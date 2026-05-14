@@ -3730,6 +3730,55 @@ class MainWindow(QMainWindow):
             }}
         """
       
+    def card_icon(self, title):
+        icons = {
+            "Endpoints": "▣",
+            "Organization": "◎",
+            "Top File": "▤",
+            "Top Hash": "#",
+            "Folder Usage": "□",
+            "Threat Trend": "⌁",
+            "Top Analysis": "↗",
+            "Detection Summary": "◇",
+            "Detection XDR Summary": "◎",
+            "Email Summary": "✉",
+            "File Summary": "□",
+        }
+        return icons.get(title, "•")
+
+    def add_card_title(self, layout, title, strong=True):
+        title_row = QHBoxLayout()
+        title_row.setSpacing(10)
+
+        icon_label = QLabel(self.card_icon(title))
+        icon_label.setAlignment(Qt.AlignCenter)
+        icon_label.setFixedSize(28, 28)
+        icon_label.setStyleSheet("""
+            QLabel {
+                background: #edf5fb;
+                border: 1px solid #c8dcea;
+                border-radius: 14px;
+                color: #5f8faf;
+                font-size: 16px;
+                font-weight: 900;
+            }
+        """)
+
+        title_label = QLabel(title)
+        title_label.setStyleSheet(f"""
+            background: transparent;
+            border: none;
+            color: #315f7d;
+            font-size: {'15px' if strong else '14px'};
+            font-weight: 800;
+            letter-spacing: 0.2px;
+        """)
+
+        title_row.addWidget(icon_label)
+        title_row.addWidget(title_label)
+        title_row.addStretch()
+        layout.addLayout(title_row)
+
     def setup_report_font(self):
         try:
             from reportlab.pdfbase import pdfmetrics
@@ -6853,15 +6902,7 @@ Command Line :
         layout.setContentsMargins(18, 14, 18, 14)
         layout.setSpacing(10)
 
-        title_label = QLabel(title)
-        title_label.setStyleSheet("""
-            background: transparent;
-            border: none;
-            font-size:15px;
-            font-weight:800;
-            color:#315f7d;
-            letter-spacing: 0.2px;
-        """)
+        self.add_card_title(layout, title)
 
         value_label = QLabel(value)
         value_label.setStyleSheet("""
@@ -6876,7 +6917,6 @@ Command Line :
         value_label.setWordWrap(True)
         value_label.setTextFormat(Qt.RichText)
 
-        layout.addWidget(title_label)
         layout.addWidget(value_label)
         layout.addStretch()
 
@@ -6893,14 +6933,7 @@ Command Line :
         layout.setContentsMargins(18, 14, 18, 14)
         layout.setSpacing(10)
 
-        title_label = QLabel(title)
-        title_label.setStyleSheet("""
-            background: transparent;
-            border: none;
-            font-size:15px;
-            font-weight:800;
-            color:#315f7d;
-        """)
+        self.add_card_title(layout, title)
 
         value_label = QTextEdit()
         value_label.setReadOnly(True)
@@ -6917,7 +6950,6 @@ Command Line :
         """)
         value_label.setHtml(value)
 
-        layout.addWidget(title_label)
         layout.addWidget(value_label)
 
         frame.value_label = value_label
@@ -7402,7 +7434,9 @@ Command Line :
         ax.spines["left"].set_color("#d1d5db")
         ax.spines["bottom"].set_color("#d1d5db")
         ax.tick_params(axis="both", colors="#374151", labelsize=10)
-        ax.set_title("Threat Trend", fontsize=16, fontweight="800", color="#111827", pad=12)
+        # The card header already displays the chart title; avoid a duplicate
+        # matplotlib title because it can render with broken-looking spacing.
+        ax.set_title("")
 
         legend = ax.legend(frameon=True, facecolor="#ffffff", edgecolor="#e5e7eb")
         for text in legend.get_texts():
@@ -12238,17 +12272,7 @@ Command Line :
         layout.setContentsMargins(18, 18, 18, 18)
         layout.setSpacing(12)
 
-        label = QLabel(title)
-        label.setStyleSheet("""
-            background: transparent;
-            border: none;
-            border-left: 3px solid #7fa6c2;
-            color:#111827;
-            font-size:15px;
-            font-weight:800;
-            padding: 2px 0 2px 10px;
-        """)
-        layout.addWidget(label)
+        self.add_card_title(layout, title)
 
         return frame, layout
         
