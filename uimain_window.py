@@ -3692,6 +3692,69 @@ class MainWindow(QMainWindow):
             border-radius: 10px;
             padding: 6px 10px;
             selection-background-color: #5f8faf;
+            font-family: 'Noto Sans CJK KR', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', 'Segoe UI', sans-serif;
+            font-size: 13px;
+            min-height: 22px;
+        }
+
+        QComboBox {
+            padding: 6px 32px 6px 12px;
+        }
+
+        QComboBox::drop-down {
+            subcontrol-origin: padding;
+            subcontrol-position: top right;
+            width: 28px;
+            border-left: 1px solid #e7eef4;
+            border-top-right-radius: 10px;
+            border-bottom-right-radius: 10px;
+            background: #edf5fb;
+        }
+
+        QComboBox::down-arrow {
+            image: none;
+            width: 0px;
+            height: 0px;
+            border-left: 5px solid transparent;
+            border-right: 5px solid transparent;
+            border-top: 6px solid #426f8f;
+            margin-right: 8px;
+        }
+
+        QComboBox QAbstractItemView {
+            background: #ffffff;
+            color: #111827;
+            border: 1px solid #c8dcea;
+            border-radius: 10px;
+            selection-background-color: #e8f1f7;
+            selection-color: #315f7d;
+            padding: 4px;
+        }
+
+        QTableWidget {
+            background: #ffffff;
+            color: #111827;
+            border: 1px solid #d7e5ee;
+            border-radius: 12px;
+            gridline-color: #edf5fb;
+            selection-background-color: #e8f1f7;
+            selection-color: #315f7d;
+            font-size: 13px;
+        }
+
+        QTableWidget::item {
+            padding: 6px;
+            border-bottom: 1px solid #edf5fb;
+        }
+
+        QHeaderView::section {
+            background: #edf5fb;
+            color: #315f7d;
+            border: none;
+            border-right: 1px solid #d7e5ee;
+            padding: 8px;
+            font-weight: 800;
+            font-size: 13px;
         }
 
         QDateEdit#datePicker, QTimeEdit#timePicker, QSpinBox#numberInput, QLineEdit#formInput {
@@ -10517,18 +10580,20 @@ Command Line :
         self.spin_interval.setMinimum(1)
         self.spin_interval.setMaximum(1440)
         self.spin_interval.setValue(10)
-        self.spin_interval.setSuffix(" min")
-        self.prepare_form_control(self.spin_interval, height=38)
-        self.spin_interval.setFixedWidth(86)
+        self.prepare_form_control(self.spin_interval, height=34)
+        self.spin_interval.setFixedWidth(52)
         self.spin_interval.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
 
         interval_label = QLabel("Interval")
         interval_label.setStyleSheet("color:#315f7d; font-size:13px; font-weight:800;")
         interval_row = QHBoxLayout()
         interval_row.setContentsMargins(0, 4, 0, 4)
-        interval_row.setSpacing(12)
+        interval_row.setSpacing(6)
+        interval_unit = QLabel("min")
+        interval_unit.setStyleSheet("color:#64748b; font-size:12px; font-weight:700;")
         interval_row.addWidget(interval_label)
         interval_row.addWidget(self.spin_interval)
+        interval_row.addWidget(interval_unit)
         interval_row.addStretch()
 
         auto_layout.addWidget(self.chk_auto_det)
