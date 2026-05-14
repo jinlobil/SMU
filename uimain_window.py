@@ -3563,13 +3563,17 @@ class MainWindow(QMainWindow):
 
         # 🔥 캘린더 UI
         self.start_date_edit = QDateEdit()
+        self.start_date_edit.setObjectName("datePicker")
         self.start_date_edit.setCalendarPopup(True)
 
         self.end_date_edit = QDateEdit()
+        self.end_date_edit.setObjectName("datePicker")
         self.end_date_edit.setCalendarPopup(True)
         
-        self.start_date_edit.setMinimumWidth(140)
-        self.end_date_edit.setMinimumWidth(140)
+        self.start_date_edit.setMinimumWidth(148)
+        self.end_date_edit.setMinimumWidth(148)
+        self.apply_date_picker_style(self.start_date_edit)
+        self.apply_date_picker_style(self.end_date_edit)
 
         today = QDate.currentDate()
         self.end_date_edit.setDate(today)
@@ -3616,8 +3620,8 @@ class MainWindow(QMainWindow):
         QMainWindow, QWidget#appRoot {
             background: #f4f7fa;
             color: #111827;
-            font-family: 'Segoe UI', 'Malgun Gothic', sans-serif;
-            font-size: 12px;
+            font-family: 'Pretendard', 'Inter', 'Segoe UI', 'Malgun Gothic', sans-serif;
+            font-size: 13px;
         }
 
         QLabel#statusPill, QLabel#rangePill {
@@ -3688,8 +3692,44 @@ class MainWindow(QMainWindow):
             selection-background-color: #5f8faf;
         }
 
+        QDateEdit#datePicker {
+            background: #ffffff;
+            color: #1f2937;
+            border: 1px solid #c8dcea;
+            border-radius: 12px;
+            padding: 7px 34px 7px 12px;
+            font-size: 12px;
+            font-weight: 700;
+            min-height: 22px;
+        }
+
+        QDateEdit#datePicker::drop-down {
+            subcontrol-origin: padding;
+            subcontrol-position: top right;
+            width: 30px;
+            border-left: 1px solid #e7eef4;
+            border-top-right-radius: 12px;
+            border-bottom-right-radius: 12px;
+            background: #edf5fb;
+        }
+
+        QDateEdit#datePicker::down-arrow {
+            image: none;
+            width: 0px;
+            height: 0px;
+            border-left: 5px solid transparent;
+            border-right: 5px solid transparent;
+            border-top: 6px solid #426f8f;
+            margin-right: 9px;
+        }
+
         QDateEdit:hover, QTimeEdit:hover, QComboBox:hover, QLineEdit:hover, QTextEdit:hover, QSpinBox:hover {
             border-color: #7fa6c2;
+        }
+
+        QDateEdit#datePicker:hover {
+            border-color: #5f8faf;
+            background: #fafdff;
         }
 
         QScrollBar:vertical {
@@ -3730,17 +3770,17 @@ class MainWindow(QMainWindow):
       
     def card_icon(self, title):
         icons = {
-            "Endpoints": "▣",
-            "Organization": "◎",
-            "Top File": "▤",
+            "Endpoints": "PC",
+            "Organization": "OR",
+            "Top File": "F",
             "Top Hash": "#",
-            "Folder Usage": "□",
-            "Threat Trend": "⌁",
-            "Top Analysis": "↗",
-            "Detection Summary": "◇",
-            "Detection XDR Summary": "◎",
-            "Email Summary": "✉",
-            "File Summary": "□",
+            "Folder Usage": "D",
+            "Threat Trend": "TR",
+            "Top Analysis": "TA",
+            "Detection Summary": "DS",
+            "Detection XDR Summary": "XD",
+            "Email Summary": "EM",
+            "File Summary": "FS",
         }
         return icons.get(title, "•")
 
@@ -3750,14 +3790,15 @@ class MainWindow(QMainWindow):
 
         icon_label = QLabel(self.card_icon(title))
         icon_label.setAlignment(Qt.AlignCenter)
-        icon_label.setFixedSize(28, 28)
+        icon_label.setFixedSize(30, 30)
         icon_label.setStyleSheet("""
             QLabel {
                 background: #edf5fb;
                 border: 1px solid #c8dcea;
-                border-radius: 14px;
-                color: #5f8faf;
-                font-size: 16px;
+                border-radius: 15px;
+                color: #426f8f;
+                font-family: 'Inter', 'Segoe UI', sans-serif;
+                font-size: 11px;
                 font-weight: 900;
             }
         """)
@@ -3767,7 +3808,7 @@ class MainWindow(QMainWindow):
             background: transparent;
             border: none;
             color: #315f7d;
-            font-size: {'15px' if strong else '14px'};
+            font-size: {'16px' if strong else '15px'};
             font-weight: 800;
             letter-spacing: 0.2px;
         """)
@@ -3781,6 +3822,68 @@ class MainWindow(QMainWindow):
         divider.setFixedHeight(1)
         divider.setStyleSheet("background: #e7eef4; border: none;")
         layout.addWidget(divider)
+
+    def apply_date_picker_style(self, date_edit):
+        calendar = date_edit.calendarWidget()
+        if not calendar:
+            return
+
+        calendar.setGridVisible(False)
+        calendar.setStyleSheet("""
+            QCalendarWidget {
+                background: #ffffff;
+                border: 1px solid #c8dcea;
+                border-radius: 14px;
+                font-family: 'Pretendard', 'Inter', 'Segoe UI', 'Malgun Gothic', sans-serif;
+                color: #111827;
+            }
+            QCalendarWidget QWidget#qt_calendar_navigationbar {
+                background: #5f8faf;
+                border-top-left-radius: 14px;
+                border-top-right-radius: 14px;
+                min-height: 34px;
+            }
+            QCalendarWidget QToolButton {
+                background: transparent;
+                color: #ffffff;
+                border: none;
+                border-radius: 8px;
+                padding: 6px;
+                font-weight: 800;
+            }
+            QCalendarWidget QToolButton:hover {
+                background: rgba(255, 255, 255, 0.16);
+            }
+            QCalendarWidget QMenu {
+                background: #ffffff;
+                color: #111827;
+                border: 1px solid #c8dcea;
+                border-radius: 8px;
+            }
+            QCalendarWidget QSpinBox {
+                background: rgba(255, 255, 255, 0.16);
+                color: #ffffff;
+                border: 1px solid rgba(255, 255, 255, 0.24);
+                border-radius: 8px;
+                padding: 3px 8px;
+                font-weight: 800;
+            }
+            QCalendarWidget QAbstractItemView {
+                background: #ffffff;
+                color: #1f2937;
+                selection-background-color: #5f8faf;
+                selection-color: #ffffff;
+                border: none;
+                outline: 0;
+                gridline-color: #edf5fb;
+                font-size: 12px;
+                font-weight: 600;
+            }
+            QCalendarWidget QAbstractItemView:enabled:hover {
+                background: #edf5fb;
+                color: #315f7d;
+            }
+        """)
 
     def setup_report_font(self):
         try:
@@ -6851,6 +6954,7 @@ Command Line :
                 gridline-color: #e5e7eb;
                 selection-background-color: #e8f1f7;
                 selection-color: #315f7d;
+                font-size: 13px;
             }
             QTableWidget::item {
                 padding: 6px;
@@ -6911,7 +7015,7 @@ Command Line :
         value_label.setStyleSheet("""
             background: transparent;
             border: none;
-            font-size:12px;
+            font-size:13px;
             font-weight:700;
             color:#111827;
             line-height: 150%;
@@ -6946,7 +7050,7 @@ Command Line :
             QTextEdit {
                 border: none;
                 background: transparent;
-                font-size: 12px;
+                font-size: 13px;
                 font-weight: 700;
                 color: #111827;
             }
@@ -7006,7 +7110,7 @@ Command Line :
                 server_count += 1
 
         endpoint_html = f"""
-        <table width='100%' cellspacing='0' cellpadding='0' style='line-height:20px;'>
+        <table width='100%' cellspacing='0' cellpadding='0' style='line-height:22px; font-size:13px;'>
             <tr>
                 <td style='color:#6b7280; font-size:11px;'>PC</td>
                 <td style='color:#6b7280; font-size:11px;'>Server</td>
@@ -7056,7 +7160,7 @@ Command Line :
         user_count = len(valid_users)
 
         org_html = f"""
-        <table width='100%' cellspacing='0' cellpadding='0' style='line-height:20px;'>
+        <table width='100%' cellspacing='0' cellpadding='0' style='line-height:22px; font-size:13px;'>
             <tr>
                 <td style='color:#6b7280; font-size:11px;'>조직부서</td>
                 <td style='color:#6b7280; font-size:11px;'>사원 수</td>
@@ -7095,7 +7199,7 @@ Command Line :
             )
 
         html = "".join(links)
-        html = f"<table width='100%' cellspacing='0' cellpadding='0' style='line-height:20px;'>{html}</table>"
+        html = f"<table width='100%' cellspacing='0' cellpadding='0' style='line-height:22px; font-size:13px;'>{html}</table>"
 
         self.card_file_top.value_label.setText(html)
         self.card_file_top.value_label.setTextFormat(Qt.RichText)
@@ -7138,7 +7242,7 @@ Command Line :
             )
 
         html = "".join(links)
-        html = f"<table width='100%' cellspacing='0' cellpadding='0' style='line-height:20px;'>{html}</table>"
+        html = f"<table width='100%' cellspacing='0' cellpadding='0' style='line-height:22px; font-size:13px;'>{html}</table>"
         
 
         self.card_hash_top.value_label.setText(html)
@@ -7165,7 +7269,7 @@ Command Line :
         env_size = format_size_text(get_dir_size_bytes(ENV_DIR))
 
         folder_html = f"""
-        <table width='100%' cellspacing='0' cellpadding='0' style='line-height:21px;'>
+        <table width='100%' cellspacing='0' cellpadding='0' style='line-height:22px; font-size:13px;'>
             <tr><td>Logs</td><td align='right'>{logs_size}</td></tr>
             <tr><td>Cache</td><td align='right'>{cache_size}</td></tr>
             <tr><td>Exports</td><td align='right'>{export_size}</td></tr>
