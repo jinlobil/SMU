@@ -3614,16 +3614,16 @@ class MainWindow(QMainWindow):
         
         self.setStyleSheet("""
         QMainWindow, QWidget#appRoot {
-            background: #f5f7fb;
+            background: #f4f7fa;
             color: #111827;
             font-family: 'Segoe UI', 'Malgun Gothic', sans-serif;
             font-size: 12px;
         }
 
         QLabel#statusPill, QLabel#rangePill {
-            background: #f3e8ff;
-            color: #5b21b6;
-            border: 1px solid #ddd6fe;
+            background: #e8f1f7;
+            color: #315f7d;
+            border: 1px solid #c8dcea;
             border-radius: 12px;
             padding: 6px 12px;
             font-weight: 700;
@@ -3631,9 +3631,9 @@ class MainWindow(QMainWindow):
         }
 
         QLabel#rangePill {
-            background: #eef2ff;
-            color: #4338ca;
-            border-color: #c7d2fe;
+            background: #edf5fb;
+            color: #416f8f;
+            border-color: #c8dcea;
         }
 
         QTabWidget::pane {
@@ -3656,18 +3656,18 @@ class MainWindow(QMainWindow):
 
         QTabBar::tab:selected {
             background: #ffffff;
-            color: #4f46e5;
-            border: 1px solid #c7d2fe;
-            border-bottom: 2px solid #7c3aed;
+            color: #426f8f;
+            border: 1px solid #c8dcea;
+            border-bottom: 2px solid #5f8faf;
         }
 
         QTabBar::tab:hover {
-            background: #f3e8ff;
-            color: #5b21b6;
+            background: #e8f1f7;
+            color: #315f7d;
         }
 
         QPushButton {
-            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #7c3aed, stop:1 #4f46e5);
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #5f8faf, stop:1 #426f8f);
             color: #ffffff;
             border: none;
             border-radius: 10px;
@@ -3676,7 +3676,7 @@ class MainWindow(QMainWindow):
         }
 
         QPushButton:hover {
-            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #8b5cf6, stop:1 #6366f1);
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #7fa6c2, stop:1 #5f8faf);
         }
 
         QDateEdit, QTimeEdit, QComboBox, QLineEdit, QTextEdit, QSpinBox {
@@ -3685,11 +3685,11 @@ class MainWindow(QMainWindow):
             border: 1px solid #dbe1ea;
             border-radius: 10px;
             padding: 6px 10px;
-            selection-background-color: #7c3aed;
+            selection-background-color: #5f8faf;
         }
 
         QDateEdit:hover, QTimeEdit:hover, QComboBox:hover, QLineEdit:hover, QTextEdit:hover, QSpinBox:hover {
-            border-color: #a78bfa;
+            border-color: #7fa6c2;
         }
 
         QScrollBar:vertical {
@@ -3714,17 +3714,17 @@ class MainWindow(QMainWindow):
         shadow = QGraphicsDropShadowEffect(self)
         shadow.setBlurRadius(blur)
         shadow.setOffset(0, y_offset)
-        shadow.setColor(QColor(79, 70, 229, min(alpha, 38)))
+        shadow.setColor(QColor(95, 143, 175, min(alpha, 42)))
         widget.setGraphicsEffect(shadow)
 
     def card_style(self, object_name, accent=True):
-        accent_line = "border-left: 3px solid #8b5cf6;" if accent else ""
+        accent_line = "border-left: 3px solid #7fa6c2;" if accent else ""
         return f"""
             QFrame#{object_name} {{
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
                     stop:0 #ffffff,
-                    stop:1 #faf7ff);
-                border: 1px solid #e9d5ff;
+                    stop:1 #f7fbff);
+                border: 1px solid #c8dcea;
                 {accent_line}
                 border-radius: 18px;
             }}
@@ -5860,9 +5860,9 @@ class MainWindow(QMainWindow):
             "gray": ("#f1f5f9", "#475569", "#e2e8f0"),
             "green": ("#ecfdf5", "#047857", "#bbf7d0"),
             "red": ("#fef2f2", "#b91c1c", "#fecaca"),
-            "blue": ("#eef2ff", "#4338ca", "#c7d2fe"),
+            "blue": ("#edf5fb", "#416f8f", "#c8dcea"),
         }
-        bg, fg, border = palette.get(str(color).lower(), ("#f3e8ff", str(color), "#ddd6fe"))
+        bg, fg, border = palette.get(str(color).lower(), ("#e8f1f7", str(color), "#c8dcea"))
         self.status_label.setStyleSheet(f"""
             QLabel#statusPill {{
                 background: {bg};
@@ -6754,7 +6754,7 @@ Command Line :
         self.percent_label.setAlignment(Qt.AlignTop)
         self.percent_label.setStyleSheet("""
             background: #ffffff;
-            border: 1px solid #e9d5ff;
+            border: 1px solid #c8dcea;
             border-radius: 14px;
             color: #111827;
             font-size: 13px;
@@ -6797,16 +6797,16 @@ Command Line :
                 background: #ffffff;
                 color: #111827;
                 gridline-color: #e5e7eb;
-                selection-background-color: #ede9fe;
-                selection-color: #4c1d95;
+                selection-background-color: #e8f1f7;
+                selection-color: #315f7d;
             }
             QTableWidget::item {
                 padding: 6px;
-                border-bottom: 1px solid #eef2ff;
+                border-bottom: 1px solid #edf5fb;
             }
             QHeaderView::section {
-                background: #f5f3ff;
-                color: #4c1d95;
+                background: #edf5fb;
+                color: #315f7d;
                 font-weight: 800;
                 border: none;
                 padding: 8px;
@@ -6859,7 +6859,7 @@ Command Line :
             border: none;
             font-size:15px;
             font-weight:800;
-            color:#6d28d9;
+            color:#315f7d;
             letter-spacing: 0.2px;
         """)
 
@@ -6899,7 +6899,7 @@ Command Line :
             border: none;
             font-size:15px;
             font-weight:800;
-            color:#6d28d9;
+            color:#315f7d;
         """)
 
         value_label = QTextEdit()
@@ -7362,12 +7362,12 @@ Command Line :
 
         color_det = "#ec4899"      # Detection
         color_mail = "#38bdf8"     # Email
-        color_xdr = "#7c3aed"      # Detection XDR
+        color_xdr = "#5f8faf"      # Detection XDR
         color_file = "#d4a017"     # File (어두운 황색)
 
         dark_det = "#be185d"
         dark_mail = "#0369a1"
-        dark_xdr = "#4c1d95"
+        dark_xdr = "#315f7d"
         dark_file = "#9a7600"
 
         ax.plot(x_dates, det_values, marker='o', linewidth=2.5,
@@ -10099,28 +10099,28 @@ Command Line :
         QPushButton {
             background-color: qlineargradient(
                 x1:0, y1:0, x2:0, y2:1,
-                stop:0 #3b82f6,
-                stop:1 #2563eb
+                stop:0 #7fa6c2,
+                stop:1 #5f8faf
             );
             color: white;
             border-radius: 8px;
             padding: 8px;
             font-weight: 600;
-            border: 1px solid #1e3a8a;   /* 기본 border */
+            border: 1px solid #426f8f;   /* 기본 border */
         }
 
         QPushButton:hover {
             background-color: qlineargradient(
                 x1:0, y1:0, x2:0, y2:1,
-                stop:0 #60a5fa,
-                stop:1 #1d4ed8
+                stop:0 #9bb5ce,
+                stop:1 #426f8f
             );
-            border: 1px solid #2563eb;   /* hover 시 밝게 */
+            border: 1px solid #5f8faf;   /* hover 시 밝게 */
         }
 
         QPushButton:pressed {
-            background-color: #1e40af;
-            border: 1px solid #1d4ed8;
+            background-color: #315f7d;
+            border: 1px solid #426f8f;
         }
 
         QPushButton:disabled {
@@ -12242,7 +12242,7 @@ Command Line :
         label.setStyleSheet("""
             background: transparent;
             border: none;
-            border-left: 3px solid #8b5cf6;
+            border-left: 3px solid #7fa6c2;
             color:#111827;
             font-size:15px;
             font-weight:800;
