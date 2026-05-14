@@ -7627,26 +7627,26 @@ Command Line :
         self.figure.clf()
         ax = self.figure.add_subplot(111)
 
-        color_det = "#ec4899"      # Detection
-        color_mail = "#38bdf8"     # Email
-        color_xdr = "#5f8faf"      # Detection XDR
-        color_file = "#d4a017"     # File (어두운 황색)
+        color_det = "#5f8faf"      # Detection - Sierra blue
+        color_xdr = "#7c9fb8"      # Detection XDR - muted steel blue
+        color_mail = "#14b8a6"     # Email - teal
+        color_file = "#f59e0b"     # File - amber
 
-        dark_det = "#be185d"
-        dark_mail = "#0369a1"
-        dark_xdr = "#315f7d"
-        dark_file = "#9a7600"
+        dark_det = "#315f7d"
+        dark_xdr = "#496f89"
+        dark_mail = "#0f766e"
+        dark_file = "#b45309"
 
-        ax.plot(x_dates, det_values, marker='o', linewidth=2.5,
+        ax.plot(x_dates, det_values, marker='o', linewidth=2.8,
                 color=color_det, label="Detection")
 
-        ax.plot(x_dates, xdr_values, marker='o', linewidth=2.5,
+        ax.plot(x_dates, xdr_values, marker='o', linewidth=2.8,
                 color=color_xdr, label="Detection XDR")
 
-        ax.plot(x_dates, mail_values, marker='o', linewidth=2.5,
+        ax.plot(x_dates, mail_values, marker='o', linewidth=2.8,
                 color=color_mail, label="Email")
 
-        ax.plot(x_dates, file_values, marker='o', linewidth=2.5,
+        ax.plot(x_dates, file_values, marker='o', linewidth=2.8,
                 color=color_file, label="File")
 
         # 🔥 tick 강제 고정
@@ -7683,6 +7683,7 @@ Command Line :
         )
         for text in legend.get_texts():
             text.set_color("#374151")
+            text.set_fontsize(10)
         max_y = max(max(det_values), max(xdr_values), max(mail_values), max(file_values), 1)        
         ax.set_ylim(0, max_y * 1.8)      
 
@@ -7773,35 +7774,35 @@ Command Line :
         # 🔥 전일 대비 (오른쪽 표시용)
         # ==============================
         percent_html = f"""
-        <table width='100%' cellspacing='0' cellpadding='0' style='font-size:12px; line-height:20px;'>
+        <table width='100%' cellspacing='0' cellpadding='0' style='font-size:14px; line-height:24px;'>
             <tr>
                 <td></td>
-                <td align='center' style='color:#6b7280; font-size:10px;'>전일 대비</td>
-                <td align='right' style='color:#6b7280; font-size:10px;'>전월 대비</td>
+                <td align='center' style='color:#6b7280; font-size:13px; font-weight:800;'>전일 대비</td>
+                <td align='right' style='color:#6b7280; font-size:13px; font-weight:800;'>전월 대비</td>
             </tr>
             <tr><td colspan='3' style='height:6px; border-bottom:1px solid #e5e7eb;'></td></tr>
             <tr>
-                <td style='padding-top:8px; color:#315f7d; font-weight:800;'>Detection</td>
-                <td align='center' style='padding-top:8px; color:{daily_det_color}; font-weight:800;'>{daily_det_text}</td>
-                <td align='right' style='padding-top:8px; color:{monthly_det_color}; font-weight:800;'>{monthly_det_text}</td>
+                <td style='padding-top:8px; color:#315f7d; font-size:13px; font-weight:900;'>Detection</td>
+                <td align='center' style='padding-top:8px; color:{daily_det_color}; font-size:13px; font-weight:900;'>{daily_det_text}</td>
+                <td align='right' style='padding-top:8px; color:{monthly_det_color}; font-size:13px; font-weight:900;'>{monthly_det_text}</td>
             </tr>
             <tr><td colspan='3' style='height:8px; border-bottom:1px solid #e5e7eb;'></td></tr>
             <tr>
-                <td style='padding-top:8px; color:#315f7d; font-weight:800;'>Detection XDR</td>
-                <td align='center' style='padding-top:8px; color:{daily_xdr_color}; font-weight:800;'>{daily_xdr_text}</td>
-                <td align='right' style='padding-top:8px; color:{monthly_xdr_color}; font-weight:800;'>{monthly_xdr_text}</td>
+                <td style='padding-top:8px; color:#315f7d; font-size:13px; font-weight:900;'>Detection XDR</td>
+                <td align='center' style='padding-top:8px; color:{daily_xdr_color}; font-size:13px; font-weight:900;'>{daily_xdr_text}</td>
+                <td align='right' style='padding-top:8px; color:{monthly_xdr_color}; font-size:13px; font-weight:900;'>{monthly_xdr_text}</td>
             </tr>
             <tr><td colspan='3' style='height:8px; border-bottom:1px solid #e5e7eb;'></td></tr>
             <tr>
-                <td style='padding-top:8px; color:#315f7d; font-weight:800;'>Email</td>
-                <td align='center' style='padding-top:8px; color:{daily_mail_color}; font-weight:800;'>{daily_mail_text}</td>
-                <td align='right' style='padding-top:8px; color:{monthly_mail_color}; font-weight:800;'>{monthly_mail_text}</td>
+                <td style='padding-top:8px; color:#315f7d; font-size:13px; font-weight:900;'>Email</td>
+                <td align='center' style='padding-top:8px; color:{daily_mail_color}; font-size:13px; font-weight:900;'>{daily_mail_text}</td>
+                <td align='right' style='padding-top:8px; color:{monthly_mail_color}; font-size:13px; font-weight:900;'>{monthly_mail_text}</td>
             </tr>
             <tr><td colspan='3' style='height:8px; border-bottom:1px solid #e5e7eb;'></td></tr>
             <tr>
-                <td style='padding-top:8px; color:#315f7d; font-weight:800;'>File</td>
-                <td align='center' style='padding-top:8px; color:{daily_file_color}; font-weight:800;'>{daily_file_text}</td>
-                <td align='right' style='padding-top:8px; color:{monthly_file_color}; font-weight:800;'>{monthly_file_text}</td>
+                <td style='padding-top:8px; color:#315f7d; font-size:13px; font-weight:900;'>File</td>
+                <td align='center' style='padding-top:8px; color:{daily_file_color}; font-size:13px; font-weight:900;'>{daily_file_text}</td>
+                <td align='right' style='padding-top:8px; color:{monthly_file_color}; font-size:13px; font-weight:900;'>{monthly_file_text}</td>
             </tr>
         </table>
 """
