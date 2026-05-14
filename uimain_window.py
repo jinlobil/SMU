@@ -52,7 +52,7 @@ from PyQt5.QtWidgets import (
     QFrame, QDateEdit, QTimeEdit, QGroupBox,
     QCheckBox, QSpinBox,
     QDialog, QTextEdit, QShortcut,
-    QSizePolicy, QGraphicsDropShadowEffect
+    QSizePolicy, QGraphicsDropShadowEffect, QStyle
 )
 
 # =============================
@@ -3769,26 +3769,32 @@ class MainWindow(QMainWindow):
         """
       
     def card_icon(self, title):
+        fallback = QStyle.SP_FileIcon
         icons = {
-            "Endpoints": "PC",
-            "Organization": "OR",
-            "Top File": "F",
+            "Endpoints": getattr(QStyle, "SP_ComputerIcon", fallback),
+            "Organization": getattr(QStyle, "SP_DirHomeIcon", fallback),
+            "Top File": getattr(QStyle, "SP_FileIcon", fallback),
             "Top Hash": "#",
-            "Folder Usage": "D",
-            "Threat Trend": "TR",
-            "Top Analysis": "TA",
-            "Detection Summary": "DS",
-            "Detection XDR Summary": "XD",
-            "Email Summary": "EM",
-            "File Summary": "FS",
+            "Folder Usage": getattr(QStyle, "SP_DirIcon", fallback),
+            "Threat Trend": getattr(QStyle, "SP_ArrowUp", fallback),
+            "Top Analysis": getattr(QStyle, "SP_ArrowForward", fallback),
+            "Detection Summary": getattr(QStyle, "SP_FileDialogInfoView", fallback),
+            "Detection XDR Summary": getattr(QStyle, "SP_DialogApplyButton", fallback),
+            "Email Summary": getattr(QStyle, "SP_MessageBoxInformation", fallback),
+            "File Summary": getattr(QStyle, "SP_DirIcon", fallback),
+            "Cache Data": getattr(QStyle, "SP_DriveHDIcon", fallback),
+            "Auto Refresh": getattr(QStyle, "SP_BrowserReload", getattr(QStyle, "SP_ArrowUp", fallback)),
+            "Export": getattr(QStyle, "SP_DialogSaveButton", fallback),
+            "Report": getattr(QStyle, "SP_FileDialogDetailedView", fallback),
+            "Folders": getattr(QStyle, "SP_DirOpenIcon", fallback),
         }
-        return icons.get(title, "•")
+        return icons.get(title, fallback)
 
     def add_card_title(self, layout, title, strong=True):
         title_row = QHBoxLayout()
         title_row.setSpacing(10)
 
-        icon_label = QLabel(self.card_icon(title))
+        icon_label = QLabel()
         icon_label.setAlignment(Qt.AlignCenter)
         icon_label.setFixedSize(30, 30)
         icon_label.setStyleSheet("""
@@ -3797,11 +3803,16 @@ class MainWindow(QMainWindow):
                 border: 1px solid #c8dcea;
                 border-radius: 15px;
                 color: #426f8f;
-                font-family: 'Inter', 'Segoe UI', sans-serif;
-                font-size: 11px;
+                font-family: 'Segoe UI Symbol', 'Inter', 'Segoe UI', sans-serif;
+                font-size: 15px;
                 font-weight: 900;
             }
         """)
+        icon = self.card_icon(title)
+        if isinstance(icon, str):
+            icon_label.setText(icon)
+        else:
+            icon_label.setPixmap(self.style().standardIcon(icon).pixmap(16, 16))
 
         title_label = QLabel(title)
         title_label.setStyleSheet(f"""
@@ -3884,6 +3895,14 @@ class MainWindow(QMainWindow):
                 color: #315f7d;
             }
         """)
+
+    def prepare_form_control(self, widget, height=36):
+        widget.setMinimumHeight(height)
+        widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        if isinstance(widget, QDateEdit):
+            widget.setObjectName("datePicker")
+            widget.setCalendarPopup(True)
+            self.apply_date_picker_style(widget)
 
     def setup_report_font(self):
         try:
@@ -10279,40 +10298,63 @@ Command Line :
     def tab_config(self):
         btn_style = """
         QPushButton {
-            background-color: qlineargradient(
-                x1:0, y1:0, x2:0, y2:1,
-                stop:0 #7fa6c2,
-                stop:1 #5f8faf
+            background: qlineargradient(
+                x1:0, y1:0, x2:1, y2:1,
+                stop:0 #6f9fbe,
+                stop:1 #426f8f
             );
-            color: white;
-            border-radius: 8px;
-            padding: 8px;
-            font-weight: 600;
-            border: 1px solid #426f8f;   /* 기본 border */
+            color: #ffffff;
+            border: none;
+            border-radius: 12px;
+            padding: 9px 16px;
+            font-family: 'Pretendard', 'Inter', 'Segoe UI', 'Malgun Gothic', sans-serif;
+            font-size: 13px;
+            font-weight: 800;
         }
 
         QPushButton:hover {
-            background-color: qlineargradient(
-                x1:0, y1:0, x2:0, y2:1,
-                stop:0 #9bb5ce,
-                stop:1 #426f8f
+            background: qlineargradient(
+                x1:0, y1:0, x2:1, y2:1,
+                stop:0 #84aec8,
+                stop:1 #5f8faf
             );
-            border: 1px solid #5f8faf;   /* hover 시 밝게 */
         }
 
         QPushButton:pressed {
-            background-color: #315f7d;
-            border: 1px solid #426f8f;
+            background: #315f7d;
         }
 
         QPushButton:disabled {
-            background-color: #94a3b8;
-            color: #e5e7eb;
-            border: 1px solid #94a3b8;
+            background: #cbd5e1;
+            color: #f8fafc;
         }
         """
         root = QWidget()
+        root.setObjectName("configRoot")
+        root.setStyleSheet("""
+            QWidget#configRoot {
+                background: #f4f7fa;
+            }
+            QCheckBox {
+                color: #1f2937;
+                font-size: 13px;
+                font-weight: 600;
+                spacing: 8px;
+            }
+            QCheckBox::indicator {
+                width: 16px;
+                height: 16px;
+                border: 1px solid #c8dcea;
+                border-radius: 4px;
+                background: #ffffff;
+            }
+            QCheckBox::indicator:checked {
+                background: #5f8faf;
+                border: 1px solid #426f8f;
+            }
+        """)
         layout = QVBoxLayout(root)
+        layout.setContentsMargins(14, 14, 14, 14)
         layout.setSpacing(20)
 
         # ==================================================
@@ -10372,8 +10414,7 @@ Command Line :
             self.mail_end_date,
             self.dlp_refresh_date,
         ]:
-            widget.setMinimumHeight(36)
-            widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            self.prepare_form_control(widget, height=38)
 
         for btn in [
             btn_det_refresh,
@@ -10382,8 +10423,8 @@ Command Line :
             btn_org_refresh,
             btn_dlp_refresh,
         ]:
-            btn.setMinimumHeight(36)
-            widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            btn.setMinimumHeight(38)
+            btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             btn.setStyleSheet(btn_style)
 
         det_tilde = QLabel("~")
@@ -10448,17 +10489,36 @@ Command Line :
         self.spin_interval.setMaximum(1440)
         self.spin_interval.setValue(10)
         self.spin_interval.setSuffix(" min")
+        self.prepare_form_control(self.spin_interval, height=38)
+        self.spin_interval.setMinimumWidth(140)
+        self.spin_interval.setMaximumWidth(180)
+
+        interval_label = QLabel("Interval")
+        interval_label.setStyleSheet("color:#315f7d; font-size:13px; font-weight:800;")
+        interval_row = QHBoxLayout()
+        interval_row.setContentsMargins(0, 4, 0, 4)
+        interval_row.setSpacing(12)
+        interval_row.addWidget(interval_label)
+        interval_row.addWidget(self.spin_interval)
+        interval_row.addStretch()
 
         auto_layout.addWidget(self.chk_auto_det)
         auto_layout.addWidget(self.chk_auto_mail)
-        auto_layout.addWidget(QLabel("Interval"))
-        auto_layout.addWidget(self.spin_interval)
+        auto_layout.addLayout(interval_row)
 
         self.lbl_det_status = QLabel("Last Run: -")
         self.lbl_det_result = QLabel("Status: -")
 
         self.lbl_mail_status = QLabel("Last Run: -")
         self.lbl_mail_result = QLabel("Status: -")
+
+        for label in [
+            self.lbl_det_status,
+            self.lbl_det_result,
+            self.lbl_mail_status,
+            self.lbl_mail_result,
+        ]:
+            label.setStyleSheet("color:#374151; font-size:13px; font-weight:600;")
 
         auto_layout.addWidget(self.lbl_det_status)
         auto_layout.addWidget(self.lbl_det_result)
@@ -10514,10 +10574,9 @@ Command Line :
 
         for w in [self.det_export_start_date, self.det_export_start_time,
                   self.det_export_end_date, self.det_export_end_time]:
-            w.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-            w.setMinimumHeight(36)
+            self.prepare_form_control(w, height=38)
         btn_det_export.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        btn_det_export.setMinimumHeight(36)
+        btn_det_export.setMinimumHeight(38)
 
         det_layout.addWidget(self.det_export_start_date, 1)
         det_layout.addWidget(self.det_export_start_time, 1)
@@ -10552,10 +10611,9 @@ Command Line :
 
         for w in [self.xdr_export_start_date, self.xdr_export_start_time,
                   self.xdr_export_end_date, self.xdr_export_end_time]:
-            w.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-            w.setMinimumHeight(36)
+            self.prepare_form_control(w, height=38)
         btn_xdr_export.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        btn_xdr_export.setMinimumHeight(36)
+        btn_xdr_export.setMinimumHeight(38)
 
         xdr_layout.addWidget(self.xdr_export_start_date, 1)
         xdr_layout.addWidget(self.xdr_export_start_time, 1)
@@ -10590,10 +10648,9 @@ Command Line :
 
         for w in [self.mail_export_start_date, self.mail_export_start_time,
                   self.mail_export_end_date, self.mail_export_end_time]:
-            w.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-            w.setMinimumHeight(36)
+            self.prepare_form_control(w, height=38)
         btn_mail_export.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        btn_mail_export.setMinimumHeight(36)
+        btn_mail_export.setMinimumHeight(38)
 
         mail_layout.addWidget(self.mail_export_start_date, 1)
         mail_layout.addWidget(self.mail_export_start_time, 1)
@@ -10632,10 +10689,9 @@ Command Line :
         for w in [self.dlp_export_start_date, self.dlp_export_start_time,
                   self.dlp_export_end_date, self.dlp_export_end_time,
                   self.dlp_export_machine_input]:
-            w.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-            w.setMinimumHeight(36)
+            self.prepare_form_control(w, height=38)
         btn_dlp_export.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        btn_dlp_export.setMinimumHeight(36)
+        btn_dlp_export.setMinimumHeight(38)
 
         dlp_layout.addWidget(self.dlp_export_start_date, 1)
         dlp_layout.addWidget(self.dlp_export_start_time, 1)
@@ -10670,15 +10726,23 @@ Command Line :
         self.report_start_time.setDisplayFormat("HH:mm:ss")
         self.report_end_time.setDisplayFormat("HH:mm:ss")
 
+        for w in [
+            self.report_start_date,
+            self.report_start_time,
+            self.report_end_date,
+            self.report_end_time,
+        ]:
+            self.prepare_form_control(w, height=38)
+
         btn_report = QPushButton("Download Security Report (PDF)")
         btn_report.clicked.connect(self.generate_security_report_v2)
         btn_report.setStyleSheet(btn_style)
-        btn_report.setMinimumHeight(36)
+        btn_report.setMinimumHeight(38)
 
         btn_report_exception = QPushButton("Report exception List")
         btn_report_exception.clicked.connect(self.open_report_exception_list_dialog)
         btn_report_exception.setStyleSheet(btn_style)
-        btn_report_exception.setMinimumHeight(36)
+        btn_report_exception.setMinimumHeight(38)
 
         row = QHBoxLayout()
         row.addWidget(self.report_start_date)
@@ -10706,7 +10770,7 @@ Command Line :
 
         for b in [btn_log, btn_cache, btn_export, btn_report]:
             b.setStyleSheet(btn_style)
-            b.setMinimumHeight(36)
+            b.setMinimumHeight(38)
             row.addWidget(b)
         
         folder_layout.addLayout(row)   # 👈 카드에 가로 레이아웃 추가
