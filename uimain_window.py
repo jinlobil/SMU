@@ -3570,8 +3570,8 @@ class MainWindow(QMainWindow):
         self.end_date_edit.setObjectName("datePicker")
         self.end_date_edit.setCalendarPopup(True)
         
-        self.start_date_edit.setMinimumWidth(148)
-        self.end_date_edit.setMinimumWidth(148)
+        self.start_date_edit.setMinimumWidth(168)
+        self.end_date_edit.setMinimumWidth(168)
         self.apply_date_picker_style(self.start_date_edit)
         self.apply_date_picker_style(self.end_date_edit)
 
@@ -3692,42 +3692,75 @@ class MainWindow(QMainWindow):
             selection-background-color: #5f8faf;
         }
 
-        QDateEdit#datePicker {
+        QDateEdit#datePicker, QTimeEdit#timePicker, QSpinBox#numberInput, QLineEdit#formInput {
             background: #ffffff;
             color: #1f2937;
             border: 1px solid #c8dcea;
             border-radius: 12px;
-            padding: 7px 34px 7px 12px;
+            padding: 7px 30px 7px 11px;
             font-size: 12px;
             font-weight: 700;
             min-height: 22px;
         }
 
-        QDateEdit#datePicker::drop-down {
+        QDateEdit#datePicker::drop-down, QTimeEdit#timePicker::drop-down, QSpinBox#numberInput::up-button, QSpinBox#numberInput::down-button {
             subcontrol-origin: padding;
             subcontrol-position: top right;
-            width: 30px;
+            width: 28px;
             border-left: 1px solid #e7eef4;
-            border-top-right-radius: 12px;
-            border-bottom-right-radius: 12px;
             background: #edf5fb;
         }
 
-        QDateEdit#datePicker::down-arrow {
+        QDateEdit#datePicker::drop-down, QTimeEdit#timePicker::drop-down {
+            border-top-right-radius: 12px;
+            border-bottom-right-radius: 12px;
+        }
+
+        QSpinBox#numberInput::up-button {
+            subcontrol-position: top right;
+            border-top-right-radius: 12px;
+            height: 18px;
+        }
+
+        QSpinBox#numberInput::down-button {
+            subcontrol-position: bottom right;
+            border-bottom-right-radius: 12px;
+            height: 18px;
+        }
+
+        QDateEdit#datePicker::down-arrow, QTimeEdit#timePicker::down-arrow {
             image: none;
             width: 0px;
             height: 0px;
             border-left: 5px solid transparent;
             border-right: 5px solid transparent;
             border-top: 6px solid #426f8f;
-            margin-right: 9px;
+            margin-right: 8px;
+        }
+
+        QSpinBox#numberInput::up-arrow {
+            image: none;
+            width: 0px;
+            height: 0px;
+            border-left: 5px solid transparent;
+            border-right: 5px solid transparent;
+            border-bottom: 6px solid #426f8f;
+        }
+
+        QSpinBox#numberInput::down-arrow {
+            image: none;
+            width: 0px;
+            height: 0px;
+            border-left: 5px solid transparent;
+            border-right: 5px solid transparent;
+            border-top: 6px solid #426f8f;
         }
 
         QDateEdit:hover, QTimeEdit:hover, QComboBox:hover, QLineEdit:hover, QTextEdit:hover, QSpinBox:hover {
             border-color: #7fa6c2;
         }
 
-        QDateEdit#datePicker:hover {
+        QDateEdit#datePicker:hover, QTimeEdit#timePicker:hover, QSpinBox#numberInput:hover, QLineEdit#formInput:hover {
             border-color: #5f8faf;
             background: #fafdff;
         }
@@ -3769,26 +3802,25 @@ class MainWindow(QMainWindow):
         """
       
     def card_icon(self, title):
-        fallback = QStyle.SP_FileIcon
         icons = {
-            "Endpoints": getattr(QStyle, "SP_ComputerIcon", fallback),
-            "Organization": getattr(QStyle, "SP_DirHomeIcon", fallback),
-            "Top File": getattr(QStyle, "SP_FileIcon", fallback),
+            "Endpoints": "🖥",
+            "Organization": "👥",
+            "Top File": "📄",
             "Top Hash": "#",
-            "Folder Usage": getattr(QStyle, "SP_DirIcon", fallback),
-            "Threat Trend": getattr(QStyle, "SP_ArrowUp", fallback),
-            "Top Analysis": getattr(QStyle, "SP_ArrowForward", fallback),
-            "Detection Summary": getattr(QStyle, "SP_FileDialogInfoView", fallback),
-            "Detection XDR Summary": getattr(QStyle, "SP_DialogApplyButton", fallback),
-            "Email Summary": getattr(QStyle, "SP_MessageBoxInformation", fallback),
-            "File Summary": getattr(QStyle, "SP_DirIcon", fallback),
-            "Cache Data": getattr(QStyle, "SP_DriveHDIcon", fallback),
-            "Auto Refresh": getattr(QStyle, "SP_BrowserReload", getattr(QStyle, "SP_ArrowUp", fallback)),
-            "Export": getattr(QStyle, "SP_DialogSaveButton", fallback),
-            "Report": getattr(QStyle, "SP_FileDialogDetailedView", fallback),
-            "Folders": getattr(QStyle, "SP_DirOpenIcon", fallback),
+            "Folder Usage": "📁",
+            "Threat Trend": "📈",
+            "Top Analysis": "📊",
+            "Detection Summary": "🛡",
+            "Detection XDR Summary": "◎",
+            "Email Summary": "✉",
+            "File Summary": "📁",
+            "Cache Data": getattr(QStyle, "SP_DriveHDIcon", QStyle.SP_FileIcon),
+            "Auto Refresh": getattr(QStyle, "SP_BrowserReload", getattr(QStyle, "SP_ArrowUp", QStyle.SP_FileIcon)),
+            "Export": getattr(QStyle, "SP_DialogSaveButton", QStyle.SP_FileIcon),
+            "Report": getattr(QStyle, "SP_FileDialogDetailedView", QStyle.SP_FileIcon),
+            "Folders": getattr(QStyle, "SP_DirOpenIcon", QStyle.SP_FileIcon),
         }
-        return icons.get(title, fallback)
+        return icons.get(title, "•")
 
     def add_card_title(self, layout, title, strong=True):
         title_row = QHBoxLayout()
@@ -3803,8 +3835,8 @@ class MainWindow(QMainWindow):
                 border: 1px solid #c8dcea;
                 border-radius: 15px;
                 color: #426f8f;
-                font-family: 'Segoe UI Symbol', 'Inter', 'Segoe UI', sans-serif;
-                font-size: 15px;
+                font-family: 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Inter', 'Segoe UI', sans-serif;
+                font-size: 16px;
                 font-weight: 900;
             }
         """)
@@ -3903,6 +3935,15 @@ class MainWindow(QMainWindow):
             widget.setObjectName("datePicker")
             widget.setCalendarPopup(True)
             self.apply_date_picker_style(widget)
+        elif isinstance(widget, QTimeEdit):
+            widget.setObjectName("timePicker")
+        elif isinstance(widget, QSpinBox):
+            widget.setObjectName("numberInput")
+        elif isinstance(widget, QLineEdit):
+            widget.setObjectName("formInput")
+
+        widget.style().unpolish(widget)
+        widget.style().polish(widget)
 
     def setup_report_font(self):
         try:
@@ -10490,8 +10531,8 @@ Command Line :
         self.spin_interval.setValue(10)
         self.spin_interval.setSuffix(" min")
         self.prepare_form_control(self.spin_interval, height=38)
-        self.spin_interval.setMinimumWidth(140)
-        self.spin_interval.setMaximumWidth(180)
+        self.spin_interval.setFixedWidth(112)
+        self.spin_interval.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
 
         interval_label = QLabel("Interval")
         interval_label.setStyleSheet("color:#315f7d; font-size:13px; font-weight:800;")
