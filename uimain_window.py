@@ -3718,14 +3718,12 @@ class MainWindow(QMainWindow):
         widget.setGraphicsEffect(shadow)
 
     def card_style(self, object_name, accent=True):
-        accent_line = "border-left: 3px solid #7fa6c2;" if accent else ""
         return f"""
             QFrame#{object_name} {{
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
                     stop:0 #ffffff,
                     stop:1 #f7fbff);
-                border: 1px solid #c8dcea;
-                {accent_line}
+                border: 1px solid #d7e5ee;
                 border-radius: 18px;
             }}
         """
@@ -3778,6 +3776,11 @@ class MainWindow(QMainWindow):
         title_row.addWidget(title_label)
         title_row.addStretch()
         layout.addLayout(title_row)
+
+        divider = QFrame()
+        divider.setFixedHeight(1)
+        divider.setStyleSheet("background: #e7eef4; border: none;")
+        layout.addWidget(divider)
 
     def setup_report_font(self):
         try:
@@ -7003,10 +7006,16 @@ Command Line :
                 server_count += 1
 
         endpoint_html = f"""
-        <div style='line-height:22px;'>
-        PC : {pc_count} 대<br>
-        Server : {server_count} 대
-        </div>
+        <table width='100%' cellspacing='0' cellpadding='0' style='line-height:20px;'>
+            <tr>
+                <td style='color:#6b7280; font-size:11px;'>PC</td>
+                <td style='color:#6b7280; font-size:11px;'>Server</td>
+            </tr>
+            <tr>
+                <td><span style='color:#5f8faf; font-size:20px; font-weight:900;'>{pc_count}</span> 대</td>
+                <td><span style='color:#5f8faf; font-size:20px; font-weight:900;'>{server_count}</span> 대</td>
+            </tr>
+        </table>
         """
         self.card_endpoint.value_label.setText(endpoint_html)
         
@@ -7047,10 +7056,16 @@ Command Line :
         user_count = len(valid_users)
 
         org_html = f"""
-        <div style='line-height:22px;'>
-        조직부서 : {org_count} 개<br>
-        사원 수 : {user_count} 명
-        </div>
+        <table width='100%' cellspacing='0' cellpadding='0' style='line-height:20px;'>
+            <tr>
+                <td style='color:#6b7280; font-size:11px;'>조직부서</td>
+                <td style='color:#6b7280; font-size:11px;'>사원 수</td>
+            </tr>
+            <tr>
+                <td><span style='color:#5f8faf; font-size:20px; font-weight:900;'>{org_count}</span> 개</td>
+                <td><span style='color:#5f8faf; font-size:20px; font-weight:900;'>{user_count}</span> 명</td>
+            </tr>
+        </table>
         """
         self.card_org.value_label.setText(org_html)
 
@@ -7071,13 +7086,16 @@ Command Line :
         links = []
         for name, cnt in top_files:
             links.append(
-                f"<a href='{name}' "
-                f"style='text-decoration:none; color:#111827; font-weight:700;'>"
-                f"{name} ({cnt}건)</a>"
+                f"<tr>"
+                f"<td style='padding:2px 12px 2px 0;'>"
+                f"<a href='{name}' style='text-decoration:none; color:#111827; font-weight:700;'>{name}</a>"
+                f"</td>"
+                f"<td align='right' style='padding:2px 0; color:#111827; font-weight:700;'>({cnt})</td>"
+                f"</tr>"
             )
 
-        html = "<br>".join(links)
-        html = f"<div style='line-height:22px;'>{html}</div>"
+        html = "".join(links)
+        html = f"<table width='100%' cellspacing='0' cellpadding='0' style='line-height:20px;'>{html}</table>"
 
         self.card_file_top.value_label.setText(html)
         self.card_file_top.value_label.setTextFormat(Qt.RichText)
@@ -7111,13 +7129,16 @@ Command Line :
         for sha, cnt in top_hash:
             short_sha = sha[:20] + "..."
             links.append(
-                f"<a href='{sha}' "
-                f"style='text-decoration:none; color:#111111; font-weight:600;'>"
-                f"{short_sha} ({cnt}건)</a>"
+                f"<tr>"
+                f"<td style='padding:2px 12px 2px 0;'>"
+                f"<a href='{sha}' style='text-decoration:none; color:#111111; font-weight:600;'>{short_sha}</a>"
+                f"</td>"
+                f"<td align='right' style='padding:2px 0; color:#111827; font-weight:700;'>({cnt})</td>"
+                f"</tr>"
             )
 
-        html = "<br>".join(links)
-        html = f"<div style='line-height:22px;'>{html}</div>"
+        html = "".join(links)
+        html = f"<table width='100%' cellspacing='0' cellpadding='0' style='line-height:20px;'>{html}</table>"
         
 
         self.card_hash_top.value_label.setText(html)
@@ -7144,13 +7165,13 @@ Command Line :
         env_size = format_size_text(get_dir_size_bytes(ENV_DIR))
 
         folder_html = f"""
-        <div style='line-height:22px;'>
-        Logs : {logs_size}<br>
-        Cache : {cache_size}<br>
-        Exports : {export_size}<br>
-        Reports : {report_size}<br>
-        Env : {env_size}
-        </div>
+        <table width='100%' cellspacing='0' cellpadding='0' style='line-height:21px;'>
+            <tr><td>Logs</td><td align='right'>{logs_size}</td></tr>
+            <tr><td>Cache</td><td align='right'>{cache_size}</td></tr>
+            <tr><td>Exports</td><td align='right'>{export_size}</td></tr>
+            <tr><td>Reports</td><td align='right'>{report_size}</td></tr>
+            <tr><td>Env</td><td align='right'>{env_size}</td></tr>
+        </table>
         """
 
         self.card_summary.value_label.setText(folder_html)
@@ -7317,7 +7338,7 @@ Command Line :
 
         def format_block(title, percent):
             if percent is None:
-                return f"{title}\nNo Data", "#6b7280"
+                return "No Data", "#6b7280"
 
             if percent > 0:
                 arrow = "▲"
@@ -7329,7 +7350,7 @@ Command Line :
                 arrow = "■"
                 color = "#6b7280"  # 회색
 
-            return f"{title}\n{arrow} {percent:+.1f}%", color
+            return f"{arrow} {percent:+.1f}%", color
 
 
         # ---- 전일 대비 ----
@@ -7438,7 +7459,14 @@ Command Line :
         # matplotlib title because it can render with broken-looking spacing.
         ax.set_title("")
 
-        legend = ax.legend(frameon=True, facecolor="#ffffff", edgecolor="#e5e7eb")
+        legend = ax.legend(
+            loc="upper center",
+            bbox_to_anchor=(0.5, 1.16),
+            ncol=4,
+            frameon=False,
+            columnspacing=1.8,
+            handlelength=1.8,
+        )
         for text in legend.get_texts():
             text.set_color("#374151")
         max_y = max(max(det_values), max(xdr_values), max(mail_values), max(file_values), 1)        
@@ -7522,7 +7550,7 @@ Command Line :
         self.figure.subplots_adjust(
             left=0.10,
             right=0.98,
-            top=0.88,
+            top=0.78,
             bottom=0.25
         )
 
@@ -7531,21 +7559,37 @@ Command Line :
         # 🔥 전일 대비 (오른쪽 표시용)
         # ==============================
         percent_html = f"""
-        <b>Detection</b><br>
-        <span style='color:{daily_det_color}'>{daily_det_text}</span><br>
-        <span style='color:{monthly_det_color}'>{monthly_det_text}</span><br><br>
-
-        <b>Detection XDR</b><br>
-        <span style='color:{daily_xdr_color}'>{daily_xdr_text}</span><br>
-        <span style='color:{monthly_xdr_color}'>{monthly_xdr_text}</span><br><br>
-
-        <b>Email</b><br>
-        <span style='color:{daily_mail_color}'>{daily_mail_text}</span><br>
-        <span style='color:{monthly_mail_color}'>{monthly_mail_text}</span>
-        
-        <br><br><b>File</b><br>
-        <span style='color:{daily_file_color}'>{daily_file_text}</span><br>
-        <span style='color:{monthly_file_color}'>{monthly_file_text}</span>
+        <table width='100%' cellspacing='0' cellpadding='0' style='font-size:12px; line-height:20px;'>
+            <tr>
+                <td></td>
+                <td align='center' style='color:#6b7280; font-size:10px;'>전일 대비</td>
+                <td align='right' style='color:#6b7280; font-size:10px;'>전월 대비</td>
+            </tr>
+            <tr><td colspan='3' style='height:6px; border-bottom:1px solid #e5e7eb;'></td></tr>
+            <tr>
+                <td style='padding-top:8px; color:#315f7d; font-weight:800;'>Detection</td>
+                <td align='center' style='padding-top:8px; color:{daily_det_color}; font-weight:800;'>{daily_det_text}</td>
+                <td align='right' style='padding-top:8px; color:{monthly_det_color}; font-weight:800;'>{monthly_det_text}</td>
+            </tr>
+            <tr><td colspan='3' style='height:8px; border-bottom:1px solid #e5e7eb;'></td></tr>
+            <tr>
+                <td style='padding-top:8px; color:#315f7d; font-weight:800;'>Detection XDR</td>
+                <td align='center' style='padding-top:8px; color:{daily_xdr_color}; font-weight:800;'>{daily_xdr_text}</td>
+                <td align='right' style='padding-top:8px; color:{monthly_xdr_color}; font-weight:800;'>{monthly_xdr_text}</td>
+            </tr>
+            <tr><td colspan='3' style='height:8px; border-bottom:1px solid #e5e7eb;'></td></tr>
+            <tr>
+                <td style='padding-top:8px; color:#315f7d; font-weight:800;'>Email</td>
+                <td align='center' style='padding-top:8px; color:{daily_mail_color}; font-weight:800;'>{daily_mail_text}</td>
+                <td align='right' style='padding-top:8px; color:{monthly_mail_color}; font-weight:800;'>{monthly_mail_text}</td>
+            </tr>
+            <tr><td colspan='3' style='height:8px; border-bottom:1px solid #e5e7eb;'></td></tr>
+            <tr>
+                <td style='padding-top:8px; color:#315f7d; font-weight:800;'>File</td>
+                <td align='center' style='padding-top:8px; color:{daily_file_color}; font-weight:800;'>{daily_file_text}</td>
+                <td align='right' style='padding-top:8px; color:{monthly_file_color}; font-weight:800;'>{monthly_file_text}</td>
+            </tr>
+        </table>
 """
 
         self.percent_label.setText(percent_html)
