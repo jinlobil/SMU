@@ -52,7 +52,7 @@ from PyQt5.QtWidgets import (
     QFrame, QDateEdit, QTimeEdit, QGroupBox,
     QCheckBox, QSpinBox,
     QDialog, QTextEdit, QShortcut,
-    QSizePolicy, QGraphicsDropShadowEffect, QStyle
+    QSizePolicy, QGraphicsDropShadowEffect, QStyle, QAbstractSpinBox
 )
 
 # =============================
@@ -3565,13 +3565,15 @@ class MainWindow(QMainWindow):
         self.start_date_edit = QDateEdit()
         self.start_date_edit.setObjectName("datePicker")
         self.start_date_edit.setCalendarPopup(True)
+        self.start_date_edit.setDisplayFormat("yyyy-MM-dd")
 
         self.end_date_edit = QDateEdit()
         self.end_date_edit.setObjectName("datePicker")
         self.end_date_edit.setCalendarPopup(True)
+        self.end_date_edit.setDisplayFormat("yyyy-MM-dd")
         
-        self.start_date_edit.setMinimumWidth(168)
-        self.end_date_edit.setMinimumWidth(168)
+        self.start_date_edit.setMinimumWidth(184)
+        self.end_date_edit.setMinimumWidth(184)
         self.apply_date_picker_style(self.start_date_edit)
         self.apply_date_picker_style(self.end_date_edit)
 
@@ -3620,7 +3622,7 @@ class MainWindow(QMainWindow):
         QMainWindow, QWidget#appRoot {
             background: #f4f7fa;
             color: #111827;
-            font-family: 'Pretendard', 'Inter', 'Segoe UI', 'Malgun Gothic', sans-serif;
+            font-family: 'Noto Sans CJK KR', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', 'Segoe UI', sans-serif;
             font-size: 13px;
         }
 
@@ -3697,38 +3699,27 @@ class MainWindow(QMainWindow):
             color: #1f2937;
             border: 1px solid #c8dcea;
             border-radius: 12px;
-            padding: 7px 30px 7px 11px;
+            padding: 7px 12px 7px 12px;
             font-size: 12px;
             font-weight: 700;
             min-height: 22px;
         }
 
-        QDateEdit#datePicker::drop-down, QTimeEdit#timePicker::drop-down, QSpinBox#numberInput::up-button, QSpinBox#numberInput::down-button {
+        QDateEdit#datePicker {
+            padding-right: 30px;
+        }
+
+        QDateEdit#datePicker::drop-down {
             subcontrol-origin: padding;
             subcontrol-position: top right;
             width: 28px;
             border-left: 1px solid #e7eef4;
+            border-top-right-radius: 12px;
+            border-bottom-right-radius: 12px;
             background: #edf5fb;
         }
 
-        QDateEdit#datePicker::drop-down, QTimeEdit#timePicker::drop-down {
-            border-top-right-radius: 12px;
-            border-bottom-right-radius: 12px;
-        }
-
-        QSpinBox#numberInput::up-button {
-            subcontrol-position: top right;
-            border-top-right-radius: 12px;
-            height: 18px;
-        }
-
-        QSpinBox#numberInput::down-button {
-            subcontrol-position: bottom right;
-            border-bottom-right-radius: 12px;
-            height: 18px;
-        }
-
-        QDateEdit#datePicker::down-arrow, QTimeEdit#timePicker::down-arrow {
+        QDateEdit#datePicker::down-arrow {
             image: none;
             width: 0px;
             height: 0px;
@@ -3738,22 +3729,16 @@ class MainWindow(QMainWindow):
             margin-right: 8px;
         }
 
-        QSpinBox#numberInput::up-arrow {
-            image: none;
+        QTimeEdit#timePicker::up-button, QTimeEdit#timePicker::down-button, QSpinBox#numberInput::up-button, QSpinBox#numberInput::down-button {
             width: 0px;
             height: 0px;
-            border-left: 5px solid transparent;
-            border-right: 5px solid transparent;
-            border-bottom: 6px solid #426f8f;
+            border: none;
         }
 
-        QSpinBox#numberInput::down-arrow {
+        QTimeEdit#timePicker::up-arrow, QTimeEdit#timePicker::down-arrow, QSpinBox#numberInput::up-arrow, QSpinBox#numberInput::down-arrow {
             image: none;
             width: 0px;
             height: 0px;
-            border-left: 5px solid transparent;
-            border-right: 5px solid transparent;
-            border-top: 6px solid #426f8f;
         }
 
         QDateEdit:hover, QTimeEdit:hover, QComboBox:hover, QLineEdit:hover, QTextEdit:hover, QSpinBox:hover {
@@ -3877,7 +3862,7 @@ class MainWindow(QMainWindow):
                 background: #ffffff;
                 border: 1px solid #c8dcea;
                 border-radius: 14px;
-                font-family: 'Pretendard', 'Inter', 'Segoe UI', 'Malgun Gothic', sans-serif;
+                font-family: 'Noto Sans CJK KR', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', 'Segoe UI', sans-serif;
                 color: #111827;
             }
             QCalendarWidget QWidget#qt_calendar_navigationbar {
@@ -3937,8 +3922,10 @@ class MainWindow(QMainWindow):
             self.apply_date_picker_style(widget)
         elif isinstance(widget, QTimeEdit):
             widget.setObjectName("timePicker")
+            widget.setButtonSymbols(QAbstractSpinBox.NoButtons)
         elif isinstance(widget, QSpinBox):
             widget.setObjectName("numberInput")
+            widget.setButtonSymbols(QAbstractSpinBox.NoButtons)
         elif isinstance(widget, QLineEdit):
             widget.setObjectName("formInput")
 
@@ -10348,7 +10335,7 @@ Command Line :
             border: none;
             border-radius: 12px;
             padding: 9px 16px;
-            font-family: 'Pretendard', 'Inter', 'Segoe UI', 'Malgun Gothic', sans-serif;
+            font-family: 'Noto Sans CJK KR', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', 'Segoe UI', sans-serif;
             font-size: 13px;
             font-weight: 800;
         }
@@ -10464,7 +10451,8 @@ Command Line :
             btn_org_refresh,
             btn_dlp_refresh,
         ]:
-            btn.setMinimumHeight(38)
+            btn.setMinimumHeight(40)
+            btn.setMinimumWidth(230)
             btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             btn.setStyleSheet(btn_style)
 
@@ -10531,7 +10519,7 @@ Command Line :
         self.spin_interval.setValue(10)
         self.spin_interval.setSuffix(" min")
         self.prepare_form_control(self.spin_interval, height=38)
-        self.spin_interval.setFixedWidth(112)
+        self.spin_interval.setFixedWidth(86)
         self.spin_interval.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
 
         interval_label = QLabel("Interval")
