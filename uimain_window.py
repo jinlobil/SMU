@@ -52,7 +52,7 @@ from PyQt5.QtWidgets import (
     QFrame, QDateEdit, QTimeEdit, QGroupBox,
     QCheckBox, QSpinBox,
     QDialog, QTextEdit, QShortcut,
-    QSizePolicy
+    QSizePolicy, QGraphicsDropShadowEffect
 )
 
 # =============================
@@ -3542,10 +3542,12 @@ class MainWindow(QMainWindow):
         self.history_queries_cache = load_history_queries()
 
         self.status_label = QLabel("Idle")
-        self.status_label.setStyleSheet("color: gray")
+        self.status_label.setObjectName("statusPill")
+        self.status_label.setAlignment(Qt.AlignCenter)
         
         self.range_label = QLabel("")
-        self.range_label.setStyleSheet("color: green")
+        self.range_label.setObjectName("rangePill")
+        self.range_label.setAlignment(Qt.AlignCenter)
 
         self._spin_timer = QTimer()
         self._spin_timer.timeout.connect(self._spin_tick)
@@ -3598,7 +3600,10 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.tab_config(), "Config")
 
         root = QWidget()
+        root.setObjectName("appRoot")
         layout = QVBoxLayout(root)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
         layout.addLayout(top)
         layout.addWidget(self.tabs)
         self.setCentralWidget(root)
@@ -3608,26 +3613,175 @@ class MainWindow(QMainWindow):
         self.tabs.currentChanged.connect(lambda _: self.update_range_label())
         
         self.setStyleSheet("""
-        QTabBar::tab {
-            background: #f9fafb;
-            padding: 10px 16px;
-            margin-right: 4px;
+        QMainWindow, QWidget#appRoot {
+            background: #f4f7fa;
+            color: #111827;
+            font-family: 'Segoe UI', 'Malgun Gothic', sans-serif;
+            font-size: 12px;
+        }
+
+        QLabel#statusPill, QLabel#rangePill {
+            background: #e8f1f7;
+            color: #315f7d;
+            border: 1px solid #c8dcea;
+            border-radius: 12px;
+            padding: 6px 12px;
+            font-weight: 700;
+            min-height: 20px;
+        }
+
+        QLabel#rangePill {
+            background: #edf5fb;
+            color: #416f8f;
+            border-color: #c8dcea;
+        }
+
+        QTabWidget::pane {
             border: 1px solid #e5e7eb;
-            border-bottom: none;
-            border-top-left-radius: 6px;
-            border-top-right-radius: 6px;
+            border-radius: 18px;
+            background: #ffffff;
+            top: -1px;
+        }
+
+        QTabBar::tab {
+            background: #f8fafc;
+            color: #64748b;
+            padding: 10px 18px;
+            margin-right: 5px;
+            border: 1px solid #e5e7eb;
+            border-top-left-radius: 12px;
+            border-top-right-radius: 12px;
+            min-height: 18px;
         }
 
         QTabBar::tab:selected {
-            background: white;
-            border-bottom: 3px solid #2563eb;
+            background: #ffffff;
+            color: #426f8f;
+            border: 1px solid #c8dcea;
+            border-bottom: 2px solid #5f8faf;
         }
 
         QTabBar::tab:hover {
-            background: #f3f4f6;
+            background: #e8f1f7;
+            color: #315f7d;
+        }
+
+        QPushButton {
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #5f8faf, stop:1 #426f8f);
+            color: #ffffff;
+            border: none;
+            border-radius: 10px;
+            padding: 7px 18px;
+            font-weight: 800;
+        }
+
+        QPushButton:hover {
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #7fa6c2, stop:1 #5f8faf);
+        }
+
+        QDateEdit, QTimeEdit, QComboBox, QLineEdit, QTextEdit, QSpinBox {
+            background: #ffffff;
+            color: #111827;
+            border: 1px solid #dbe1ea;
+            border-radius: 10px;
+            padding: 6px 10px;
+            selection-background-color: #5f8faf;
+        }
+
+        QDateEdit:hover, QTimeEdit:hover, QComboBox:hover, QLineEdit:hover, QTextEdit:hover, QSpinBox:hover {
+            border-color: #7fa6c2;
+        }
+
+        QScrollBar:vertical {
+            background: transparent;
+            width: 9px;
+            margin: 4px 0 4px 0;
+        }
+
+        QScrollBar::handle:vertical {
+            background: #cbd5e1;
+            border-radius: 4px;
+            min-height: 28px;
+        }
+
+        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+            height: 0px;
         }
         """)
+
+
+    def apply_soft_shadow(self, widget, blur=28, y_offset=12, alpha=95):
+        shadow = QGraphicsDropShadowEffect(self)
+        shadow.setBlurRadius(blur)
+        shadow.setOffset(0, y_offset)
+        shadow.setColor(QColor(95, 143, 175, min(alpha, 42)))
+        widget.setGraphicsEffect(shadow)
+
+    def card_style(self, object_name, accent=True):
+        return f"""
+            QFrame#{object_name} {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 #ffffff,
+                    stop:1 #f7fbff);
+                border: 1px solid #d7e5ee;
+                border-radius: 18px;
+            }}
+        """
       
+    def card_icon(self, title):
+        icons = {
+            "Endpoints": "▣",
+            "Organization": "◎",
+            "Top File": "▤",
+            "Top Hash": "#",
+            "Folder Usage": "□",
+            "Threat Trend": "⌁",
+            "Top Analysis": "↗",
+            "Detection Summary": "◇",
+            "Detection XDR Summary": "◎",
+            "Email Summary": "✉",
+            "File Summary": "□",
+        }
+        return icons.get(title, "•")
+
+    def add_card_title(self, layout, title, strong=True):
+        title_row = QHBoxLayout()
+        title_row.setSpacing(10)
+
+        icon_label = QLabel(self.card_icon(title))
+        icon_label.setAlignment(Qt.AlignCenter)
+        icon_label.setFixedSize(28, 28)
+        icon_label.setStyleSheet("""
+            QLabel {
+                background: #edf5fb;
+                border: 1px solid #c8dcea;
+                border-radius: 14px;
+                color: #5f8faf;
+                font-size: 16px;
+                font-weight: 900;
+            }
+        """)
+
+        title_label = QLabel(title)
+        title_label.setStyleSheet(f"""
+            background: transparent;
+            border: none;
+            color: #315f7d;
+            font-size: {'15px' if strong else '14px'};
+            font-weight: 800;
+            letter-spacing: 0.2px;
+        """)
+
+        title_row.addWidget(icon_label)
+        title_row.addWidget(title_label)
+        title_row.addStretch()
+        layout.addLayout(title_row)
+
+        divider = QFrame()
+        divider.setFixedHeight(1)
+        divider.setStyleSheet("background: #e7eef4; border: none;")
+        layout.addWidget(divider)
+
     def setup_report_font(self):
         try:
             from reportlab.pdfbase import pdfmetrics
@@ -5754,7 +5908,24 @@ class MainWindow(QMainWindow):
         self.status_label.setText(f"{self._spin_base}{dots}")
 
     def set_status(self, text, color="gray", spinning=False):
-        self.status_label.setStyleSheet(f"color: {color}")
+        palette = {
+            "gray": ("#f1f5f9", "#475569", "#e2e8f0"),
+            "green": ("#ecfdf5", "#047857", "#bbf7d0"),
+            "red": ("#fef2f2", "#b91c1c", "#fecaca"),
+            "blue": ("#edf5fb", "#416f8f", "#c8dcea"),
+        }
+        bg, fg, border = palette.get(str(color).lower(), ("#e8f1f7", str(color), "#c8dcea"))
+        self.status_label.setStyleSheet(f"""
+            QLabel#statusPill {{
+                background: {bg};
+                color: {fg};
+                border: 1px solid {border};
+                border-radius: 12px;
+                padding: 6px 12px;
+                font-weight: 700;
+                min-height: 20px;
+            }}
+        """)
         self._spin_timer.stop()
         if spinning:
             self._spin_base = text
@@ -6572,7 +6743,16 @@ Command Line :
     # ==================================================
     def tab_dashboard(self):
         root = QWidget()
+        root.setObjectName("dashboardRoot")
+        root.setStyleSheet("""
+            QWidget#dashboardRoot {
+                background: #f7f8fc;
+                border-radius: 18px;
+            }
+        """)
         layout = QVBoxLayout(root)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(14)
 
         # -------------------------
         # 🔥 TOP CARD AREA
@@ -6613,7 +6793,7 @@ Command Line :
         container.setSpacing(15)
 
         # 그래프
-        self.figure = Figure(figsize=(10, 4))
+        self.figure = Figure(figsize=(10, 4), facecolor="#ffffff")
         self.canvas = FigureCanvas(self.figure)
         container.addWidget(self.canvas, 4)
 
@@ -6624,7 +6804,15 @@ Command Line :
         percent_layout = QVBoxLayout(percent_frame)
         self.percent_label = QLabel("")
         self.percent_label.setAlignment(Qt.AlignTop)
-        self.percent_label.setStyleSheet("font-size:13px; font-weight:700;")
+        self.percent_label.setStyleSheet("""
+            background: #ffffff;
+            border: 1px solid #c8dcea;
+            border-radius: 14px;
+            color: #111827;
+            font-size: 13px;
+            font-weight: 800;
+            padding: 14px;
+        """)
         self.percent_label.setWordWrap(True)
 
         percent_layout.addWidget(self.percent_label)
@@ -6657,14 +6845,23 @@ Command Line :
         self.top_table.setStyleSheet("""
             QTableWidget {
                 border: none;
-                background-color: #ffffff;
+                border-radius: 14px;
+                background: #ffffff;
+                color: #111827;
                 gridline-color: #e5e7eb;
+                selection-background-color: #e8f1f7;
+                selection-color: #315f7d;
+            }
+            QTableWidget::item {
+                padding: 6px;
+                border-bottom: 1px solid #edf5fb;
             }
             QHeaderView::section {
-                background-color: #f3f4f6;
-                font-weight: 600;
+                background: #edf5fb;
+                color: #315f7d;
+                font-weight: 800;
                 border: none;
-                padding: 4px;
+                padding: 8px;
             }
         """)
         self.top_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
@@ -6700,36 +6897,29 @@ Command Line :
 
     def make_stat_card(self, title, value):
         frame = QFrame()
-        frame.setStyleSheet("""
-            QFrame {
-                background-color: #ffffff;
-                border: 1px solid #e5e7eb;
-                border-left: 4px solid #2563eb;
-                border-radius: 10px;
-            }
-        """)
+        frame.setObjectName("statCard")
+        frame.setStyleSheet(self.card_style("statCard", accent=True))
+        self.apply_soft_shadow(frame)
 
         layout = QVBoxLayout(frame)
-        layout.setContentsMargins(15, 12, 15, 12)
+        layout.setContentsMargins(18, 14, 18, 14)
+        layout.setSpacing(10)
 
-        title_label = QLabel(title)
-        title_label.setStyleSheet("""
-            font-size:16px;
-            font-weight:600;
-            color:#2563eb;
-        """)
+        self.add_card_title(layout, title)
 
         value_label = QLabel(value)
         value_label.setStyleSheet("""
+            background: transparent;
+            border: none;
             font-size:12px;
-            font-weight:600;
+            font-weight:700;
             color:#111827;
+            line-height: 150%;
         """)
 
         value_label.setWordWrap(True)
         value_label.setTextFormat(Qt.RichText)
 
-        layout.addWidget(title_label)
         layout.addWidget(value_label)
         layout.addStretch()
 
@@ -6738,24 +6928,15 @@ Command Line :
 
     def make_scroll_stat_card(self, title, value):
         frame = QFrame()
-        frame.setStyleSheet("""
-            QFrame {
-                background-color: #ffffff;
-                border: 1px solid #e5e7eb;
-                border-left: 4px solid #2563eb;
-                border-radius: 10px;
-            }
-        """)
+        frame.setObjectName("scrollStatCard")
+        frame.setStyleSheet(self.card_style("scrollStatCard", accent=True))
+        self.apply_soft_shadow(frame, blur=24, y_offset=10, alpha=80)
 
         layout = QVBoxLayout(frame)
-        layout.setContentsMargins(15, 12, 15, 12)
+        layout.setContentsMargins(18, 14, 18, 14)
+        layout.setSpacing(10)
 
-        title_label = QLabel(title)
-        title_label.setStyleSheet("""
-            font-size:16px;
-            font-weight:600;
-            color:#2563eb;
-        """)
+        self.add_card_title(layout, title)
 
         value_label = QTextEdit()
         value_label.setReadOnly(True)
@@ -6766,13 +6947,12 @@ Command Line :
                 border: none;
                 background: transparent;
                 font-size: 12px;
-                font-weight: 600;
+                font-weight: 700;
                 color: #111827;
             }
         """)
         value_label.setHtml(value)
 
-        layout.addWidget(title_label)
         layout.addWidget(value_label)
 
         frame.value_label = value_label
@@ -6826,10 +7006,16 @@ Command Line :
                 server_count += 1
 
         endpoint_html = f"""
-        <div style='line-height:22px;'>
-        PC : {pc_count} 대<br>
-        Server : {server_count} 대
-        </div>
+        <table width='100%' cellspacing='0' cellpadding='0' style='line-height:20px;'>
+            <tr>
+                <td style='color:#6b7280; font-size:11px;'>PC</td>
+                <td style='color:#6b7280; font-size:11px;'>Server</td>
+            </tr>
+            <tr>
+                <td><span style='color:#5f8faf; font-size:20px; font-weight:900;'>{pc_count}</span> 대</td>
+                <td><span style='color:#5f8faf; font-size:20px; font-weight:900;'>{server_count}</span> 대</td>
+            </tr>
+        </table>
         """
         self.card_endpoint.value_label.setText(endpoint_html)
         
@@ -6870,10 +7056,16 @@ Command Line :
         user_count = len(valid_users)
 
         org_html = f"""
-        <div style='line-height:22px;'>
-        조직부서 : {org_count} 개<br>
-        사원 수 : {user_count} 명
-        </div>
+        <table width='100%' cellspacing='0' cellpadding='0' style='line-height:20px;'>
+            <tr>
+                <td style='color:#6b7280; font-size:11px;'>조직부서</td>
+                <td style='color:#6b7280; font-size:11px;'>사원 수</td>
+            </tr>
+            <tr>
+                <td><span style='color:#5f8faf; font-size:20px; font-weight:900;'>{org_count}</span> 개</td>
+                <td><span style='color:#5f8faf; font-size:20px; font-weight:900;'>{user_count}</span> 명</td>
+            </tr>
+        </table>
         """
         self.card_org.value_label.setText(org_html)
 
@@ -6894,13 +7086,16 @@ Command Line :
         links = []
         for name, cnt in top_files:
             links.append(
-                f"<a href='{name}' "
-                f"style='text-decoration:none; color:#111827; font-weight:700;'>"
-                f"{name} ({cnt}건)</a>"
+                f"<tr>"
+                f"<td style='padding:2px 12px 2px 0;'>"
+                f"<a href='{name}' style='text-decoration:none; color:#111827; font-weight:700;'>{name}</a>"
+                f"</td>"
+                f"<td align='right' style='padding:2px 0; color:#111827; font-weight:700;'>({cnt})</td>"
+                f"</tr>"
             )
 
-        html = "<br>".join(links)
-        html = f"<div style='line-height:22px;'>{html}</div>"
+        html = "".join(links)
+        html = f"<table width='100%' cellspacing='0' cellpadding='0' style='line-height:20px;'>{html}</table>"
 
         self.card_file_top.value_label.setText(html)
         self.card_file_top.value_label.setTextFormat(Qt.RichText)
@@ -6934,13 +7129,16 @@ Command Line :
         for sha, cnt in top_hash:
             short_sha = sha[:20] + "..."
             links.append(
-                f"<a href='{sha}' "
-                f"style='text-decoration:none; color:#111111; font-weight:600;'>"
-                f"{short_sha} ({cnt}건)</a>"
+                f"<tr>"
+                f"<td style='padding:2px 12px 2px 0;'>"
+                f"<a href='{sha}' style='text-decoration:none; color:#111111; font-weight:600;'>{short_sha}</a>"
+                f"</td>"
+                f"<td align='right' style='padding:2px 0; color:#111827; font-weight:700;'>({cnt})</td>"
+                f"</tr>"
             )
 
-        html = "<br>".join(links)
-        html = f"<div style='line-height:22px;'>{html}</div>"
+        html = "".join(links)
+        html = f"<table width='100%' cellspacing='0' cellpadding='0' style='line-height:20px;'>{html}</table>"
         
 
         self.card_hash_top.value_label.setText(html)
@@ -6967,13 +7165,13 @@ Command Line :
         env_size = format_size_text(get_dir_size_bytes(ENV_DIR))
 
         folder_html = f"""
-        <div style='line-height:22px;'>
-        Logs : {logs_size}<br>
-        Cache : {cache_size}<br>
-        Exports : {export_size}<br>
-        Reports : {report_size}<br>
-        Env : {env_size}
-        </div>
+        <table width='100%' cellspacing='0' cellpadding='0' style='line-height:21px;'>
+            <tr><td>Logs</td><td align='right'>{logs_size}</td></tr>
+            <tr><td>Cache</td><td align='right'>{cache_size}</td></tr>
+            <tr><td>Exports</td><td align='right'>{export_size}</td></tr>
+            <tr><td>Reports</td><td align='right'>{report_size}</td></tr>
+            <tr><td>Env</td><td align='right'>{env_size}</td></tr>
+        </table>
         """
 
         self.card_summary.value_label.setText(folder_html)
@@ -7140,7 +7338,7 @@ Command Line :
 
         def format_block(title, percent):
             if percent is None:
-                return f"{title}\nNo Data", "#6b7280"
+                return "No Data", "#6b7280"
 
             if percent > 0:
                 arrow = "▲"
@@ -7152,7 +7350,7 @@ Command Line :
                 arrow = "■"
                 color = "#6b7280"  # 회색
 
-            return f"{title}\n{arrow} {percent:+.1f}%", color
+            return f"{arrow} {percent:+.1f}%", color
 
 
         # ---- 전일 대비 ----
@@ -7217,12 +7415,12 @@ Command Line :
 
         color_det = "#ec4899"      # Detection
         color_mail = "#38bdf8"     # Email
-        color_xdr = "#7c3aed"      # Detection XDR
+        color_xdr = "#5f8faf"      # Detection XDR
         color_file = "#d4a017"     # File (어두운 황색)
 
         dark_det = "#be185d"
         dark_mail = "#0369a1"
-        dark_xdr = "#4c1d95"
+        dark_xdr = "#315f7d"
         dark_file = "#9a7600"
 
         ax.plot(x_dates, det_values, marker='o', linewidth=2.5,
@@ -7249,14 +7447,28 @@ Command Line :
 
         self.figure.autofmt_xdate()
 
-        ax.set_title("Threat & Email Trend", fontsize=16, fontweight="700")
-        ax.grid(True, linestyle="--", alpha=0.25)
+        self.figure.patch.set_facecolor("#ffffff")
+        ax.set_facecolor("#ffffff")
+        ax.grid(True, linestyle="--", linewidth=0.8, color="#e5e7eb", alpha=0.9)
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
+        ax.spines["left"].set_color("#d1d5db")
+        ax.spines["bottom"].set_color("#d1d5db")
+        ax.tick_params(axis="both", colors="#374151", labelsize=10)
+        # The card header already displays the chart title; avoid a duplicate
+        # matplotlib title because it can render with broken-looking spacing.
+        ax.set_title("")
 
-        ax.set_title("Threat Trend", fontsize=16, fontweight="700")
-
-        ax.legend(frameon=False)
+        legend = ax.legend(
+            loc="upper center",
+            bbox_to_anchor=(0.5, 1.16),
+            ncol=4,
+            frameon=False,
+            columnspacing=1.8,
+            handlelength=1.8,
+        )
+        for text in legend.get_texts():
+            text.set_color("#374151")
         max_y = max(max(det_values), max(xdr_values), max(mail_values), max(file_values), 1)        
         ax.set_ylim(0, max_y * 1.8)      
 
@@ -7338,7 +7550,7 @@ Command Line :
         self.figure.subplots_adjust(
             left=0.10,
             right=0.98,
-            top=0.88,
+            top=0.78,
             bottom=0.25
         )
 
@@ -7347,21 +7559,37 @@ Command Line :
         # 🔥 전일 대비 (오른쪽 표시용)
         # ==============================
         percent_html = f"""
-        <b>Detection</b><br>
-        <span style='color:{daily_det_color}'>{daily_det_text}</span><br>
-        <span style='color:{monthly_det_color}'>{monthly_det_text}</span><br><br>
-
-        <b>Detection XDR</b><br>
-        <span style='color:{daily_xdr_color}'>{daily_xdr_text}</span><br>
-        <span style='color:{monthly_xdr_color}'>{monthly_xdr_text}</span><br><br>
-
-        <b>Email</b><br>
-        <span style='color:{daily_mail_color}'>{daily_mail_text}</span><br>
-        <span style='color:{monthly_mail_color}'>{monthly_mail_text}</span>
-        
-        <br><br><b>File</b><br>
-        <span style='color:{daily_file_color}'>{daily_file_text}</span><br>
-        <span style='color:{monthly_file_color}'>{monthly_file_text}</span>
+        <table width='100%' cellspacing='0' cellpadding='0' style='font-size:12px; line-height:20px;'>
+            <tr>
+                <td></td>
+                <td align='center' style='color:#6b7280; font-size:10px;'>전일 대비</td>
+                <td align='right' style='color:#6b7280; font-size:10px;'>전월 대비</td>
+            </tr>
+            <tr><td colspan='3' style='height:6px; border-bottom:1px solid #e5e7eb;'></td></tr>
+            <tr>
+                <td style='padding-top:8px; color:#315f7d; font-weight:800;'>Detection</td>
+                <td align='center' style='padding-top:8px; color:{daily_det_color}; font-weight:800;'>{daily_det_text}</td>
+                <td align='right' style='padding-top:8px; color:{monthly_det_color}; font-weight:800;'>{monthly_det_text}</td>
+            </tr>
+            <tr><td colspan='3' style='height:8px; border-bottom:1px solid #e5e7eb;'></td></tr>
+            <tr>
+                <td style='padding-top:8px; color:#315f7d; font-weight:800;'>Detection XDR</td>
+                <td align='center' style='padding-top:8px; color:{daily_xdr_color}; font-weight:800;'>{daily_xdr_text}</td>
+                <td align='right' style='padding-top:8px; color:{monthly_xdr_color}; font-weight:800;'>{monthly_xdr_text}</td>
+            </tr>
+            <tr><td colspan='3' style='height:8px; border-bottom:1px solid #e5e7eb;'></td></tr>
+            <tr>
+                <td style='padding-top:8px; color:#315f7d; font-weight:800;'>Email</td>
+                <td align='center' style='padding-top:8px; color:{daily_mail_color}; font-weight:800;'>{daily_mail_text}</td>
+                <td align='right' style='padding-top:8px; color:{monthly_mail_color}; font-weight:800;'>{monthly_mail_text}</td>
+            </tr>
+            <tr><td colspan='3' style='height:8px; border-bottom:1px solid #e5e7eb;'></td></tr>
+            <tr>
+                <td style='padding-top:8px; color:#315f7d; font-weight:800;'>File</td>
+                <td align='center' style='padding-top:8px; color:{daily_file_color}; font-weight:800;'>{daily_file_text}</td>
+                <td align='right' style='padding-top:8px; color:{monthly_file_color}; font-weight:800;'>{monthly_file_text}</td>
+            </tr>
+        </table>
 """
 
         self.percent_label.setText(percent_html)
@@ -9949,28 +10177,28 @@ Command Line :
         QPushButton {
             background-color: qlineargradient(
                 x1:0, y1:0, x2:0, y2:1,
-                stop:0 #3b82f6,
-                stop:1 #2563eb
+                stop:0 #7fa6c2,
+                stop:1 #5f8faf
             );
             color: white;
             border-radius: 8px;
             padding: 8px;
             font-weight: 600;
-            border: 1px solid #1e3a8a;   /* 기본 border */
+            border: 1px solid #426f8f;   /* 기본 border */
         }
 
         QPushButton:hover {
             background-color: qlineargradient(
                 x1:0, y1:0, x2:0, y2:1,
-                stop:0 #60a5fa,
-                stop:1 #1d4ed8
+                stop:0 #9bb5ce,
+                stop:1 #426f8f
             );
-            border: 1px solid #2563eb;   /* hover 시 밝게 */
+            border: 1px solid #5f8faf;   /* hover 시 밝게 */
         }
 
         QPushButton:pressed {
-            background-color: #1e40af;
-            border: 1px solid #1d4ed8;
+            background-color: #315f7d;
+            border: 1px solid #426f8f;
         }
 
         QPushButton:disabled {
@@ -12080,27 +12308,15 @@ Command Line :
  
     def make_card(self, title):
         frame = QFrame()
-        frame.setStyleSheet("""
-            QFrame {
-                background-color: #ffffff;
-                border: 1px solid #e5e7eb;
-                border-radius: 10px;
-            }
-        """)
+        frame.setObjectName("dashboardCard")
+        frame.setStyleSheet(self.card_style("dashboardCard", accent=False))
+        self.apply_soft_shadow(frame, blur=30, y_offset=12, alpha=90)
 
         layout = QVBoxLayout(frame)
-        layout.setContentsMargins(15, 15, 15, 15)
-        layout.setSpacing(10)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(12)
 
-        label = QLabel(title)
-        label.setStyleSheet("""
-            font-size:15px;
-            font-weight:700;
-            color:#1d4ed8;
-            padding-left:8px;
-            border-left:4px solid #2563eb;
-        """)
-        layout.addWidget(label)
+        self.add_card_title(layout, title)
 
         return frame, layout
         
