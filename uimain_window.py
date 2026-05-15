@@ -3811,6 +3811,34 @@ class MainWindow(QMainWindow):
             height: 0px;
         }
 
+        QSpinBox#intervalSpin {
+            background: #ffffff;
+            color: #111827;
+            border: 1px solid #c8dcea;
+            border-radius: 10px;
+            padding: 6px 24px 6px 10px;
+            font-size: 13px;
+            font-weight: 800;
+            min-height: 22px;
+        }
+
+        QSpinBox#intervalSpin::up-button, QSpinBox#intervalSpin::down-button {
+            subcontrol-origin: border;
+            width: 20px;
+            border-left: 1px solid #e7eef4;
+            background: #edf5fb;
+        }
+
+        QSpinBox#intervalSpin::up-button {
+            subcontrol-position: top right;
+            border-top-right-radius: 10px;
+        }
+
+        QSpinBox#intervalSpin::down-button {
+            subcontrol-position: bottom right;
+            border-bottom-right-radius: 10px;
+        }
+
         QDateEdit:hover, QTimeEdit:hover, QComboBox:hover, QLineEdit:hover, QTextEdit:hover, QSpinBox:hover {
             border-color: #7fa6c2;
         }
@@ -7100,10 +7128,13 @@ Command Line :
 
         # 퍼센트
         percent_frame = QFrame()
-        percent_frame.setFixedWidth(340)
+        percent_frame.setMinimumWidth(285)
+        percent_frame.setMaximumWidth(315)
         percent_frame.setMinimumHeight(230)
+        percent_frame.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
 
         percent_layout = QVBoxLayout(percent_frame)
+        percent_layout.setContentsMargins(0, 0, 0, 0)
         self.percent_label = QLabel("")
         self.percent_label.setAlignment(Qt.AlignTop)
         self.percent_label.setStyleSheet("""
@@ -7117,11 +7148,12 @@ Command Line :
         """)
         self.percent_label.setWordWrap(True)
         self.percent_label.setMinimumHeight(210)
+        self.percent_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
         percent_layout.addWidget(self.percent_label)
         percent_layout.addStretch()
 
-        container.addWidget(percent_frame, 1)
+        container.addWidget(percent_frame, 0)
 
         graph_layout.addLayout(container)
         layout.addWidget(graph_card)
@@ -7864,35 +7896,35 @@ Command Line :
         # 🔥 전일 대비 (오른쪽 표시용)
         # ==============================
         percent_html = f"""
-        <table width='100%' cellspacing='0' cellpadding='0' style='font-size:13px; line-height:21px;'>
+        <table width='100%' cellspacing='0' cellpadding='0' style='font-size:12px; line-height:19px;'>
             <tr>
-                <td></td>
-                <td align='center' style='color:#6b7280; font-size:12px; font-weight:900;'>전일 대비</td>
-                <td align='right' style='color:#6b7280; font-size:12px; font-weight:900;'>전월 대비</td>
+                <td width='38%'></td>
+                <td width='31%' align='center' style='color:#6b7280; font-size:11px; font-weight:900;'>전일 대비</td>
+                <td width='31%' align='right' style='color:#6b7280; font-size:11px; font-weight:900;'>전월 대비</td>
             </tr>
-            <tr><td colspan='3' style='height:6px; border-bottom:1px solid #e5e7eb;'></td></tr>
+            <tr><td colspan='3' style='height:4px; border-bottom:1px solid #e5e7eb;'></td></tr>
             <tr>
-                <td style='padding-top:5px; color:#315f7d; font-size:13px; font-weight:900;'>Detection</td>
-                <td align='center' style='padding-top:5px; color:{daily_det_color}; font-size:13px; font-weight:900;'>{daily_det_text}</td>
-                <td align='right' style='padding-top:5px; color:{monthly_det_color}; font-size:13px; font-weight:900;'>{monthly_det_text}</td>
+                <td style='padding-top:4px; color:#315f7d; font-size:12px; font-weight:900;'>Detection</td>
+                <td align='center' style='padding-top:4px; color:{daily_det_color}; font-size:12px; font-weight:900;'>{daily_det_text}</td>
+                <td align='right' style='padding-top:4px; color:{monthly_det_color}; font-size:12px; font-weight:900;'>{monthly_det_text}</td>
             </tr>
-            <tr><td colspan='3' style='height:5px; border-bottom:1px solid #e5e7eb;'></td></tr>
+            <tr><td colspan='3' style='height:4px; border-bottom:1px solid #e5e7eb;'></td></tr>
             <tr>
-                <td style='padding-top:5px; color:#315f7d; font-size:13px; font-weight:900;'>Detection XDR</td>
-                <td align='center' style='padding-top:5px; color:{daily_xdr_color}; font-size:13px; font-weight:900;'>{daily_xdr_text}</td>
-                <td align='right' style='padding-top:5px; color:{monthly_xdr_color}; font-size:13px; font-weight:900;'>{monthly_xdr_text}</td>
+                <td style='padding-top:4px; color:#315f7d; font-size:12px; font-weight:900;'>XDR</td>
+                <td align='center' style='padding-top:4px; color:{daily_xdr_color}; font-size:12px; font-weight:900;'>{daily_xdr_text}</td>
+                <td align='right' style='padding-top:4px; color:{monthly_xdr_color}; font-size:12px; font-weight:900;'>{monthly_xdr_text}</td>
             </tr>
-            <tr><td colspan='3' style='height:5px; border-bottom:1px solid #e5e7eb;'></td></tr>
+            <tr><td colspan='3' style='height:4px; border-bottom:1px solid #e5e7eb;'></td></tr>
             <tr>
-                <td style='padding-top:5px; color:#315f7d; font-size:13px; font-weight:900;'>Email</td>
-                <td align='center' style='padding-top:5px; color:{daily_mail_color}; font-size:13px; font-weight:900;'>{daily_mail_text}</td>
-                <td align='right' style='padding-top:5px; color:{monthly_mail_color}; font-size:13px; font-weight:900;'>{monthly_mail_text}</td>
+                <td style='padding-top:4px; color:#315f7d; font-size:12px; font-weight:900;'>Email</td>
+                <td align='center' style='padding-top:4px; color:{daily_mail_color}; font-size:12px; font-weight:900;'>{daily_mail_text}</td>
+                <td align='right' style='padding-top:4px; color:{monthly_mail_color}; font-size:12px; font-weight:900;'>{monthly_mail_text}</td>
             </tr>
-            <tr><td colspan='3' style='height:5px; border-bottom:1px solid #e5e7eb;'></td></tr>
+            <tr><td colspan='3' style='height:4px; border-bottom:1px solid #e5e7eb;'></td></tr>
             <tr>
-                <td style='padding-top:5px; color:#315f7d; font-size:13px; font-weight:900;'>File</td>
-                <td align='center' style='padding-top:5px; color:{daily_file_color}; font-size:13px; font-weight:900;'>{daily_file_text}</td>
-                <td align='right' style='padding-top:5px; color:{monthly_file_color}; font-size:13px; font-weight:900;'>{monthly_file_text}</td>
+                <td style='padding-top:4px; color:#315f7d; font-size:12px; font-weight:900;'>File</td>
+                <td align='center' style='padding-top:4px; color:{daily_file_color}; font-size:12px; font-weight:900;'>{daily_file_text}</td>
+                <td align='right' style='padding-top:4px; color:{monthly_file_color}; font-size:12px; font-weight:900;'>{monthly_file_text}</td>
             </tr>
         </table>
 """
@@ -10668,45 +10700,29 @@ Command Line :
         self.chk_auto_mail = QCheckBox("Email Auto Refresh")
 
         self.spin_interval = QSpinBox()
+        self.spin_interval.setObjectName("intervalSpin")
         self.spin_interval.setMinimum(1)
         self.spin_interval.setMaximum(1440)
         self.spin_interval.setValue(10)
-        self.prepare_form_control(self.spin_interval, height=30)
-        self.spin_interval.setFixedWidth(46)
+        self.spin_interval.setSuffix(" min")
+        self.spin_interval.setButtonSymbols(QAbstractSpinBox.UpDownArrows)
+        self.spin_interval.setFixedSize(96, 34)
         self.spin_interval.setAlignment(Qt.AlignCenter)
         self.spin_interval.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
 
         interval_label = QLabel("Interval")
         interval_label.setStyleSheet("color:#315f7d; font-size:13px; font-weight:800;")
-        interval_unit = QLabel("min")
-        interval_unit.setStyleSheet("color:#64748b; font-size:12px; font-weight:700;")
 
-        interval_value_row = QHBoxLayout()
-        interval_value_row.setContentsMargins(0, 0, 0, 0)
-        interval_value_row.setSpacing(6)
-        interval_value_row.addWidget(self.spin_interval)
-        interval_value_row.addWidget(interval_unit)
-        interval_value_row.addStretch()
-
-        interval_box = QFrame()
-        interval_box.setObjectName("intervalBox")
-        interval_box.setFixedWidth(150)
-        interval_box.setStyleSheet("""
-            QFrame#intervalBox {
-                background: #f7fbff;
-                border: 1px solid #d7e5ee;
-                border-radius: 12px;
-            }
-        """)
-        interval_box_layout = QVBoxLayout(interval_box)
-        interval_box_layout.setContentsMargins(10, 8, 10, 8)
-        interval_box_layout.setSpacing(5)
-        interval_box_layout.addWidget(interval_label)
-        interval_box_layout.addLayout(interval_value_row)
+        interval_row = QHBoxLayout()
+        interval_row.setContentsMargins(0, 2, 0, 2)
+        interval_row.setSpacing(10)
+        interval_row.addWidget(interval_label)
+        interval_row.addWidget(self.spin_interval)
+        interval_row.addStretch()
 
         auto_layout.addWidget(self.chk_auto_det)
         auto_layout.addWidget(self.chk_auto_mail)
-        auto_layout.addWidget(interval_box, 0, Qt.AlignLeft)
+        auto_layout.addLayout(interval_row)
 
         self.lbl_det_status = QLabel("Last Run: -")
         self.lbl_det_result = QLabel("Status: -")
@@ -10729,6 +10745,7 @@ Command Line :
 
         self.chk_auto_det.stateChanged.connect(self.toggle_det_timer)
         self.chk_auto_mail.stateChanged.connect(self.toggle_mail_timer)
+        self.spin_interval.valueChanged.connect(self.update_auto_interval)
 
         # ===== 여기서 가로 배치 =====
         top_row = QHBoxLayout()
@@ -13010,6 +13027,15 @@ Command Line :
             return
 
         self.run_refresh("Email")
+
+    def update_auto_interval(self):
+        interval = self.spin_interval.value() * 60 * 1000
+
+        if self.det_timer.isActive():
+            self.det_timer.start(interval)
+
+        if self.mail_timer.isActive():
+            self.mail_timer.start(interval)
 
     def toggle_det_timer(self, state):
         if state:
