@@ -8215,8 +8215,9 @@ Command Line :
         # 🔎 Multi Search UI (wrapper)
         # ===============================
         search_wrapper = QWidget()
+        search_wrapper.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         search_v = QVBoxLayout(search_wrapper)
-        search_v.setContentsMargins(0, 0, 0, 0)
+        search_v.setContentsMargins(0, 0, 0, 4)
         search_v.setSpacing(6)
 
         self.search_container = QVBoxLayout()
@@ -8406,7 +8407,7 @@ Command Line :
         # ===============================
         FIELD_W = 150
         BTN_W = 34
-        ROW_H = 34
+        ROW_H = 40
 
         def add_search_row(default_field="ALL", default_value="", removable=True, first=False):
             row = QWidget()
@@ -8473,8 +8474,8 @@ Command Line :
         # 첫 줄(삭제 불가) + 버튼
         add_search_row(removable=False, first=True)
 
-        layout.addWidget(search_wrapper)
-        layout.addWidget(table)
+        layout.addWidget(search_wrapper, 0)
+        layout.addWidget(table, 1)
 
         # expose
         self._refresh_detection = refresh
@@ -8491,8 +8492,9 @@ Command Line :
         layout.setSpacing(8)
 
         search_wrapper = QWidget()
+        search_wrapper.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         search_v = QVBoxLayout(search_wrapper)
-        search_v.setContentsMargins(0, 0, 0, 0)
+        search_v.setContentsMargins(0, 0, 0, 4)
         search_v.setSpacing(6)
 
         self.xdr_search_container = QVBoxLayout()
@@ -8666,7 +8668,7 @@ Command Line :
 
         FIELD_W = 150
         BTN_W = 34
-        ROW_H = 34
+        ROW_H = 40
 
         def add_search_row(default_field="ALL", removable=True, first=False):
             row = QWidget()
@@ -8731,8 +8733,8 @@ Command Line :
 
         add_search_row(removable=False, first=True)
 
-        layout.addWidget(search_wrapper)
-        layout.addWidget(table)
+        layout.addWidget(search_wrapper, 0)
+        layout.addWidget(table, 1)
 
         self._refresh_detection_xdr = refresh
         refresh()
@@ -8753,8 +8755,9 @@ Command Line :
         # 🔎 Multi Search UI
         # ===============================
         search_wrapper = QWidget()
+        search_wrapper.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         search_v = QVBoxLayout(search_wrapper)
-        search_v.setContentsMargins(0, 0, 0, 0)
+        search_v.setContentsMargins(0, 0, 0, 4)
         search_v.setSpacing(6)
 
         self.email_search_container = QVBoxLayout()
@@ -8895,7 +8898,7 @@ Command Line :
         # ===============================
         FIELD_W = 150
         BTN_W = 34
-        ROW_H = 34
+        ROW_H = 40
 
         def add_search_row(default_field="ALL", removable=True, first=False):
             row = QWidget()
@@ -8950,8 +8953,8 @@ Command Line :
         # 첫 줄
         add_search_row(removable=False, first=True)
 
-        layout.addWidget(search_wrapper)
-        layout.addWidget(table)
+        layout.addWidget(search_wrapper, 0)
+        layout.addWidget(table, 1)
 
         self._refresh_email = refresh
         refresh()
@@ -9731,8 +9734,9 @@ Command Line :
         # 🔎 Multi Search UI
         # ===============================
         search_wrapper = QWidget()
+        search_wrapper.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         search_v = QVBoxLayout(search_wrapper)
-        search_v.setContentsMargins(0, 0, 0, 0)
+        search_v.setContentsMargins(0, 0, 0, 4)
         search_v.setSpacing(6)
 
         self.dlp_search_container = QVBoxLayout()
@@ -9955,7 +9959,7 @@ Command Line :
         # ===============================
         FIELD_W = 150
         BTN_W = 34
-        ROW_H = 34
+        ROW_H = 40
 
         def add_search_row(default_field="ALL", default_mode="포함", removable=True, first=False):
             row = QWidget()
@@ -10029,8 +10033,8 @@ Command Line :
 
         add_search_row(default_field="ALL", default_mode="포함", removable=False, first=True)
 
-        layout.addWidget(search_wrapper)
-        layout.addWidget(table)
+        layout.addWidget(search_wrapper, 0)
+        layout.addWidget(table, 1)
 
         self._refresh_dlp = refresh
         refresh()
