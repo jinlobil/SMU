@@ -3815,28 +3815,44 @@ class MainWindow(QMainWindow):
             background: #ffffff;
             color: #111827;
             border: 1px solid #c8dcea;
-            border-radius: 10px;
-            padding: 6px 24px 6px 10px;
-            font-size: 13px;
+            border-radius: 8px;
+            padding: 4px 22px 4px 8px;
+            font-size: 12px;
             font-weight: 800;
-            min-height: 22px;
+            min-height: 18px;
         }
 
         QSpinBox#intervalSpin::up-button, QSpinBox#intervalSpin::down-button {
             subcontrol-origin: border;
-            width: 20px;
+            width: 18px;
             border-left: 1px solid #e7eef4;
             background: #edf5fb;
         }
 
         QSpinBox#intervalSpin::up-button {
             subcontrol-position: top right;
-            border-top-right-radius: 10px;
+            border-top-right-radius: 8px;
         }
 
         QSpinBox#intervalSpin::down-button {
             subcontrol-position: bottom right;
-            border-bottom-right-radius: 10px;
+            border-bottom-right-radius: 8px;
+        }
+
+        QSpinBox#intervalSpin::up-arrow {
+            width: 0px;
+            height: 0px;
+            border-left: 4px solid transparent;
+            border-right: 4px solid transparent;
+            border-bottom: 5px solid #426f8f;
+        }
+
+        QSpinBox#intervalSpin::down-arrow {
+            width: 0px;
+            height: 0px;
+            border-left: 4px solid transparent;
+            border-right: 4px solid transparent;
+            border-top: 5px solid #426f8f;
         }
 
         QDateEdit:hover, QTimeEdit:hover, QComboBox:hover, QLineEdit:hover, QTextEdit:hover, QSpinBox:hover {
@@ -8390,7 +8406,7 @@ Command Line :
         # ===============================
         FIELD_W = 150
         BTN_W = 34
-        ROW_H = 28
+        ROW_H = 34
 
         def add_search_row(default_field="ALL", default_value="", removable=True, first=False):
             row = QWidget()
@@ -8650,7 +8666,7 @@ Command Line :
 
         FIELD_W = 150
         BTN_W = 34
-        ROW_H = 28
+        ROW_H = 34
 
         def add_search_row(default_field="ALL", removable=True, first=False):
             row = QWidget()
@@ -8879,7 +8895,7 @@ Command Line :
         # ===============================
         FIELD_W = 150
         BTN_W = 34
-        ROW_H = 28
+        ROW_H = 34
 
         def add_search_row(default_field="ALL", removable=True, first=False):
             row = QWidget()
@@ -9939,7 +9955,7 @@ Command Line :
         # ===============================
         FIELD_W = 150
         BTN_W = 34
-        ROW_H = 28
+        ROW_H = 34
 
         def add_search_row(default_field="ALL", default_mode="포함", removable=True, first=False):
             row = QWidget()
@@ -9970,7 +9986,7 @@ Command Line :
             mode_combo = QComboBox()
             mode_combo.addItems(["포함", "제외"])
             mode_combo.setCurrentText(default_mode)
-            mode_combo.setFixedWidth(80)
+            mode_combo.setFixedWidth(92)
             mode_combo.setFixedHeight(ROW_H)
 
             default_font = QApplication.font()
@@ -10706,16 +10722,17 @@ Command Line :
         self.spin_interval.setValue(10)
         self.spin_interval.setSuffix(" min")
         self.spin_interval.setButtonSymbols(QAbstractSpinBox.UpDownArrows)
-        self.spin_interval.setFixedSize(96, 34)
+        self.spin_interval.setFixedSize(104, 28)
         self.spin_interval.setAlignment(Qt.AlignCenter)
         self.spin_interval.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
 
         interval_label = QLabel("Interval")
+        interval_label.setFixedWidth(56)
         interval_label.setStyleSheet("color:#315f7d; font-size:13px; font-weight:800;")
 
         interval_row = QHBoxLayout()
-        interval_row.setContentsMargins(0, 2, 0, 2)
-        interval_row.setSpacing(10)
+        interval_row.setContentsMargins(0, 0, 0, 0)
+        interval_row.setSpacing(6)
         interval_row.addWidget(interval_label)
         interval_row.addWidget(self.spin_interval)
         interval_row.addStretch()
