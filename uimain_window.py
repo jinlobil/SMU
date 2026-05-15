@@ -49,7 +49,7 @@ from PyQt5.QtWidgets import (
     QPushButton, QLineEdit, QTabWidget,
     QHeaderView, QMenu, QFileDialog,
     QLabel, QMessageBox, QComboBox,
-    QFrame, QDateEdit, QTimeEdit, QGroupBox,
+    QFrame, QDateEdit, QTimeEdit, QGroupBox, QColorDialog,
     QCheckBox, QSpinBox,
     QDialog, QTextEdit, QShortcut,
     QSizePolicy, QGraphicsDropShadowEffect, QStyle, QAbstractSpinBox
@@ -3532,6 +3532,13 @@ class MainWindow(QMainWindow):
         self.email_emails = []
         self.xdr_detections = []
         self.dlp_rows = []
+
+        self.trend_colors = {
+            "Detection": "#5f8faf",
+            "Detection XDR": "#7c9fb8",
+            "Email": "#14b8a6",
+            "File": "#f59e0b",
+        }
         
         self.setWindowTitle("Sophos Monitoring UI")
         self.resize(1500, 850)
@@ -3870,7 +3877,7 @@ class MainWindow(QMainWindow):
         }
         return icons.get(title, "•")
 
-    def add_card_title(self, layout, title, strong=True):
+    def add_card_title(self, layout, title, strong=True, action_text=None, action_callback=None):
         title_row = QHBoxLayout()
         title_row.setSpacing(10)
 
@@ -3907,6 +3914,29 @@ class MainWindow(QMainWindow):
         title_row.addWidget(icon_label)
         title_row.addWidget(title_label)
         title_row.addStretch()
+
+        if action_text and action_callback:
+            action_btn = QPushButton(action_text)
+            action_btn.setFixedSize(30, 30)
+            action_btn.setToolTip("Trend color settings")
+            action_btn.setStyleSheet("""
+                QPushButton {
+                    background: #edf5fb;
+                    color: #315f7d;
+                    border: 1px solid #c8dcea;
+                    border-radius: 15px;
+                    padding: 0;
+                    font-size: 15px;
+                    font-weight: 900;
+                }
+                QPushButton:hover {
+                    background: #dcebf5;
+                    border-color: #7fa6c2;
+                }
+            """)
+            action_btn.clicked.connect(action_callback)
+            title_row.addWidget(action_btn)
+
         layout.addLayout(title_row)
 
         divider = QFrame()
@@ -3994,6 +4024,64 @@ class MainWindow(QMainWindow):
 
         widget.style().unpolish(widget)
         widget.style().polish(widget)
+
+    def open_trend_color_dialog(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Threat Trend Colors")
+        dialog.setModal(True)
+
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(10)
+
+        color_buttons = {}
+        for name in ["Detection", "Detection XDR", "Email", "File"]:
+            row = QHBoxLayout()
+            row.setSpacing(10)
+
+            label = QLabel(name)
+            label.setMinimumWidth(110)
+            label.setStyleSheet("color:#315f7d; font-size:13px; font-weight:800;")
+
+            btn = QPushButton(self.trend_colors.get(name, "#5f8faf"))
+            btn.setMinimumWidth(110)
+            btn.setStyleSheet(self.color_button_style(self.trend_colors.get(name, "#5f8faf")))
+
+            def choose_color(_, series=name, button=btn):
+                current = QColor(self.trend_colors.get(series, "#5f8faf"))
+                color = QColorDialog.getColor(current, dialog, f"{series} color")
+                if not color.isValid():
+                    return
+                self.trend_colors[series] = color.name()
+                button.setText(color.name())
+                button.setStyleSheet(self.color_button_style(color.name()))
+                self.refresh_dashboard()
+
+            btn.clicked.connect(choose_color)
+            color_buttons[name] = btn
+
+            row.addWidget(label)
+            row.addWidget(btn)
+            layout.addLayout(row)
+
+        close_btn = QPushButton("닫기")
+        close_btn.clicked.connect(dialog.accept)
+        layout.addWidget(close_btn, 0, Qt.AlignRight)
+
+        dialog.exec_()
+
+    def color_button_style(self, color):
+        text_color = "#ffffff" if QColor(color).lightness() < 150 else "#111827"
+        return f"""
+            QPushButton {{
+                background: {color};
+                color: {text_color};
+                border: 1px solid #c8dcea;
+                border-radius: 10px;
+                padding: 7px 10px;
+                font-weight: 800;
+            }}
+        """
 
     def setup_report_font(self):
         try:
@@ -7012,7 +7100,8 @@ Command Line :
 
         # 퍼센트
         percent_frame = QFrame()
-        percent_frame.setFixedWidth(300)
+        percent_frame.setFixedWidth(340)
+        percent_frame.setMinimumHeight(230)
 
         percent_layout = QVBoxLayout(percent_frame)
         self.percent_label = QLabel("")
@@ -7027,6 +7116,7 @@ Command Line :
             padding: 14px;
         """)
         self.percent_label.setWordWrap(True)
+        self.percent_label.setMinimumHeight(210)
 
         percent_layout.addWidget(self.percent_label)
         percent_layout.addStretch()
@@ -7627,15 +7717,15 @@ Command Line :
         self.figure.clf()
         ax = self.figure.add_subplot(111)
 
-        color_det = "#5f8faf"      # Detection - Sierra blue
-        color_xdr = "#7c9fb8"      # Detection XDR - muted steel blue
-        color_mail = "#14b8a6"     # Email - teal
-        color_file = "#f59e0b"     # File - amber
+        color_det = self.trend_colors.get("Detection", "#5f8faf")
+        color_xdr = self.trend_colors.get("Detection XDR", "#7c9fb8")
+        color_mail = self.trend_colors.get("Email", "#14b8a6")
+        color_file = self.trend_colors.get("File", "#f59e0b")
 
-        dark_det = "#315f7d"
-        dark_xdr = "#496f89"
-        dark_mail = "#0f766e"
-        dark_file = "#b45309"
+        dark_det = color_det
+        dark_xdr = color_xdr
+        dark_mail = color_mail
+        dark_file = color_file
 
         ax.plot(x_dates, det_values, marker='o', linewidth=2.8,
                 color=color_det, label="Detection")
@@ -7774,35 +7864,35 @@ Command Line :
         # 🔥 전일 대비 (오른쪽 표시용)
         # ==============================
         percent_html = f"""
-        <table width='100%' cellspacing='0' cellpadding='0' style='font-size:14px; line-height:24px;'>
+        <table width='100%' cellspacing='0' cellpadding='0' style='font-size:13px; line-height:21px;'>
             <tr>
                 <td></td>
-                <td align='center' style='color:#6b7280; font-size:13px; font-weight:800;'>전일 대비</td>
-                <td align='right' style='color:#6b7280; font-size:13px; font-weight:800;'>전월 대비</td>
+                <td align='center' style='color:#6b7280; font-size:12px; font-weight:900;'>전일 대비</td>
+                <td align='right' style='color:#6b7280; font-size:12px; font-weight:900;'>전월 대비</td>
             </tr>
             <tr><td colspan='3' style='height:6px; border-bottom:1px solid #e5e7eb;'></td></tr>
             <tr>
-                <td style='padding-top:8px; color:#315f7d; font-size:13px; font-weight:900;'>Detection</td>
-                <td align='center' style='padding-top:8px; color:{daily_det_color}; font-size:13px; font-weight:900;'>{daily_det_text}</td>
-                <td align='right' style='padding-top:8px; color:{monthly_det_color}; font-size:13px; font-weight:900;'>{monthly_det_text}</td>
+                <td style='padding-top:5px; color:#315f7d; font-size:13px; font-weight:900;'>Detection</td>
+                <td align='center' style='padding-top:5px; color:{daily_det_color}; font-size:13px; font-weight:900;'>{daily_det_text}</td>
+                <td align='right' style='padding-top:5px; color:{monthly_det_color}; font-size:13px; font-weight:900;'>{monthly_det_text}</td>
             </tr>
-            <tr><td colspan='3' style='height:8px; border-bottom:1px solid #e5e7eb;'></td></tr>
+            <tr><td colspan='3' style='height:5px; border-bottom:1px solid #e5e7eb;'></td></tr>
             <tr>
-                <td style='padding-top:8px; color:#315f7d; font-size:13px; font-weight:900;'>Detection XDR</td>
-                <td align='center' style='padding-top:8px; color:{daily_xdr_color}; font-size:13px; font-weight:900;'>{daily_xdr_text}</td>
-                <td align='right' style='padding-top:8px; color:{monthly_xdr_color}; font-size:13px; font-weight:900;'>{monthly_xdr_text}</td>
+                <td style='padding-top:5px; color:#315f7d; font-size:13px; font-weight:900;'>Detection XDR</td>
+                <td align='center' style='padding-top:5px; color:{daily_xdr_color}; font-size:13px; font-weight:900;'>{daily_xdr_text}</td>
+                <td align='right' style='padding-top:5px; color:{monthly_xdr_color}; font-size:13px; font-weight:900;'>{monthly_xdr_text}</td>
             </tr>
-            <tr><td colspan='3' style='height:8px; border-bottom:1px solid #e5e7eb;'></td></tr>
+            <tr><td colspan='3' style='height:5px; border-bottom:1px solid #e5e7eb;'></td></tr>
             <tr>
-                <td style='padding-top:8px; color:#315f7d; font-size:13px; font-weight:900;'>Email</td>
-                <td align='center' style='padding-top:8px; color:{daily_mail_color}; font-size:13px; font-weight:900;'>{daily_mail_text}</td>
-                <td align='right' style='padding-top:8px; color:{monthly_mail_color}; font-size:13px; font-weight:900;'>{monthly_mail_text}</td>
+                <td style='padding-top:5px; color:#315f7d; font-size:13px; font-weight:900;'>Email</td>
+                <td align='center' style='padding-top:5px; color:{daily_mail_color}; font-size:13px; font-weight:900;'>{daily_mail_text}</td>
+                <td align='right' style='padding-top:5px; color:{monthly_mail_color}; font-size:13px; font-weight:900;'>{monthly_mail_text}</td>
             </tr>
-            <tr><td colspan='3' style='height:8px; border-bottom:1px solid #e5e7eb;'></td></tr>
+            <tr><td colspan='3' style='height:5px; border-bottom:1px solid #e5e7eb;'></td></tr>
             <tr>
-                <td style='padding-top:8px; color:#315f7d; font-size:13px; font-weight:900;'>File</td>
-                <td align='center' style='padding-top:8px; color:{daily_file_color}; font-size:13px; font-weight:900;'>{daily_file_text}</td>
-                <td align='right' style='padding-top:8px; color:{monthly_file_color}; font-size:13px; font-weight:900;'>{monthly_file_text}</td>
+                <td style='padding-top:5px; color:#315f7d; font-size:13px; font-weight:900;'>File</td>
+                <td align='center' style='padding-top:5px; color:{daily_file_color}; font-size:13px; font-weight:900;'>{daily_file_text}</td>
+                <td align='right' style='padding-top:5px; color:{monthly_file_color}; font-size:13px; font-weight:900;'>{monthly_file_text}</td>
             </tr>
         </table>
 """
@@ -12596,7 +12686,10 @@ Command Line :
         layout.setContentsMargins(18, 18, 18, 18)
         layout.setSpacing(12)
 
-        self.add_card_title(layout, title)
+        if title == "Threat Trend":
+            self.add_card_title(layout, title, action_text="⚙", action_callback=self.open_trend_color_dialog)
+        else:
+            self.add_card_title(layout, title)
 
         return frame, layout
         
