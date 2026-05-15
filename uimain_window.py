@@ -10581,25 +10581,42 @@ Command Line :
         self.spin_interval.setMinimum(1)
         self.spin_interval.setMaximum(1440)
         self.spin_interval.setValue(10)
-        self.prepare_form_control(self.spin_interval, height=34)
-        self.spin_interval.setFixedWidth(52)
+        self.prepare_form_control(self.spin_interval, height=30)
+        self.spin_interval.setFixedWidth(46)
+        self.spin_interval.setAlignment(Qt.AlignCenter)
         self.spin_interval.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
 
         interval_label = QLabel("Interval")
         interval_label.setStyleSheet("color:#315f7d; font-size:13px; font-weight:800;")
-        interval_row = QHBoxLayout()
-        interval_row.setContentsMargins(0, 4, 0, 4)
-        interval_row.setSpacing(6)
         interval_unit = QLabel("min")
         interval_unit.setStyleSheet("color:#64748b; font-size:12px; font-weight:700;")
-        interval_row.addWidget(interval_label)
-        interval_row.addWidget(self.spin_interval)
-        interval_row.addWidget(interval_unit)
-        interval_row.addStretch()
+
+        interval_value_row = QHBoxLayout()
+        interval_value_row.setContentsMargins(0, 0, 0, 0)
+        interval_value_row.setSpacing(6)
+        interval_value_row.addWidget(self.spin_interval)
+        interval_value_row.addWidget(interval_unit)
+        interval_value_row.addStretch()
+
+        interval_box = QFrame()
+        interval_box.setObjectName("intervalBox")
+        interval_box.setFixedWidth(150)
+        interval_box.setStyleSheet("""
+            QFrame#intervalBox {
+                background: #f7fbff;
+                border: 1px solid #d7e5ee;
+                border-radius: 12px;
+            }
+        """)
+        interval_box_layout = QVBoxLayout(interval_box)
+        interval_box_layout.setContentsMargins(10, 8, 10, 8)
+        interval_box_layout.setSpacing(5)
+        interval_box_layout.addWidget(interval_label)
+        interval_box_layout.addLayout(interval_value_row)
 
         auto_layout.addWidget(self.chk_auto_det)
         auto_layout.addWidget(self.chk_auto_mail)
-        auto_layout.addLayout(interval_row)
+        auto_layout.addWidget(interval_box, 0, Qt.AlignLeft)
 
         self.lbl_det_status = QLabel("Last Run: -")
         self.lbl_det_result = QLabel("Status: -")
