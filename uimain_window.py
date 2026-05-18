@@ -145,15 +145,15 @@ UI_THEME = {
     "border": "#C8DCEA",
     "border_soft": "#E1EDF5",
     "input_border": "#D8E6EF",
-    "accent": "#6CB7E8",
-    "accent_hover": "#C2E6F8",
-    "accent_mid": "#8CCBF0",
-    "accent_light": "#A8D8F3",
+    "accent": "#55B8F0",
+    "accent_hover": "#B5E8FB",
+    "accent_mid": "#75C9F5",
+    "accent_light": "#9EDCF8",
     "accent_text": "#3679A8",
     "accent_text_soft": "#4F8FB7",
     "sierra": "#5F8FAF",
     "sierra_shadow": (95, 143, 175),
-    "icon_glow": (142, 197, 226),
+    "icon_glow": (112, 198, 235),
     "text": "#111827",
     "text_muted": "#6b7280",
     "text_soft": "#374151",
@@ -4166,6 +4166,17 @@ class MainWindow(QMainWindow):
         painter.end()
         return pixmap
 
+    def add_legacy_card_title(self, layout, title):
+        label = QLabel(title)
+        label.setStyleSheet("""
+            font-size:15px;
+            font-weight:700;
+            color:#1d4ed8;
+            padding-left:8px;
+            border-left:4px solid #2563eb;
+        """)
+        layout.addWidget(label)
+
     def add_card_title(self, layout, title, strong=True, action_text=None, action_callback=None):
         title_row = QHBoxLayout()
         title_row.setSpacing(10)
@@ -4232,7 +4243,7 @@ class MainWindow(QMainWindow):
                 color: #111827;
             }
             QCalendarWidget QWidget#qt_calendar_navigationbar {
-                background: #6CB7E8;
+                background: #55B8F0;
                 border-top-left-radius: 14px;
                 border-top-right-radius: 14px;
                 min-height: 34px;
@@ -10770,7 +10781,7 @@ Command Line :
                 background: #ffffff;
             }
             QCheckBox::indicator:checked {
-                background: #6CB7E8;
+                background: #55B8F0;
                 border: 1px solid #3679A8;
             }
         """)
@@ -10781,8 +10792,7 @@ Command Line :
         # ==================================================
         # 🔹 Cache Data 카드
         # ==================================================
-        cache_card, cache_layout = self.make_card("Cache Data")
-        self.add_card_description(cache_layout, "Refresh cached security data by range or source before reviewing dashboards and exports.")
+        cache_card, cache_layout = self.make_card("Cache Data", legacy_title=True)
 
         btn_det_refresh = QPushButton("탐지 데이터 최신화")
         btn_mail_refresh = QPushButton("이메일 데이터 최신화")
@@ -10902,8 +10912,7 @@ Command Line :
         # ==================================================
         # 🔹 Auto Refresh 카드
         # ==================================================
-        auto_card, auto_layout = self.make_card("Auto Refresh")
-        self.add_card_description(auto_layout, "Schedule recurring Detection and Email refresh runs with the interval below.")
+        auto_card, auto_layout = self.make_card("Auto Refresh", legacy_title=True)
 
         self.chk_auto_det = QCheckBox("Detection Auto Refresh")
         self.chk_auto_mail = QCheckBox("Email Auto Refresh")
@@ -10969,8 +10978,7 @@ Command Line :
         # ==================================================
         # 🔹 Export 카드
         # ==================================================
-        export_card, export_layout = self.make_card("Export")
-        self.add_card_description(export_layout, "Download filtered Detection, XDR, Email, and File datasets as Excel files.")
+        export_card, export_layout = self.make_card("Export", legacy_title=True)
 
         today = QDate.currentDate()
 
@@ -11137,8 +11145,7 @@ Command Line :
         # ==================================================
         # 🔹 Report 카드
         # ==================================================
-        report_card, report_layout = self.make_card("Report")
-        self.add_card_description(report_layout, "Generate the executive PDF report or adjust the report exception list.")
+        report_card, report_layout = self.make_card("Report", legacy_title=True)
 
         self.report_start_date = QDateEdit()
         self.report_start_time = QTimeEdit()
@@ -11190,8 +11197,7 @@ Command Line :
         # ===============================
         # Folders (Quick Access)
         # ===============================
-        folder_group, folder_layout = self.make_card("Folders")
-        self.add_card_description(folder_layout, "Open application output folders for logs, cache, exports, and reports.")
+        folder_group, folder_layout = self.make_card("Folders", legacy_title=True)
         
         row = QHBoxLayout()   # 👈 가로 레이아웃 생성
 
@@ -12906,20 +12912,24 @@ Command Line :
                 self.lbl_mail_result.setText("Status: FAILED")
                 self.lbl_mail_result.setStyleSheet("color:#dc2626; font-weight:600;")
  
-    def make_card(self, title):
+    def make_card(self, title, legacy_title=False):
         frame = QFrame()
         frame.setObjectName("dashboardCard")
         frame.setStyleSheet(self.card_style("dashboardCard", accent=False))
         self.apply_soft_shadow(frame, blur=30, y_offset=12, alpha=90)
 
         layout = QVBoxLayout(frame)
-        layout.setContentsMargins(18, 18, 18, 18)
-        layout.setSpacing(12)
-
-        if title == "Threat Trend":
-            self.add_card_title(layout, title, action_text="⌾", action_callback=self.open_trend_color_dialog)
+        if legacy_title:
+            layout.setContentsMargins(15, 15, 15, 15)
+            layout.setSpacing(10)
+            self.add_legacy_card_title(layout, title)
         else:
-            self.add_card_title(layout, title)
+            layout.setContentsMargins(18, 18, 18, 18)
+            layout.setSpacing(12)
+            if title == "Threat Trend":
+                self.add_card_title(layout, title, action_text="⌾", action_callback=self.open_trend_color_dialog)
+            else:
+                self.add_card_title(layout, title)
 
         return frame, layout
         
