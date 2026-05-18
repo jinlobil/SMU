@@ -152,6 +152,7 @@ UI_THEME = {
     "accent_mid": "#2F80ED",
     "accent_light": "#EAF3FF",
     "accent_text": "#0863e2",
+    "card_title_text": "#0863e2",
     "accent_text_soft": "#2B6FCB",
     "sierra": "#5F8FAF",
     "sierra_shadow": (95, 143, 175),
@@ -244,7 +245,7 @@ THEME_COLOR_MAP = {
     "UI_Surface_Soft": "surface_soft",
     "UI_Surface_Muted": "surface_muted",
     "Card_Border": "accent_soft",
-    "Card_Title_Text": "accent_text",
+    "Card_Title_Text": "card_title_text",
     "Card_Divider": "border_soft",
     "Sierra_Blue": "sierra",
     "Primary_Blue": "accent",
@@ -388,6 +389,7 @@ def apply_color_config_to_theme(config):
             config.get(config_key, DEFAULT_COLOR_CONFIG.get(config_key, "#000000")),
             DEFAULT_COLOR_CONFIG.get(config_key, "#000000"),
         )
+    UI_THEME["accent_text"] = normalize_hex_color(config.get("Primary_Blue"), DEFAULT_COLOR_CONFIG["Primary_Blue"])
     UI_THEME["sierra_shadow"] = hex_to_rgb_tuple(config.get("Sierra_Shadow"), DEFAULT_COLOR_CONFIG["Sierra_Shadow"])
     UI_THEME["icon_glow"] = hex_to_rgb_tuple(config.get("Icon_Glow"), DEFAULT_COLOR_CONFIG["Icon_Glow"])
 
@@ -4456,6 +4458,24 @@ class MainWindow(QMainWindow):
         painter.end()
         return pixmap
 
+    def card_title_label_style(self, font_size=15, weight=800, letter_spacing="0.15px"):
+        return f"""
+            background: transparent;
+            border: none;
+            font-size:{font_size}px;
+            font-weight:{weight};
+            color:{UI_THEME['card_title_text']};
+            letter-spacing:{letter_spacing};
+        """
+
+    def restyle_card_titles(self):
+        for label in self.findChildren(QLabel):
+            if label.property("cardTitle"):
+                font_size = label.property("cardTitleFontSize") or 15
+                weight = label.property("cardTitleWeight") or 800
+                spacing = label.property("cardTitleLetterSpacing") or "0.15px"
+                label.setStyleSheet(self.card_title_label_style(font_size, weight, spacing))
+
     def add_legacy_card_title(self, layout, title):
         title_row = QHBoxLayout()
         title_row.setContentsMargins(0, 0, 0, 0)
@@ -4480,14 +4500,11 @@ class MainWindow(QMainWindow):
         icon_label.setPixmap(self.card_icon_pixmap(title, 16))
 
         label = QLabel(title)
-        label.setStyleSheet("""
-            background: transparent;
-            border: none;
-            font-size:15px;
-            font-weight:800;
-            color:#0863e2;
-            letter-spacing:0.15px;
-        """)
+        label.setProperty("cardTitle", True)
+        label.setProperty("cardTitleFontSize", 15)
+        label.setProperty("cardTitleWeight", 800)
+        label.setProperty("cardTitleLetterSpacing", "0.15px")
+        label.setStyleSheet(self.card_title_label_style(15, 800, "0.15px"))
 
         title_row.addWidget(icon_label)
         title_row.addWidget(label)
@@ -4517,14 +4534,12 @@ class MainWindow(QMainWindow):
         icon_label.setPixmap(self.card_icon_pixmap(title, 18))
 
         title_label = QLabel(title)
-        title_label.setStyleSheet(f"""
-            background: transparent;
-            border: none;
-            color: {UI_THEME['accent_text']};
-            font-size: {'16px' if strong else '15px'};
-            font-weight: 900;
-            letter-spacing: 0.2px;
-        """)
+        title_font_size = 16 if strong else 15
+        title_label.setProperty("cardTitle", True)
+        title_label.setProperty("cardTitleFontSize", title_font_size)
+        title_label.setProperty("cardTitleWeight", 900)
+        title_label.setProperty("cardTitleLetterSpacing", "0.2px")
+        title_label.setStyleSheet(self.card_title_label_style(title_font_size, 900, "0.2px"))
 
         title_row.addWidget(icon_label)
         title_row.addWidget(title_label)
@@ -4646,6 +4661,20 @@ class MainWindow(QMainWindow):
         for widget in self.findChildren(QWidget):
             if widget.objectName() == "configRoot":
                 widget.setStyleSheet(self.config_root_stylesheet())
+
+        self.restyle_card_titles()
+        if hasattr(self, "top_table"):
+            self.top_table.setStyleSheet(self.top_table_stylesheet())
+        if hasattr(self, "percent_label"):
+            self.percent_label.setStyleSheet(f"""
+                background: {UI_THEME['surface']};
+                border: 1px solid {UI_THEME['border']};
+                border-radius: 14px;
+                color: {UI_THEME['text']};
+                font-size: 13px;
+                font-weight: 800;
+                padding: 14px;
+            """)
 
         for button in self.findChildren(QPushButton):
             if button.text().strip().startswith("#") or button.property("buttonRole") == "color":
@@ -4776,6 +4805,31 @@ class MainWindow(QMainWindow):
                 border-radius: 10px;
                 padding: 7px 10px;
                 font-weight: 800;
+            }}
+        """
+
+    def top_table_stylesheet(self):
+        return f"""
+            QTableWidget {{
+                border: none;
+                border-radius: 14px;
+                background: {UI_THEME['surface']};
+                color: {UI_THEME['text']};
+                gridline-color: #e5e7eb;
+                selection-background-color: {UI_THEME['table_selection_bg']};
+                selection-color: {UI_THEME['table_selection_text']};
+                font-size: 13px;
+            }}
+            QTableWidget::item {{
+                padding: 6px;
+                border-bottom: 1px solid {UI_THEME['surface_muted']};
+            }}
+            QHeaderView::section {{
+                background: {UI_THEME['table_header_bg']};
+                color: {UI_THEME['table_header_text']};
+                font-weight: 800;
+                border: none;
+                padding: 8px;
             }}
         """
 
@@ -7805,11 +7859,11 @@ Command Line :
         percent_layout.setContentsMargins(0, 0, 0, 0)
         self.percent_label = QLabel("")
         self.percent_label.setAlignment(Qt.AlignTop)
-        self.percent_label.setStyleSheet("""
-            background: #ffffff;
+        self.percent_label.setStyleSheet(f"""
+            background: {UI_THEME['surface']};
             border: 1px solid {UI_THEME['border']};
             border-radius: 14px;
-            color: #111827;
+            color: {UI_THEME['text']};
             font-size: 13px;
             font-weight: 800;
             padding: 14px;
@@ -7848,29 +7902,7 @@ Command Line :
         self.top_table.setHorizontalHeaderLabels(
             ["Top Hostname", "Top Rule", "Top Sender IP"]
         )
-        self.top_table.setStyleSheet("""
-            QTableWidget {
-                border: none;
-                border-radius: 14px;
-                background: #ffffff;
-                color: #111827;
-                gridline-color: #e5e7eb;
-                selection-background-color: #EEF5FF;
-                selection-color: #0863e2;
-                font-size: 13px;
-            }
-            QTableWidget::item {
-                padding: 6px;
-                border-bottom: 1px solid #F3F8FC;
-            }
-            QHeaderView::section {
-                background: #F3F8FC;
-                color: #0863e2;
-                font-weight: 800;
-                border: none;
-                padding: 8px;
-            }
-        """)
+        self.top_table.setStyleSheet(self.top_table_stylesheet())
         self.top_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
 
         top_layout.addWidget(self.top_table, 1)
@@ -8559,25 +8591,25 @@ Command Line :
             </tr>
             <tr><td colspan='3' style='height:4px; border-bottom:1px solid #e5e7eb;'></td></tr>
             <tr>
-                <td style='padding-top:4px; color:#0863e2; font-size:12px; font-weight:900;'>Detection</td>
+                <td style='padding-top:4px; color:{UI_THEME['accent_text']}; font-size:12px; font-weight:900;'>Detection</td>
                 <td align='center' style='padding-top:4px; color:{daily_det_color}; font-size:12px; font-weight:900;'>{daily_det_text}</td>
                 <td align='right' style='padding-top:4px; color:{monthly_det_color}; font-size:12px; font-weight:900;'>{monthly_det_text}</td>
             </tr>
             <tr><td colspan='3' style='height:4px; border-bottom:1px solid #e5e7eb;'></td></tr>
             <tr>
-                <td style='padding-top:4px; color:#0863e2; font-size:12px; font-weight:900;'>XDR</td>
+                <td style='padding-top:4px; color:{UI_THEME['accent_text']}; font-size:12px; font-weight:900;'>XDR</td>
                 <td align='center' style='padding-top:4px; color:{daily_xdr_color}; font-size:12px; font-weight:900;'>{daily_xdr_text}</td>
                 <td align='right' style='padding-top:4px; color:{monthly_xdr_color}; font-size:12px; font-weight:900;'>{monthly_xdr_text}</td>
             </tr>
             <tr><td colspan='3' style='height:4px; border-bottom:1px solid #e5e7eb;'></td></tr>
             <tr>
-                <td style='padding-top:4px; color:#0863e2; font-size:12px; font-weight:900;'>Email</td>
+                <td style='padding-top:4px; color:{UI_THEME['accent_text']}; font-size:12px; font-weight:900;'>Email</td>
                 <td align='center' style='padding-top:4px; color:{daily_mail_color}; font-size:12px; font-weight:900;'>{daily_mail_text}</td>
                 <td align='right' style='padding-top:4px; color:{monthly_mail_color}; font-size:12px; font-weight:900;'>{monthly_mail_text}</td>
             </tr>
             <tr><td colspan='3' style='height:4px; border-bottom:1px solid #e5e7eb;'></td></tr>
             <tr>
-                <td style='padding-top:4px; color:#0863e2; font-size:12px; font-weight:900;'>File</td>
+                <td style='padding-top:4px; color:{UI_THEME['accent_text']}; font-size:12px; font-weight:900;'>File</td>
                 <td align='center' style='padding-top:4px; color:{daily_file_color}; font-size:12px; font-weight:900;'>{daily_file_text}</td>
                 <td align='right' style='padding-top:4px; color:{monthly_file_color}; font-size:12px; font-weight:900;'>{monthly_file_text}</td>
             </tr>
@@ -10746,7 +10778,10 @@ Command Line :
             self.btn_query_fw_icheon,
             self.btn_query_fw_anseong,
         ]:
-            btn.setFixedHeight(30)
+            btn.setFixedHeight(38)
+            btn.setMinimumHeight(38)
+            btn.setProperty("buttonRole", "secondary")
+            btn.setStyleSheet(self.button_style("secondary"))
             query_layout.addWidget(btn)
 
         right_box.addWidget(self.response_mode_combo)
@@ -11320,7 +11355,7 @@ Command Line :
 
         interval_label = QLabel("Interval")
         interval_label.setFixedWidth(56)
-        interval_label.setStyleSheet("color:#0863e2; font-size:13px; font-weight:800;")
+        interval_label.setStyleSheet(f"color:{UI_THEME['accent_text']}; font-size:13px; font-weight:800;")
 
         interval_row = QHBoxLayout()
         interval_row.setContentsMargins(0, 0, 0, 0)
