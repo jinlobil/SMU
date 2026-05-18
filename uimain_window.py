@@ -36,7 +36,7 @@ import matplotlib.patheffects as path_effects
 # =============================
 from PyQt5.QtCore import (
     Qt, QTimer, QThread, pyqtSignal,
-    QDate, QTime
+    QDate, QTime, QRectF, QPointF
 )
 
 # =============================
@@ -62,7 +62,7 @@ from PyQt5.QtGui import (
     QKeySequence,
     QTextCursor,
     QTextCharFormat,
-    QColor, QFont
+    QColor, QFont, QPixmap, QPainter, QPen, QPainterPath
 )
 
 
@@ -132,6 +132,53 @@ logging.basicConfig(
     ],
 )
 log = logging.getLogger("SophosUI")
+
+
+# ======================================================
+# UI Theme Tokens
+# ======================================================
+UI_THEME = {
+    "surface": "#FFFFFF",
+    "surface_soft": "#F8FBFD",
+    "surface_muted": "#F3F8FC",
+    "accent_soft": "#E8F1F7",
+    "border": "#C8DCEA",
+    "border_soft": "#E1EDF5",
+    "input_border": "#D8E6EF",
+    "accent": "#7F99F8",
+    "accent_hover": "#B8C6FF",
+    "accent_mid": "#8FA6FF",
+    "accent_light": "#A8B8FF",
+    "accent_text": "#5368C9",
+    "accent_text_soft": "#6578DA",
+    "sierra": "#5F8FAF",
+    "sierra_shadow": (95, 143, 175),
+    "icon_glow": (142, 197, 226),
+    "text": "#111827",
+    "text_muted": "#6b7280",
+    "text_soft": "#374151",
+    "success_bg": "#ecfdf5",
+    "success_text": "#047857",
+    "success_border": "#bbf7d0",
+    "danger_bg": "#fef2f2",
+    "danger_text": "#b91c1c",
+    "danger_border": "#fecaca",
+    "gray_bg": "#f1f5f9",
+    "gray_text": "#475569",
+    "gray_border": "#e2e8f0",
+}
+
+UI_FONT_FAMILY = (
+    "'Aptos', 'Inter', 'Segoe UI Variable', 'SF Pro Text', "
+    "'Noto Sans CJK KR', 'Noto Sans KR', 'Apple SD Gothic Neo', "
+    "'Malgun Gothic', sans-serif"
+)
+UI_ICON_FONT_FAMILY = "'Segoe UI Symbol', 'Aptos', 'Inter', 'Segoe UI Variable', sans-serif"
+
+SEARCH_FIELD_W = 150
+SEARCH_MODE_W = 132
+SEARCH_BTN_W = 34
+SEARCH_ROW_H = 40
 
 
 # ===============================
@@ -3534,8 +3581,8 @@ class MainWindow(QMainWindow):
         self.dlp_rows = []
 
         self.trend_colors = {
-            "Detection": "#7F99F8",
-            "Detection XDR": "#A8B8FF",
+            "Detection": UI_THEME["accent"],
+            "Detection XDR": UI_THEME["accent_light"],
             "Email": "#14b8a6",
             "File": "#f59e0b",
         }
@@ -3882,26 +3929,242 @@ class MainWindow(QMainWindow):
         """)
 
 
+    def theme(self, key):
+        return UI_THEME[key]
+
     def apply_soft_shadow(self, widget, blur=28, y_offset=12, alpha=95):
         shadow = QGraphicsDropShadowEffect(self)
         shadow.setBlurRadius(blur)
         shadow.setOffset(0, y_offset)
-        shadow.setColor(QColor(95, 143, 175, min(max(alpha, 72), 96)))
+        r, g, b = UI_THEME["sierra_shadow"]
+        shadow.setColor(QColor(r, g, b, min(max(alpha, 72), 96)))
         widget.setGraphicsEffect(shadow)
 
     def card_style(self, object_name, accent=True):
         return f"""
             QFrame#{object_name} {{
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #ffffff,
-                    stop:1 #F8FBFD);
-                border: 1px solid #E8F1F7;
+                    stop:0 {UI_THEME['surface']},
+                    stop:1 {UI_THEME['surface_soft']});
+                border: 1px solid {UI_THEME['accent_soft']};
                 border-radius: 18px;
             }}
         """
-      
-    def card_icon(self, title):
-        return "✧"
+
+    def button_style(self, variant="primary"):
+        if variant == "secondary":
+            return f"""
+                QPushButton {{
+                    background: {UI_THEME['surface_muted']};
+                    color: {UI_THEME['accent_text']};
+                    border: 1px solid {UI_THEME['border']};
+                    border-radius: 12px;
+                    padding: 8px 14px;
+                    font-family: {UI_FONT_FAMILY};
+                    font-size: 13px;
+                    font-weight: 800;
+                }}
+                QPushButton:hover {{
+                    background: {UI_THEME['accent_soft']};
+                    border-color: {UI_THEME['accent_light']};
+                }}
+            """
+        if variant == "ghost":
+            return f"""
+                QPushButton {{
+                    background: transparent;
+                    color: {UI_THEME['accent_text']};
+                    border: 1px solid {UI_THEME['border_soft']};
+                    border-radius: 12px;
+                    padding: 8px 14px;
+                    font-family: {UI_FONT_FAMILY};
+                    font-size: 13px;
+                    font-weight: 800;
+                }}
+                QPushButton:hover {{
+                    background: {UI_THEME['surface_muted']};
+                    border-color: {UI_THEME['border']};
+                }}
+            """
+        return f"""
+            QPushButton {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 {UI_THEME['accent_mid']},
+                    stop:0.55 {UI_THEME['accent']},
+                    stop:1 {UI_THEME['accent_text']});
+                color: #ffffff;
+                border: none;
+                border-radius: 12px;
+                padding: 9px 16px;
+                font-family: {UI_FONT_FAMILY};
+                font-size: 13px;
+                font-weight: 800;
+            }}
+            QPushButton:hover {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 {UI_THEME['accent_hover']},
+                    stop:1 {UI_THEME['accent_mid']});
+            }}
+            QPushButton:pressed {{
+                background: {UI_THEME['accent_text']};
+            }}
+            QPushButton:disabled {{
+                background: #cbd5e1;
+                color: #f8fafc;
+            }}
+        """
+
+    def apply_button_role(self, button, variant="primary", min_height=38):
+        button.setStyleSheet(self.button_style(variant))
+        if min_height:
+            button.setMinimumHeight(min_height)
+
+    def add_card_description(self, layout, text):
+        desc = QLabel(text)
+        desc.setWordWrap(True)
+        desc.setStyleSheet(f"""
+            background: transparent;
+            border: none;
+            color: {UI_THEME['text_muted']};
+            font-size: 12px;
+            font-weight: 600;
+        """)
+        layout.addWidget(desc)
+
+    def metric_table_html(self, metrics):
+        header_cells = "".join(
+            f"<td style='color:{UI_THEME['text_muted']}; font-size:11px; font-weight:700;'>{label}</td>"
+            for label, _, _ in metrics
+        )
+        value_cells = "".join(
+            f"<td><span style='color:{color or UI_THEME['accent']}; font-size:20px; font-weight:900;'>{value}</span></td>"
+            for _, value, color in metrics
+        )
+        return f"""
+        <table width='100%' cellspacing='0' cellpadding='0' style='line-height:22px; font-size:13px;'>
+            <tr>{header_cells}</tr>
+            <tr>{value_cells}</tr>
+        </table>
+        """
+
+    def card_icon_kind(self, title):
+        icons = {
+            "Endpoints": "monitor",
+            "Organization": "network",
+            "Top File": "file",
+            "Top Hash": "hash",
+            "Folder Usage": "folder",
+            "Threat Trend": "trend",
+            "Top Analysis": "bars",
+            "Detection Summary": "shield",
+            "Detection XDR Summary": "radar",
+            "Email Summary": "mail",
+            "File Summary": "file",
+            "Cache Data": "database",
+            "Auto Refresh": "refresh",
+            "Export": "download",
+            "Report": "report",
+            "Folders": "folder",
+        }
+        return icons.get(title, "spark")
+
+    def card_icon_pixmap(self, title, size=18):
+        pixmap = QPixmap(size, size)
+        pixmap.fill(Qt.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+        pen = QPen(QColor(UI_THEME["accent"]), 1.7)
+        pen.setCapStyle(Qt.RoundCap)
+        pen.setJoinStyle(Qt.RoundJoin)
+        painter.setPen(pen)
+        kind = self.card_icon_kind(title)
+        w = size
+        h = size
+        if kind == "monitor":
+            painter.drawRoundedRect(QRectF(3, 3, w - 6, h - 8), 2, 2)
+            painter.drawLine(QPointF(w * 0.5, h - 5), QPointF(w * 0.5, h - 2))
+            painter.drawLine(QPointF(w * 0.35, h - 2), QPointF(w * 0.65, h - 2))
+        elif kind == "network":
+            for x, y in [(w/2, 4), (4, h-5), (w-4, h-5)]:
+                painter.drawEllipse(QPointF(x, y), 2.2, 2.2)
+            painter.drawLine(QPointF(w/2, 6), QPointF(5, h-7))
+            painter.drawLine(QPointF(w/2, 6), QPointF(w-5, h-7))
+        elif kind == "file":
+            path = QPainterPath()
+            path.moveTo(5, 3)
+            path.lineTo(w - 7, 3)
+            path.lineTo(w - 3, 7)
+            path.lineTo(w - 3, h - 3)
+            path.lineTo(5, h - 3)
+            path.closeSubpath()
+            painter.drawPath(path)
+            painter.drawLine(QPointF(7, 10), QPointF(w - 6, 10))
+            painter.drawLine(QPointF(7, 13), QPointF(w - 8, 13))
+        elif kind == "hash":
+            painter.drawLine(QPointF(7, 3), QPointF(5, h - 3))
+            painter.drawLine(QPointF(w - 5, 3), QPointF(w - 7, h - 3))
+            painter.drawLine(QPointF(3, 7), QPointF(w - 3, 7))
+            painter.drawLine(QPointF(3, h - 7), QPointF(w - 3, h - 7))
+        elif kind == "folder":
+            path = QPainterPath()
+            path.moveTo(3, 6)
+            path.lineTo(8, 6)
+            path.lineTo(10, 8)
+            path.lineTo(w - 3, 8)
+            path.lineTo(w - 3, h - 4)
+            path.lineTo(3, h - 4)
+            path.closeSubpath()
+            painter.drawPath(path)
+        elif kind == "trend":
+            points = [QPointF(3, h-5), QPointF(7, h-9), QPointF(11, h-7), QPointF(w-3, 4)]
+            for a, b in zip(points, points[1:]):
+                painter.drawLine(a, b)
+            painter.drawEllipse(points[-1], 1.6, 1.6)
+        elif kind == "bars":
+            for i, height in enumerate([6, 10, 14]):
+                x = 4 + i * 5
+                painter.drawRoundedRect(QRectF(x, h - height - 2, 3, height), 1, 1)
+        elif kind == "shield":
+            path = QPainterPath()
+            path.moveTo(w/2, 3)
+            path.lineTo(w-4, 6)
+            path.lineTo(w-5, 12)
+            path.quadTo(w/2, h-2, 4, 12)
+            path.lineTo(4, 6)
+            path.closeSubpath()
+            painter.drawPath(path)
+        elif kind == "radar":
+            painter.drawEllipse(QPointF(w/2, h/2), 6, 6)
+            painter.drawEllipse(QPointF(w/2, h/2), 2, 2)
+            painter.drawLine(QPointF(w/2, h/2), QPointF(w-4, 5))
+        elif kind == "mail":
+            painter.drawRoundedRect(QRectF(3, 5, w-6, h-10), 2, 2)
+            painter.drawLine(QPointF(4, 6), QPointF(w/2, h/2))
+            painter.drawLine(QPointF(w-4, 6), QPointF(w/2, h/2))
+        elif kind == "database":
+            painter.drawEllipse(QRectF(4, 3, w-8, 5))
+            painter.drawLine(QPointF(4, 5.5), QPointF(4, h-5))
+            painter.drawLine(QPointF(w-4, 5.5), QPointF(w-4, h-5))
+            painter.drawEllipse(QRectF(4, h-8, w-8, 5))
+        elif kind == "refresh":
+            painter.drawArc(QRectF(4, 4, w-8, h-8), 40 * 16, 280 * 16)
+            painter.drawLine(QPointF(w-5, 5), QPointF(w-3, 9))
+            painter.drawLine(QPointF(w-5, 5), QPointF(w-9, 5))
+        elif kind == "download":
+            painter.drawLine(QPointF(w/2, 3), QPointF(w/2, h-7))
+            painter.drawLine(QPointF(w/2, h-7), QPointF(w/2-4, h-11))
+            painter.drawLine(QPointF(w/2, h-7), QPointF(w/2+4, h-11))
+            painter.drawLine(QPointF(4, h-3), QPointF(w-4, h-3))
+        elif kind == "report":
+            painter.drawRoundedRect(QRectF(4, 3, w-8, h-6), 2, 2)
+            painter.drawLine(QPointF(7, 8), QPointF(w-7, 8))
+            painter.drawLine(QPointF(7, 12), QPointF(w-8, 12))
+        else:
+            painter.drawLine(QPointF(w/2, 3), QPointF(w/2, h-3))
+            painter.drawLine(QPointF(3, h/2), QPointF(w-3, h/2))
+            painter.drawEllipse(QPointF(w/2, h/2), 3, 3)
+        painter.end()
+        return pixmap
 
     def add_card_title(self, layout, title, strong=True, action_text=None, action_callback=None):
         title_row = QHBoxLayout()
@@ -3910,33 +4173,26 @@ class MainWindow(QMainWindow):
         icon_label = QLabel()
         icon_label.setAlignment(Qt.AlignCenter)
         icon_label.setFixedSize(30, 30)
-        icon_label.setStyleSheet("""
-            QLabel {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #FFFFFF, stop:1 #E8F1F7);
-                border: 1px solid #A8B8FF;
+        icon_label.setStyleSheet(f"""
+            QLabel {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {UI_THEME['surface']}, stop:1 {UI_THEME['accent_soft']});
+                border: 1px solid {UI_THEME['accent_light']};
                 border-radius: 12px;
-                color: #7F99F8;
-                font-family: 'Segoe UI Symbol', 'Aptos', 'Inter', 'Segoe UI Variable', sans-serif;
-                font-size: 16px;
-                font-weight: 500;
-            }
+            }}
         """)
         icon_glow = QGraphicsDropShadowEffect(self)
         icon_glow.setBlurRadius(14)
         icon_glow.setOffset(0, 3)
-        icon_glow.setColor(QColor(142, 197, 226, 132))
+        r, g, b = UI_THEME["icon_glow"]
+        icon_glow.setColor(QColor(r, g, b, 132))
         icon_label.setGraphicsEffect(icon_glow)
-        icon = self.card_icon(title)
-        if isinstance(icon, str):
-            icon_label.setText(icon)
-        else:
-            icon_label.setPixmap(self.style().standardIcon(icon).pixmap(16, 16))
+        icon_label.setPixmap(self.card_icon_pixmap(title, 18))
 
         title_label = QLabel(title)
         title_label.setStyleSheet(f"""
             background: transparent;
             border: none;
-            color: #5368C9;
+            color: {UI_THEME['accent_text']};
             font-size: {'16px' if strong else '15px'};
             font-weight: 800;
             letter-spacing: 0.2px;
@@ -3950,21 +4206,7 @@ class MainWindow(QMainWindow):
             action_btn = QPushButton(action_text)
             action_btn.setFixedSize(34, 34)
             action_btn.setToolTip("Trend color settings")
-            action_btn.setStyleSheet("""
-                QPushButton {
-                    background: #F3F8FC;
-                    color: #5368C9;
-                    border: 1px solid #C8DCEA;
-                    border-radius: 14px;
-                    padding: 0;
-                    font-size: 17px;
-                    font-weight: 900;
-                }
-                QPushButton:hover {
-                    background: #E8F1F7;
-                    border-color: #A8B8FF;
-                }
-            """)
+            action_btn.setStyleSheet(self.button_style("secondary"))
             action_btn.clicked.connect(action_callback)
             title_row.addWidget(action_btn)
 
@@ -3972,7 +4214,7 @@ class MainWindow(QMainWindow):
 
         divider = QFrame()
         divider.setFixedHeight(1)
-        divider.setStyleSheet("background: #E1EDF5; border: none;")
+        divider.setStyleSheet(f"background: {UI_THEME['border_soft']}; border: none;")
         layout.addWidget(divider)
 
     def apply_date_picker_style(self, date_edit):
@@ -4074,12 +4316,12 @@ class MainWindow(QMainWindow):
             label.setMinimumWidth(110)
             label.setStyleSheet("color:#5368C9; font-size:13px; font-weight:800;")
 
-            btn = QPushButton(self.trend_colors.get(name, "#7F99F8"))
+            btn = QPushButton(self.trend_colors.get(name, UI_THEME["accent"]))
             btn.setMinimumWidth(110)
-            btn.setStyleSheet(self.color_button_style(self.trend_colors.get(name, "#7F99F8")))
+            btn.setStyleSheet(self.color_button_style(self.trend_colors.get(name, UI_THEME["accent"])))
 
             def choose_color(_, series=name, button=btn):
-                current = QColor(self.trend_colors.get(series, "#7F99F8"))
+                current = QColor(self.trend_colors.get(series, UI_THEME["accent"]))
                 color = QColorDialog.getColor(current, dialog, f"{series} color")
                 if not color.isValid():
                     return
@@ -4096,6 +4338,7 @@ class MainWindow(QMainWindow):
             layout.addLayout(row)
 
         close_btn = QPushButton("닫기")
+        close_btn.setStyleSheet(self.button_style("ghost"))
         close_btn.clicked.connect(dialog.accept)
         layout.addWidget(close_btn, 0, Qt.AlignRight)
 
@@ -7344,18 +7587,10 @@ Command Line :
             elif e.get("type") == "server":
                 server_count += 1
 
-        endpoint_html = f"""
-        <table width='100%' cellspacing='0' cellpadding='0' style='line-height:22px; font-size:13px;'>
-            <tr>
-                <td style='color:#6b7280; font-size:11px;'>PC</td>
-                <td style='color:#6b7280; font-size:11px;'>Server</td>
-            </tr>
-            <tr>
-                <td><span style='color:#7F99F8; font-size:20px; font-weight:900;'>{pc_count}</span> 대</td>
-                <td><span style='color:#7F99F8; font-size:20px; font-weight:900;'>{server_count}</span> 대</td>
-            </tr>
-        </table>
-        """
+        endpoint_html = self.metric_table_html([
+            ("PC", f"{pc_count} 대", UI_THEME["accent"]),
+            ("Server", f"{server_count} 대", UI_THEME["accent"]),
+        ])
         self.card_endpoint.value_label.setText(endpoint_html)
         
         # ==============================
@@ -7394,18 +7629,10 @@ Command Line :
         org_count = len(valid_dept_codes)
         user_count = len(valid_users)
 
-        org_html = f"""
-        <table width='100%' cellspacing='0' cellpadding='0' style='line-height:22px; font-size:13px;'>
-            <tr>
-                <td style='color:#6b7280; font-size:11px;'>조직부서</td>
-                <td style='color:#6b7280; font-size:11px;'>사원 수</td>
-            </tr>
-            <tr>
-                <td><span style='color:#7F99F8; font-size:20px; font-weight:900;'>{org_count}</span> 개</td>
-                <td><span style='color:#7F99F8; font-size:20px; font-weight:900;'>{user_count}</span> 명</td>
-            </tr>
-        </table>
-        """
+        org_html = self.metric_table_html([
+            ("조직부서", f"{org_count} 개", UI_THEME["accent"]),
+            ("사원 수", f"{user_count} 명", UI_THEME["accent"]),
+        ])
         self.card_org.value_label.setText(org_html)
 
         # ==============================
@@ -7752,8 +7979,8 @@ Command Line :
         self.figure.clf()
         ax = self.figure.add_subplot(111)
 
-        color_det = self.trend_colors.get("Detection", "#7F99F8")
-        color_xdr = self.trend_colors.get("Detection XDR", "#A8B8FF")
+        color_det = self.trend_colors.get("Detection", UI_THEME["accent"])
+        color_xdr = self.trend_colors.get("Detection XDR", UI_THEME["accent_light"])
         color_mail = self.trend_colors.get("Email", "#14b8a6")
         color_file = self.trend_colors.get("File", "#f59e0b")
 
@@ -7788,12 +8015,12 @@ Command Line :
 
         self.figure.patch.set_facecolor("#ffffff")
         ax.set_facecolor("#ffffff")
-        ax.grid(True, linestyle="--", linewidth=0.8, color="#e5e7eb", alpha=0.9)
+        ax.grid(True, linestyle="--", linewidth=0.8, color=UI_THEME["border_soft"], alpha=0.9)
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
-        ax.spines["left"].set_color("#d1d5db")
-        ax.spines["bottom"].set_color("#d1d5db")
-        ax.tick_params(axis="both", colors="#374151", labelsize=10)
+        ax.spines["left"].set_color(UI_THEME["border"])
+        ax.spines["bottom"].set_color(UI_THEME["border"])
+        ax.tick_params(axis="both", colors=UI_THEME["text_soft"], labelsize=10)
         # The card header already displays the chart title; avoid a duplicate
         # matplotlib title because it can render with broken-looking spacing.
         ax.set_title("")
@@ -7807,7 +8034,7 @@ Command Line :
             handlelength=1.8,
         )
         for text in legend.get_texts():
-            text.set_color("#374151")
+            text.set_color(UI_THEME["text_soft"])
             text.set_fontsize(10)
         max_y = max(max(det_values), max(xdr_values), max(mail_values), max(file_values), 1)        
         ax.set_ylim(0, max_y * 1.8)      
@@ -8392,9 +8619,9 @@ Command Line :
         # ===============================
         # 🔥 검색줄 생성 (크기/폰트/엔터/버튼 통일)
         # ===============================
-        FIELD_W = 150
-        BTN_W = 34
-        ROW_H = 40
+        FIELD_W = SEARCH_FIELD_W
+        BTN_W = SEARCH_BTN_W
+        ROW_H = SEARCH_ROW_H
 
         def add_search_row(default_field="ALL", default_value="", removable=True, first=False):
             row = QWidget()
@@ -8653,9 +8880,9 @@ Command Line :
             if sort_column >= 0:
                 table.sortItems(sort_column, sort_order)
 
-        FIELD_W = 150
-        BTN_W = 34
-        ROW_H = 40
+        FIELD_W = SEARCH_FIELD_W
+        BTN_W = SEARCH_BTN_W
+        ROW_H = SEARCH_ROW_H
 
         def add_search_row(default_field="ALL", removable=True, first=False):
             row = QWidget()
@@ -8883,9 +9110,9 @@ Command Line :
         # ===============================
         # 🔥 검색줄 생성
         # ===============================
-        FIELD_W = 150
-        BTN_W = 34
-        ROW_H = 40
+        FIELD_W = SEARCH_FIELD_W
+        BTN_W = SEARCH_BTN_W
+        ROW_H = SEARCH_ROW_H
 
         def add_search_row(default_field="ALL", removable=True, first=False):
             row = QWidget()
@@ -9944,9 +10171,9 @@ Command Line :
         # ===============================
         # 검색줄 생성
         # ===============================
-        FIELD_W = 150
-        BTN_W = 34
-        ROW_H = 40
+        FIELD_W = SEARCH_FIELD_W
+        BTN_W = SEARCH_BTN_W
+        ROW_H = SEARCH_ROW_H
 
         def add_search_row(default_field="ALL", default_mode="포함", removable=True, first=False):
             row = QWidget()
@@ -9977,7 +10204,7 @@ Command Line :
             mode_combo = QComboBox()
             mode_combo.addItems(["포함", "제외"])
             mode_combo.setCurrentText(default_mode)
-            mode_combo.setFixedWidth(132)
+            mode_combo.setFixedWidth(SEARCH_MODE_W)
             mode_combo.setFixedHeight(ROW_H)
 
             default_font = QApplication.font()
@@ -10517,39 +10744,9 @@ Command Line :
     # Config Tab
     # ==================================================
     def tab_config(self):
-        btn_style = """
-        QPushButton {
-            background: qlineargradient(
-                x1:0, y1:0, x2:1, y2:1,
-                stop:0 #8FA6FF,
-                stop:1 #5368C9
-            );
-            color: #ffffff;
-            border: none;
-            border-radius: 12px;
-            padding: 9px 16px;
-            font-family: 'Aptos', 'Inter', 'Segoe UI Variable', 'SF Pro Text', 'Noto Sans CJK KR', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif;
-            font-size: 13px;
-            font-weight: 800;
-        }
-
-        QPushButton:hover {
-            background: qlineargradient(
-                x1:0, y1:0, x2:1, y2:1,
-                stop:0 #B8C6FF,
-                stop:1 #8FA6FF
-            );
-        }
-
-        QPushButton:pressed {
-            background: #5368C9;
-        }
-
-        QPushButton:disabled {
-            background: #cbd5e1;
-            color: #f8fafc;
-        }
-        """
+        btn_style = self.button_style("primary")
+        secondary_btn_style = self.button_style("secondary")
+        ghost_btn_style = self.button_style("ghost")
         root = QWidget()
         root.setObjectName("configRoot")
         root.setStyleSheet("""
@@ -10582,6 +10779,7 @@ Command Line :
         # 🔹 Cache Data 카드
         # ==================================================
         cache_card, cache_layout = self.make_card("Cache Data")
+        self.add_card_description(cache_layout, "Refresh cached security data by range or source before reviewing dashboards and exports.")
 
         btn_det_refresh = QPushButton("탐지 데이터 최신화")
         btn_mail_refresh = QPushButton("이메일 데이터 최신화")
@@ -10702,6 +10900,7 @@ Command Line :
         # 🔹 Auto Refresh 카드
         # ==================================================
         auto_card, auto_layout = self.make_card("Auto Refresh")
+        self.add_card_description(auto_layout, "Schedule recurring Detection and Email refresh runs with the interval below.")
 
         self.chk_auto_det = QCheckBox("Detection Auto Refresh")
         self.chk_auto_mail = QCheckBox("Email Auto Refresh")
@@ -10768,6 +10967,7 @@ Command Line :
         # 🔹 Export 카드
         # ==================================================
         export_card, export_layout = self.make_card("Export")
+        self.add_card_description(export_layout, "Download filtered Detection, XDR, Email, and File datasets as Excel files.")
 
         today = QDate.currentDate()
 
@@ -10935,6 +11135,7 @@ Command Line :
         # 🔹 Report 카드
         # ==================================================
         report_card, report_layout = self.make_card("Report")
+        self.add_card_description(report_layout, "Generate the executive PDF report or adjust the report exception list.")
 
         self.report_start_date = QDateEdit()
         self.report_start_time = QTimeEdit()
@@ -10968,7 +11169,7 @@ Command Line :
 
         btn_report_exception = QPushButton("Report exception List")
         btn_report_exception.clicked.connect(self.open_report_exception_list_dialog)
-        btn_report_exception.setStyleSheet(btn_style)
+        btn_report_exception.setStyleSheet(secondary_btn_style)
         btn_report_exception.setMinimumHeight(38)
 
         row = QHBoxLayout()
@@ -10987,6 +11188,7 @@ Command Line :
         # Folders (Quick Access)
         # ===============================
         folder_group, folder_layout = self.make_card("Folders")
+        self.add_card_description(folder_layout, "Open application output folders for logs, cache, exports, and reports.")
         
         row = QHBoxLayout()   # 👈 가로 레이아웃 생성
 
@@ -10996,7 +11198,7 @@ Command Line :
         btn_report = QPushButton("Reports")
 
         for b in [btn_log, btn_cache, btn_export, btn_report]:
-            b.setStyleSheet(btn_style)
+            b.setStyleSheet(secondary_btn_style)
             b.setMinimumHeight(38)
             row.addWidget(b)
         
