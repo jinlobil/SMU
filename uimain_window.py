@@ -3747,17 +3747,17 @@ class MainWindow(QMainWindow):
         }
 
         QPushButton {
-            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #2F80ED, stop:0.58 #0863e2, stop:1 #054fb8);
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #FDFEFF, stop:0.18 #6EAAF7, stop:0.54 #0863e2, stop:1 #054fb8);
             color: #ffffff;
-            border: 1px solid rgba(8, 99, 226, 0.22);
+            border: 1px solid rgba(8, 99, 226, 0.28);
             border-radius: 10px;
             padding: 7px 18px;
             font-weight: 800;
         }
 
         QPushButton:hover {
-            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #3C8DF4, stop:0.58 #1F75EF, stop:1 #0863e2);
-            border: 1px solid rgba(8, 99, 226, 0.36);
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #FFFFFF, stop:0.16 #8FC0FA, stop:0.56 #1F75EF, stop:1 #0863e2);
+            border: 1px solid rgba(8, 99, 226, 0.42);
         }
 
         QDateEdit, QTimeEdit, QComboBox, QLineEdit, QTextEdit, QSpinBox {
@@ -3978,7 +3978,8 @@ class MainWindow(QMainWindow):
                 QPushButton {{
                     background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
                         stop:0 #ffffff,
-                        stop:1 {UI_THEME['accent_soft']});
+                        stop:0.62 {UI_THEME['accent_soft']},
+                        stop:1 #DCEBFF);
                     color: {UI_THEME['accent_text']};
                     border: 1px solid {UI_THEME['border']};
                     border-radius: 12px;
@@ -4012,11 +4013,12 @@ class MainWindow(QMainWindow):
         return f"""
             QPushButton {{
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 {UI_THEME['accent_mid']},
-                    stop:0.58 {UI_THEME['accent']},
+                    stop:0 #FDFEFF,
+                    stop:0.18 #6EAAF7,
+                    stop:0.54 {UI_THEME['accent']},
                     stop:1 {UI_THEME['accent_deep']});
                 color: #ffffff;
-                border: 1px solid rgba(8, 99, 226, 0.24);
+                border: 1px solid rgba(8, 99, 226, 0.28);
                 border-radius: 12px;
                 padding: 9px 16px;
                 font-family: {UI_FONT_FAMILY};
@@ -4025,10 +4027,11 @@ class MainWindow(QMainWindow):
             }}
             QPushButton:hover {{
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #3C8DF4,
-                    stop:0.58 {UI_THEME['accent_hover']},
+                    stop:0 #FFFFFF,
+                    stop:0.16 #8FC0FA,
+                    stop:0.56 {UI_THEME['accent_hover']},
                     stop:1 {UI_THEME['accent']});
-                border-color: rgba(8, 99, 226, 0.38);
+                border-color: rgba(8, 99, 226, 0.42);
             }}
             QPushButton:pressed {{
                 background: {UI_THEME['accent_deep']};
@@ -4192,15 +4195,42 @@ class MainWindow(QMainWindow):
         return pixmap
 
     def add_legacy_card_title(self, layout, title):
+        title_row = QHBoxLayout()
+        title_row.setContentsMargins(0, 0, 0, 0)
+        title_row.setSpacing(9)
+
+        icon_label = QLabel()
+        icon_label.setAlignment(Qt.AlignCenter)
+        icon_label.setFixedSize(26, 26)
+        icon_label.setStyleSheet(f"""
+            QLabel {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #ffffff, stop:1 {UI_THEME['accent_soft']});
+                border: 1px solid {UI_THEME['border']};
+                border-radius: 10px;
+            }}
+        """)
+        icon_glow = QGraphicsDropShadowEffect(self)
+        icon_glow.setBlurRadius(10)
+        icon_glow.setOffset(0, 2)
+        r, g, b = UI_THEME["icon_glow"]
+        icon_glow.setColor(QColor(r, g, b, 72))
+        icon_label.setGraphicsEffect(icon_glow)
+        icon_label.setPixmap(self.card_icon_pixmap(title, 16))
+
         label = QLabel(title)
         label.setStyleSheet("""
+            background: transparent;
+            border: none;
             font-size:15px;
-            font-weight:700;
+            font-weight:800;
             color:#0863e2;
-            padding-left:8px;
-            border-left:4px solid #0863e2;
+            letter-spacing:0.15px;
         """)
-        layout.addWidget(label)
+
+        title_row.addWidget(icon_label)
+        title_row.addWidget(label)
+        title_row.addStretch()
+        layout.addLayout(title_row)
 
     def add_card_title(self, layout, title, strong=True, action_text=None, action_callback=None):
         title_row = QHBoxLayout()
@@ -4230,7 +4260,7 @@ class MainWindow(QMainWindow):
             border: none;
             color: {UI_THEME['accent_text']};
             font-size: {'16px' if strong else '15px'};
-            font-weight: 800;
+            font-weight: 900;
             letter-spacing: 0.2px;
         """)
 
