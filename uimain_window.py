@@ -10782,6 +10782,7 @@ Command Line :
         # 🔹 Cache Data 카드
         # ==================================================
         cache_card, cache_layout = self.make_card("Cache Data")
+        self.add_card_description(cache_layout, "Refresh cached security data by range or source before reviewing dashboards and exports.")
 
         btn_det_refresh = QPushButton("탐지 데이터 최신화")
         btn_mail_refresh = QPushButton("이메일 데이터 최신화")
@@ -10902,6 +10903,7 @@ Command Line :
         # 🔹 Auto Refresh 카드
         # ==================================================
         auto_card, auto_layout = self.make_card("Auto Refresh")
+        self.add_card_description(auto_layout, "Schedule recurring Detection and Email refresh runs with the interval below.")
 
         self.chk_auto_det = QCheckBox("Detection Auto Refresh")
         self.chk_auto_mail = QCheckBox("Email Auto Refresh")
@@ -10968,6 +10970,7 @@ Command Line :
         # 🔹 Export 카드
         # ==================================================
         export_card, export_layout = self.make_card("Export")
+        self.add_card_description(export_layout, "Download filtered Detection, XDR, Email, and File datasets as Excel files.")
 
         today = QDate.currentDate()
 
@@ -11135,6 +11138,7 @@ Command Line :
         # 🔹 Report 카드
         # ==================================================
         report_card, report_layout = self.make_card("Report")
+        self.add_card_description(report_layout, "Generate the executive PDF report or adjust the report exception list.")
 
         self.report_start_date = QDateEdit()
         self.report_start_time = QTimeEdit()
@@ -11187,6 +11191,7 @@ Command Line :
         # Folders (Quick Access)
         # ===============================
         folder_group, folder_layout = self.make_card("Folders")
+        self.add_card_description(folder_layout, "Open application output folders for logs, cache, exports, and reports.")
         
         row = QHBoxLayout()   # 👈 가로 레이아웃 생성
 
