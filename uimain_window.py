@@ -3534,8 +3534,8 @@ class MainWindow(QMainWindow):
         self.dlp_rows = []
 
         self.trend_colors = {
-            "Detection": "#4F91BF",
-            "Detection XDR": "#8FCBEA",
+            "Detection": "#7F99F8",
+            "Detection XDR": "#A8B8FF",
             "Email": "#14b8a6",
             "File": "#f59e0b",
         }
@@ -3635,7 +3635,7 @@ class MainWindow(QMainWindow):
 
         QLabel#statusPill, QLabel#rangePill {
             background: #E8F1F7;
-            color: #245F8F;
+            color: #5368C9;
             border: 1px solid #C8DCEA;
             border-radius: 12px;
             padding: 6px 12px;
@@ -3645,7 +3645,7 @@ class MainWindow(QMainWindow):
 
         QLabel#rangePill {
             background: #F3F8FC;
-            color: #2E6F9F;
+            color: #6578DA;
             border-color: #C8DCEA;
         }
 
@@ -3669,18 +3669,18 @@ class MainWindow(QMainWindow):
 
         QTabBar::tab:selected {
             background: #ffffff;
-            color: #245F8F;
+            color: #5368C9;
             border: 1px solid #C8DCEA;
-            border-bottom: 2px solid #4F91BF;
+            border-bottom: 2px solid #7F99F8;
         }
 
         QTabBar::tab:hover {
             background: #E8F1F7;
-            color: #245F8F;
+            color: #5368C9;
         }
 
         QPushButton {
-            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #63A8D4, stop:0.55 #4F91BF, stop:1 #245F8F);
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #8FA6FF, stop:0.55 #7F99F8, stop:1 #5368C9);
             color: #ffffff;
             border: none;
             border-radius: 10px;
@@ -3689,7 +3689,7 @@ class MainWindow(QMainWindow):
         }
 
         QPushButton:hover {
-            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #86C7EA, stop:1 #63A8D4);
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #B8C6FF, stop:1 #8FA6FF);
         }
 
         QDateEdit, QTimeEdit, QComboBox, QLineEdit, QTextEdit, QSpinBox {
@@ -3698,7 +3698,7 @@ class MainWindow(QMainWindow):
             border: 1px solid #D8E6EF;
             border-radius: 10px;
             padding: 6px 10px;
-            selection-background-color: #4F91BF;
+            selection-background-color: #7F99F8;
             font-family: 'Aptos', 'Inter', 'Segoe UI Variable', 'SF Pro Text', 'Noto Sans CJK KR', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif;
             font-size: 13px;
             min-height: 22px;
@@ -3724,7 +3724,7 @@ class MainWindow(QMainWindow):
             height: 0px;
             border-left: 5px solid transparent;
             border-right: 5px solid transparent;
-            border-top: 6px solid #245F8F;
+            border-top: 6px solid #5368C9;
             margin-right: 8px;
         }
 
@@ -3734,7 +3734,7 @@ class MainWindow(QMainWindow):
             border: 1px solid #C8DCEA;
             border-radius: 10px;
             selection-background-color: #E8F1F7;
-            selection-color: #245F8F;
+            selection-color: #5368C9;
             padding: 4px;
         }
 
@@ -3745,7 +3745,7 @@ class MainWindow(QMainWindow):
             border-radius: 12px;
             gridline-color: #F3F8FC;
             selection-background-color: #E8F1F7;
-            selection-color: #245F8F;
+            selection-color: #5368C9;
             font-size: 13px;
         }
 
@@ -3756,7 +3756,7 @@ class MainWindow(QMainWindow):
 
         QHeaderView::section {
             background: #F3F8FC;
-            color: #245F8F;
+            color: #5368C9;
             border: none;
             border-right: 1px solid #E8F1F7;
             padding: 8px;
@@ -3795,7 +3795,7 @@ class MainWindow(QMainWindow):
             height: 0px;
             border-left: 5px solid transparent;
             border-right: 5px solid transparent;
-            border-top: 6px solid #245F8F;
+            border-top: 6px solid #5368C9;
             margin-right: 8px;
         }
 
@@ -3844,7 +3844,7 @@ class MainWindow(QMainWindow):
             height: 0px;
             border-left: 4px solid transparent;
             border-right: 4px solid transparent;
-            border-bottom: 5px solid #245F8F;
+            border-bottom: 5px solid #5368C9;
         }
 
         QSpinBox#intervalSpin::down-arrow {
@@ -3852,15 +3852,15 @@ class MainWindow(QMainWindow):
             height: 0px;
             border-left: 4px solid transparent;
             border-right: 4px solid transparent;
-            border-top: 5px solid #245F8F;
+            border-top: 5px solid #5368C9;
         }
 
         QDateEdit:hover, QTimeEdit:hover, QComboBox:hover, QLineEdit:hover, QTextEdit:hover, QSpinBox:hover {
-            border-color: #8FCBEA;
+            border-color: #A8B8FF;
         }
 
         QDateEdit#datePicker:hover, QTimeEdit#timePicker:hover, QSpinBox#numberInput:hover, QLineEdit#formInput:hover {
-            border-color: #4F91BF;
+            border-color: #7F99F8;
             background: #fafdff;
         }
 
@@ -3901,7 +3901,7 @@ class MainWindow(QMainWindow):
         """
       
     def card_icon(self, title):
-        return "◇"
+        return "✧"
 
     def add_card_title(self, layout, title, strong=True, action_text=None, action_callback=None):
         title_row = QHBoxLayout()
@@ -3913,18 +3913,18 @@ class MainWindow(QMainWindow):
         icon_label.setStyleSheet("""
             QLabel {
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #FFFFFF, stop:1 #E8F1F7);
-                border: 1px solid #8FCBEA;
+                border: 1px solid #A8B8FF;
                 border-radius: 12px;
-                color: #4F91BF;
+                color: #7F99F8;
                 font-family: 'Segoe UI Symbol', 'Aptos', 'Inter', 'Segoe UI Variable', sans-serif;
-                font-size: 15px;
-                font-weight: 600;
+                font-size: 16px;
+                font-weight: 500;
             }
         """)
         icon_glow = QGraphicsDropShadowEffect(self)
         icon_glow.setBlurRadius(14)
         icon_glow.setOffset(0, 3)
-        icon_glow.setColor(QColor(142, 197, 226, 140))
+        icon_glow.setColor(QColor(142, 197, 226, 132))
         icon_label.setGraphicsEffect(icon_glow)
         icon = self.card_icon(title)
         if isinstance(icon, str):
@@ -3936,7 +3936,7 @@ class MainWindow(QMainWindow):
         title_label.setStyleSheet(f"""
             background: transparent;
             border: none;
-            color: #245F8F;
+            color: #5368C9;
             font-size: {'16px' if strong else '15px'};
             font-weight: 800;
             letter-spacing: 0.2px;
@@ -3953,7 +3953,7 @@ class MainWindow(QMainWindow):
             action_btn.setStyleSheet("""
                 QPushButton {
                     background: #F3F8FC;
-                    color: #245F8F;
+                    color: #5368C9;
                     border: 1px solid #C8DCEA;
                     border-radius: 14px;
                     padding: 0;
@@ -3962,7 +3962,7 @@ class MainWindow(QMainWindow):
                 }
                 QPushButton:hover {
                     background: #E8F1F7;
-                    border-color: #8FCBEA;
+                    border-color: #A8B8FF;
                 }
             """)
             action_btn.clicked.connect(action_callback)
@@ -3990,7 +3990,7 @@ class MainWindow(QMainWindow):
                 color: #111827;
             }
             QCalendarWidget QWidget#qt_calendar_navigationbar {
-                background: #4F91BF;
+                background: #7F99F8;
                 border-top-left-radius: 14px;
                 border-top-right-radius: 14px;
                 min-height: 34px;
@@ -4023,7 +4023,7 @@ class MainWindow(QMainWindow):
             QCalendarWidget QAbstractItemView {
                 background: #ffffff;
                 color: #1f2937;
-                selection-background-color: #4F91BF;
+                selection-background-color: #7F99F8;
                 selection-color: #ffffff;
                 border: none;
                 outline: 0;
@@ -4033,7 +4033,7 @@ class MainWindow(QMainWindow):
             }
             QCalendarWidget QAbstractItemView:enabled:hover {
                 background: #F3F8FC;
-                color: #245F8F;
+                color: #5368C9;
             }
         """)
 
@@ -4072,14 +4072,14 @@ class MainWindow(QMainWindow):
 
             label = QLabel(name)
             label.setMinimumWidth(110)
-            label.setStyleSheet("color:#245F8F; font-size:13px; font-weight:800;")
+            label.setStyleSheet("color:#5368C9; font-size:13px; font-weight:800;")
 
-            btn = QPushButton(self.trend_colors.get(name, "#4F91BF"))
+            btn = QPushButton(self.trend_colors.get(name, "#7F99F8"))
             btn.setMinimumWidth(110)
-            btn.setStyleSheet(self.color_button_style(self.trend_colors.get(name, "#4F91BF")))
+            btn.setStyleSheet(self.color_button_style(self.trend_colors.get(name, "#7F99F8")))
 
             def choose_color(_, series=name, button=btn):
-                current = QColor(self.trend_colors.get(series, "#4F91BF"))
+                current = QColor(self.trend_colors.get(series, "#7F99F8"))
                 color = QColorDialog.getColor(current, dialog, f"{series} color")
                 if not color.isValid():
                     return
@@ -6244,7 +6244,7 @@ class MainWindow(QMainWindow):
             "gray": ("#f1f5f9", "#475569", "#e2e8f0"),
             "green": ("#ecfdf5", "#047857", "#bbf7d0"),
             "red": ("#fef2f2", "#b91c1c", "#fecaca"),
-            "blue": ("#F3F8FC", "#2E6F9F", "#C8DCEA"),
+            "blue": ("#F3F8FC", "#6578DA", "#C8DCEA"),
         }
         bg, fg, border = palette.get(str(color).lower(), ("#E8F1F7", str(color), "#C8DCEA"))
         self.status_label.setStyleSheet(f"""
@@ -7188,7 +7188,7 @@ Command Line :
                 color: #111827;
                 gridline-color: #e5e7eb;
                 selection-background-color: #E8F1F7;
-                selection-color: #245F8F;
+                selection-color: #5368C9;
                 font-size: 13px;
             }
             QTableWidget::item {
@@ -7197,7 +7197,7 @@ Command Line :
             }
             QHeaderView::section {
                 background: #F3F8FC;
-                color: #245F8F;
+                color: #5368C9;
                 font-weight: 800;
                 border: none;
                 padding: 8px;
@@ -7351,8 +7351,8 @@ Command Line :
                 <td style='color:#6b7280; font-size:11px;'>Server</td>
             </tr>
             <tr>
-                <td><span style='color:#4F91BF; font-size:20px; font-weight:900;'>{pc_count}</span> 대</td>
-                <td><span style='color:#4F91BF; font-size:20px; font-weight:900;'>{server_count}</span> 대</td>
+                <td><span style='color:#7F99F8; font-size:20px; font-weight:900;'>{pc_count}</span> 대</td>
+                <td><span style='color:#7F99F8; font-size:20px; font-weight:900;'>{server_count}</span> 대</td>
             </tr>
         </table>
         """
@@ -7401,8 +7401,8 @@ Command Line :
                 <td style='color:#6b7280; font-size:11px;'>사원 수</td>
             </tr>
             <tr>
-                <td><span style='color:#4F91BF; font-size:20px; font-weight:900;'>{org_count}</span> 개</td>
-                <td><span style='color:#4F91BF; font-size:20px; font-weight:900;'>{user_count}</span> 명</td>
+                <td><span style='color:#7F99F8; font-size:20px; font-weight:900;'>{org_count}</span> 개</td>
+                <td><span style='color:#7F99F8; font-size:20px; font-weight:900;'>{user_count}</span> 명</td>
             </tr>
         </table>
         """
@@ -7752,8 +7752,8 @@ Command Line :
         self.figure.clf()
         ax = self.figure.add_subplot(111)
 
-        color_det = self.trend_colors.get("Detection", "#4F91BF")
-        color_xdr = self.trend_colors.get("Detection XDR", "#8FCBEA")
+        color_det = self.trend_colors.get("Detection", "#7F99F8")
+        color_xdr = self.trend_colors.get("Detection XDR", "#A8B8FF")
         color_mail = self.trend_colors.get("Email", "#14b8a6")
         color_file = self.trend_colors.get("File", "#f59e0b")
 
@@ -7907,25 +7907,25 @@ Command Line :
             </tr>
             <tr><td colspan='3' style='height:4px; border-bottom:1px solid #e5e7eb;'></td></tr>
             <tr>
-                <td style='padding-top:4px; color:#245F8F; font-size:12px; font-weight:900;'>Detection</td>
+                <td style='padding-top:4px; color:#5368C9; font-size:12px; font-weight:900;'>Detection</td>
                 <td align='center' style='padding-top:4px; color:{daily_det_color}; font-size:12px; font-weight:900;'>{daily_det_text}</td>
                 <td align='right' style='padding-top:4px; color:{monthly_det_color}; font-size:12px; font-weight:900;'>{monthly_det_text}</td>
             </tr>
             <tr><td colspan='3' style='height:4px; border-bottom:1px solid #e5e7eb;'></td></tr>
             <tr>
-                <td style='padding-top:4px; color:#245F8F; font-size:12px; font-weight:900;'>XDR</td>
+                <td style='padding-top:4px; color:#5368C9; font-size:12px; font-weight:900;'>XDR</td>
                 <td align='center' style='padding-top:4px; color:{daily_xdr_color}; font-size:12px; font-weight:900;'>{daily_xdr_text}</td>
                 <td align='right' style='padding-top:4px; color:{monthly_xdr_color}; font-size:12px; font-weight:900;'>{monthly_xdr_text}</td>
             </tr>
             <tr><td colspan='3' style='height:4px; border-bottom:1px solid #e5e7eb;'></td></tr>
             <tr>
-                <td style='padding-top:4px; color:#245F8F; font-size:12px; font-weight:900;'>Email</td>
+                <td style='padding-top:4px; color:#5368C9; font-size:12px; font-weight:900;'>Email</td>
                 <td align='center' style='padding-top:4px; color:{daily_mail_color}; font-size:12px; font-weight:900;'>{daily_mail_text}</td>
                 <td align='right' style='padding-top:4px; color:{monthly_mail_color}; font-size:12px; font-weight:900;'>{monthly_mail_text}</td>
             </tr>
             <tr><td colspan='3' style='height:4px; border-bottom:1px solid #e5e7eb;'></td></tr>
             <tr>
-                <td style='padding-top:4px; color:#245F8F; font-size:12px; font-weight:900;'>File</td>
+                <td style='padding-top:4px; color:#5368C9; font-size:12px; font-weight:900;'>File</td>
                 <td align='center' style='padding-top:4px; color:{daily_file_color}; font-size:12px; font-weight:900;'>{daily_file_text}</td>
                 <td align='right' style='padding-top:4px; color:{monthly_file_color}; font-size:12px; font-weight:900;'>{monthly_file_text}</td>
             </tr>
@@ -10521,8 +10521,8 @@ Command Line :
         QPushButton {
             background: qlineargradient(
                 x1:0, y1:0, x2:1, y2:1,
-                stop:0 #63A8D4,
-                stop:1 #245F8F
+                stop:0 #8FA6FF,
+                stop:1 #5368C9
             );
             color: #ffffff;
             border: none;
@@ -10536,13 +10536,13 @@ Command Line :
         QPushButton:hover {
             background: qlineargradient(
                 x1:0, y1:0, x2:1, y2:1,
-                stop:0 #86C7EA,
-                stop:1 #63A8D4
+                stop:0 #B8C6FF,
+                stop:1 #8FA6FF
             );
         }
 
         QPushButton:pressed {
-            background: #245F8F;
+            background: #5368C9;
         }
 
         QPushButton:disabled {
@@ -10570,8 +10570,8 @@ Command Line :
                 background: #ffffff;
             }
             QCheckBox::indicator:checked {
-                background: #4F91BF;
-                border: 1px solid #245F8F;
+                background: #7F99F8;
+                border: 1px solid #5368C9;
             }
         """)
         layout = QVBoxLayout(root)
@@ -10719,7 +10719,7 @@ Command Line :
 
         interval_label = QLabel("Interval")
         interval_label.setFixedWidth(56)
-        interval_label.setStyleSheet("color:#245F8F; font-size:13px; font-weight:800;")
+        interval_label.setStyleSheet("color:#5368C9; font-size:13px; font-weight:800;")
 
         interval_row = QHBoxLayout()
         interval_row.setContentsMargins(0, 0, 0, 0)
