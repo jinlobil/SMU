@@ -94,6 +94,7 @@ DLP_ENV_PATH = os.path.join(ENV_DIR, "DLP_env.txt")
 USER_GROUP_ENV_PATH = os.path.join(ENV_DIR, "User_group_env.txt")
 REPORT_EXCEPTION_LIST_PATH = os.path.join(ENV_DIR, "Report_exception_List.txt")
 COLOR_ENV_PATH = os.path.join(ENV_DIR, "Color_env.txt")
+COLOR_THEME_DIR = os.path.join(ENV_DIR, "themes")
 DLP_DAY_DIR = os.path.join(CACHE_DIR, "dlp")
 
 
@@ -106,6 +107,7 @@ os.makedirs(EXPORT_DIR, exist_ok=True)
 os.makedirs(REPORT_DIR, exist_ok=True)
 os.makedirs(DLP_DAY_DIR, exist_ok=True)
 os.makedirs(ENV_DIR, exist_ok=True)
+os.makedirs(COLOR_THEME_DIR, exist_ok=True)
 
 LOG_PATH = os.path.join(LOG_DIR, f"ui_engine_{datetime.now().strftime('%Y%m%d')}.log")
 # 🔥 Auto Refresh 전용 로그
@@ -318,6 +320,34 @@ COLOR_DIALOG_GROUPS = [
     ]),
 ]
 
+COLOR_SETTING_TOOLTIPS = {
+    "Primary_Blue": "앱 전체에서 가장 자주 쓰이는 메인 강조색입니다.",
+    "Primary_Blue_Dark": "버튼 끝부분과 깊이감을 만드는 어두운 강조색입니다.",
+    "Primary_Blue_Hover": "버튼 위에 마우스를 올렸을 때 보이는 강조색입니다.",
+    "Card_Title_Text": "대시보드 카드와 섹션 제목에 표시되는 글씨 색입니다.",
+    "Card_Border": "카드, 미리보기 영역, 구분선 주변의 옅은 테두리 색입니다.",
+    "Sierra_Shadow": "카드 그림자와 일부 아이콘 그림자에 사용하는 기준 색입니다.",
+    "Button_Primary_Stop_0": "Primary 버튼 왼쪽 위의 밝은 하이라이트 색입니다.",
+    "Button_Primary_Stop_1": "Primary 버튼 상단/초반부에 보이는 밝은 파랑입니다.",
+    "Button_Primary_Stop_2": "Primary 버튼 중앙에 가장 많이 보이는 대표 파랑입니다.",
+    "Button_Primary_Stop_3": "Primary 버튼 오른쪽 아래의 깊이감 있는 진파랑입니다.",
+    "Button_Primary_Hover_Stop_0": "마우스오버 Primary 버튼 왼쪽 위 하이라이트 색입니다.",
+    "Button_Primary_Hover_Stop_1": "마우스오버 Primary 버튼의 밝은 파랑 영역입니다.",
+    "Button_Primary_Hover_Stop_2": "마우스오버 Primary 버튼 중앙의 대표 파랑입니다.",
+    "Button_Primary_Hover_Stop_3": "마우스오버 Primary 버튼 오른쪽 아래의 진한 파랑입니다.",
+    "Checkbox_Text": "체크박스 라벨 텍스트 색입니다.",
+    "Checkbox_Border": "체크박스 외곽선과 보조 버튼 테두리에 쓰이는 색입니다.",
+    "Checkbox_Checked_Start": "체크된 체크박스 표시의 시작 그라데이션 색입니다.",
+    "Checkbox_Checked_End": "체크된 체크박스 표시의 끝 그라데이션 색입니다.",
+    "Table_Selection_Background": "테이블에서 선택된 행의 배경색입니다.",
+    "Table_Selection_Text": "테이블에서 선택된 행의 글씨 색입니다.",
+    "Table_Header_Text": "테이블 헤더 라벨의 글씨 색입니다.",
+    "Threat_trend_Detection": "Threat Trend 그래프의 Detection 선/막대 색입니다.",
+    "Threat_trend_Detection_XDR": "Threat Trend 그래프의 Detection XDR 선/막대 색입니다.",
+    "Threat_trend_Email": "Threat Trend 그래프의 Email 선/막대 색입니다.",
+    "Threat_trend_File": "Threat Trend 그래프의 File 선/막대 색입니다.",
+}
+
 
 def normalize_hex_color(value, fallback):
     value = str(value or "").strip()
@@ -365,7 +395,9 @@ def load_color_env(path=COLOR_ENV_PATH):
 
 
 def save_color_env(config, path=COLOR_ENV_PATH):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    directory = os.path.dirname(path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         f.write("# UI Color Settings\n")
         f.write("# Format: KEY=#RRGGBB\n\n")
@@ -4274,6 +4306,23 @@ class MainWindow(QMainWindow):
                     border-color: {UI_THEME['border']};
                 }}
             """
+        if variant == "mini":
+            return f"""
+                QPushButton {{
+                    background: {UI_THEME['surface_muted']};
+                    color: {UI_THEME['accent_text']};
+                    border: 1px solid {UI_THEME['border_soft']};
+                    border-radius: 8px;
+                    padding: 2px 8px;
+                    font-family: {UI_FONT_FAMILY};
+                    font-size: 12px;
+                    font-weight: 900;
+                }}
+                QPushButton:hover {{
+                    background: {UI_THEME['accent_soft']};
+                    border-color: {UI_THEME['border']};
+                }}
+            """
         return f"""
             QPushButton {{
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
@@ -4307,9 +4356,31 @@ class MainWindow(QMainWindow):
         """
 
     def apply_button_role(self, button, variant="primary", min_height=38):
+        button.setProperty("buttonRole", variant)
         button.setStyleSheet(self.button_style(variant))
         if min_height:
             button.setMinimumHeight(min_height)
+
+    def infer_button_role(self, button):
+        role = button.property("buttonRole")
+        if role:
+            return str(role)
+        text = button.text().strip()
+        if text in {"+", "-"}:
+            return "mini"
+        if text in {"닫기", "Close"}:
+            return "ghost"
+        if button.toolTip() in {"색상 설정", "Trend color settings"}:
+            return "secondary"
+        return "primary"
+
+    def restyle_themed_buttons(self):
+        for button in self.findChildren(QPushButton):
+            if button.text().strip().startswith("#") or button.property("buttonRole") == "color":
+                continue
+            role = self.infer_button_role(button)
+            button.setProperty("buttonRole", role)
+            button.setStyleSheet(self.button_style(role))
 
     def add_card_description(self, layout, text):
         desc = QLabel(text)
@@ -4549,6 +4620,7 @@ class MainWindow(QMainWindow):
             action_btn = QPushButton(action_text)
             action_btn.setFixedSize(34, 34)
             action_btn.setToolTip("Trend color settings")
+            action_btn.setProperty("buttonRole", "secondary")
             action_btn.setStyleSheet(self.button_style("secondary"))
             action_btn.clicked.connect(action_callback)
             title_row.addWidget(action_btn)
@@ -4676,34 +4748,197 @@ class MainWindow(QMainWindow):
                 padding: 14px;
             """)
 
-        for button in self.findChildren(QPushButton):
-            if button.text().strip().startswith("#") or button.property("buttonRole") == "color":
-                continue
-            role = button.property("buttonRole")
-            if not role:
-                if button.text() in {"닫기", "Close"}:
-                    role = "ghost"
-                elif button.toolTip() in {"색상 설정", "Trend color settings"}:
-                    role = "secondary"
-                else:
-                    role = "primary"
-            button.setStyleSheet(self.button_style(str(role)))
+        self.restyle_themed_buttons()
 
         try:
             self.refresh_dashboard()
         except Exception as e:
             log.debug(f"Theme refresh skipped dashboard refresh: {e}")
 
-    def color_picker_row(self, dialog, config, key, label_text, button_map):
+    def create_color_preview(self, config):
+        preview = {}
+        frame = QFrame()
+        frame.setObjectName("colorPreview")
+        frame.setMinimumWidth(260)
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(10)
+
+        title = QLabel("샘플 카드 제목")
+        title.setProperty("previewRole", "title")
+
+        primary_btn = QPushButton("Primary 버튼")
+        primary_btn.setProperty("previewRole", "primary")
+        secondary_btn = QPushButton("Secondary 버튼")
+        secondary_btn.setProperty("previewRole", "secondary")
+
+        checkbox = QCheckBox("체크박스 샘플")
+        checkbox.setChecked(True)
+        checkbox.setProperty("previewRole", "checkbox")
+
+        table_header = QLabel("테이블 헤더")
+        table_header.setProperty("previewRole", "tableHeader")
+        table_row = QLabel("선택된 테이블 행")
+        table_row.setProperty("previewRole", "tableRow")
+
+        graph_title = QLabel("그래프 색상")
+        graph_title.setStyleSheet("font-weight:800; color:#374151;")
+        graph_row = QHBoxLayout()
+        graph_row.setSpacing(6)
+        graph_keys = [
+            ("D", "Threat_trend_Detection"),
+            ("X", "Threat_trend_Detection_XDR"),
+            ("E", "Threat_trend_Email"),
+            ("F", "Threat_trend_File"),
+        ]
+        graph_swatches = []
+        for label_text, color_key in graph_keys:
+            swatch = QLabel(label_text)
+            swatch.setAlignment(Qt.AlignCenter)
+            swatch.setFixedSize(34, 24)
+            swatch.setProperty("colorKey", color_key)
+            graph_swatches.append(swatch)
+            graph_row.addWidget(swatch)
+        graph_row.addStretch()
+
+        layout.addWidget(title)
+        layout.addWidget(primary_btn)
+        layout.addWidget(secondary_btn)
+        layout.addWidget(checkbox)
+        layout.addWidget(table_header)
+        layout.addWidget(table_row)
+        layout.addWidget(graph_title)
+        layout.addLayout(graph_row)
+        layout.addStretch()
+
+        preview.update({
+            "frame": frame,
+            "title": title,
+            "primary_btn": primary_btn,
+            "secondary_btn": secondary_btn,
+            "checkbox": checkbox,
+            "table_header": table_header,
+            "table_row": table_row,
+            "graph_swatches": graph_swatches,
+        })
+        self.update_color_preview(preview, config)
+        return preview
+
+    def update_color_preview(self, preview, config):
+        c = default_color_config()
+        c.update(config)
+        for key, fallback in DEFAULT_COLOR_CONFIG.items():
+            c[key] = normalize_hex_color(c.get(key), fallback)
+
+        preview["frame"].setStyleSheet(f"""
+            QFrame#colorPreview {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 {c['UI_Surface']},
+                    stop:1 {c['UI_Surface_Soft']});
+                border: 1px solid {c['Card_Border']};
+                border-radius: 16px;
+            }}
+        """)
+        preview["title"].setStyleSheet(f"""
+            background: transparent;
+            border: none;
+            color: {c['Card_Title_Text']};
+            font-size: 15px;
+            font-weight: 900;
+        """)
+        preview["primary_btn"].setStyleSheet(f"""
+            QPushButton {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 {c['Button_Primary_Stop_0']},
+                    stop:0.18 {c['Button_Primary_Stop_1']},
+                    stop:0.54 {c['Button_Primary_Stop_2']},
+                    stop:1 {c['Button_Primary_Stop_3']});
+                color: #ffffff;
+                border: 1px solid {c['Primary_Blue']};
+                border-radius: 10px;
+                padding: 8px 12px;
+                font-weight: 800;
+            }}
+        """)
+        preview["secondary_btn"].setStyleSheet(f"""
+            QPushButton {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 {c['Button_Secondary_Start']},
+                    stop:0.62 {c['Button_Secondary_Mid']},
+                    stop:1 {c['Button_Secondary_End']});
+                color: {c['Primary_Blue']};
+                border: 1px solid {c['Checkbox_Border']};
+                border-radius: 10px;
+                padding: 8px 12px;
+                font-weight: 800;
+            }}
+        """)
+        preview["checkbox"].setStyleSheet(f"""
+            QCheckBox {{
+                color: {c['Checkbox_Text']};
+                font-weight: 800;
+                spacing: 8px;
+            }}
+            QCheckBox::indicator {{
+                width: 15px;
+                height: 15px;
+                border: 1px solid {c['Checkbox_Border']};
+                border-radius: 4px;
+                background: {c['UI_Surface']};
+            }}
+            QCheckBox::indicator:checked {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 {c['Checkbox_Checked_Start']},
+                    stop:1 {c['Checkbox_Checked_End']});
+            }}
+        """)
+        preview["table_header"].setStyleSheet(f"""
+            background: {c['Table_Header_Background']};
+            color: {c['Table_Header_Text']};
+            border: 1px solid {c['Card_Border']};
+            border-radius: 8px;
+            padding: 7px;
+            font-weight: 900;
+        """)
+        preview["table_row"].setStyleSheet(f"""
+            background: {c['Table_Selection_Background']};
+            color: {c['Table_Selection_Text']};
+            border: 1px solid {c['Card_Border']};
+            border-radius: 8px;
+            padding: 7px;
+            font-weight: 800;
+        """)
+        for swatch in preview["graph_swatches"]:
+            color_key = swatch.property("colorKey")
+            color = c.get(color_key, "#ffffff")
+            text_color = "#ffffff" if QColor(color).lightness() < 150 else "#111827"
+            swatch.setStyleSheet(f"""
+                background: {color};
+                color: {text_color};
+                border: 1px solid {c['Checkbox_Border']};
+                border-radius: 8px;
+                font-weight: 900;
+            """)
+
+    def refresh_color_buttons(self, button_map, config):
+        for key, button in button_map.items():
+            button.setText(config[key])
+            button.setStyleSheet(self.color_button_style(config[key]))
+
+    def color_picker_row(self, dialog, config, key, label_text, button_map, on_change=None):
         row = QHBoxLayout()
         row.setSpacing(10)
 
+        tooltip = COLOR_SETTING_TOOLTIPS.get(key, f"{label_text} 색상을 변경합니다.")
+
         label = QLabel(label_text)
         label.setMinimumWidth(210)
+        label.setToolTip(tooltip)
         label.setStyleSheet(f"color:{UI_THEME['accent_text']}; font-size:13px; font-weight:800;")
 
         btn = QPushButton(config.get(key, DEFAULT_COLOR_CONFIG[key]))
         btn.setMinimumWidth(112)
+        btn.setToolTip(tooltip)
         btn.setProperty("buttonRole", "color")
         btn.setStyleSheet(self.color_button_style(config.get(key, DEFAULT_COLOR_CONFIG[key])))
 
@@ -4715,6 +4950,8 @@ class MainWindow(QMainWindow):
             config[key] = color.name()
             btn.setText(config[key])
             btn.setStyleSheet(self.color_button_style(config[key]))
+            if on_change:
+                on_change()
 
         btn.clicked.connect(choose_color)
         button_map[key] = btn
@@ -4727,19 +4964,29 @@ class MainWindow(QMainWindow):
         dialog = QDialog(self)
         dialog.setWindowTitle("UI Color Settings")
         dialog.setModal(True)
-        dialog.resize(520, 620)
+        dialog.resize(860, 620)
 
+        original_config = dict(self.color_config)
         working_config = dict(self.color_config)
+        preview_applied = {"value": False}
         button_map = {}
 
         root = QVBoxLayout(dialog)
         root.setContentsMargins(16, 16, 16, 16)
         root.setSpacing(10)
 
-        info = QLabel(f"저장 경로: {COLOR_ENV_PATH}")
+        info = QLabel(f"저장 경로: {COLOR_ENV_PATH}\n테마 파일 경로: {COLOR_THEME_DIR}")
         info.setWordWrap(True)
         info.setStyleSheet(f"color:{UI_THEME['text_soft']}; font-size:12px; font-weight:700;")
         root.addWidget(info)
+
+        content = QHBoxLayout()
+        content.setSpacing(14)
+
+        preview = self.create_color_preview(working_config)
+
+        def update_preview():
+            self.update_color_preview(preview, working_config)
 
         tabs = QTabWidget()
         for group_name, items in COLOR_DIALOG_GROUPS:
@@ -4748,14 +4995,37 @@ class MainWindow(QMainWindow):
             tab_layout.setContentsMargins(10, 10, 10, 10)
             tab_layout.setSpacing(8)
             for label_text, key in items:
-                tab_layout.addLayout(self.color_picker_row(dialog, working_config, key, label_text, button_map))
+                tab_layout.addLayout(
+                    self.color_picker_row(
+                        dialog,
+                        working_config,
+                        key,
+                        label_text,
+                        button_map,
+                        on_change=update_preview,
+                    )
+                )
             tab_layout.addStretch()
             tabs.addTab(tab, group_name)
 
-        root.addWidget(tabs)
+        content.addWidget(tabs, 2)
+        content.addWidget(preview["frame"], 1)
+        root.addLayout(content)
 
         actions = QHBoxLayout()
         actions.addStretch()
+
+        btn_load_theme = QPushButton("테마 불러오기")
+        btn_load_theme.setProperty("buttonRole", "secondary")
+        btn_load_theme.setStyleSheet(self.button_style("secondary"))
+
+        btn_save_theme = QPushButton("테마 저장")
+        btn_save_theme.setProperty("buttonRole", "secondary")
+        btn_save_theme.setStyleSheet(self.button_style("secondary"))
+
+        btn_preview_apply = QPushButton("미리보기 적용")
+        btn_preview_apply.setProperty("buttonRole", "secondary")
+        btn_preview_apply.setStyleSheet(self.button_style("secondary"))
 
         btn_reset = QPushButton("기본값")
         btn_reset.setProperty("buttonRole", "secondary")
@@ -4769,22 +5039,70 @@ class MainWindow(QMainWindow):
         btn_close.setProperty("buttonRole", "ghost")
         btn_close.setStyleSheet(self.button_style("ghost"))
 
+        def refresh_dialog_values():
+            self.refresh_color_buttons(button_map, working_config)
+            update_preview()
+
         def reset_defaults():
             working_config.clear()
             working_config.update(default_color_config())
-            for key, button in button_map.items():
-                button.setText(working_config[key])
-                button.setStyleSheet(self.color_button_style(working_config[key]))
+            refresh_dialog_values()
+
+        def apply_preview_only():
+            self.apply_runtime_color_config(working_config, persist=False)
+            preview_applied["value"] = True
+            QMessageBox.information(self, "색상 설정", "현재 화면에만 미리보기로 적용했습니다. 저장 버튼을 누르면 파일에 저장됩니다.")
+
+        def save_theme_preset():
+            path, _ = QFileDialog.getSaveFileName(
+                dialog,
+                "테마 저장",
+                os.path.join(COLOR_THEME_DIR, "theme.txt"),
+                "Theme Files (*.txt);;All Files (*)",
+            )
+            if not path:
+                return
+            if not os.path.splitext(path)[1]:
+                path = f"{path}.txt"
+            save_color_env(working_config, path)
+            QMessageBox.information(dialog, "테마 저장", f"테마를 저장했습니다.\n{path}")
+
+        def load_theme_preset():
+            path, _ = QFileDialog.getOpenFileName(
+                dialog,
+                "테마 불러오기",
+                COLOR_THEME_DIR,
+                "Theme Files (*.txt);;All Files (*)",
+            )
+            if not path:
+                return
+            loaded = load_color_env(path)
+            working_config.clear()
+            working_config.update(loaded)
+            refresh_dialog_values()
+            QMessageBox.information(dialog, "테마 불러오기", f"테마를 불러왔습니다.\n저장을 누르면 현재 기본 색상 파일에 반영됩니다.\n{path}")
 
         def save_and_apply():
             self.apply_runtime_color_config(working_config, persist=True)
+            preview_applied["value"] = False
             QMessageBox.information(self, "색상 설정", "색상 설정을 저장하고 현재 화면에 적용했습니다.")
             dialog.accept()
 
+        def discard_unsaved_preview():
+            if preview_applied["value"]:
+                self.apply_runtime_color_config(original_config, persist=False)
+
+        btn_load_theme.clicked.connect(load_theme_preset)
+        btn_save_theme.clicked.connect(save_theme_preset)
+        btn_preview_apply.clicked.connect(apply_preview_only)
         btn_reset.clicked.connect(reset_defaults)
         btn_save.clicked.connect(save_and_apply)
         btn_close.clicked.connect(dialog.reject)
+        dialog.rejected.connect(discard_unsaved_preview)
 
+        actions.addWidget(btn_load_theme)
+        actions.addWidget(btn_save_theme)
+        actions.addWidget(btn_preview_apply)
         actions.addWidget(btn_reset)
         actions.addWidget(btn_close)
         actions.addWidget(btn_save)
