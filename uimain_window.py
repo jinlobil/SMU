@@ -93,6 +93,7 @@ FIREWALL_ENV_PATH = os.path.join(ENV_DIR, "Firewall_env.txt")
 DLP_ENV_PATH = os.path.join(ENV_DIR, "DLP_env.txt")
 USER_GROUP_ENV_PATH = os.path.join(ENV_DIR, "User_group_env.txt")
 REPORT_EXCEPTION_LIST_PATH = os.path.join(ENV_DIR, "Report_exception_List.txt")
+COLOR_ENV_PATH = os.path.join(ENV_DIR, "Color_env.txt")
 DLP_DAY_DIR = os.path.join(CACHE_DIR, "dlp")
 
 
@@ -168,6 +169,228 @@ UI_THEME = {
     "gray_text": "#475569",
     "gray_border": "#e2e8f0",
 }
+
+DEFAULT_COLOR_CONFIG = {
+    "UI_Background": "#FFFFFF",
+    "UI_Surface": "#FFFFFF",
+    "UI_Surface_Soft": "#F8FBFD",
+    "UI_Surface_Muted": "#F3F8FC",
+    "Card_Border": "#EEF5FF",
+    "Card_Title_Text": "#0863e2",
+    "Card_Divider": "#D8E8FF",
+    "Sierra_Blue": "#5F8FAF",
+    "Sierra_Shadow": "#5F8FAF",
+    "Icon_Glow": "#0863e2",
+    "Primary_Blue": "#0863e2",
+    "Primary_Blue_Dark": "#054fb8",
+    "Primary_Blue_Hover": "#1F75EF",
+    "Primary_Blue_Mid": "#2F80ED",
+    "Primary_Blue_Soft": "#EEF5FF",
+    "Primary_Blue_Light": "#EAF3FF",
+    "Primary_Blue_Text_Soft": "#2B6FCB",
+    "Input_Border": "#CFE0FB",
+    "Input_Border_Soft": "#D8E8FF",
+    "Button_Primary_Stop_0": "#FDFEFF",
+    "Button_Primary_Stop_1": "#6EAAF7",
+    "Button_Primary_Stop_2": "#0863e2",
+    "Button_Primary_Stop_3": "#054fb8",
+    "Button_Primary_Hover_Stop_0": "#FFFFFF",
+    "Button_Primary_Hover_Stop_1": "#8FC0FA",
+    "Button_Primary_Hover_Stop_2": "#1F75EF",
+    "Button_Primary_Hover_Stop_3": "#0863e2",
+    "Button_Secondary_Start": "#FFFFFF",
+    "Button_Secondary_Mid": "#EEF5FF",
+    "Button_Secondary_End": "#DCEBFF",
+    "Checkbox_Text": "#0863e2",
+    "Checkbox_Border": "#B7D2FB",
+    "Checkbox_Checked_Start": "#2F80ED",
+    "Checkbox_Checked_End": "#0863e2",
+    "Table_Selection_Background": "#EEF5FF",
+    "Table_Selection_Text": "#0863e2",
+    "Table_Header_Background": "#F3F8FC",
+    "Table_Header_Text": "#0863e2",
+    "Status_Blue_Background": "#EEF5FF",
+    "Status_Blue_Text": "#2B6FCB",
+    "Status_Blue_Border": "#B7D2FB",
+    "Status_Success_Text": "#16a34a",
+    "Status_Fail_Text": "#dc2626",
+    "Threat_trend_Detection": "#0863e2",
+    "Threat_trend_Detection_XDR": "#EAF3FF",
+    "Threat_trend_Email": "#14b8a6",
+    "Threat_trend_File": "#f59e0b",
+}
+
+COLOR_ENV_COMMENTS = {
+    "UI_Background": "기본 배경",
+    "Card_Border": "카드 테두리",
+    "Card_Title_Text": "카드 제목 글씨",
+    "Sierra_Shadow": "카드 그림자 RGB 기준색",
+    "Primary_Blue": "기본 브랜드 파랑",
+    "Button_Primary_Stop_0": "Primary 버튼 그라데이션 시작",
+    "Button_Primary_Stop_3": "Primary 버튼 그라데이션 끝",
+    "Threat_trend_Detection": "그래프 Detection",
+}
+
+COLOR_ENV_ALIAS = {
+    "Threat_trend_Detection": ["Threat_trand_Detection"],
+    "Threat_trend_Detection_XDR": ["Threat_trand_Detection_XDR"],
+    "Threat_trend_Email": ["Threat_trand_Email"],
+    "Threat_trend_File": ["Threat_trand_File"],
+}
+
+THEME_COLOR_MAP = {
+    "UI_Background": "app_background",
+    "UI_Surface": "surface",
+    "UI_Surface_Soft": "surface_soft",
+    "UI_Surface_Muted": "surface_muted",
+    "Card_Border": "accent_soft",
+    "Card_Title_Text": "accent_text",
+    "Card_Divider": "border_soft",
+    "Sierra_Blue": "sierra",
+    "Primary_Blue": "accent",
+    "Primary_Blue_Dark": "accent_deep",
+    "Primary_Blue_Hover": "accent_hover",
+    "Primary_Blue_Mid": "accent_mid",
+    "Primary_Blue_Light": "accent_light",
+    "Primary_Blue_Text_Soft": "accent_text_soft",
+    "Input_Border": "input_border",
+    "Checkbox_Border": "border",
+    "Input_Border_Soft": "border_soft",
+    "Button_Primary_Stop_0": "button_primary_stop_0",
+    "Button_Primary_Stop_1": "button_primary_stop_1",
+    "Button_Primary_Stop_2": "button_primary_stop_2",
+    "Button_Primary_Stop_3": "button_primary_stop_3",
+    "Button_Primary_Hover_Stop_0": "button_primary_hover_stop_0",
+    "Button_Primary_Hover_Stop_1": "button_primary_hover_stop_1",
+    "Button_Primary_Hover_Stop_2": "button_primary_hover_stop_2",
+    "Button_Primary_Hover_Stop_3": "button_primary_hover_stop_3",
+    "Button_Secondary_Start": "button_secondary_start",
+    "Button_Secondary_Mid": "button_secondary_mid",
+    "Button_Secondary_End": "button_secondary_end",
+    "Checkbox_Text": "checkbox_text",
+    "Checkbox_Checked_Start": "checkbox_checked_start",
+    "Checkbox_Checked_End": "checkbox_checked_end",
+    "Table_Selection_Background": "table_selection_bg",
+    "Table_Selection_Text": "table_selection_text",
+    "Table_Header_Background": "table_header_bg",
+    "Table_Header_Text": "table_header_text",
+    "Status_Blue_Background": "status_blue_bg",
+    "Status_Blue_Text": "status_blue_text",
+    "Status_Blue_Border": "status_blue_border",
+    "Status_Success_Text": "status_success_text",
+    "Status_Fail_Text": "status_fail_text",
+}
+
+COLOR_DIALOG_GROUPS = [
+    ("기본 테마", [
+        ("Primary Blue", "Primary_Blue"),
+        ("Primary Dark", "Primary_Blue_Dark"),
+        ("Primary Hover", "Primary_Blue_Hover"),
+        ("Card Title", "Card_Title_Text"),
+        ("Card Border", "Card_Border"),
+        ("Sierra Shadow", "Sierra_Shadow"),
+    ]),
+    ("버튼", [
+        ("Primary Stop 0", "Button_Primary_Stop_0"),
+        ("Primary Stop 1", "Button_Primary_Stop_1"),
+        ("Primary Stop 2", "Button_Primary_Stop_2"),
+        ("Primary Stop 3", "Button_Primary_Stop_3"),
+        ("Hover Stop 0", "Button_Primary_Hover_Stop_0"),
+        ("Hover Stop 1", "Button_Primary_Hover_Stop_1"),
+        ("Hover Stop 2", "Button_Primary_Hover_Stop_2"),
+        ("Hover Stop 3", "Button_Primary_Hover_Stop_3"),
+    ]),
+    ("체크박스 / 테이블", [
+        ("Checkbox Text", "Checkbox_Text"),
+        ("Checkbox Border", "Checkbox_Border"),
+        ("Checkbox Checked Start", "Checkbox_Checked_Start"),
+        ("Checkbox Checked End", "Checkbox_Checked_End"),
+        ("Table Selection BG", "Table_Selection_Background"),
+        ("Table Selection Text", "Table_Selection_Text"),
+        ("Table Header Text", "Table_Header_Text"),
+    ]),
+    ("그래프", [
+        ("Threat Detection", "Threat_trend_Detection"),
+        ("Threat XDR", "Threat_trend_Detection_XDR"),
+        ("Threat Email", "Threat_trend_Email"),
+        ("Threat File", "Threat_trend_File"),
+    ]),
+]
+
+
+def normalize_hex_color(value, fallback):
+    value = str(value or "").strip()
+    if value and not value.startswith("#") and len(value) in (3, 6):
+        value = f"#{value}"
+    if QColor(value).isValid():
+        return QColor(value).name()
+    return QColor(fallback).name() if QColor(fallback).isValid() else fallback
+
+
+def hex_to_rgb_tuple(value, fallback="#5F8FAF"):
+    color = QColor(normalize_hex_color(value, fallback))
+    return (color.red(), color.green(), color.blue())
+
+
+def default_color_config():
+    return dict(DEFAULT_COLOR_CONFIG)
+
+
+def load_color_env(path=COLOR_ENV_PATH):
+    config = default_color_config()
+    raw = {}
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    key, value = line.split("=", 1)
+                    raw[key.strip()] = value.strip()
+        except Exception as e:
+            log.warning(f"Failed to load color env: {e}")
+
+    for key, fallback in DEFAULT_COLOR_CONFIG.items():
+        value = raw.get(key)
+        if value is None:
+            for alias in COLOR_ENV_ALIAS.get(key, []):
+                if alias in raw:
+                    value = raw[alias]
+                    break
+        config[key] = normalize_hex_color(value or fallback, fallback)
+
+    return config
+
+
+def save_color_env(config, path=COLOR_ENV_PATH):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("# UI Color Settings\n")
+        f.write("# Format: KEY=#RRGGBB\n\n")
+        for key, fallback in DEFAULT_COLOR_CONFIG.items():
+            comment = COLOR_ENV_COMMENTS.get(key)
+            if comment:
+                f.write(f"# {comment}\n")
+            f.write(f"{key}={normalize_hex_color(config.get(key, fallback), fallback)}\n")
+
+
+def ensure_color_env_file(path=COLOR_ENV_PATH):
+    config = load_color_env(path)
+    if not os.path.exists(path):
+        save_color_env(config, path)
+    return config
+
+
+def apply_color_config_to_theme(config):
+    for config_key, theme_key in THEME_COLOR_MAP.items():
+        UI_THEME[theme_key] = normalize_hex_color(
+            config.get(config_key, DEFAULT_COLOR_CONFIG.get(config_key, "#000000")),
+            DEFAULT_COLOR_CONFIG.get(config_key, "#000000"),
+        )
+    UI_THEME["sierra_shadow"] = hex_to_rgb_tuple(config.get("Sierra_Shadow"), DEFAULT_COLOR_CONFIG["Sierra_Shadow"])
+    UI_THEME["icon_glow"] = hex_to_rgb_tuple(config.get("Icon_Glow"), DEFAULT_COLOR_CONFIG["Icon_Glow"])
+
 
 UI_FONT_FAMILY = (
     "'Aptos', 'Inter', 'Segoe UI Variable', 'SF Pro Text', "
@@ -3556,6 +3779,8 @@ class SophosXdrQueryClient:
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        self.color_config = ensure_color_env_file()
+        apply_color_config_to_theme(self.color_config)
         
         self.auto_pending = None
         
@@ -3581,12 +3806,7 @@ class MainWindow(QMainWindow):
         self.xdr_detections = []
         self.dlp_rows = []
 
-        self.trend_colors = {
-            "Detection": UI_THEME["accent"],
-            "Detection XDR": UI_THEME["accent_light"],
-            "Email": "#14b8a6",
-            "File": "#f59e0b",
-        }
+        self.trend_colors = self.trend_colors_from_config(self.color_config)
         
         self.setWindowTitle("Sophos Monitoring UI")
         self.resize(1500, 850)
@@ -3636,8 +3856,16 @@ class MainWindow(QMainWindow):
         self.end_date_edit.setDate(today)
         self.start_date_edit.setDate(today.addDays(-6))  # 기본 7일
 
-        btn_apply_range = QPushButton("적용")
-        btn_apply_range.clicked.connect(self.apply_date_range)
+        self.btn_apply_range = QPushButton("적용")
+        self.btn_apply_range.clicked.connect(self.apply_date_range)
+        self.btn_apply_range.setProperty("buttonRole", "primary")
+
+        self.btn_color_settings = QPushButton("⚙")
+        self.btn_color_settings.setToolTip("색상 설정")
+        self.btn_color_settings.setFixedSize(38, 36)
+        self.btn_color_settings.setProperty("buttonRole", "secondary")
+        self.btn_color_settings.setStyleSheet(self.button_style("secondary"))
+        self.btn_color_settings.clicked.connect(self.open_color_settings_dialog)
 
         # 🔥 Top Layout
         top = QHBoxLayout()
@@ -3646,7 +3874,8 @@ class MainWindow(QMainWindow):
         top.addWidget(self.range_label)
         top.addWidget(self.start_date_edit)
         top.addWidget(self.end_date_edit)
-        top.addWidget(btn_apply_range)
+        top.addWidget(self.btn_apply_range)
+        top.addWidget(self.btn_color_settings)
 
         self.tabs = QTabWidget()
         self.tabs.addTab(self.tab_dashboard(), "Dashboard")
@@ -3673,38 +3902,54 @@ class MainWindow(QMainWindow):
         self.apply_date_range()
         self.tabs.currentChanged.connect(lambda _: self.update_range_label())
         
-        self.setStyleSheet("""
-        QMainWindow, QWidget#appRoot {
-            background: #FFFFFF;
-            color: #111827;
-            font-family: 'Aptos', 'Inter', 'Segoe UI Variable', 'SF Pro Text', 'Noto Sans CJK KR', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif;
-            font-size: 13px;
+        self.apply_main_stylesheet()
+
+
+    def theme(self, key):
+        return UI_THEME[key]
+
+    def trend_colors_from_config(self, config):
+        return {
+            "Detection": normalize_hex_color(config.get("Threat_trend_Detection"), DEFAULT_COLOR_CONFIG["Threat_trend_Detection"]),
+            "Detection XDR": normalize_hex_color(config.get("Threat_trend_Detection_XDR"), DEFAULT_COLOR_CONFIG["Threat_trend_Detection_XDR"]),
+            "Email": normalize_hex_color(config.get("Threat_trend_Email"), DEFAULT_COLOR_CONFIG["Threat_trend_Email"]),
+            "File": normalize_hex_color(config.get("Threat_trend_File"), DEFAULT_COLOR_CONFIG["Threat_trend_File"]),
         }
 
-        QLabel#statusPill, QLabel#rangePill {
-            background: #EEF5FF;
-            color: #0863e2;
-            border: 1px solid #B7D2FB;
+    def main_stylesheet(self):
+        t = UI_THEME
+        return f"""
+        QMainWindow, QWidget#appRoot {{
+            background: {t['app_background']};
+            color: {t['text']};
+            font-family: {UI_FONT_FAMILY};
+            font-size: 13px;
+        }}
+
+        QLabel#statusPill, QLabel#rangePill {{
+            background: {t['status_blue_bg']};
+            color: {t['accent']};
+            border: 1px solid {t['status_blue_border']};
             border-radius: 12px;
             padding: 6px 12px;
             font-weight: 700;
             min-height: 20px;
-        }
+        }}
 
-        QLabel#rangePill {
-            background: #F3F8FC;
-            color: #2B6FCB;
-            border-color: #B7D2FB;
-        }
+        QLabel#rangePill {{
+            background: {t['surface_muted']};
+            color: {t['status_blue_text']};
+            border-color: {t['status_blue_border']};
+        }}
 
-        QTabWidget::pane {
+        QTabWidget::pane {{
             border: 1px solid #e5e7eb;
             border-radius: 18px;
-            background: #ffffff;
+            background: {t['surface']};
             top: -1px;
-        }
+        }}
 
-        QTabBar::tab {
+        QTabBar::tab {{
             background: #f8fafc;
             color: #64748b;
             padding: 10px 18px;
@@ -3713,245 +3958,262 @@ class MainWindow(QMainWindow):
             border-top-left-radius: 12px;
             border-top-right-radius: 12px;
             min-height: 18px;
-        }
+        }}
 
-        QTabBar::tab:selected {
-            background: #ffffff;
-            color: #0863e2;
-            border: 1px solid #B7D2FB;
-            border-bottom: 2px solid #0863e2;
-        }
+        QTabBar::tab:selected {{
+            background: {t['surface']};
+            color: {t['accent']};
+            border: 1px solid {t['border']};
+            border-bottom: 2px solid {t['accent']};
+        }}
 
-        QTabBar::tab:hover {
-            background: #EEF5FF;
-            color: #0863e2;
-        }
+        QTabBar::tab:hover {{
+            background: {t['accent_soft']};
+            color: {t['accent']};
+        }}
 
-        QCheckBox {
-            color: #0863e2;
+        QCheckBox {{
+            color: {t['checkbox_text']};
             spacing: 8px;
             font-weight: 700;
-        }
+        }}
 
-        QCheckBox::indicator {
+        QCheckBox::indicator {{
             width: 16px;
             height: 16px;
-            border: 1px solid #B7D2FB;
+            border: 1px solid {t['border']};
             border-radius: 4px;
-            background: #ffffff;
-        }
+            background: {t['surface']};
+        }}
 
-        QCheckBox::indicator:checked {
-            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #2F80ED, stop:1 #0863e2);
-            border: 1px solid #0863e2;
-        }
+        QCheckBox::indicator:checked {{
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {t['checkbox_checked_start']}, stop:1 {t['checkbox_checked_end']});
+            border: 1px solid {t['checkbox_checked_end']};
+        }}
 
-        QPushButton {
-            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #FDFEFF, stop:0.18 #6EAAF7, stop:0.54 #0863e2, stop:1 #054fb8);
+        QPushButton {{
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {t['button_primary_stop_0']}, stop:0.18 {t['button_primary_stop_1']}, stop:0.54 {t['button_primary_stop_2']}, stop:1 {t['button_primary_stop_3']});
             color: #ffffff;
             border: 1px solid rgba(8, 99, 226, 0.28);
             border-radius: 10px;
             padding: 7px 18px;
             font-weight: 800;
-        }
+        }}
 
-        QPushButton:hover {
-            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #FFFFFF, stop:0.16 #8FC0FA, stop:0.56 #1F75EF, stop:1 #0863e2);
+        QPushButton:hover {{
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {t['button_primary_hover_stop_0']}, stop:0.16 {t['button_primary_hover_stop_1']}, stop:0.56 {t['button_primary_hover_stop_2']}, stop:1 {t['button_primary_hover_stop_3']});
             border: 1px solid rgba(8, 99, 226, 0.42);
-        }
+        }}
 
-        QDateEdit, QTimeEdit, QComboBox, QLineEdit, QTextEdit, QSpinBox {
-            background: #ffffff;
-            color: #111827;
-            border: 1px solid #CFE0FB;
+        QDateEdit, QTimeEdit, QComboBox, QLineEdit, QTextEdit, QSpinBox {{
+            background: {t['surface']};
+            color: {t['text']};
+            border: 1px solid {t['input_border']};
             border-radius: 10px;
             padding: 6px 10px;
-            selection-background-color: #0863e2;
-            font-family: 'Aptos', 'Inter', 'Segoe UI Variable', 'SF Pro Text', 'Noto Sans CJK KR', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif;
+            selection-background-color: {t['accent']};
+            font-family: {UI_FONT_FAMILY};
             font-size: 13px;
             min-height: 22px;
-        }
+        }}
 
-        QComboBox {
-            padding: 6px 32px 6px 12px;
-        }
+        QComboBox {{ padding: 6px 32px 6px 12px; }}
 
-        QComboBox::drop-down {
+        QComboBox::drop-down {{
             subcontrol-origin: padding;
             subcontrol-position: top right;
             width: 28px;
-            border-left: 1px solid #D8E8FF;
+            border-left: 1px solid {t['border_soft']};
             border-top-right-radius: 10px;
             border-bottom-right-radius: 10px;
-            background: #F3F8FC;
-        }
+            background: {t['surface_muted']};
+        }}
 
-        QComboBox::down-arrow {
+        QComboBox::down-arrow {{
             image: none;
             width: 0px;
             height: 0px;
             border-left: 5px solid transparent;
             border-right: 5px solid transparent;
-            border-top: 6px solid #0863e2;
+            border-top: 6px solid {t['accent']};
             margin-right: 8px;
-        }
+        }}
 
-        QComboBox QAbstractItemView {
-            background: #ffffff;
-            color: #111827;
-            border: 1px solid #B7D2FB;
+        QComboBox QAbstractItemView {{
+            background: {t['surface']};
+            color: {t['text']};
+            border: 1px solid {t['border']};
             border-radius: 10px;
-            selection-background-color: #EEF5FF;
-            selection-color: #0863e2;
+            selection-background-color: {t['table_selection_bg']};
+            selection-color: {t['table_selection_text']};
             padding: 4px;
-        }
+        }}
 
-        QTableWidget {
-            background: #ffffff;
-            color: #111827;
-            border: 1px solid #EEF5FF;
+        QTableWidget {{
+            background: {t['surface']};
+            color: {t['text']};
+            border: 1px solid {t['accent_soft']};
             border-radius: 12px;
-            gridline-color: #F3F8FC;
-            selection-background-color: #EEF5FF;
-            selection-color: #0863e2;
+            gridline-color: {t['surface_muted']};
+            selection-background-color: {t['table_selection_bg']};
+            selection-color: {t['table_selection_text']};
             font-size: 13px;
-        }
+        }}
 
-        QTableWidget::item {
+        QTableWidget::item {{
             padding: 6px;
-            border-bottom: 1px solid #F3F8FC;
-        }
+            border-bottom: 1px solid {t['surface_muted']};
+        }}
 
-        QHeaderView::section {
-            background: #F3F8FC;
-            color: #0863e2;
+        QHeaderView::section {{
+            background: {t['table_header_bg']};
+            color: {t['table_header_text']};
             border: none;
-            border-right: 1px solid #EEF5FF;
+            border-right: 1px solid {t['accent_soft']};
             padding: 8px;
             font-weight: 800;
             font-size: 13px;
-        }
+        }}
 
-        QDateEdit#datePicker, QTimeEdit#timePicker, QSpinBox#numberInput, QLineEdit#formInput {
-            background: #ffffff;
+        QDateEdit#datePicker, QTimeEdit#timePicker, QSpinBox#numberInput, QLineEdit#formInput {{
+            background: {t['surface']};
             color: #1f2937;
-            border: 1px solid #B7D2FB;
+            border: 1px solid {t['border']};
             border-radius: 12px;
             padding: 7px 12px 7px 12px;
             font-size: 12px;
             font-weight: 700;
             min-height: 22px;
-        }
+        }}
 
-        QDateEdit#datePicker {
-            padding-right: 30px;
-        }
+        QDateEdit#datePicker {{ padding-right: 30px; }}
 
-        QDateEdit#datePicker::drop-down {
+        QDateEdit#datePicker::drop-down {{
             subcontrol-origin: padding;
             subcontrol-position: top right;
             width: 28px;
-            border-left: 1px solid #D8E8FF;
+            border-left: 1px solid {t['border_soft']};
             border-top-right-radius: 12px;
             border-bottom-right-radius: 12px;
-            background: #F3F8FC;
-        }
+            background: {t['surface_muted']};
+        }}
 
-        QDateEdit#datePicker::down-arrow {
+        QDateEdit#datePicker::down-arrow {{
             image: none;
             width: 0px;
             height: 0px;
             border-left: 5px solid transparent;
             border-right: 5px solid transparent;
-            border-top: 6px solid #0863e2;
+            border-top: 6px solid {t['accent']};
             margin-right: 8px;
-        }
+        }}
 
-        QTimeEdit#timePicker::up-button, QTimeEdit#timePicker::down-button, QSpinBox#numberInput::up-button, QSpinBox#numberInput::down-button {
+        QTimeEdit#timePicker::up-button, QTimeEdit#timePicker::down-button, QSpinBox#numberInput::up-button, QSpinBox#numberInput::down-button {{
             width: 0px;
             height: 0px;
             border: none;
-        }
+        }}
 
-        QTimeEdit#timePicker::up-arrow, QTimeEdit#timePicker::down-arrow, QSpinBox#numberInput::up-arrow, QSpinBox#numberInput::down-arrow {
+        QTimeEdit#timePicker::up-arrow, QTimeEdit#timePicker::down-arrow, QSpinBox#numberInput::up-arrow, QSpinBox#numberInput::down-arrow {{
             image: none;
             width: 0px;
             height: 0px;
-        }
+        }}
 
-        QSpinBox#intervalSpin {
-            background: #ffffff;
-            color: #111827;
-            border: 1px solid #B7D2FB;
+        QSpinBox#intervalSpin {{
+            background: {t['surface']};
+            color: {t['text']};
+            border: 1px solid {t['border']};
             border-radius: 8px;
             padding: 4px 22px 4px 8px;
             font-size: 12px;
             font-weight: 800;
             min-height: 18px;
-        }
+        }}
 
-        QSpinBox#intervalSpin::up-button, QSpinBox#intervalSpin::down-button {
+        QSpinBox#intervalSpin::up-button, QSpinBox#intervalSpin::down-button {{
             subcontrol-origin: border;
             width: 18px;
-            border-left: 1px solid #D8E8FF;
-            background: #F3F8FC;
-        }
+            border-left: 1px solid {t['border_soft']};
+            background: {t['surface_muted']};
+        }}
 
-        QSpinBox#intervalSpin::up-button {
+        QSpinBox#intervalSpin::up-button {{
             subcontrol-position: top right;
             border-top-right-radius: 8px;
-        }
+        }}
 
-        QSpinBox#intervalSpin::down-button {
+        QSpinBox#intervalSpin::down-button {{
             subcontrol-position: bottom right;
             border-bottom-right-radius: 8px;
-        }
+        }}
 
-        QSpinBox#intervalSpin::up-arrow {
+        QSpinBox#intervalSpin::up-arrow {{
             width: 0px;
             height: 0px;
             border-left: 4px solid transparent;
             border-right: 4px solid transparent;
-            border-bottom: 5px solid #0863e2;
-        }
+            border-bottom: 5px solid {t['accent']};
+        }}
 
-        QSpinBox#intervalSpin::down-arrow {
+        QSpinBox#intervalSpin::down-arrow {{
             width: 0px;
             height: 0px;
             border-left: 4px solid transparent;
             border-right: 4px solid transparent;
-            border-top: 5px solid #0863e2;
-        }
+            border-top: 5px solid {t['accent']};
+        }}
 
-        QDateEdit:hover, QTimeEdit:hover, QComboBox:hover, QLineEdit:hover, QTextEdit:hover, QSpinBox:hover {
-            border-color: #EAF3FF;
-        }
+        QDateEdit:hover, QTimeEdit:hover, QComboBox:hover, QLineEdit:hover, QTextEdit:hover, QSpinBox:hover {{
+            border-color: {t['accent_light']};
+        }}
 
-        QDateEdit#datePicker:hover, QTimeEdit#timePicker:hover, QSpinBox#numberInput:hover, QLineEdit#formInput:hover {
-            border-color: #0863e2;
+        QDateEdit#datePicker:hover, QTimeEdit#timePicker:hover, QSpinBox#numberInput:hover, QLineEdit#formInput:hover {{
+            border-color: {t['accent']};
             background: #fafdff;
-        }
+        }}
 
-        QScrollBar:vertical {
+        QScrollBar:vertical {{
             background: transparent;
             width: 9px;
             margin: 4px 0 4px 0;
-        }
+        }}
 
-        QScrollBar::handle:vertical {
+        QScrollBar::handle:vertical {{
             background: #cbd5e1;
             border-radius: 4px;
             min-height: 28px;
-        }
+        }}
 
-        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-            height: 0px;
-        }
-        """)
+        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0px; }}
+        """
 
+    def apply_main_stylesheet(self):
+        self.setStyleSheet(self.main_stylesheet())
 
-    def theme(self, key):
-        return UI_THEME[key]
+    def config_root_stylesheet(self):
+        return f"""
+            QWidget#configRoot {{
+                background: {UI_THEME['app_background']};
+            }}
+            QCheckBox {{
+                color: {UI_THEME['checkbox_text']};
+                font-size: 13px;
+                font-weight: 700;
+                spacing: 8px;
+            }}
+            QCheckBox::indicator {{
+                width: 16px;
+                height: 16px;
+                border: 1px solid {UI_THEME['border']};
+                border-radius: 4px;
+                background: {UI_THEME['surface']};
+            }}
+            QCheckBox::indicator:checked {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {UI_THEME['checkbox_checked_start']}, stop:1 {UI_THEME['checkbox_checked_end']});
+                border: 1px solid {UI_THEME['checkbox_checked_end']};
+            }}
+        """
 
     def apply_soft_shadow(self, widget, blur=28, y_offset=12, alpha=95):
         shadow = QGraphicsDropShadowEffect(self)
@@ -3977,9 +4239,9 @@ class MainWindow(QMainWindow):
             return f"""
                 QPushButton {{
                     background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                        stop:0 #ffffff,
-                        stop:0.62 {UI_THEME['accent_soft']},
-                        stop:1 #DCEBFF);
+                        stop:0 {UI_THEME['button_secondary_start']},
+                        stop:0.62 {UI_THEME['button_secondary_mid']},
+                        stop:1 {UI_THEME['button_secondary_end']});
                     color: {UI_THEME['accent_text']};
                     border: 1px solid {UI_THEME['border']};
                     border-radius: 12px;
@@ -4013,10 +4275,10 @@ class MainWindow(QMainWindow):
         return f"""
             QPushButton {{
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #FDFEFF,
-                    stop:0.18 #6EAAF7,
-                    stop:0.54 {UI_THEME['accent']},
-                    stop:1 {UI_THEME['accent_deep']});
+                    stop:0 {UI_THEME['button_primary_stop_0']},
+                    stop:0.18 {UI_THEME['button_primary_stop_1']},
+                    stop:0.54 {UI_THEME['button_primary_stop_2']},
+                    stop:1 {UI_THEME['button_primary_stop_3']});
                 color: #ffffff;
                 border: 1px solid rgba(8, 99, 226, 0.28);
                 border-radius: 12px;
@@ -4027,10 +4289,10 @@ class MainWindow(QMainWindow):
             }}
             QPushButton:hover {{
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #FFFFFF,
-                    stop:0.16 #8FC0FA,
-                    stop:0.56 {UI_THEME['accent_hover']},
-                    stop:1 {UI_THEME['accent']});
+                    stop:0 {UI_THEME['button_primary_hover_stop_0']},
+                    stop:0.16 {UI_THEME['button_primary_hover_stop_1']},
+                    stop:0.56 {UI_THEME['button_primary_hover_stop_2']},
+                    stop:1 {UI_THEME['button_primary_hover_stop_3']});
                 border-color: rgba(8, 99, 226, 0.42);
             }}
             QPushButton:pressed {{
@@ -4289,60 +4551,60 @@ class MainWindow(QMainWindow):
             return
 
         calendar.setGridVisible(False)
-        calendar.setStyleSheet("""
-            QCalendarWidget {
-                background: #ffffff;
-                border: 1px solid #B7D2FB;
+        calendar.setStyleSheet(f"""
+            QCalendarWidget {{
+                background: {UI_THEME['surface']};
+                border: 1px solid {UI_THEME['border']};
                 border-radius: 14px;
-                font-family: 'Aptos', 'Inter', 'Segoe UI Variable', 'SF Pro Text', 'Noto Sans CJK KR', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif;
-                color: #111827;
-            }
-            QCalendarWidget QWidget#qt_calendar_navigationbar {
-                background: #0863e2;
+                font-family: {UI_FONT_FAMILY};
+                color: {UI_THEME['text']};
+            }}
+            QCalendarWidget QWidget#qt_calendar_navigationbar {{
+                background: {UI_THEME['accent']};
                 border-top-left-radius: 14px;
                 border-top-right-radius: 14px;
                 min-height: 34px;
-            }
-            QCalendarWidget QToolButton {
+            }}
+            QCalendarWidget QToolButton {{
                 background: transparent;
                 color: #ffffff;
                 border: none;
                 border-radius: 8px;
                 padding: 6px;
                 font-weight: 800;
-            }
-            QCalendarWidget QToolButton:hover {
+            }}
+            QCalendarWidget QToolButton:hover {{
                 background: rgba(255, 255, 255, 0.16);
-            }
-            QCalendarWidget QMenu {
-                background: #ffffff;
-                color: #111827;
-                border: 1px solid #B7D2FB;
+            }}
+            QCalendarWidget QMenu {{
+                background: {UI_THEME['surface']};
+                color: {UI_THEME['text']};
+                border: 1px solid {UI_THEME['border']};
                 border-radius: 8px;
-            }
-            QCalendarWidget QSpinBox {
+            }}
+            QCalendarWidget QSpinBox {{
                 background: rgba(255, 255, 255, 0.16);
                 color: #ffffff;
                 border: 1px solid rgba(255, 255, 255, 0.24);
                 border-radius: 8px;
                 padding: 3px 8px;
                 font-weight: 800;
-            }
-            QCalendarWidget QAbstractItemView {
-                background: #ffffff;
+            }}
+            QCalendarWidget QAbstractItemView {{
+                background: {UI_THEME['surface']};
                 color: #1f2937;
-                selection-background-color: #0863e2;
+                selection-background-color: {UI_THEME['accent']};
                 selection-color: #ffffff;
                 border: none;
                 outline: 0;
-                gridline-color: #F3F8FC;
+                gridline-color: {UI_THEME['surface_muted']};
                 font-size: 12px;
                 font-weight: 600;
-            }
-            QCalendarWidget QAbstractItemView:enabled:hover {
-                background: #F3F8FC;
-                color: #0863e2;
-            }
+            }}
+            QCalendarWidget QAbstractItemView:enabled:hover {{
+                background: {UI_THEME['surface_muted']};
+                color: {UI_THEME['accent']};
+            }}
         """)
 
     def prepare_form_control(self, widget, height=36):
@@ -4364,51 +4626,145 @@ class MainWindow(QMainWindow):
         widget.style().unpolish(widget)
         widget.style().polish(widget)
 
-    def open_trend_color_dialog(self):
+    def apply_runtime_color_config(self, config, persist=False):
+        self.color_config = dict(config)
+        apply_color_config_to_theme(self.color_config)
+        self.trend_colors = self.trend_colors_from_config(self.color_config)
+        if persist:
+            save_color_env(self.color_config)
+
+        self.apply_main_stylesheet()
+        for widget in self.findChildren(QDateEdit):
+            self.apply_date_picker_style(widget)
+            widget.style().unpolish(widget)
+            widget.style().polish(widget)
+
+        for frame in self.findChildren(QFrame):
+            if frame.objectName() == "dashboardCard":
+                frame.setStyleSheet(self.card_style("dashboardCard", accent=False))
+
+        for widget in self.findChildren(QWidget):
+            if widget.objectName() == "configRoot":
+                widget.setStyleSheet(self.config_root_stylesheet())
+
+        for button in self.findChildren(QPushButton):
+            if button.text().strip().startswith("#") or button.property("buttonRole") == "color":
+                continue
+            role = button.property("buttonRole")
+            if not role:
+                if button.text() in {"닫기", "Close"}:
+                    role = "ghost"
+                elif button.toolTip() in {"색상 설정", "Trend color settings"}:
+                    role = "secondary"
+                else:
+                    role = "primary"
+            button.setStyleSheet(self.button_style(str(role)))
+
+        try:
+            self.refresh_dashboard()
+        except Exception as e:
+            log.debug(f"Theme refresh skipped dashboard refresh: {e}")
+
+    def color_picker_row(self, dialog, config, key, label_text, button_map):
+        row = QHBoxLayout()
+        row.setSpacing(10)
+
+        label = QLabel(label_text)
+        label.setMinimumWidth(170)
+        label.setStyleSheet(f"color:{UI_THEME['accent_text']}; font-size:13px; font-weight:800;")
+
+        btn = QPushButton(config.get(key, DEFAULT_COLOR_CONFIG[key]))
+        btn.setMinimumWidth(112)
+        btn.setProperty("buttonRole", "color")
+        btn.setStyleSheet(self.color_button_style(config.get(key, DEFAULT_COLOR_CONFIG[key])))
+
+        def choose_color():
+            current = QColor(config.get(key, DEFAULT_COLOR_CONFIG[key]))
+            color = QColorDialog.getColor(current, dialog, key)
+            if not color.isValid():
+                return
+            config[key] = color.name()
+            btn.setText(config[key])
+            btn.setStyleSheet(self.color_button_style(config[key]))
+
+        btn.clicked.connect(choose_color)
+        button_map[key] = btn
+        row.addWidget(label)
+        row.addWidget(btn)
+        row.addStretch()
+        return row
+
+    def open_color_settings_dialog(self):
         dialog = QDialog(self)
-        dialog.setWindowTitle("Threat Trend Colors")
+        dialog.setWindowTitle("UI Color Settings")
         dialog.setModal(True)
+        dialog.resize(520, 620)
 
-        layout = QVBoxLayout(dialog)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(10)
+        working_config = dict(self.color_config)
+        button_map = {}
 
-        color_buttons = {}
-        for name in ["Detection", "Detection XDR", "Email", "File"]:
-            row = QHBoxLayout()
-            row.setSpacing(10)
+        root = QVBoxLayout(dialog)
+        root.setContentsMargins(16, 16, 16, 16)
+        root.setSpacing(10)
 
-            label = QLabel(name)
-            label.setMinimumWidth(110)
-            label.setStyleSheet("color:#0863e2; font-size:13px; font-weight:800;")
+        info = QLabel(f"저장 경로: {COLOR_ENV_PATH}")
+        info.setWordWrap(True)
+        info.setStyleSheet(f"color:{UI_THEME['text_soft']}; font-size:12px; font-weight:700;")
+        root.addWidget(info)
 
-            btn = QPushButton(self.trend_colors.get(name, UI_THEME["accent"]))
-            btn.setMinimumWidth(110)
-            btn.setStyleSheet(self.color_button_style(self.trend_colors.get(name, UI_THEME["accent"])))
+        tabs = QTabWidget()
+        for group_name, items in COLOR_DIALOG_GROUPS:
+            tab = QWidget()
+            tab_layout = QVBoxLayout(tab)
+            tab_layout.setContentsMargins(10, 10, 10, 10)
+            tab_layout.setSpacing(8)
+            for label_text, key in items:
+                tab_layout.addLayout(self.color_picker_row(dialog, working_config, key, label_text, button_map))
+            tab_layout.addStretch()
+            tabs.addTab(tab, group_name)
 
-            def choose_color(_, series=name, button=btn):
-                current = QColor(self.trend_colors.get(series, UI_THEME["accent"]))
-                color = QColorDialog.getColor(current, dialog, f"{series} color")
-                if not color.isValid():
-                    return
-                self.trend_colors[series] = color.name()
-                button.setText(color.name())
-                button.setStyleSheet(self.color_button_style(color.name()))
-                self.refresh_dashboard()
+        root.addWidget(tabs)
 
-            btn.clicked.connect(choose_color)
-            color_buttons[name] = btn
+        actions = QHBoxLayout()
+        actions.addStretch()
 
-            row.addWidget(label)
-            row.addWidget(btn)
-            layout.addLayout(row)
+        btn_reset = QPushButton("기본값")
+        btn_reset.setProperty("buttonRole", "secondary")
+        btn_reset.setStyleSheet(self.button_style("secondary"))
 
-        close_btn = QPushButton("닫기")
-        close_btn.setStyleSheet(self.button_style("ghost"))
-        close_btn.clicked.connect(dialog.accept)
-        layout.addWidget(close_btn, 0, Qt.AlignRight)
+        btn_save = QPushButton("저장")
+        btn_save.setProperty("buttonRole", "primary")
+        btn_save.setStyleSheet(self.button_style("primary"))
+
+        btn_close = QPushButton("닫기")
+        btn_close.setProperty("buttonRole", "ghost")
+        btn_close.setStyleSheet(self.button_style("ghost"))
+
+        def reset_defaults():
+            working_config.clear()
+            working_config.update(default_color_config())
+            for key, button in button_map.items():
+                button.setText(working_config[key])
+                button.setStyleSheet(self.color_button_style(working_config[key]))
+
+        def save_and_apply():
+            self.apply_runtime_color_config(working_config, persist=True)
+            QMessageBox.information(self, "색상 설정", "색상 설정을 저장하고 현재 화면에 적용했습니다.")
+            dialog.accept()
+
+        btn_reset.clicked.connect(reset_defaults)
+        btn_save.clicked.connect(save_and_apply)
+        btn_close.clicked.connect(dialog.reject)
+
+        actions.addWidget(btn_reset)
+        actions.addWidget(btn_close)
+        actions.addWidget(btn_save)
+        root.addLayout(actions)
 
         dialog.exec_()
+
+    def open_trend_color_dialog(self):
+        self.open_color_settings_dialog()
 
     def color_button_style(self, color):
         text_color = "#ffffff" if QColor(color).lightness() < 150 else "#111827"
@@ -4416,7 +4772,7 @@ class MainWindow(QMainWindow):
             QPushButton {{
                 background: {color};
                 color: {text_color};
-                border: 1px solid #B7D2FB;
+                border: 1px solid {UI_THEME['border']};
                 border-radius: 10px;
                 padding: 7px 10px;
                 font-weight: 800;
@@ -6550,12 +6906,12 @@ class MainWindow(QMainWindow):
 
     def set_status(self, text, color="gray", spinning=False):
         palette = {
-            "gray": ("#f1f5f9", "#475569", "#e2e8f0"),
-            "green": ("#ecfdf5", "#047857", "#bbf7d0"),
-            "red": ("#fef2f2", "#b91c1c", "#fecaca"),
-            "blue": ("#F3F8FC", "#2B6FCB", "#B7D2FB"),
+            "gray": (UI_THEME["gray_bg"], UI_THEME["gray_text"], UI_THEME["gray_border"]),
+            "green": (UI_THEME["success_bg"], UI_THEME["status_success_text"], UI_THEME["success_border"]),
+            "red": (UI_THEME["danger_bg"], UI_THEME["status_fail_text"], UI_THEME["danger_border"]),
+            "blue": (UI_THEME["status_blue_bg"], UI_THEME["status_blue_text"], UI_THEME["status_blue_border"]),
         }
-        bg, fg, border = palette.get(str(color).lower(), ("#EEF5FF", str(color), "#B7D2FB"))
+        bg, fg, border = palette.get(str(color).lower(), (UI_THEME["accent_soft"], str(color), UI_THEME["border"]))
         self.status_label.setStyleSheet(f"""
             QLabel#statusPill {{
                 background: {bg};
@@ -7451,7 +7807,7 @@ Command Line :
         self.percent_label.setAlignment(Qt.AlignTop)
         self.percent_label.setStyleSheet("""
             background: #ffffff;
-            border: 1px solid #B7D2FB;
+            border: 1px solid {UI_THEME['border']};
             border-radius: 14px;
             color: #111827;
             font-size: 13px;
@@ -10818,28 +11174,7 @@ Command Line :
         ghost_btn_style = self.button_style("ghost")
         root = QWidget()
         root.setObjectName("configRoot")
-        root.setStyleSheet("""
-            QWidget#configRoot {
-                background: #FFFFFF;
-            }
-            QCheckBox {
-                color: #0863e2;
-                font-size: 13px;
-                font-weight: 700;
-                spacing: 8px;
-            }
-            QCheckBox::indicator {
-                width: 16px;
-                height: 16px;
-                border: 1px solid #B7D2FB;
-                border-radius: 4px;
-                background: #ffffff;
-            }
-            QCheckBox::indicator:checked {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #2F80ED, stop:1 #0863e2);
-                border: 1px solid #0863e2;
-            }
-        """)
+        root.setStyleSheet(self.config_root_stylesheet())
         layout = QVBoxLayout(root)
         layout.setContentsMargins(14, 14, 14, 14)
         layout.setSpacing(20)
@@ -12952,20 +13287,20 @@ Command Line :
 
             if success:
                 self.lbl_det_result.setText("Status: SUCCESS")
-                self.lbl_det_result.setStyleSheet("color:#16a34a; font-weight:600;")
+                self.lbl_det_result.setStyleSheet(f"color:{UI_THEME['status_success_text']}; font-weight:600;")
             else:
                 self.lbl_det_result.setText("Status: FAILED")
-                self.lbl_det_result.setStyleSheet("color:#dc2626; font-weight:600;")
+                self.lbl_det_result.setStyleSheet(f"color:{UI_THEME['status_fail_text']}; font-weight:600;")
 
         elif kind == "Email":
             self.lbl_mail_status.setText(f"Last Run: {now}")
 
             if success:
                 self.lbl_mail_result.setText("Status: SUCCESS")
-                self.lbl_mail_result.setStyleSheet("color:#16a34a; font-weight:600;")
+                self.lbl_mail_result.setStyleSheet(f"color:{UI_THEME['status_success_text']}; font-weight:600;")
             else:
                 self.lbl_mail_result.setText("Status: FAILED")
-                self.lbl_mail_result.setStyleSheet("color:#dc2626; font-weight:600;")
+                self.lbl_mail_result.setStyleSheet(f"color:{UI_THEME['status_fail_text']}; font-weight:600;")
  
     def make_card(self, title, legacy_title=False):
         frame = QFrame()
