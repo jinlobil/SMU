@@ -141,19 +141,20 @@ UI_THEME = {
     "surface": "#FFFFFF",
     "surface_soft": "#F8FBFD",
     "surface_muted": "#F3F8FC",
-    "accent_soft": "#EEF4FC",
-    "border": "#C8D8ED",
-    "border_soft": "#E4EDF8",
-    "input_border": "#D7E2F1",
-    "accent": "#9DBCE8",
-    "accent_hover": "#DDEBFA",
-    "accent_mid": "#B8D0F0",
-    "accent_light": "#D2E2F7",
-    "accent_text": "#4D6F9F",
-    "accent_text_soft": "#6380A8",
+    "accent_soft": "#EEF5FF",
+    "border": "#B7D2FB",
+    "border_soft": "#D8E8FF",
+    "input_border": "#CFE0FB",
+    "accent": "#0863e2",
+    "accent_deep": "#054fb8",
+    "accent_hover": "#1F75EF",
+    "accent_mid": "#2F80ED",
+    "accent_light": "#EAF3FF",
+    "accent_text": "#0863e2",
+    "accent_text_soft": "#2B6FCB",
     "sierra": "#5F8FAF",
     "sierra_shadow": (95, 143, 175),
-    "icon_glow": (154, 181, 220),
+    "icon_glow": (8, 99, 226),
     "text": "#111827",
     "text_muted": "#6b7280",
     "text_soft": "#374151",
@@ -3681,9 +3682,9 @@ class MainWindow(QMainWindow):
         }
 
         QLabel#statusPill, QLabel#rangePill {
-            background: #EEF4FC;
-            color: #4D6F9F;
-            border: 1px solid #C8D8ED;
+            background: #EEF5FF;
+            color: #0863e2;
+            border: 1px solid #B7D2FB;
             border-radius: 12px;
             padding: 6px 12px;
             font-weight: 700;
@@ -3692,8 +3693,8 @@ class MainWindow(QMainWindow):
 
         QLabel#rangePill {
             background: #F3F8FC;
-            color: #6380A8;
-            border-color: #C8D8ED;
+            color: #2B6FCB;
+            border-color: #B7D2FB;
         }
 
         QTabWidget::pane {
@@ -3716,36 +3717,56 @@ class MainWindow(QMainWindow):
 
         QTabBar::tab:selected {
             background: #ffffff;
-            color: #4D6F9F;
-            border: 1px solid #C8D8ED;
-            border-bottom: 2px solid #9DBCE8;
+            color: #0863e2;
+            border: 1px solid #B7D2FB;
+            border-bottom: 2px solid #0863e2;
         }
 
         QTabBar::tab:hover {
-            background: #EEF4FC;
-            color: #4D6F9F;
+            background: #EEF5FF;
+            color: #0863e2;
+        }
+
+        QCheckBox {
+            color: #0863e2;
+            spacing: 8px;
+            font-weight: 700;
+        }
+
+        QCheckBox::indicator {
+            width: 16px;
+            height: 16px;
+            border: 1px solid #B7D2FB;
+            border-radius: 4px;
+            background: #ffffff;
+        }
+
+        QCheckBox::indicator:checked {
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #2F80ED, stop:1 #0863e2);
+            border: 1px solid #0863e2;
         }
 
         QPushButton {
-            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #B8D0F0, stop:0.55 #9DBCE8, stop:1 #4D6F9F);
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #2F80ED, stop:0.58 #0863e2, stop:1 #054fb8);
             color: #ffffff;
-            border: none;
+            border: 1px solid rgba(8, 99, 226, 0.22);
             border-radius: 10px;
             padding: 7px 18px;
             font-weight: 800;
         }
 
         QPushButton:hover {
-            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #DDEBFA, stop:1 #B8D0F0);
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #3C8DF4, stop:0.58 #1F75EF, stop:1 #0863e2);
+            border: 1px solid rgba(8, 99, 226, 0.36);
         }
 
         QDateEdit, QTimeEdit, QComboBox, QLineEdit, QTextEdit, QSpinBox {
             background: #ffffff;
             color: #111827;
-            border: 1px solid #D7E2F1;
+            border: 1px solid #CFE0FB;
             border-radius: 10px;
             padding: 6px 10px;
-            selection-background-color: #9DBCE8;
+            selection-background-color: #0863e2;
             font-family: 'Aptos', 'Inter', 'Segoe UI Variable', 'SF Pro Text', 'Noto Sans CJK KR', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif;
             font-size: 13px;
             min-height: 22px;
@@ -3759,7 +3780,7 @@ class MainWindow(QMainWindow):
             subcontrol-origin: padding;
             subcontrol-position: top right;
             width: 28px;
-            border-left: 1px solid #E4EDF8;
+            border-left: 1px solid #D8E8FF;
             border-top-right-radius: 10px;
             border-bottom-right-radius: 10px;
             background: #F3F8FC;
@@ -3771,28 +3792,28 @@ class MainWindow(QMainWindow):
             height: 0px;
             border-left: 5px solid transparent;
             border-right: 5px solid transparent;
-            border-top: 6px solid #4D6F9F;
+            border-top: 6px solid #0863e2;
             margin-right: 8px;
         }
 
         QComboBox QAbstractItemView {
             background: #ffffff;
             color: #111827;
-            border: 1px solid #C8D8ED;
+            border: 1px solid #B7D2FB;
             border-radius: 10px;
-            selection-background-color: #EEF4FC;
-            selection-color: #4D6F9F;
+            selection-background-color: #EEF5FF;
+            selection-color: #0863e2;
             padding: 4px;
         }
 
         QTableWidget {
             background: #ffffff;
             color: #111827;
-            border: 1px solid #EEF4FC;
+            border: 1px solid #EEF5FF;
             border-radius: 12px;
             gridline-color: #F3F8FC;
-            selection-background-color: #EEF4FC;
-            selection-color: #4D6F9F;
+            selection-background-color: #EEF5FF;
+            selection-color: #0863e2;
             font-size: 13px;
         }
 
@@ -3803,9 +3824,9 @@ class MainWindow(QMainWindow):
 
         QHeaderView::section {
             background: #F3F8FC;
-            color: #4D6F9F;
+            color: #0863e2;
             border: none;
-            border-right: 1px solid #EEF4FC;
+            border-right: 1px solid #EEF5FF;
             padding: 8px;
             font-weight: 800;
             font-size: 13px;
@@ -3814,7 +3835,7 @@ class MainWindow(QMainWindow):
         QDateEdit#datePicker, QTimeEdit#timePicker, QSpinBox#numberInput, QLineEdit#formInput {
             background: #ffffff;
             color: #1f2937;
-            border: 1px solid #C8D8ED;
+            border: 1px solid #B7D2FB;
             border-radius: 12px;
             padding: 7px 12px 7px 12px;
             font-size: 12px;
@@ -3830,7 +3851,7 @@ class MainWindow(QMainWindow):
             subcontrol-origin: padding;
             subcontrol-position: top right;
             width: 28px;
-            border-left: 1px solid #E4EDF8;
+            border-left: 1px solid #D8E8FF;
             border-top-right-radius: 12px;
             border-bottom-right-radius: 12px;
             background: #F3F8FC;
@@ -3842,7 +3863,7 @@ class MainWindow(QMainWindow):
             height: 0px;
             border-left: 5px solid transparent;
             border-right: 5px solid transparent;
-            border-top: 6px solid #4D6F9F;
+            border-top: 6px solid #0863e2;
             margin-right: 8px;
         }
 
@@ -3861,7 +3882,7 @@ class MainWindow(QMainWindow):
         QSpinBox#intervalSpin {
             background: #ffffff;
             color: #111827;
-            border: 1px solid #C8D8ED;
+            border: 1px solid #B7D2FB;
             border-radius: 8px;
             padding: 4px 22px 4px 8px;
             font-size: 12px;
@@ -3872,7 +3893,7 @@ class MainWindow(QMainWindow):
         QSpinBox#intervalSpin::up-button, QSpinBox#intervalSpin::down-button {
             subcontrol-origin: border;
             width: 18px;
-            border-left: 1px solid #E4EDF8;
+            border-left: 1px solid #D8E8FF;
             background: #F3F8FC;
         }
 
@@ -3891,7 +3912,7 @@ class MainWindow(QMainWindow):
             height: 0px;
             border-left: 4px solid transparent;
             border-right: 4px solid transparent;
-            border-bottom: 5px solid #4D6F9F;
+            border-bottom: 5px solid #0863e2;
         }
 
         QSpinBox#intervalSpin::down-arrow {
@@ -3899,15 +3920,15 @@ class MainWindow(QMainWindow):
             height: 0px;
             border-left: 4px solid transparent;
             border-right: 4px solid transparent;
-            border-top: 5px solid #4D6F9F;
+            border-top: 5px solid #0863e2;
         }
 
         QDateEdit:hover, QTimeEdit:hover, QComboBox:hover, QLineEdit:hover, QTextEdit:hover, QSpinBox:hover {
-            border-color: #D2E2F7;
+            border-color: #EAF3FF;
         }
 
         QDateEdit#datePicker:hover, QTimeEdit#timePicker:hover, QSpinBox#numberInput:hover, QLineEdit#formInput:hover {
-            border-color: #9DBCE8;
+            border-color: #0863e2;
             background: #fafdff;
         }
 
@@ -3955,7 +3976,9 @@ class MainWindow(QMainWindow):
         if variant == "secondary":
             return f"""
                 QPushButton {{
-                    background: {UI_THEME['surface_muted']};
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                        stop:0 #ffffff,
+                        stop:1 {UI_THEME['accent_soft']});
                     color: {UI_THEME['accent_text']};
                     border: 1px solid {UI_THEME['border']};
                     border-radius: 12px;
@@ -3966,7 +3989,7 @@ class MainWindow(QMainWindow):
                 }}
                 QPushButton:hover {{
                     background: {UI_THEME['accent_soft']};
-                    border-color: {UI_THEME['accent_light']};
+                    border-color: {UI_THEME['accent']};
                 }}
             """
         if variant == "ghost":
@@ -3990,10 +4013,10 @@ class MainWindow(QMainWindow):
             QPushButton {{
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
                     stop:0 {UI_THEME['accent_mid']},
-                    stop:0.55 {UI_THEME['accent']},
-                    stop:1 {UI_THEME['accent_text']});
+                    stop:0.58 {UI_THEME['accent']},
+                    stop:1 {UI_THEME['accent_deep']});
                 color: #ffffff;
-                border: none;
+                border: 1px solid rgba(8, 99, 226, 0.24);
                 border-radius: 12px;
                 padding: 9px 16px;
                 font-family: {UI_FONT_FAMILY};
@@ -4002,11 +4025,13 @@ class MainWindow(QMainWindow):
             }}
             QPushButton:hover {{
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 {UI_THEME['accent_hover']},
-                    stop:1 {UI_THEME['accent_mid']});
+                    stop:0 #3C8DF4,
+                    stop:0.58 {UI_THEME['accent_hover']},
+                    stop:1 {UI_THEME['accent']});
+                border-color: rgba(8, 99, 226, 0.38);
             }}
             QPushButton:pressed {{
-                background: {UI_THEME['accent_text']};
+                background: {UI_THEME['accent_deep']};
             }}
             QPushButton:disabled {{
                 background: #cbd5e1;
@@ -4171,9 +4196,9 @@ class MainWindow(QMainWindow):
         label.setStyleSheet("""
             font-size:15px;
             font-weight:700;
-            color:#374151;
+            color:#0863e2;
             padding-left:8px;
-            border-left:4px solid #9DBCE8;
+            border-left:4px solid #0863e2;
         """)
         layout.addWidget(label)
 
@@ -4237,13 +4262,13 @@ class MainWindow(QMainWindow):
         calendar.setStyleSheet("""
             QCalendarWidget {
                 background: #ffffff;
-                border: 1px solid #C8D8ED;
+                border: 1px solid #B7D2FB;
                 border-radius: 14px;
                 font-family: 'Aptos', 'Inter', 'Segoe UI Variable', 'SF Pro Text', 'Noto Sans CJK KR', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif;
                 color: #111827;
             }
             QCalendarWidget QWidget#qt_calendar_navigationbar {
-                background: #9DBCE8;
+                background: #0863e2;
                 border-top-left-radius: 14px;
                 border-top-right-radius: 14px;
                 min-height: 34px;
@@ -4262,7 +4287,7 @@ class MainWindow(QMainWindow):
             QCalendarWidget QMenu {
                 background: #ffffff;
                 color: #111827;
-                border: 1px solid #C8D8ED;
+                border: 1px solid #B7D2FB;
                 border-radius: 8px;
             }
             QCalendarWidget QSpinBox {
@@ -4276,7 +4301,7 @@ class MainWindow(QMainWindow):
             QCalendarWidget QAbstractItemView {
                 background: #ffffff;
                 color: #1f2937;
-                selection-background-color: #9DBCE8;
+                selection-background-color: #0863e2;
                 selection-color: #ffffff;
                 border: none;
                 outline: 0;
@@ -4286,7 +4311,7 @@ class MainWindow(QMainWindow):
             }
             QCalendarWidget QAbstractItemView:enabled:hover {
                 background: #F3F8FC;
-                color: #4D6F9F;
+                color: #0863e2;
             }
         """)
 
@@ -4325,7 +4350,7 @@ class MainWindow(QMainWindow):
 
             label = QLabel(name)
             label.setMinimumWidth(110)
-            label.setStyleSheet("color:#4D6F9F; font-size:13px; font-weight:800;")
+            label.setStyleSheet("color:#0863e2; font-size:13px; font-weight:800;")
 
             btn = QPushButton(self.trend_colors.get(name, UI_THEME["accent"]))
             btn.setMinimumWidth(110)
@@ -4361,7 +4386,7 @@ class MainWindow(QMainWindow):
             QPushButton {{
                 background: {color};
                 color: {text_color};
-                border: 1px solid #C8D8ED;
+                border: 1px solid #B7D2FB;
                 border-radius: 10px;
                 padding: 7px 10px;
                 font-weight: 800;
@@ -6498,9 +6523,9 @@ class MainWindow(QMainWindow):
             "gray": ("#f1f5f9", "#475569", "#e2e8f0"),
             "green": ("#ecfdf5", "#047857", "#bbf7d0"),
             "red": ("#fef2f2", "#b91c1c", "#fecaca"),
-            "blue": ("#F3F8FC", "#6380A8", "#C8D8ED"),
+            "blue": ("#F3F8FC", "#2B6FCB", "#B7D2FB"),
         }
-        bg, fg, border = palette.get(str(color).lower(), ("#EEF4FC", str(color), "#C8D8ED"))
+        bg, fg, border = palette.get(str(color).lower(), ("#EEF5FF", str(color), "#B7D2FB"))
         self.status_label.setStyleSheet(f"""
             QLabel#statusPill {{
                 background: {bg};
@@ -7078,7 +7103,7 @@ Command Line :
                 background-color: #ffffff;
                 gridline-color: #e5e7eb;
                 border: 1px solid #d1d5db;
-                selection-background-color: #EEF4FC;
+                selection-background-color: #EEF5FF;
                 selection-color: #111827;
             }
 
@@ -7396,7 +7421,7 @@ Command Line :
         self.percent_label.setAlignment(Qt.AlignTop)
         self.percent_label.setStyleSheet("""
             background: #ffffff;
-            border: 1px solid #C8D8ED;
+            border: 1px solid #B7D2FB;
             border-radius: 14px;
             color: #111827;
             font-size: 13px;
@@ -7444,8 +7469,8 @@ Command Line :
                 background: #ffffff;
                 color: #111827;
                 gridline-color: #e5e7eb;
-                selection-background-color: #EEF4FC;
-                selection-color: #4D6F9F;
+                selection-background-color: #EEF5FF;
+                selection-color: #0863e2;
                 font-size: 13px;
             }
             QTableWidget::item {
@@ -7454,7 +7479,7 @@ Command Line :
             }
             QHeaderView::section {
                 background: #F3F8FC;
-                color: #4D6F9F;
+                color: #0863e2;
                 font-weight: 800;
                 border: none;
                 padding: 8px;
@@ -8148,25 +8173,25 @@ Command Line :
             </tr>
             <tr><td colspan='3' style='height:4px; border-bottom:1px solid #e5e7eb;'></td></tr>
             <tr>
-                <td style='padding-top:4px; color:#4D6F9F; font-size:12px; font-weight:900;'>Detection</td>
+                <td style='padding-top:4px; color:#0863e2; font-size:12px; font-weight:900;'>Detection</td>
                 <td align='center' style='padding-top:4px; color:{daily_det_color}; font-size:12px; font-weight:900;'>{daily_det_text}</td>
                 <td align='right' style='padding-top:4px; color:{monthly_det_color}; font-size:12px; font-weight:900;'>{monthly_det_text}</td>
             </tr>
             <tr><td colspan='3' style='height:4px; border-bottom:1px solid #e5e7eb;'></td></tr>
             <tr>
-                <td style='padding-top:4px; color:#4D6F9F; font-size:12px; font-weight:900;'>XDR</td>
+                <td style='padding-top:4px; color:#0863e2; font-size:12px; font-weight:900;'>XDR</td>
                 <td align='center' style='padding-top:4px; color:{daily_xdr_color}; font-size:12px; font-weight:900;'>{daily_xdr_text}</td>
                 <td align='right' style='padding-top:4px; color:{monthly_xdr_color}; font-size:12px; font-weight:900;'>{monthly_xdr_text}</td>
             </tr>
             <tr><td colspan='3' style='height:4px; border-bottom:1px solid #e5e7eb;'></td></tr>
             <tr>
-                <td style='padding-top:4px; color:#4D6F9F; font-size:12px; font-weight:900;'>Email</td>
+                <td style='padding-top:4px; color:#0863e2; font-size:12px; font-weight:900;'>Email</td>
                 <td align='center' style='padding-top:4px; color:{daily_mail_color}; font-size:12px; font-weight:900;'>{daily_mail_text}</td>
                 <td align='right' style='padding-top:4px; color:{monthly_mail_color}; font-size:12px; font-weight:900;'>{monthly_mail_text}</td>
             </tr>
             <tr><td colspan='3' style='height:4px; border-bottom:1px solid #e5e7eb;'></td></tr>
             <tr>
-                <td style='padding-top:4px; color:#4D6F9F; font-size:12px; font-weight:900;'>File</td>
+                <td style='padding-top:4px; color:#0863e2; font-size:12px; font-weight:900;'>File</td>
                 <td align='center' style='padding-top:4px; color:{daily_file_color}; font-size:12px; font-weight:900;'>{daily_file_text}</td>
                 <td align='right' style='padding-top:4px; color:{monthly_file_color}; font-size:12px; font-weight:900;'>{monthly_file_text}</td>
             </tr>
@@ -10768,21 +10793,21 @@ Command Line :
                 background: #FFFFFF;
             }
             QCheckBox {
-                color: #1f2937;
+                color: #0863e2;
                 font-size: 13px;
-                font-weight: 600;
+                font-weight: 700;
                 spacing: 8px;
             }
             QCheckBox::indicator {
                 width: 16px;
                 height: 16px;
-                border: 1px solid #C8D8ED;
+                border: 1px solid #B7D2FB;
                 border-radius: 4px;
                 background: #ffffff;
             }
             QCheckBox::indicator:checked {
-                background: #9DBCE8;
-                border: 1px solid #4D6F9F;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #2F80ED, stop:1 #0863e2);
+                border: 1px solid #0863e2;
             }
         """)
         layout = QVBoxLayout(root)
@@ -10930,7 +10955,7 @@ Command Line :
 
         interval_label = QLabel("Interval")
         interval_label.setFixedWidth(56)
-        interval_label.setStyleSheet("color:#4D6F9F; font-size:13px; font-weight:800;")
+        interval_label.setStyleSheet("color:#0863e2; font-size:13px; font-weight:800;")
 
         interval_row = QHBoxLayout()
         interval_row.setContentsMargins(0, 0, 0, 0)
