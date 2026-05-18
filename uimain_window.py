@@ -283,37 +283,37 @@ THEME_COLOR_MAP = {
 
 COLOR_DIALOG_GROUPS = [
     ("기본 테마", [
-        ("Primary Blue", "Primary_Blue"),
-        ("Primary Dark", "Primary_Blue_Dark"),
-        ("Primary Hover", "Primary_Blue_Hover"),
-        ("Card Title", "Card_Title_Text"),
-        ("Card Border", "Card_Border"),
-        ("Sierra Shadow", "Sierra_Shadow"),
+        ("메인 강조색", "Primary_Blue"),
+        ("버튼 끝 어두운 색", "Primary_Blue_Dark"),
+        ("버튼 마우스오버 색", "Primary_Blue_Hover"),
+        ("카드 제목 글씨", "Card_Title_Text"),
+        ("카드 테두리", "Card_Border"),
+        ("카드 그림자", "Sierra_Shadow"),
     ]),
     ("버튼", [
-        ("Primary Stop 0", "Button_Primary_Stop_0"),
-        ("Primary Stop 1", "Button_Primary_Stop_1"),
-        ("Primary Stop 2", "Button_Primary_Stop_2"),
-        ("Primary Stop 3", "Button_Primary_Stop_3"),
-        ("Hover Stop 0", "Button_Primary_Hover_Stop_0"),
-        ("Hover Stop 1", "Button_Primary_Hover_Stop_1"),
-        ("Hover Stop 2", "Button_Primary_Hover_Stop_2"),
-        ("Hover Stop 3", "Button_Primary_Hover_Stop_3"),
+        ("기본 버튼 시작 하이라이트", "Button_Primary_Stop_0"),
+        ("기본 버튼 밝은 파랑", "Button_Primary_Stop_1"),
+        ("기본 버튼 중심 파랑", "Button_Primary_Stop_2"),
+        ("기본 버튼 끝 진파랑", "Button_Primary_Stop_3"),
+        ("마우스오버 시작 하이라이트", "Button_Primary_Hover_Stop_0"),
+        ("마우스오버 밝은 파랑", "Button_Primary_Hover_Stop_1"),
+        ("마우스오버 중심 파랑", "Button_Primary_Hover_Stop_2"),
+        ("마우스오버 끝 파랑", "Button_Primary_Hover_Stop_3"),
     ]),
     ("체크박스 / 테이블", [
-        ("Checkbox Text", "Checkbox_Text"),
-        ("Checkbox Border", "Checkbox_Border"),
-        ("Checkbox Checked Start", "Checkbox_Checked_Start"),
-        ("Checkbox Checked End", "Checkbox_Checked_End"),
-        ("Table Selection BG", "Table_Selection_Background"),
-        ("Table Selection Text", "Table_Selection_Text"),
-        ("Table Header Text", "Table_Header_Text"),
+        ("체크박스 글씨", "Checkbox_Text"),
+        ("체크박스 테두리", "Checkbox_Border"),
+        ("체크 시 시작 색", "Checkbox_Checked_Start"),
+        ("체크 시 끝 색", "Checkbox_Checked_End"),
+        ("테이블 선택 배경", "Table_Selection_Background"),
+        ("테이블 선택 글씨", "Table_Selection_Text"),
+        ("테이블 헤더 글씨", "Table_Header_Text"),
     ]),
     ("그래프", [
-        ("Threat Detection", "Threat_trend_Detection"),
-        ("Threat XDR", "Threat_trend_Detection_XDR"),
-        ("Threat Email", "Threat_trend_Email"),
-        ("Threat File", "Threat_trend_File"),
+        ("Threat Trend - Detection", "Threat_trend_Detection"),
+        ("Threat Trend - Detection XDR", "Threat_trend_Detection_XDR"),
+        ("Threat Trend - Email", "Threat_trend_Email"),
+        ("Threat Trend - File", "Threat_trend_File"),
     ]),
 ]
 
@@ -4670,7 +4670,7 @@ class MainWindow(QMainWindow):
         row.setSpacing(10)
 
         label = QLabel(label_text)
-        label.setMinimumWidth(170)
+        label.setMinimumWidth(210)
         label.setStyleSheet(f"color:{UI_THEME['accent_text']}; font-size:13px; font-weight:800;")
 
         btn = QPushButton(config.get(key, DEFAULT_COLOR_CONFIG[key]))
@@ -4680,7 +4680,7 @@ class MainWindow(QMainWindow):
 
         def choose_color():
             current = QColor(config.get(key, DEFAULT_COLOR_CONFIG[key]))
-            color = QColorDialog.getColor(current, dialog, key)
+            color = QColorDialog.getColor(current, dialog, label_text)
             if not color.isValid():
                 return
             config[key] = color.name()
