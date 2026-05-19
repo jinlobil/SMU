@@ -371,6 +371,30 @@ def hex_to_rgb_tuple(value, fallback="#5F8FAF"):
     return (color.red(), color.green(), color.blue())
 
 
+
+
+def get_detection_sensor_type(detection):
+    if not isinstance(detection, dict):
+        return ""
+
+    sensor = detection.get("sensor", {})
+    if isinstance(sensor, dict):
+        sensor_type = str(sensor.get("type", "") or "").strip().lower()
+        if sensor_type:
+            return sensor_type
+
+    for key in ("sensorType", "sensor_type", "type", "source"):
+        value = str(detection.get(key, "") or "").strip().lower()
+        if value in {"endpoint", "email"}:
+            return value
+
+    dd = detection.get("detectionDescription", {})
+    if isinstance(dd, dict):
+        reason = str(dd.get("createdReasonId", "") or "").strip()
+        if reason in XDR_EMAIL_RULES:
+            return "email"
+
+    return ""
 def default_color_config():
     return dict(DEFAULT_COLOR_CONFIG)
 
@@ -5870,10 +5894,9 @@ class MainWindow(QMainWindow):
             for d in detections:
                 if not isinstance(d, dict):
                     continue
-                sensor = d.get("sensor", {})
-                if not isinstance(sensor, dict):
+                sensor_type = get_detection_sensor_type(d)
+                if not sensor_type:
                     continue
-                sensor_type = sensor.get("type")
 
                 if sensor_type == "endpoint":
                     endpoint_detections.append(d)
@@ -7024,11 +7047,10 @@ class MainWindow(QMainWindow):
                 if not isinstance(d, dict):
                     continue
 
-                sensor = d.get("sensor", {})
-                if not isinstance(sensor, dict):
+                sensor_type = get_detection_sensor_type(d)
+                if not sensor_type:
                     continue
 
-                sensor_type = sensor.get("type")
 
                 dd = d.get("detectionDescription", {})
                 rule = ""
@@ -7064,11 +7086,10 @@ class MainWindow(QMainWindow):
                 if not isinstance(d, dict):
                     continue
 
-                sensor = d.get("sensor", {})
-                if not isinstance(sensor, dict):
+                sensor_type = get_detection_sensor_type(d)
+                if not sensor_type:
                     continue
 
-                sensor_type = sensor.get("type")
 
                 dd = d.get("detectionDescription", {})
                 rule = ""
