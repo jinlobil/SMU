@@ -4338,7 +4338,7 @@ class MainWindow(QMainWindow):
                     stop:0.18 {UI_THEME['button_primary_stop_1']},
                     stop:0.54 {UI_THEME['button_primary_stop_2']},
                     stop:1 {UI_THEME['button_primary_stop_3']});
-                color: {c['Button_Primary_Text']};
+                color: {UI_THEME['button_primary_text']};
                 border: 1px solid rgba(8, 99, 226, 0.28);
                 border-radius: 12px;
                 padding: 9px 16px;
