@@ -204,6 +204,8 @@ DEFAULT_COLOR_CONFIG = {
     "Button_Secondary_Start": "#FFFFFF",
     "Button_Secondary_Mid": "#EEF5FF",
     "Button_Secondary_End": "#DCEBFF",
+    "Button_Primary_Text": "#FFFFFF",
+    "Button_Secondary_Text": "#0863e2",
     "Checkbox_Text": "#0863e2",
     "Checkbox_Border": "#B7D2FB",
     "Checkbox_Checked_Start": "#2F80ED",
@@ -270,6 +272,8 @@ THEME_COLOR_MAP = {
     "Button_Secondary_Start": "button_secondary_start",
     "Button_Secondary_Mid": "button_secondary_mid",
     "Button_Secondary_End": "button_secondary_end",
+    "Button_Primary_Text": "button_primary_text",
+    "Button_Secondary_Text": "button_secondary_text",
     "Checkbox_Text": "checkbox_text",
     "Checkbox_Checked_Start": "checkbox_checked_start",
     "Checkbox_Checked_End": "checkbox_checked_end",
@@ -302,6 +306,8 @@ COLOR_DIALOG_GROUPS = [
         ("마우스오버 밝은 파랑", "Button_Primary_Hover_Stop_1"),
         ("마우스오버 중심 파랑", "Button_Primary_Hover_Stop_2"),
         ("마우스오버 끝 파랑", "Button_Primary_Hover_Stop_3"),
+        ("기본 버튼 글씨", "Button_Primary_Text"),
+        ("보조 버튼 글씨", "Button_Secondary_Text"),
     ]),
     ("체크박스 / 테이블", [
         ("체크박스 글씨", "Checkbox_Text"),
@@ -335,6 +341,8 @@ COLOR_SETTING_TOOLTIPS = {
     "Button_Primary_Hover_Stop_1": "마우스오버 Primary 버튼의 밝은 파랑 영역입니다.",
     "Button_Primary_Hover_Stop_2": "마우스오버 Primary 버튼 중앙의 대표 파랑입니다.",
     "Button_Primary_Hover_Stop_3": "마우스오버 Primary 버튼 오른쪽 아래의 진한 파랑입니다.",
+    "Button_Primary_Text": "기본(Primary) 버튼 텍스트 색입니다.",
+    "Button_Secondary_Text": "보조(Secondary) 버튼 텍스트 색입니다.",
     "Checkbox_Text": "체크박스 라벨 텍스트 색입니다.",
     "Checkbox_Border": "체크박스 외곽선과 보조 버튼 테두리에 쓰이는 색입니다.",
     "Checkbox_Checked_Start": "체크된 체크박스 표시의 시작 그라데이션 색입니다.",
@@ -4027,7 +4035,7 @@ class MainWindow(QMainWindow):
 
         QPushButton {{
             background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {t['button_primary_stop_0']}, stop:0.18 {t['button_primary_stop_1']}, stop:0.54 {t['button_primary_stop_2']}, stop:1 {t['button_primary_stop_3']});
-            color: #ffffff;
+            color: {UI_THEME['button_primary_text']};
             border: 1px solid rgba(8, 99, 226, 0.28);
             border-radius: 10px;
             padding: 7px 18px;
@@ -4276,7 +4284,7 @@ class MainWindow(QMainWindow):
                         stop:0 {UI_THEME['button_secondary_start']},
                         stop:0.62 {UI_THEME['button_secondary_mid']},
                         stop:1 {UI_THEME['button_secondary_end']});
-                    color: {UI_THEME['accent_text']};
+                    color: {UI_THEME['button_secondary_text']};
                     border: 1px solid {UI_THEME['border']};
                     border-radius: 12px;
                     padding: 8px 14px;
@@ -4293,7 +4301,7 @@ class MainWindow(QMainWindow):
             return f"""
                 QPushButton {{
                     background: transparent;
-                    color: {UI_THEME['accent_text']};
+                    color: {UI_THEME['button_secondary_text']};
                     border: 1px solid {UI_THEME['border_soft']};
                     border-radius: 12px;
                     padding: 8px 14px;
@@ -4330,7 +4338,7 @@ class MainWindow(QMainWindow):
                     stop:0.18 {UI_THEME['button_primary_stop_1']},
                     stop:0.54 {UI_THEME['button_primary_stop_2']},
                     stop:1 {UI_THEME['button_primary_stop_3']});
-                color: #ffffff;
+                color: {c['Button_Primary_Text']};
                 border: 1px solid rgba(8, 99, 226, 0.28);
                 border-radius: 12px;
                 padding: 9px 16px;
@@ -4853,7 +4861,7 @@ class MainWindow(QMainWindow):
                     stop:0.18 {c['Button_Primary_Stop_1']},
                     stop:0.54 {c['Button_Primary_Stop_2']},
                     stop:1 {c['Button_Primary_Stop_3']});
-                color: #ffffff;
+                color: {c['Button_Primary_Text']};
                 border: 1px solid {c['Primary_Blue']};
                 border-radius: 10px;
                 padding: 8px 12px;
@@ -4866,7 +4874,7 @@ class MainWindow(QMainWindow):
                     stop:0 {c['Button_Secondary_Start']},
                     stop:0.62 {c['Button_Secondary_Mid']},
                     stop:1 {c['Button_Secondary_End']});
-                color: {c['Primary_Blue']};
+                color: {c['Button_Secondary_Text']};
                 border: 1px solid {c['Checkbox_Border']};
                 border-radius: 10px;
                 padding: 8px 12px;
@@ -8170,11 +8178,12 @@ Command Line :
         percent_frame = QFrame()
         percent_frame.setMinimumWidth(285)
         percent_frame.setMaximumWidth(315)
-        percent_frame.setMinimumHeight(230)
+        percent_frame.setMinimumHeight(210)
         percent_frame.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
 
         percent_layout = QVBoxLayout(percent_frame)
         percent_layout.setContentsMargins(0, 0, 0, 0)
+        percent_layout.setSpacing(0)
         self.percent_label = QLabel("")
         self.percent_label.setAlignment(Qt.AlignTop)
         self.percent_label.setStyleSheet(f"""
@@ -8187,7 +8196,7 @@ Command Line :
             padding: 14px;
         """)
         self.percent_label.setWordWrap(True)
-        self.percent_label.setMinimumHeight(210)
+        self.percent_label.setMinimumHeight(190)
         self.percent_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
         percent_layout.addWidget(self.percent_label)
@@ -13669,10 +13678,7 @@ Command Line :
         else:
             layout.setContentsMargins(18, 18, 18, 18)
             layout.setSpacing(12)
-            if title == "Threat Trend":
-                self.add_card_title(layout, title, action_text="⌾", action_callback=self.open_trend_color_dialog)
-            else:
-                self.add_card_title(layout, title)
+            self.add_card_title(layout, title)
 
         return frame, layout
         
