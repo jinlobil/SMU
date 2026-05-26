@@ -2249,9 +2249,9 @@ class DlpClient:
         if not self.is_logged_in(r.text):
             raise RuntimeError("DLP login failed. Check credentials or login flow.")
 
-    def build_cf_log_payload(self, date_str: str, draw: int = 1, start: int = 0, length: int = -1):
-        start_dt = f"{date_str} 00:00:00"
-        end_dt = f"{date_str} 23:30:00"
+    def build_cf_log_payload(self, date_str: str, draw: int = 1, start: int = 0, length: int = -1, start_dt: str = None, end_dt: str = None):
+        start_dt = start_dt or f"{date_str} 00:00:00"
+        end_dt = end_dt or f"{date_str} 23:30:00"
 
         columns = [
             ("id", False),
@@ -2321,14 +2321,7 @@ class DlpClient:
 
         return payload
 
-    def fetch_daily_logs(self, date_str: str):
-        payload = self.build_cf_log_payload(
-            date_str=date_str,
-            draw=1,
-            start=0,
-            length=-1,
-        )
-
+    def _fetch_cf_logs(self, payload):
         headers = {
             "X-Requested-With": "XMLHttpRequest",
             "Referer": f"{self.base_url}/index.php/",
@@ -2358,7 +2351,109 @@ class DlpClient:
         if not isinstance(rows, list):
             rows = []
 
-        return rows
+        records_filtered = result.get("recordsFiltered", len(rows))
+        try:
+            records_filtered = int(records_filtered)
+        except Exception:
+            records_filtered = len(rows)
+
+        return {
+            "rows": rows,
+            "records_filtered": max(records_filtered, 0),
+            "raw": result,
+        }
+
+    def fetch_daily_logs_window(self, date_str: str, start_dt: str, end_dt: str, length: int = -1, draw: int = 1, start: int = 0):
+        payload = self.build_cf_log_payload(
+            date_str=date_str,
+            draw=draw,
+            start=start,
+            length=length,
+            start_dt=start_dt,
+            end_dt=end_dt,
+        )
+        return self._fetch_cf_logs(payload)
+
+    def _merge_rows_unique(self, rows):
+        dedup = {}
+        order = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            key = (
+                row.get("log_id")
+                or row.get("id")
+                or row.get("loclogid")
+                or "|".join([
+                    str(row.get("timestamp", "")),
+                    str(row.get("event_id", "")),
+                    str(row.get("machine_name", "")),
+                    str(row.get("filename", "")),
+                ])
+            )
+            if key in dedup:
+                continue
+            dedup[key] = row
+            order.append(key)
+        return [dedup[k] for k in order]
+
+    def fetch_daily_logs(self, date_str: str):
+        try:
+            first_try = self.fetch_daily_logs_window(
+                date_str=date_str,
+                start_dt=f"{date_str} 00:00:00",
+                end_dt=f"{date_str} 23:30:00",
+                length=-1,
+                draw=1,
+            )
+            return first_try.get("rows", [])
+        except requests.exceptions.Timeout:
+            log.warning(f"DLP full-day fetch timed out ({date_str}). Retry with paged fetch (start/length).")
+        except requests.exceptions.RequestException as e:
+            if "timed out" not in str(e).lower():
+                raise
+            log.warning(f"DLP full-day fetch timed out ({date_str}). Retry with paged fetch (start/length).")
+
+        start_dt = f"{date_str} 00:00:00"
+        end_dt = f"{date_str} 23:30:00"
+        page_size = 500
+
+        first_page = self.fetch_daily_logs_window(
+            date_str=date_str,
+            start_dt=start_dt,
+            end_dt=end_dt,
+            start=0,
+            length=page_size,
+            draw=1,
+        )
+
+        total_count = first_page.get("records_filtered", 0)
+        all_rows = list(first_page.get("rows", []))
+
+        if total_count <= len(all_rows):
+            merged = self._merge_rows_unique(all_rows)
+            log.info(f"DLP fallback paged fetch completed ({date_str}) total={total_count} raw={len(all_rows)} unique={len(merged)}")
+            return merged
+
+        page_count = (total_count + page_size - 1) // page_size
+        for page_index in range(1, page_count):
+            page_start = page_index * page_size
+            page = self.fetch_daily_logs_window(
+                date_str=date_str,
+                start_dt=start_dt,
+                end_dt=end_dt,
+                start=page_start,
+                length=page_size,
+                draw=page_index + 1,
+            )
+            page_rows = page.get("rows", [])
+            if not page_rows:
+                break
+            all_rows.extend(page_rows)
+
+        merged = self._merge_rows_unique(all_rows)
+        log.info(f"DLP fallback paged fetch completed ({date_str}) total={total_count} raw={len(all_rows)} unique={len(merged)}")
+        return merged
 
     def refresh_dlp_day(self, date_str: str):
         log.info(f"Refreshing DLP ({date_str})")
