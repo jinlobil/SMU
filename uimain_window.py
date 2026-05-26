@@ -36,7 +36,7 @@ import matplotlib.patheffects as path_effects
 # =============================
 from PyQt5.QtCore import (
     Qt, QTimer, QThread, pyqtSignal,
-    QDate, QTime
+    QDate, QTime, QRectF, QPointF
 )
 
 # =============================
@@ -49,10 +49,10 @@ from PyQt5.QtWidgets import (
     QPushButton, QLineEdit, QTabWidget,
     QHeaderView, QMenu, QFileDialog,
     QLabel, QMessageBox, QComboBox,
-    QFrame, QDateEdit, QTimeEdit, QGroupBox,
+    QFrame, QDateEdit, QTimeEdit, QGroupBox, QColorDialog,
     QCheckBox, QSpinBox,
     QDialog, QTextEdit, QShortcut,
-    QSizePolicy
+    QSizePolicy, QGraphicsDropShadowEffect, QAbstractSpinBox
 )
 
 # =============================
@@ -62,7 +62,7 @@ from PyQt5.QtGui import (
     QKeySequence,
     QTextCursor,
     QTextCharFormat,
-    QColor, QFont
+    QColor, QFont, QPixmap, QPainter, QPen, QPainterPath
 )
 
 
@@ -93,6 +93,8 @@ FIREWALL_ENV_PATH = os.path.join(ENV_DIR, "Firewall_env.txt")
 DLP_ENV_PATH = os.path.join(ENV_DIR, "DLP_env.txt")
 USER_GROUP_ENV_PATH = os.path.join(ENV_DIR, "User_group_env.txt")
 REPORT_EXCEPTION_LIST_PATH = os.path.join(ENV_DIR, "Report_exception_List.txt")
+COLOR_ENV_PATH = os.path.join(ENV_DIR, "Color_env.txt")
+COLOR_THEME_DIR = os.path.join(ENV_DIR, "themes")
 DLP_DAY_DIR = os.path.join(CACHE_DIR, "dlp")
 
 
@@ -105,6 +107,7 @@ os.makedirs(EXPORT_DIR, exist_ok=True)
 os.makedirs(REPORT_DIR, exist_ok=True)
 os.makedirs(DLP_DAY_DIR, exist_ok=True)
 os.makedirs(ENV_DIR, exist_ok=True)
+os.makedirs(COLOR_THEME_DIR, exist_ok=True)
 
 LOG_PATH = os.path.join(LOG_DIR, f"ui_engine_{datetime.now().strftime('%Y%m%d')}.log")
 # 🔥 Auto Refresh 전용 로그
@@ -132,6 +135,340 @@ logging.basicConfig(
     ],
 )
 log = logging.getLogger("SophosUI")
+
+
+# ======================================================
+# UI Theme Tokens
+# ======================================================
+UI_THEME = {
+    "surface": "#FFFFFF",
+    "surface_soft": "#F8FBFD",
+    "surface_muted": "#F3F8FC",
+    "accent_soft": "#EEF5FF",
+    "border": "#B7D2FB",
+    "border_soft": "#D8E8FF",
+    "input_border": "#CFE0FB",
+    "accent": "#0863e2",
+    "accent_deep": "#054fb8",
+    "accent_hover": "#1F75EF",
+    "accent_mid": "#2F80ED",
+    "accent_light": "#EAF3FF",
+    "accent_text": "#0863e2",
+    "card_title_text": "#0863e2",
+    "accent_text_soft": "#2B6FCB",
+    "sierra": "#5F8FAF",
+    "sierra_shadow": (95, 143, 175),
+    "icon_glow": (8, 99, 226),
+    "text": "#111827",
+    "text_muted": "#6b7280",
+    "text_soft": "#374151",
+    "success_bg": "#ecfdf5",
+    "success_text": "#047857",
+    "success_border": "#bbf7d0",
+    "danger_bg": "#fef2f2",
+    "danger_text": "#b91c1c",
+    "danger_border": "#fecaca",
+    "gray_bg": "#f1f5f9",
+    "gray_text": "#475569",
+    "gray_border": "#e2e8f0",
+}
+
+DEFAULT_COLOR_CONFIG = {
+    "UI_Background": "#FFFFFF",
+    "UI_Surface": "#FFFFFF",
+    "UI_Surface_Soft": "#F8FBFD",
+    "UI_Surface_Muted": "#F3F8FC",
+    "Card_Border": "#EEF5FF",
+    "Card_Title_Text": "#0863e2",
+    "Card_Divider": "#D8E8FF",
+    "Sierra_Blue": "#5F8FAF",
+    "Sierra_Shadow": "#5F8FAF",
+    "Icon_Glow": "#0863e2",
+    "Primary_Blue": "#0863e2",
+    "Primary_Blue_Dark": "#054fb8",
+    "Primary_Blue_Hover": "#1F75EF",
+    "Primary_Blue_Mid": "#2F80ED",
+    "Primary_Blue_Soft": "#EEF5FF",
+    "Primary_Blue_Light": "#EAF3FF",
+    "Primary_Blue_Text_Soft": "#2B6FCB",
+    "Input_Border": "#CFE0FB",
+    "Input_Border_Soft": "#D8E8FF",
+    "Button_Primary_Stop_0": "#FDFEFF",
+    "Button_Primary_Stop_1": "#6EAAF7",
+    "Button_Primary_Stop_2": "#0863e2",
+    "Button_Primary_Stop_3": "#054fb8",
+    "Button_Primary_Hover_Stop_0": "#FFFFFF",
+    "Button_Primary_Hover_Stop_1": "#8FC0FA",
+    "Button_Primary_Hover_Stop_2": "#1F75EF",
+    "Button_Primary_Hover_Stop_3": "#0863e2",
+    "Button_Secondary_Start": "#FFFFFF",
+    "Button_Secondary_Mid": "#EEF5FF",
+    "Button_Secondary_End": "#DCEBFF",
+    "Button_Primary_Text": "#FFFFFF",
+    "Button_Secondary_Text": "#0863e2",
+    "Checkbox_Text": "#0863e2",
+    "Checkbox_Border": "#B7D2FB",
+    "Checkbox_Checked_Start": "#2F80ED",
+    "Checkbox_Checked_End": "#0863e2",
+    "Table_Selection_Background": "#EEF5FF",
+    "Table_Selection_Text": "#0863e2",
+    "Table_Header_Background": "#F3F8FC",
+    "Table_Header_Text": "#0863e2",
+    "Status_Blue_Background": "#EEF5FF",
+    "Status_Blue_Text": "#2B6FCB",
+    "Status_Blue_Border": "#B7D2FB",
+    "Status_Success_Text": "#16a34a",
+    "Status_Fail_Text": "#dc2626",
+    "Threat_trend_Detection": "#0863e2",
+    "Threat_trend_Detection_XDR": "#EAF3FF",
+    "Threat_trend_Email": "#14b8a6",
+    "Threat_trend_File": "#f59e0b",
+}
+
+COLOR_ENV_COMMENTS = {
+    "UI_Background": "기본 배경",
+    "Card_Border": "카드 테두리",
+    "Card_Title_Text": "카드 제목 글씨",
+    "Sierra_Shadow": "카드 그림자 RGB 기준색",
+    "Primary_Blue": "기본 브랜드 파랑",
+    "Button_Primary_Stop_0": "Primary 버튼 그라데이션 시작",
+    "Button_Primary_Stop_3": "Primary 버튼 그라데이션 끝",
+    "Threat_trend_Detection": "그래프 Detection",
+}
+
+COLOR_ENV_ALIAS = {
+    "Threat_trend_Detection": ["Threat_trand_Detection"],
+    "Threat_trend_Detection_XDR": ["Threat_trand_Detection_XDR"],
+    "Threat_trend_Email": ["Threat_trand_Email"],
+    "Threat_trend_File": ["Threat_trand_File"],
+}
+
+THEME_COLOR_MAP = {
+    "UI_Background": "app_background",
+    "UI_Surface": "surface",
+    "UI_Surface_Soft": "surface_soft",
+    "UI_Surface_Muted": "surface_muted",
+    "Card_Border": "accent_soft",
+    "Card_Title_Text": "card_title_text",
+    "Card_Divider": "border_soft",
+    "Sierra_Blue": "sierra",
+    "Primary_Blue": "accent",
+    "Primary_Blue_Dark": "accent_deep",
+    "Primary_Blue_Hover": "accent_hover",
+    "Primary_Blue_Mid": "accent_mid",
+    "Primary_Blue_Light": "accent_light",
+    "Primary_Blue_Text_Soft": "accent_text_soft",
+    "Input_Border": "input_border",
+    "Checkbox_Border": "border",
+    "Input_Border_Soft": "border_soft",
+    "Button_Primary_Stop_0": "button_primary_stop_0",
+    "Button_Primary_Stop_1": "button_primary_stop_1",
+    "Button_Primary_Stop_2": "button_primary_stop_2",
+    "Button_Primary_Stop_3": "button_primary_stop_3",
+    "Button_Primary_Hover_Stop_0": "button_primary_hover_stop_0",
+    "Button_Primary_Hover_Stop_1": "button_primary_hover_stop_1",
+    "Button_Primary_Hover_Stop_2": "button_primary_hover_stop_2",
+    "Button_Primary_Hover_Stop_3": "button_primary_hover_stop_3",
+    "Button_Secondary_Start": "button_secondary_start",
+    "Button_Secondary_Mid": "button_secondary_mid",
+    "Button_Secondary_End": "button_secondary_end",
+    "Button_Primary_Text": "button_primary_text",
+    "Button_Secondary_Text": "button_secondary_text",
+    "Checkbox_Text": "checkbox_text",
+    "Checkbox_Checked_Start": "checkbox_checked_start",
+    "Checkbox_Checked_End": "checkbox_checked_end",
+    "Table_Selection_Background": "table_selection_bg",
+    "Table_Selection_Text": "table_selection_text",
+    "Table_Header_Background": "table_header_bg",
+    "Table_Header_Text": "table_header_text",
+    "Status_Blue_Background": "status_blue_bg",
+    "Status_Blue_Text": "status_blue_text",
+    "Status_Blue_Border": "status_blue_border",
+    "Status_Success_Text": "status_success_text",
+    "Status_Fail_Text": "status_fail_text",
+}
+
+COLOR_DIALOG_GROUPS = [
+    ("기본 테마", [
+        ("메인 강조색", "Primary_Blue"),
+        ("버튼 끝 어두운 색", "Primary_Blue_Dark"),
+        ("버튼 마우스오버 색", "Primary_Blue_Hover"),
+        ("카드 제목 글씨", "Card_Title_Text"),
+        ("카드 테두리", "Card_Border"),
+        ("카드 그림자", "Sierra_Shadow"),
+    ]),
+    ("버튼", [
+        ("기본 버튼 시작 하이라이트", "Button_Primary_Stop_0"),
+        ("기본 버튼 밝은 파랑", "Button_Primary_Stop_1"),
+        ("기본 버튼 중심 파랑", "Button_Primary_Stop_2"),
+        ("기본 버튼 끝 진파랑", "Button_Primary_Stop_3"),
+        ("마우스오버 시작 하이라이트", "Button_Primary_Hover_Stop_0"),
+        ("마우스오버 밝은 파랑", "Button_Primary_Hover_Stop_1"),
+        ("마우스오버 중심 파랑", "Button_Primary_Hover_Stop_2"),
+        ("마우스오버 끝 파랑", "Button_Primary_Hover_Stop_3"),
+        ("기본 버튼 글씨", "Button_Primary_Text"),
+        ("보조 버튼 글씨", "Button_Secondary_Text"),
+    ]),
+    ("체크박스 / 테이블", [
+        ("체크박스 글씨", "Checkbox_Text"),
+        ("체크박스 테두리", "Checkbox_Border"),
+        ("체크 시 시작 색", "Checkbox_Checked_Start"),
+        ("체크 시 끝 색", "Checkbox_Checked_End"),
+        ("테이블 선택 배경", "Table_Selection_Background"),
+        ("테이블 선택 글씨", "Table_Selection_Text"),
+        ("테이블 헤더 글씨", "Table_Header_Text"),
+    ]),
+    ("그래프", [
+        ("Threat Trend - Detection", "Threat_trend_Detection"),
+        ("Threat Trend - Detection XDR", "Threat_trend_Detection_XDR"),
+        ("Threat Trend - Email", "Threat_trend_Email"),
+        ("Threat Trend - File", "Threat_trend_File"),
+    ]),
+]
+
+COLOR_SETTING_TOOLTIPS = {
+    "Primary_Blue": "앱 전체에서 가장 자주 쓰이는 메인 강조색입니다.",
+    "Primary_Blue_Dark": "버튼 끝부분과 깊이감을 만드는 어두운 강조색입니다.",
+    "Primary_Blue_Hover": "버튼 위에 마우스를 올렸을 때 보이는 강조색입니다.",
+    "Card_Title_Text": "대시보드 카드와 섹션 제목에 표시되는 글씨 색입니다.",
+    "Card_Border": "카드, 미리보기 영역, 구분선 주변의 옅은 테두리 색입니다.",
+    "Sierra_Shadow": "카드 그림자와 일부 아이콘 그림자에 사용하는 기준 색입니다.",
+    "Button_Primary_Stop_0": "Primary 버튼 왼쪽 위의 밝은 하이라이트 색입니다.",
+    "Button_Primary_Stop_1": "Primary 버튼 상단/초반부에 보이는 밝은 파랑입니다.",
+    "Button_Primary_Stop_2": "Primary 버튼 중앙에 가장 많이 보이는 대표 파랑입니다.",
+    "Button_Primary_Stop_3": "Primary 버튼 오른쪽 아래의 깊이감 있는 진파랑입니다.",
+    "Button_Primary_Hover_Stop_0": "마우스오버 Primary 버튼 왼쪽 위 하이라이트 색입니다.",
+    "Button_Primary_Hover_Stop_1": "마우스오버 Primary 버튼의 밝은 파랑 영역입니다.",
+    "Button_Primary_Hover_Stop_2": "마우스오버 Primary 버튼 중앙의 대표 파랑입니다.",
+    "Button_Primary_Hover_Stop_3": "마우스오버 Primary 버튼 오른쪽 아래의 진한 파랑입니다.",
+    "Button_Primary_Text": "기본(Primary) 버튼 텍스트 색입니다.",
+    "Button_Secondary_Text": "보조(Secondary) 버튼 텍스트 색입니다.",
+    "Checkbox_Text": "체크박스 라벨 텍스트 색입니다.",
+    "Checkbox_Border": "체크박스 외곽선과 보조 버튼 테두리에 쓰이는 색입니다.",
+    "Checkbox_Checked_Start": "체크된 체크박스 표시의 시작 그라데이션 색입니다.",
+    "Checkbox_Checked_End": "체크된 체크박스 표시의 끝 그라데이션 색입니다.",
+    "Table_Selection_Background": "테이블에서 선택된 행의 배경색입니다.",
+    "Table_Selection_Text": "테이블에서 선택된 행의 글씨 색입니다.",
+    "Table_Header_Text": "테이블 헤더 라벨의 글씨 색입니다.",
+    "Threat_trend_Detection": "Threat Trend 그래프의 Detection 선/막대 색입니다.",
+    "Threat_trend_Detection_XDR": "Threat Trend 그래프의 Detection XDR 선/막대 색입니다.",
+    "Threat_trend_Email": "Threat Trend 그래프의 Email 선/막대 색입니다.",
+    "Threat_trend_File": "Threat Trend 그래프의 File 선/막대 색입니다.",
+}
+
+
+def normalize_hex_color(value, fallback):
+    value = str(value or "").strip()
+    if value and not value.startswith("#") and len(value) in (3, 6):
+        value = f"#{value}"
+    if QColor(value).isValid():
+        return QColor(value).name()
+    return QColor(fallback).name() if QColor(fallback).isValid() else fallback
+
+
+def hex_to_rgb_tuple(value, fallback="#5F8FAF"):
+    color = QColor(normalize_hex_color(value, fallback))
+    return (color.red(), color.green(), color.blue())
+
+
+
+
+def get_detection_sensor_type(detection):
+    if not isinstance(detection, dict):
+        return ""
+
+    sensor = detection.get("sensor", {})
+    if isinstance(sensor, dict):
+        sensor_type = str(sensor.get("type", "") or "").strip().lower()
+        if sensor_type:
+            return sensor_type
+
+    for key in ("sensorType", "sensor_type", "type", "source"):
+        value = str(detection.get(key, "") or "").strip().lower()
+        if value in {"endpoint", "email"}:
+            return value
+
+    dd = detection.get("detectionDescription", {})
+    if isinstance(dd, dict):
+        reason = str(dd.get("createdReasonId", "") or "").strip()
+        if reason in XDR_EMAIL_RULES:
+            return "email"
+
+    return ""
+def default_color_config():
+    return dict(DEFAULT_COLOR_CONFIG)
+
+
+def load_color_env(path=COLOR_ENV_PATH):
+    config = default_color_config()
+    raw = {}
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    key, value = line.split("=", 1)
+                    raw[key.strip()] = value.strip()
+        except Exception as e:
+            log.warning(f"Failed to load color env: {e}")
+
+    for key, fallback in DEFAULT_COLOR_CONFIG.items():
+        value = raw.get(key)
+        if value is None:
+            for alias in COLOR_ENV_ALIAS.get(key, []):
+                if alias in raw:
+                    value = raw[alias]
+                    break
+        config[key] = normalize_hex_color(value or fallback, fallback)
+
+    return config
+
+
+def save_color_env(config, path=COLOR_ENV_PATH):
+    directory = os.path.dirname(path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("# UI Color Settings\n")
+        f.write("# Format: KEY=#RRGGBB\n\n")
+        for key, fallback in DEFAULT_COLOR_CONFIG.items():
+            comment = COLOR_ENV_COMMENTS.get(key)
+            if comment:
+                f.write(f"# {comment}\n")
+            f.write(f"{key}={normalize_hex_color(config.get(key, fallback), fallback)}\n")
+
+
+def ensure_color_env_file(path=COLOR_ENV_PATH):
+    config = load_color_env(path)
+    if not os.path.exists(path):
+        save_color_env(config, path)
+    return config
+
+
+def apply_color_config_to_theme(config):
+    for config_key, theme_key in THEME_COLOR_MAP.items():
+        UI_THEME[theme_key] = normalize_hex_color(
+            config.get(config_key, DEFAULT_COLOR_CONFIG.get(config_key, "#000000")),
+            DEFAULT_COLOR_CONFIG.get(config_key, "#000000"),
+        )
+    UI_THEME["accent_text"] = normalize_hex_color(config.get("Primary_Blue"), DEFAULT_COLOR_CONFIG["Primary_Blue"])
+    UI_THEME["sierra_shadow"] = hex_to_rgb_tuple(config.get("Sierra_Shadow"), DEFAULT_COLOR_CONFIG["Sierra_Shadow"])
+    UI_THEME["icon_glow"] = hex_to_rgb_tuple(config.get("Icon_Glow"), DEFAULT_COLOR_CONFIG["Icon_Glow"])
+
+
+UI_FONT_FAMILY = (
+    "'Aptos', 'Inter', 'Segoe UI Variable', 'SF Pro Text', "
+    "'Noto Sans CJK KR', 'Noto Sans KR', 'Apple SD Gothic Neo', "
+    "'Malgun Gothic', sans-serif"
+)
+UI_ICON_FONT_FAMILY = "'Segoe UI Symbol', 'Aptos', 'Inter', 'Segoe UI Variable', sans-serif"
+
+SEARCH_FIELD_W = 150
+SEARCH_MODE_W = 132
+SEARCH_BTN_W = 34
+SEARCH_ROW_H = 40
 
 
 # ===============================
@@ -1810,8 +2147,9 @@ requests.packages.urllib3.disable_warnings(category=InsecureRequestWarning)
 
 
 class DlpClient:
-    def __init__(self):
+    def __init__(self, progress_cb=None):
         env = load_dlp_env(DLP_ENV_PATH)
+        self.progress_cb = progress_cb
 
         self.base_url = str(env.get("DLP_BASE_URL", "")).strip().rstrip("/")
         self.username = str(env.get("DLP_USERNAME", "")).strip()
@@ -1842,6 +2180,18 @@ class DlpClient:
             )
         })
 
+
+    def _notify_progress(self, message: str):
+        if callable(self.progress_cb):
+            try:
+                self.progress_cb(str(message))
+            except Exception:
+                pass
+
+    @property
+    def base_home_url(self):
+        return f"{self.base_url}/"
+
     @property
     def login_url(self):
         return f"{self.base_url}/index.php/login"
@@ -1852,7 +2202,7 @@ class DlpClient:
 
     def fetch_login_page(self):
         r = self.session.get(
-            self.login_url,
+            self.base_home_url,
             timeout=self.timeout,
             verify=self.verify_ssl,
         )
@@ -1895,13 +2245,15 @@ class DlpClient:
         }
 
         headers = {
-            "Referer": self.login_url,
+            "Referer": self.base_home_url,
             "Origin": self.base_url,
         }
 
+        files_payload = {k: (None, str(v)) for k, v in payload.items()}
+
         r = self.session.post(
             self.login_url,
-            data=payload,
+            files=files_payload,
             headers=headers,
             timeout=self.timeout,
             verify=self.verify_ssl,
@@ -1909,12 +2261,20 @@ class DlpClient:
         )
         r.raise_for_status()
 
-        if not self.is_logged_in(r.text):
+        has_ratool_cookie = any(c.name == "ratool" for c in self.session.cookies)
+        final_url = str(getattr(r, "url", "") or "")
+        redirected_to_index = "/index.php/" in final_url
+        log.info(
+            f"DLP login post status={r.status_code} final_url={final_url} "
+            f"redirected_to_index={redirected_to_index} ratool_cookie={has_ratool_cookie}"
+        )
+
+        if not self.is_logged_in(r.text) and not (redirected_to_index and has_ratool_cookie):
             raise RuntimeError("DLP login failed. Check credentials or login flow.")
 
-    def build_cf_log_payload(self, date_str: str, draw: int = 1, start: int = 0, length: int = -1):
-        start_dt = f"{date_str} 00:00:00"
-        end_dt = f"{date_str} 23:30:00"
+    def build_cf_log_payload(self, date_str: str, draw: int = 1, start: int = 0, length: int = -1, start_dt: str = None, end_dt: str = None):
+        start_dt = start_dt or f"{date_str} 00:00:00"
+        end_dt = end_dt or f"{date_str} 23:30:00"
 
         columns = [
             ("id", False),
@@ -1984,14 +2344,12 @@ class DlpClient:
 
         return payload
 
-    def fetch_daily_logs(self, date_str: str):
-        payload = self.build_cf_log_payload(
-            date_str=date_str,
-            draw=1,
-            start=0,
-            length=-1,
-        )
+    def _looks_like_login_html(self, text: str):
+        txt = str(text or "")
+        hints = ["로그아웃", "환영합니다!", "/index.php/logout", "Endpoint Protector"]
+        return any(h in txt for h in hints)
 
+    def _fetch_cf_logs(self, payload, timeout=None):
         headers = {
             "X-Requested-With": "XMLHttpRequest",
             "Referer": f"{self.base_url}/index.php/",
@@ -2003,25 +2361,164 @@ class DlpClient:
             self.cf_log_list_url,
             data=payload,
             headers=headers,
-            timeout=self.timeout,
+            timeout=timeout if timeout is not None else self.timeout,
             verify=self.verify_ssl,
         )
         r.raise_for_status()
+        content_type = str(r.headers.get("Content-Type", "") or "")
+        body_preview = r.text[:600]
+        log.info(
+            f"DLP cf_log/list status={r.status_code} url={r.url} content_type={content_type} "
+            f"body_len={len(r.text)}"
+        )
+
+        if self._looks_like_login_html(r.text):
+            raise RuntimeError("DLP cf_log/list returned login/main HTML instead of JSON")
 
         try:
             result = r.json()
         except Exception as e:
-            preview = r.text[:1000]
-            raise RuntimeError(f"Failed to parse DLP response as JSON: {preview}") from e
+            raise RuntimeError(f"Failed to parse DLP response as JSON: {body_preview}") from e
 
         if "data" not in result:
-            raise RuntimeError(f"Unexpected DLP response: {result}")
+            keys = list(result.keys()) if isinstance(result, dict) else []
+            raise RuntimeError(f"Unexpected DLP response keys={keys} preview={body_preview}")
 
         rows = result.get("data", [])
         if not isinstance(rows, list):
             rows = []
 
-        return rows
+        records_total = result.get("recordsTotal", len(rows))
+        records_filtered = result.get("recordsFiltered", len(rows))
+        try:
+            records_total = int(records_total)
+        except Exception:
+            records_total = len(rows)
+        try:
+            records_filtered = int(records_filtered)
+        except Exception:
+            records_filtered = len(rows)
+
+        log.info(
+            f"DLP cf_log/list parsed recordsTotal={records_total} recordsFiltered={records_filtered} rows={len(rows)}"
+        )
+
+        return {
+            "rows": rows,
+            "records_filtered": max(records_filtered, 0),
+            "raw": result,
+        }
+
+    def fetch_daily_logs_window(self, date_str: str, start_dt: str, end_dt: str, length: int = -1, draw: int = 1, start: int = 0, timeout=None):
+        payload = self.build_cf_log_payload(
+            date_str=date_str,
+            draw=draw,
+            start=start,
+            length=length,
+            start_dt=start_dt,
+            end_dt=end_dt,
+        )
+        return self._fetch_cf_logs(payload, timeout=timeout)
+
+    def _merge_rows_unique(self, rows):
+        dedup = {}
+        order = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            key = (
+                row.get("log_id")
+                or row.get("id")
+                or row.get("loclogid")
+                or "|".join([
+                    str(row.get("timestamp", "")),
+                    str(row.get("event_id", "")),
+                    str(row.get("machine_name", "")),
+                    str(row.get("filename", "")),
+                ])
+            )
+            if key in dedup:
+                continue
+            dedup[key] = row
+            order.append(key)
+        return [dedup[k] for k in order]
+
+    def fetch_daily_logs(self, date_str: str):
+        try:
+            first_try = self.fetch_daily_logs_window(
+                date_str=date_str,
+                start_dt=f"{date_str} 00:00:00",
+                end_dt=f"{date_str} 23:30:00",
+                length=-1,
+                draw=1,
+            )
+            first_rows = first_try.get("rows", [])
+            first_filtered = int(first_try.get("records_filtered", len(first_rows)) or 0)
+            if first_filtered > 0 and len(first_rows) == 0:
+                log.warning(
+                    f"DLP full-day fetch returned 0 rows but recordsFiltered={first_filtered}. "
+                    "Retry with paged fetch (start/length)."
+                )
+            else:
+                return first_rows
+        except requests.exceptions.Timeout:
+            log.warning(f"DLP full-day fetch timed out ({date_str}). Retry with paged fetch (start/length).")
+        except requests.exceptions.RequestException as e:
+            if "timed out" not in str(e).lower():
+                raise
+            log.warning(f"DLP full-day fetch timed out ({date_str}). Retry with paged fetch (start/length).")
+
+        start_dt = f"{date_str} 00:00:00"
+        end_dt = f"{date_str} 23:30:00"
+        page_size = 500
+        fallback_timeout = max(self.timeout, 60)
+        retry_count = 2
+
+        self._notify_progress("DLP 2차 조회 시작 (페이징 500건 단위)")
+
+        def fetch_page_with_retry(page_start, draw):
+            last_exc = None
+            for attempt in range(1, retry_count + 1):
+                try:
+                    return self.fetch_daily_logs_window(
+                        date_str=date_str,
+                        start_dt=start_dt,
+                        end_dt=end_dt,
+                        start=page_start,
+                        length=page_size,
+                        draw=draw,
+                        timeout=fallback_timeout,
+                    )
+                except requests.exceptions.Timeout as e:
+                    last_exc = e
+                    log.warning(f"DLP fallback page timeout start={page_start} attempt={attempt}/{retry_count}")
+            if last_exc:
+                raise last_exc
+
+        first_page = fetch_page_with_retry(0, 1)
+
+        total_count = first_page.get("records_filtered", 0)
+        all_rows = list(first_page.get("rows", []))
+
+        if total_count <= len(all_rows):
+            merged = self._merge_rows_unique(all_rows)
+            log.info(f"DLP fallback paged fetch completed ({date_str}) total={total_count} raw={len(all_rows)} unique={len(merged)}")
+            return merged
+
+        page_count = (total_count + page_size - 1) // page_size
+        for page_index in range(1, page_count):
+            page_start = page_index * page_size
+            self._notify_progress(f"DLP 2차 조회 진행중 {page_index + 1}/{page_count} (start={page_start})")
+            page = fetch_page_with_retry(page_start, page_index + 1)
+            page_rows = page.get("rows", [])
+            if not page_rows:
+                break
+            all_rows.extend(page_rows)
+
+        merged = self._merge_rows_unique(all_rows)
+        log.info(f"DLP fallback paged fetch completed ({date_str}) total={total_count} raw={len(all_rows)} unique={len(merged)}")
+        self._notify_progress(f"DLP 2차 조회 완료 total={total_count} raw={len(all_rows)} unique={len(merged)}")
+        return merged
 
     def refresh_dlp_day(self, date_str: str):
         log.info(f"Refreshing DLP ({date_str})")
@@ -2609,6 +3106,7 @@ class SophosClient:
 class RefreshWorker(QThread):
     ok = pyqtSignal(str)
     fail = pyqtSignal(str, str)
+    progress = pyqtSignal(str, str)
 
     def __init__(self, job_name: str, date_str: str = "", parent=None):
         super().__init__(parent)
@@ -2621,7 +3119,7 @@ class RefreshWorker(QThread):
 
             if self.job_name == "DLP":
                 log.info("STEP 1: DlpClient init")
-                api = DlpClient()
+                api = DlpClient(progress_cb=lambda msg: self.progress.emit("DLP", msg))
 
                 log.info("STEP 2: Before DLP refresh call")
 
@@ -3508,6 +4006,8 @@ class SophosXdrQueryClient:
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        self.color_config = ensure_color_env_file()
+        apply_color_config_to_theme(self.color_config)
         
         self.auto_pending = None
         
@@ -3532,6 +4032,8 @@ class MainWindow(QMainWindow):
         self.email_emails = []
         self.xdr_detections = []
         self.dlp_rows = []
+
+        self.trend_colors = self.trend_colors_from_config(self.color_config)
         
         self.setWindowTitle("Sophos Monitoring UI")
         self.resize(1500, 850)
@@ -3542,10 +4044,12 @@ class MainWindow(QMainWindow):
         self.history_queries_cache = load_history_queries()
 
         self.status_label = QLabel("Idle")
-        self.status_label.setStyleSheet("color: gray")
+        self.status_label.setObjectName("statusPill")
+        self.status_label.setAlignment(Qt.AlignCenter)
         
         self.range_label = QLabel("")
-        self.range_label.setStyleSheet("color: green")
+        self.range_label.setObjectName("rangePill")
+        self.range_label.setAlignment(Qt.AlignCenter)
 
         self._spin_timer = QTimer()
         self._spin_timer.timeout.connect(self._spin_tick)
@@ -3561,20 +4065,34 @@ class MainWindow(QMainWindow):
 
         # 🔥 캘린더 UI
         self.start_date_edit = QDateEdit()
+        self.start_date_edit.setObjectName("datePicker")
         self.start_date_edit.setCalendarPopup(True)
+        self.start_date_edit.setDisplayFormat("yyyy-MM-dd")
 
         self.end_date_edit = QDateEdit()
+        self.end_date_edit.setObjectName("datePicker")
         self.end_date_edit.setCalendarPopup(True)
+        self.end_date_edit.setDisplayFormat("yyyy-MM-dd")
         
-        self.start_date_edit.setMinimumWidth(140)
-        self.end_date_edit.setMinimumWidth(140)
+        self.start_date_edit.setMinimumWidth(184)
+        self.end_date_edit.setMinimumWidth(184)
+        self.apply_date_picker_style(self.start_date_edit)
+        self.apply_date_picker_style(self.end_date_edit)
 
         today = QDate.currentDate()
         self.end_date_edit.setDate(today)
         self.start_date_edit.setDate(today.addDays(-6))  # 기본 7일
 
-        btn_apply_range = QPushButton("적용")
-        btn_apply_range.clicked.connect(self.apply_date_range)
+        self.btn_apply_range = QPushButton("적용")
+        self.btn_apply_range.clicked.connect(self.apply_date_range)
+        self.btn_apply_range.setProperty("buttonRole", "primary")
+
+        self.btn_color_settings = QPushButton("⚙")
+        self.btn_color_settings.setToolTip("색상 설정")
+        self.btn_color_settings.setFixedSize(38, 36)
+        self.btn_color_settings.setProperty("buttonRole", "secondary")
+        self.btn_color_settings.setStyleSheet(self.button_style("secondary"))
+        self.btn_color_settings.clicked.connect(self.open_color_settings_dialog)
 
         # 🔥 Top Layout
         top = QHBoxLayout()
@@ -3583,7 +4101,8 @@ class MainWindow(QMainWindow):
         top.addWidget(self.range_label)
         top.addWidget(self.start_date_edit)
         top.addWidget(self.end_date_edit)
-        top.addWidget(btn_apply_range)
+        top.addWidget(self.btn_apply_range)
+        top.addWidget(self.btn_color_settings)
 
         self.tabs = QTabWidget()
         self.tabs.addTab(self.tab_dashboard(), "Dashboard")
@@ -3598,7 +4117,10 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.tab_config(), "Config")
 
         root = QWidget()
+        root.setObjectName("appRoot")
         layout = QVBoxLayout(root)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
         layout.addLayout(top)
         layout.addWidget(self.tabs)
         self.setCentralWidget(root)
@@ -3607,27 +4129,1221 @@ class MainWindow(QMainWindow):
         self.apply_date_range()
         self.tabs.currentChanged.connect(lambda _: self.update_range_label())
         
-        self.setStyleSheet("""
-        QTabBar::tab {
-            background: #f9fafb;
-            padding: 10px 16px;
-            margin-right: 4px;
+        self.apply_main_stylesheet()
+
+
+    def theme(self, key):
+        return UI_THEME[key]
+
+    def trend_colors_from_config(self, config):
+        return {
+            "Detection": normalize_hex_color(config.get("Threat_trend_Detection"), DEFAULT_COLOR_CONFIG["Threat_trend_Detection"]),
+            "Detection XDR": normalize_hex_color(config.get("Threat_trend_Detection_XDR"), DEFAULT_COLOR_CONFIG["Threat_trend_Detection_XDR"]),
+            "Email": normalize_hex_color(config.get("Threat_trend_Email"), DEFAULT_COLOR_CONFIG["Threat_trend_Email"]),
+            "File": normalize_hex_color(config.get("Threat_trend_File"), DEFAULT_COLOR_CONFIG["Threat_trend_File"]),
+        }
+
+    def main_stylesheet(self):
+        t = UI_THEME
+        return f"""
+        QMainWindow, QWidget#appRoot {{
+            background: {t['app_background']};
+            color: {t['text']};
+            font-family: {UI_FONT_FAMILY};
+            font-size: 13px;
+        }}
+
+        QLabel#statusPill, QLabel#rangePill {{
+            background: {t['status_blue_bg']};
+            color: {t['accent']};
+            border: 1px solid {t['status_blue_border']};
+            border-radius: 12px;
+            padding: 6px 12px;
+            font-weight: 700;
+            min-height: 20px;
+        }}
+
+        QLabel#rangePill {{
+            background: {t['surface_muted']};
+            color: {t['status_blue_text']};
+            border-color: {t['status_blue_border']};
+        }}
+
+        QTabWidget::pane {{
             border: 1px solid #e5e7eb;
-            border-bottom: none;
-            border-top-left-radius: 6px;
-            border-top-right-radius: 6px;
-        }
+            border-radius: 18px;
+            background: {t['surface']};
+            top: -1px;
+        }}
 
-        QTabBar::tab:selected {
-            background: white;
-            border-bottom: 3px solid #2563eb;
-        }
+        QTabBar::tab {{
+            background: #f8fafc;
+            color: #64748b;
+            padding: 10px 18px;
+            margin-right: 5px;
+            border: 1px solid #e5e7eb;
+            border-top-left-radius: 12px;
+            border-top-right-radius: 12px;
+            min-height: 18px;
+        }}
 
-        QTabBar::tab:hover {
-            background: #f3f4f6;
-        }
+        QTabBar::tab:selected {{
+            background: {t['surface']};
+            color: {t['accent']};
+            border: 1px solid {t['border']};
+            border-bottom: 2px solid {t['accent']};
+        }}
+
+        QTabBar::tab:hover {{
+            background: {t['accent_soft']};
+            color: {t['accent']};
+        }}
+
+        QCheckBox {{
+            color: {t['checkbox_text']};
+            spacing: 8px;
+            font-weight: 700;
+        }}
+
+        QCheckBox::indicator {{
+            width: 16px;
+            height: 16px;
+            border: 1px solid {t['border']};
+            border-radius: 4px;
+            background: {t['surface']};
+        }}
+
+        QCheckBox::indicator:checked {{
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {t['checkbox_checked_start']}, stop:1 {t['checkbox_checked_end']});
+            border: 1px solid {t['checkbox_checked_end']};
+        }}
+
+        QPushButton {{
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {t['button_primary_stop_0']}, stop:0.18 {t['button_primary_stop_1']}, stop:0.54 {t['button_primary_stop_2']}, stop:1 {t['button_primary_stop_3']});
+            color: {UI_THEME['button_primary_text']};
+            border: 1px solid rgba(8, 99, 226, 0.28);
+            border-radius: 10px;
+            padding: 7px 18px;
+            font-weight: 800;
+        }}
+
+        QPushButton:hover {{
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {t['button_primary_hover_stop_0']}, stop:0.16 {t['button_primary_hover_stop_1']}, stop:0.56 {t['button_primary_hover_stop_2']}, stop:1 {t['button_primary_hover_stop_3']});
+            border: 1px solid rgba(8, 99, 226, 0.42);
+        }}
+
+        QDateEdit, QTimeEdit, QComboBox, QLineEdit, QTextEdit, QSpinBox {{
+            background: {t['surface']};
+            color: {t['text']};
+            border: 1px solid {t['input_border']};
+            border-radius: 10px;
+            padding: 6px 10px;
+            selection-background-color: {t['accent']};
+            font-family: {UI_FONT_FAMILY};
+            font-size: 13px;
+            min-height: 22px;
+        }}
+
+        QComboBox {{ padding: 6px 32px 6px 12px; }}
+
+        QComboBox::drop-down {{
+            subcontrol-origin: padding;
+            subcontrol-position: top right;
+            width: 28px;
+            border-left: 1px solid {t['border_soft']};
+            border-top-right-radius: 10px;
+            border-bottom-right-radius: 10px;
+            background: {t['surface_muted']};
+        }}
+
+        QComboBox::down-arrow {{
+            image: none;
+            width: 0px;
+            height: 0px;
+            border-left: 5px solid transparent;
+            border-right: 5px solid transparent;
+            border-top: 6px solid {t['accent']};
+            margin-right: 8px;
+        }}
+
+        QComboBox QAbstractItemView {{
+            background: {t['surface']};
+            color: {t['text']};
+            border: 1px solid {t['border']};
+            border-radius: 10px;
+            selection-background-color: {t['table_selection_bg']};
+            selection-color: {t['table_selection_text']};
+            padding: 4px;
+        }}
+
+        QTableWidget {{
+            background: {t['surface']};
+            color: {t['text']};
+            border: 1px solid {t['accent_soft']};
+            border-radius: 12px;
+            gridline-color: {t['surface_muted']};
+            selection-background-color: {t['table_selection_bg']};
+            selection-color: {t['table_selection_text']};
+            font-size: 13px;
+        }}
+
+        QTableWidget::item {{
+            padding: 6px;
+            border-bottom: 1px solid {t['surface_muted']};
+        }}
+
+        QHeaderView::section {{
+            background: {t['table_header_bg']};
+            color: {t['table_header_text']};
+            border: none;
+            border-right: 1px solid {t['accent_soft']};
+            padding: 8px;
+            font-weight: 800;
+            font-size: 13px;
+        }}
+
+        QDateEdit#datePicker, QTimeEdit#timePicker, QSpinBox#numberInput, QLineEdit#formInput {{
+            background: {t['surface']};
+            color: #1f2937;
+            border: 1px solid {t['border']};
+            border-radius: 12px;
+            padding: 7px 12px 7px 12px;
+            font-size: 12px;
+            font-weight: 700;
+            min-height: 22px;
+        }}
+
+        QDateEdit#datePicker {{ padding-right: 30px; }}
+
+        QDateEdit#datePicker::drop-down {{
+            subcontrol-origin: padding;
+            subcontrol-position: top right;
+            width: 28px;
+            border-left: 1px solid {t['border_soft']};
+            border-top-right-radius: 12px;
+            border-bottom-right-radius: 12px;
+            background: {t['surface_muted']};
+        }}
+
+        QDateEdit#datePicker::down-arrow {{
+            image: none;
+            width: 0px;
+            height: 0px;
+            border-left: 5px solid transparent;
+            border-right: 5px solid transparent;
+            border-top: 6px solid {t['accent']};
+            margin-right: 8px;
+        }}
+
+        QTimeEdit#timePicker::up-button, QTimeEdit#timePicker::down-button, QSpinBox#numberInput::up-button, QSpinBox#numberInput::down-button {{
+            width: 0px;
+            height: 0px;
+            border: none;
+        }}
+
+        QTimeEdit#timePicker::up-arrow, QTimeEdit#timePicker::down-arrow, QSpinBox#numberInput::up-arrow, QSpinBox#numberInput::down-arrow {{
+            image: none;
+            width: 0px;
+            height: 0px;
+        }}
+
+        QSpinBox#intervalSpin {{
+            background: {t['surface']};
+            color: {t['text']};
+            border: 1px solid {t['border']};
+            border-radius: 8px;
+            padding: 4px 22px 4px 8px;
+            font-size: 12px;
+            font-weight: 800;
+            min-height: 18px;
+        }}
+
+        QSpinBox#intervalSpin::up-button, QSpinBox#intervalSpin::down-button {{
+            subcontrol-origin: border;
+            width: 18px;
+            border-left: 1px solid {t['border_soft']};
+            background: {t['surface_muted']};
+        }}
+
+        QSpinBox#intervalSpin::up-button {{
+            subcontrol-position: top right;
+            border-top-right-radius: 8px;
+        }}
+
+        QSpinBox#intervalSpin::down-button {{
+            subcontrol-position: bottom right;
+            border-bottom-right-radius: 8px;
+        }}
+
+        QSpinBox#intervalSpin::up-arrow {{
+            width: 0px;
+            height: 0px;
+            border-left: 4px solid transparent;
+            border-right: 4px solid transparent;
+            border-bottom: 5px solid {t['accent']};
+        }}
+
+        QSpinBox#intervalSpin::down-arrow {{
+            width: 0px;
+            height: 0px;
+            border-left: 4px solid transparent;
+            border-right: 4px solid transparent;
+            border-top: 5px solid {t['accent']};
+        }}
+
+        QDateEdit:hover, QTimeEdit:hover, QComboBox:hover, QLineEdit:hover, QTextEdit:hover, QSpinBox:hover {{
+            border-color: {t['accent_light']};
+        }}
+
+        QDateEdit#datePicker:hover, QTimeEdit#timePicker:hover, QSpinBox#numberInput:hover, QLineEdit#formInput:hover {{
+            border-color: {t['accent']};
+            background: #fafdff;
+        }}
+
+        QScrollBar:vertical {{
+            background: transparent;
+            width: 9px;
+            margin: 4px 0 4px 0;
+        }}
+
+        QScrollBar::handle:vertical {{
+            background: #cbd5e1;
+            border-radius: 4px;
+            min-height: 28px;
+        }}
+
+        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0px; }}
+        """
+
+    def apply_main_stylesheet(self):
+        self.setStyleSheet(self.main_stylesheet())
+
+    def config_root_stylesheet(self):
+        return f"""
+            QWidget#configRoot {{
+                background: {UI_THEME['app_background']};
+            }}
+            QCheckBox {{
+                color: {UI_THEME['checkbox_text']};
+                font-size: 13px;
+                font-weight: 700;
+                spacing: 8px;
+            }}
+            QCheckBox::indicator {{
+                width: 16px;
+                height: 16px;
+                border: 1px solid {UI_THEME['border']};
+                border-radius: 4px;
+                background: {UI_THEME['surface']};
+            }}
+            QCheckBox::indicator:checked {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {UI_THEME['checkbox_checked_start']}, stop:1 {UI_THEME['checkbox_checked_end']});
+                border: 1px solid {UI_THEME['checkbox_checked_end']};
+            }}
+        """
+
+    def apply_soft_shadow(self, widget, blur=28, y_offset=12, alpha=95):
+        shadow = QGraphicsDropShadowEffect(self)
+        shadow.setBlurRadius(blur)
+        shadow.setOffset(0, y_offset)
+        r, g, b = UI_THEME["sierra_shadow"]
+        shadow.setColor(QColor(r, g, b, min(max(alpha, 72), 96)))
+        widget.setGraphicsEffect(shadow)
+
+    def card_style(self, object_name, accent=True):
+        return f"""
+            QFrame#{object_name} {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 {UI_THEME['surface']},
+                    stop:1 {UI_THEME['surface_soft']});
+                border: 1px solid {UI_THEME['accent_soft']};
+                border-radius: 18px;
+            }}
+        """
+
+    def button_style(self, variant="primary"):
+        if variant == "secondary":
+            return f"""
+                QPushButton {{
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                        stop:0 {UI_THEME['button_secondary_start']},
+                        stop:0.62 {UI_THEME['button_secondary_mid']},
+                        stop:1 {UI_THEME['button_secondary_end']});
+                    color: {UI_THEME['button_secondary_text']};
+                    border: 1px solid {UI_THEME['border']};
+                    border-radius: 12px;
+                    padding: 8px 14px;
+                    font-family: {UI_FONT_FAMILY};
+                    font-size: 13px;
+                    font-weight: 800;
+                }}
+                QPushButton:hover {{
+                    background: {UI_THEME['accent_soft']};
+                    border-color: {UI_THEME['accent']};
+                }}
+            """
+        if variant == "ghost":
+            return f"""
+                QPushButton {{
+                    background: transparent;
+                    color: {UI_THEME['button_secondary_text']};
+                    border: 1px solid {UI_THEME['border_soft']};
+                    border-radius: 12px;
+                    padding: 8px 14px;
+                    font-family: {UI_FONT_FAMILY};
+                    font-size: 13px;
+                    font-weight: 800;
+                }}
+                QPushButton:hover {{
+                    background: {UI_THEME['surface_muted']};
+                    border-color: {UI_THEME['border']};
+                }}
+            """
+        if variant == "mini":
+            return f"""
+                QPushButton {{
+                    background: {UI_THEME['surface_muted']};
+                    color: {UI_THEME['accent_text']};
+                    border: 1px solid {UI_THEME['border_soft']};
+                    border-radius: 8px;
+                    padding: 2px 8px;
+                    font-family: {UI_FONT_FAMILY};
+                    font-size: 12px;
+                    font-weight: 900;
+                }}
+                QPushButton:hover {{
+                    background: {UI_THEME['accent_soft']};
+                    border-color: {UI_THEME['border']};
+                }}
+            """
+        return f"""
+            QPushButton {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 {UI_THEME['button_primary_stop_0']},
+                    stop:0.18 {UI_THEME['button_primary_stop_1']},
+                    stop:0.54 {UI_THEME['button_primary_stop_2']},
+                    stop:1 {UI_THEME['button_primary_stop_3']});
+                color: {UI_THEME['button_primary_text']};
+                border: 1px solid rgba(8, 99, 226, 0.28);
+                border-radius: 12px;
+                padding: 9px 16px;
+                font-family: {UI_FONT_FAMILY};
+                font-size: 13px;
+                font-weight: 800;
+            }}
+            QPushButton:hover {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 {UI_THEME['button_primary_hover_stop_0']},
+                    stop:0.16 {UI_THEME['button_primary_hover_stop_1']},
+                    stop:0.56 {UI_THEME['button_primary_hover_stop_2']},
+                    stop:1 {UI_THEME['button_primary_hover_stop_3']});
+                border-color: rgba(8, 99, 226, 0.42);
+            }}
+            QPushButton:pressed {{
+                background: {UI_THEME['accent_deep']};
+            }}
+            QPushButton:disabled {{
+                background: #cbd5e1;
+                color: #f8fafc;
+            }}
+        """
+
+    def apply_button_role(self, button, variant="primary", min_height=38):
+        button.setProperty("buttonRole", variant)
+        button.setStyleSheet(self.button_style(variant))
+        if min_height:
+            button.setMinimumHeight(min_height)
+
+    def infer_button_role(self, button):
+        role = button.property("buttonRole")
+        if role:
+            return str(role)
+        text = button.text().strip()
+        if text in {"+", "-"}:
+            return "mini"
+        if text in {"닫기", "Close"}:
+            return "ghost"
+        if button.toolTip() in {"색상 설정", "Trend color settings"}:
+            return "secondary"
+        return "primary"
+
+    def restyle_themed_buttons(self):
+        for button in self.findChildren(QPushButton):
+            if button.text().strip().startswith("#") or button.property("buttonRole") == "color":
+                continue
+            role = self.infer_button_role(button)
+            button.setProperty("buttonRole", role)
+            button.setStyleSheet(self.button_style(role))
+
+    def add_card_description(self, layout, text):
+        desc = QLabel(text)
+        desc.setWordWrap(True)
+        desc.setStyleSheet(f"""
+            background: transparent;
+            border: none;
+            color: {UI_THEME['text_muted']};
+            font-size: 12px;
+            font-weight: 600;
         """)
-      
+        layout.addWidget(desc)
+
+    def metric_table_html(self, metrics):
+        header_cells = "".join(
+            f"<td style='color:{UI_THEME['text_muted']}; font-size:11px; font-weight:700;'>{label}</td>"
+            for label, _, _ in metrics
+        )
+        value_cells = "".join(
+            f"<td><span style='color:{color or UI_THEME['accent']}; font-size:20px; font-weight:900;'>{value}</span></td>"
+            for _, value, color in metrics
+        )
+        return f"""
+        <table width='100%' cellspacing='0' cellpadding='0' style='line-height:22px; font-size:13px;'>
+            <tr>{header_cells}</tr>
+            <tr>{value_cells}</tr>
+        </table>
+        """
+
+    def card_icon_kind(self, title):
+        icons = {
+            "Endpoints": "monitor",
+            "Organization": "network",
+            "Top File": "file",
+            "Top Hash": "hash",
+            "Folder Usage": "folder",
+            "Threat Trend": "trend",
+            "Top Analysis": "bars",
+            "Detection Summary": "shield",
+            "Detection XDR Summary": "radar",
+            "Email Summary": "mail",
+            "File Summary": "file",
+            "Cache Data": "database",
+            "Auto Refresh": "refresh",
+            "Export": "download",
+            "Report": "report",
+            "Folders": "folder",
+        }
+        return icons.get(title, "spark")
+
+    def card_icon_pixmap(self, title, size=18):
+        pixmap = QPixmap(size, size)
+        pixmap.fill(Qt.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+        pen = QPen(QColor(UI_THEME["accent"]), 1.7)
+        pen.setCapStyle(Qt.RoundCap)
+        pen.setJoinStyle(Qt.RoundJoin)
+        painter.setPen(pen)
+        kind = self.card_icon_kind(title)
+        w = size
+        h = size
+        if kind == "monitor":
+            painter.drawRoundedRect(QRectF(3, 3, w - 6, h - 8), 2, 2)
+            painter.drawLine(QPointF(w * 0.5, h - 5), QPointF(w * 0.5, h - 2))
+            painter.drawLine(QPointF(w * 0.35, h - 2), QPointF(w * 0.65, h - 2))
+        elif kind == "network":
+            for x, y in [(w/2, 4), (4, h-5), (w-4, h-5)]:
+                painter.drawEllipse(QPointF(x, y), 2.2, 2.2)
+            painter.drawLine(QPointF(w/2, 6), QPointF(5, h-7))
+            painter.drawLine(QPointF(w/2, 6), QPointF(w-5, h-7))
+        elif kind == "file":
+            path = QPainterPath()
+            path.moveTo(5, 3)
+            path.lineTo(w - 7, 3)
+            path.lineTo(w - 3, 7)
+            path.lineTo(w - 3, h - 3)
+            path.lineTo(5, h - 3)
+            path.closeSubpath()
+            painter.drawPath(path)
+            painter.drawLine(QPointF(7, 10), QPointF(w - 6, 10))
+            painter.drawLine(QPointF(7, 13), QPointF(w - 8, 13))
+        elif kind == "hash":
+            painter.drawLine(QPointF(7, 3), QPointF(5, h - 3))
+            painter.drawLine(QPointF(w - 5, 3), QPointF(w - 7, h - 3))
+            painter.drawLine(QPointF(3, 7), QPointF(w - 3, 7))
+            painter.drawLine(QPointF(3, h - 7), QPointF(w - 3, h - 7))
+        elif kind == "folder":
+            path = QPainterPath()
+            path.moveTo(3, 6)
+            path.lineTo(8, 6)
+            path.lineTo(10, 8)
+            path.lineTo(w - 3, 8)
+            path.lineTo(w - 3, h - 4)
+            path.lineTo(3, h - 4)
+            path.closeSubpath()
+            painter.drawPath(path)
+        elif kind == "trend":
+            points = [QPointF(3, h-5), QPointF(7, h-9), QPointF(11, h-7), QPointF(w-3, 4)]
+            for a, b in zip(points, points[1:]):
+                painter.drawLine(a, b)
+            painter.drawEllipse(points[-1], 1.6, 1.6)
+        elif kind == "bars":
+            for i, height in enumerate([6, 10, 14]):
+                x = 4 + i * 5
+                painter.drawRoundedRect(QRectF(x, h - height - 2, 3, height), 1, 1)
+        elif kind == "shield":
+            path = QPainterPath()
+            path.moveTo(w/2, 3)
+            path.lineTo(w-4, 6)
+            path.lineTo(w-5, 12)
+            path.quadTo(w/2, h-2, 4, 12)
+            path.lineTo(4, 6)
+            path.closeSubpath()
+            painter.drawPath(path)
+        elif kind == "radar":
+            painter.drawEllipse(QPointF(w/2, h/2), 6, 6)
+            painter.drawEllipse(QPointF(w/2, h/2), 2, 2)
+            painter.drawLine(QPointF(w/2, h/2), QPointF(w-4, 5))
+        elif kind == "mail":
+            painter.drawRoundedRect(QRectF(3, 5, w-6, h-10), 2, 2)
+            painter.drawLine(QPointF(4, 6), QPointF(w/2, h/2))
+            painter.drawLine(QPointF(w-4, 6), QPointF(w/2, h/2))
+        elif kind == "database":
+            painter.drawEllipse(QRectF(4, 3, w-8, 5))
+            painter.drawLine(QPointF(4, 5.5), QPointF(4, h-5))
+            painter.drawLine(QPointF(w-4, 5.5), QPointF(w-4, h-5))
+            painter.drawEllipse(QRectF(4, h-8, w-8, 5))
+        elif kind == "refresh":
+            painter.drawArc(QRectF(4, 4, w-8, h-8), 40 * 16, 280 * 16)
+            painter.drawLine(QPointF(w-5, 5), QPointF(w-3, 9))
+            painter.drawLine(QPointF(w-5, 5), QPointF(w-9, 5))
+        elif kind == "download":
+            painter.drawLine(QPointF(w/2, 3), QPointF(w/2, h-7))
+            painter.drawLine(QPointF(w/2, h-7), QPointF(w/2-4, h-11))
+            painter.drawLine(QPointF(w/2, h-7), QPointF(w/2+4, h-11))
+            painter.drawLine(QPointF(4, h-3), QPointF(w-4, h-3))
+        elif kind == "report":
+            painter.drawRoundedRect(QRectF(4, 3, w-8, h-6), 2, 2)
+            painter.drawLine(QPointF(7, 8), QPointF(w-7, 8))
+            painter.drawLine(QPointF(7, 12), QPointF(w-8, 12))
+        else:
+            painter.drawLine(QPointF(w/2, 3), QPointF(w/2, h-3))
+            painter.drawLine(QPointF(3, h/2), QPointF(w-3, h/2))
+            painter.drawEllipse(QPointF(w/2, h/2), 3, 3)
+        painter.end()
+        return pixmap
+
+    def card_title_label_style(self, font_size=15, weight=800, letter_spacing="0.15px"):
+        return f"""
+            background: transparent;
+            border: none;
+            font-size:{font_size}px;
+            font-weight:{weight};
+            color:{UI_THEME['card_title_text']};
+            letter-spacing:{letter_spacing};
+        """
+
+    def restyle_card_titles(self):
+        for label in self.findChildren(QLabel):
+            if label.property("cardTitle"):
+                font_size = label.property("cardTitleFontSize") or 15
+                weight = label.property("cardTitleWeight") or 800
+                spacing = label.property("cardTitleLetterSpacing") or "0.15px"
+                label.setStyleSheet(self.card_title_label_style(font_size, weight, spacing))
+
+    def add_legacy_card_title(self, layout, title):
+        title_row = QHBoxLayout()
+        title_row.setContentsMargins(0, 0, 0, 0)
+        title_row.setSpacing(9)
+
+        icon_label = QLabel()
+        icon_label.setAlignment(Qt.AlignCenter)
+        icon_label.setFixedSize(26, 26)
+        icon_label.setStyleSheet(f"""
+            QLabel {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #ffffff, stop:1 {UI_THEME['accent_soft']});
+                border: 1px solid {UI_THEME['border']};
+                border-radius: 10px;
+            }}
+        """)
+        icon_glow = QGraphicsDropShadowEffect(self)
+        icon_glow.setBlurRadius(10)
+        icon_glow.setOffset(0, 2)
+        r, g, b = UI_THEME["icon_glow"]
+        icon_glow.setColor(QColor(r, g, b, 72))
+        icon_label.setGraphicsEffect(icon_glow)
+        icon_label.setPixmap(self.card_icon_pixmap(title, 16))
+
+        label = QLabel(title)
+        label.setProperty("cardTitle", True)
+        label.setProperty("cardTitleFontSize", 15)
+        label.setProperty("cardTitleWeight", 800)
+        label.setProperty("cardTitleLetterSpacing", "0.15px")
+        label.setStyleSheet(self.card_title_label_style(15, 800, "0.15px"))
+
+        title_row.addWidget(icon_label)
+        title_row.addWidget(label)
+        title_row.addStretch()
+        layout.addLayout(title_row)
+
+    def add_card_title(self, layout, title, strong=True, action_text=None, action_callback=None):
+        title_row = QHBoxLayout()
+        title_row.setSpacing(10)
+
+        icon_label = QLabel()
+        icon_label.setAlignment(Qt.AlignCenter)
+        icon_label.setFixedSize(30, 30)
+        icon_label.setStyleSheet(f"""
+            QLabel {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {UI_THEME['surface']}, stop:1 {UI_THEME['accent_soft']});
+                border: 1px solid {UI_THEME['accent_light']};
+                border-radius: 12px;
+            }}
+        """)
+        icon_glow = QGraphicsDropShadowEffect(self)
+        icon_glow.setBlurRadius(14)
+        icon_glow.setOffset(0, 3)
+        r, g, b = UI_THEME["icon_glow"]
+        icon_glow.setColor(QColor(r, g, b, 132))
+        icon_label.setGraphicsEffect(icon_glow)
+        icon_label.setPixmap(self.card_icon_pixmap(title, 18))
+
+        title_label = QLabel(title)
+        title_font_size = 16 if strong else 15
+        title_label.setProperty("cardTitle", True)
+        title_label.setProperty("cardTitleFontSize", title_font_size)
+        title_label.setProperty("cardTitleWeight", 900)
+        title_label.setProperty("cardTitleLetterSpacing", "0.2px")
+        title_label.setStyleSheet(self.card_title_label_style(title_font_size, 900, "0.2px"))
+
+        title_row.addWidget(icon_label)
+        title_row.addWidget(title_label)
+        title_row.addStretch()
+
+        if action_text and action_callback:
+            action_btn = QPushButton(action_text)
+            action_btn.setFixedSize(34, 34)
+            action_btn.setToolTip("Trend color settings")
+            action_btn.setProperty("buttonRole", "secondary")
+            action_btn.setStyleSheet(self.button_style("secondary"))
+            action_btn.clicked.connect(action_callback)
+            title_row.addWidget(action_btn)
+
+        layout.addLayout(title_row)
+
+        divider = QFrame()
+        divider.setFixedHeight(1)
+        divider.setStyleSheet(f"background: {UI_THEME['border_soft']}; border: none;")
+        layout.addWidget(divider)
+
+    def apply_date_picker_style(self, date_edit):
+        calendar = date_edit.calendarWidget()
+        if not calendar:
+            return
+
+        calendar.setGridVisible(False)
+        calendar.setStyleSheet(f"""
+            QCalendarWidget {{
+                background: {UI_THEME['surface']};
+                border: 1px solid {UI_THEME['border']};
+                border-radius: 14px;
+                font-family: {UI_FONT_FAMILY};
+                color: {UI_THEME['text']};
+            }}
+            QCalendarWidget QWidget#qt_calendar_navigationbar {{
+                background: {UI_THEME['accent']};
+                border-top-left-radius: 14px;
+                border-top-right-radius: 14px;
+                min-height: 34px;
+            }}
+            QCalendarWidget QToolButton {{
+                background: transparent;
+                color: #ffffff;
+                border: none;
+                border-radius: 8px;
+                padding: 6px;
+                font-weight: 800;
+            }}
+            QCalendarWidget QToolButton:hover {{
+                background: rgba(255, 255, 255, 0.16);
+            }}
+            QCalendarWidget QMenu {{
+                background: {UI_THEME['surface']};
+                color: {UI_THEME['text']};
+                border: 1px solid {UI_THEME['border']};
+                border-radius: 8px;
+            }}
+            QCalendarWidget QSpinBox {{
+                background: rgba(255, 255, 255, 0.16);
+                color: #ffffff;
+                border: 1px solid rgba(255, 255, 255, 0.24);
+                border-radius: 8px;
+                padding: 3px 8px;
+                font-weight: 800;
+            }}
+            QCalendarWidget QAbstractItemView {{
+                background: {UI_THEME['surface']};
+                color: #1f2937;
+                selection-background-color: {UI_THEME['accent']};
+                selection-color: #ffffff;
+                border: none;
+                outline: 0;
+                gridline-color: {UI_THEME['surface_muted']};
+                font-size: 12px;
+                font-weight: 600;
+            }}
+            QCalendarWidget QAbstractItemView:enabled:hover {{
+                background: {UI_THEME['surface_muted']};
+                color: {UI_THEME['accent']};
+            }}
+        """)
+
+    def prepare_form_control(self, widget, height=36):
+        widget.setMinimumHeight(height)
+        widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        if isinstance(widget, QDateEdit):
+            widget.setObjectName("datePicker")
+            widget.setCalendarPopup(True)
+            self.apply_date_picker_style(widget)
+        elif isinstance(widget, QTimeEdit):
+            widget.setObjectName("timePicker")
+            widget.setButtonSymbols(QAbstractSpinBox.NoButtons)
+        elif isinstance(widget, QSpinBox):
+            widget.setObjectName("numberInput")
+            widget.setButtonSymbols(QAbstractSpinBox.NoButtons)
+        elif isinstance(widget, QLineEdit):
+            widget.setObjectName("formInput")
+
+        widget.style().unpolish(widget)
+        widget.style().polish(widget)
+
+    def apply_runtime_color_config(self, config, persist=False):
+        self.color_config = dict(config)
+        apply_color_config_to_theme(self.color_config)
+        self.trend_colors = self.trend_colors_from_config(self.color_config)
+        if persist:
+            save_color_env(self.color_config)
+
+        self.apply_main_stylesheet()
+        for widget in self.findChildren(QDateEdit):
+            self.apply_date_picker_style(widget)
+            widget.style().unpolish(widget)
+            widget.style().polish(widget)
+
+        for frame in self.findChildren(QFrame):
+            if frame.objectName() == "dashboardCard":
+                frame.setStyleSheet(self.card_style("dashboardCard", accent=False))
+
+        for widget in self.findChildren(QWidget):
+            if widget.objectName() == "configRoot":
+                widget.setStyleSheet(self.config_root_stylesheet())
+
+        self.restyle_card_titles()
+        if hasattr(self, "top_table"):
+            self.top_table.setStyleSheet(self.top_table_stylesheet())
+        if hasattr(self, "percent_label"):
+            self.percent_label.setStyleSheet(f"""
+                background: {UI_THEME['surface']};
+                border: 1px solid {UI_THEME['border']};
+                border-radius: 14px;
+                color: {UI_THEME['text']};
+                font-size: 13px;
+                font-weight: 800;
+                padding: 14px;
+            """)
+
+        self.restyle_themed_buttons()
+
+        try:
+            self.refresh_dashboard()
+        except Exception as e:
+            log.debug(f"Theme refresh skipped dashboard refresh: {e}")
+
+    def create_color_preview(self, config):
+        preview = {}
+        frame = QFrame()
+        frame.setObjectName("colorPreview")
+        frame.setMinimumWidth(260)
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(10)
+
+        title = QLabel("샘플 카드 제목")
+        title.setProperty("previewRole", "title")
+
+        primary_btn = QPushButton("Primary 버튼")
+        primary_btn.setProperty("previewRole", "primary")
+        secondary_btn = QPushButton("Secondary 버튼")
+        secondary_btn.setProperty("previewRole", "secondary")
+
+        checkbox = QCheckBox("체크박스 샘플")
+        checkbox.setChecked(True)
+        checkbox.setProperty("previewRole", "checkbox")
+
+        table_header = QLabel("테이블 헤더")
+        table_header.setProperty("previewRole", "tableHeader")
+        table_row = QLabel("선택된 테이블 행")
+        table_row.setProperty("previewRole", "tableRow")
+
+        graph_title = QLabel("그래프 색상")
+        graph_title.setStyleSheet("font-weight:800; color:#374151;")
+        graph_row = QHBoxLayout()
+        graph_row.setSpacing(6)
+        graph_keys = [
+            ("D", "Threat_trend_Detection"),
+            ("X", "Threat_trend_Detection_XDR"),
+            ("E", "Threat_trend_Email"),
+            ("F", "Threat_trend_File"),
+        ]
+        graph_swatches = []
+        for label_text, color_key in graph_keys:
+            swatch = QLabel(label_text)
+            swatch.setAlignment(Qt.AlignCenter)
+            swatch.setFixedSize(34, 24)
+            swatch.setProperty("colorKey", color_key)
+            graph_swatches.append(swatch)
+            graph_row.addWidget(swatch)
+        graph_row.addStretch()
+
+        layout.addWidget(title)
+        layout.addWidget(primary_btn)
+        layout.addWidget(secondary_btn)
+        layout.addWidget(checkbox)
+        layout.addWidget(table_header)
+        layout.addWidget(table_row)
+        layout.addWidget(graph_title)
+        layout.addLayout(graph_row)
+        layout.addStretch()
+
+        preview.update({
+            "frame": frame,
+            "title": title,
+            "primary_btn": primary_btn,
+            "secondary_btn": secondary_btn,
+            "checkbox": checkbox,
+            "table_header": table_header,
+            "table_row": table_row,
+            "graph_swatches": graph_swatches,
+        })
+        self.update_color_preview(preview, config)
+        return preview
+
+    def update_color_preview(self, preview, config):
+        c = default_color_config()
+        c.update(config)
+        for key, fallback in DEFAULT_COLOR_CONFIG.items():
+            c[key] = normalize_hex_color(c.get(key), fallback)
+
+        preview["frame"].setStyleSheet(f"""
+            QFrame#colorPreview {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 {c['UI_Surface']},
+                    stop:1 {c['UI_Surface_Soft']});
+                border: 1px solid {c['Card_Border']};
+                border-radius: 16px;
+            }}
+        """)
+        preview["title"].setStyleSheet(f"""
+            background: transparent;
+            border: none;
+            color: {c['Card_Title_Text']};
+            font-size: 15px;
+            font-weight: 900;
+        """)
+        preview["primary_btn"].setStyleSheet(f"""
+            QPushButton {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 {c['Button_Primary_Stop_0']},
+                    stop:0.18 {c['Button_Primary_Stop_1']},
+                    stop:0.54 {c['Button_Primary_Stop_2']},
+                    stop:1 {c['Button_Primary_Stop_3']});
+                color: {c['Button_Primary_Text']};
+                border: 1px solid {c['Primary_Blue']};
+                border-radius: 10px;
+                padding: 8px 12px;
+                font-weight: 800;
+            }}
+        """)
+        preview["secondary_btn"].setStyleSheet(f"""
+            QPushButton {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 {c['Button_Secondary_Start']},
+                    stop:0.62 {c['Button_Secondary_Mid']},
+                    stop:1 {c['Button_Secondary_End']});
+                color: {c['Button_Secondary_Text']};
+                border: 1px solid {c['Checkbox_Border']};
+                border-radius: 10px;
+                padding: 8px 12px;
+                font-weight: 800;
+            }}
+        """)
+        preview["checkbox"].setStyleSheet(f"""
+            QCheckBox {{
+                color: {c['Checkbox_Text']};
+                font-weight: 800;
+                spacing: 8px;
+            }}
+            QCheckBox::indicator {{
+                width: 15px;
+                height: 15px;
+                border: 1px solid {c['Checkbox_Border']};
+                border-radius: 4px;
+                background: {c['UI_Surface']};
+            }}
+            QCheckBox::indicator:checked {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 {c['Checkbox_Checked_Start']},
+                    stop:1 {c['Checkbox_Checked_End']});
+            }}
+        """)
+        preview["table_header"].setStyleSheet(f"""
+            background: {c['Table_Header_Background']};
+            color: {c['Table_Header_Text']};
+            border: 1px solid {c['Card_Border']};
+            border-radius: 8px;
+            padding: 7px;
+            font-weight: 900;
+        """)
+        preview["table_row"].setStyleSheet(f"""
+            background: {c['Table_Selection_Background']};
+            color: {c['Table_Selection_Text']};
+            border: 1px solid {c['Card_Border']};
+            border-radius: 8px;
+            padding: 7px;
+            font-weight: 800;
+        """)
+        for swatch in preview["graph_swatches"]:
+            color_key = swatch.property("colorKey")
+            color = c.get(color_key, "#ffffff")
+            text_color = "#ffffff" if QColor(color).lightness() < 150 else "#111827"
+            swatch.setStyleSheet(f"""
+                background: {color};
+                color: {text_color};
+                border: 1px solid {c['Checkbox_Border']};
+                border-radius: 8px;
+                font-weight: 900;
+            """)
+
+    def refresh_color_buttons(self, button_map, config):
+        for key, button in button_map.items():
+            button.setText(config[key])
+            button.setStyleSheet(self.color_button_style(config[key]))
+
+    def color_picker_row(self, dialog, config, key, label_text, button_map, on_change=None):
+        row = QHBoxLayout()
+        row.setSpacing(10)
+
+        tooltip = COLOR_SETTING_TOOLTIPS.get(key, f"{label_text} 색상을 변경합니다.")
+
+        label = QLabel(label_text)
+        label.setMinimumWidth(210)
+        label.setToolTip(tooltip)
+        label.setStyleSheet(f"color:{UI_THEME['accent_text']}; font-size:13px; font-weight:800;")
+
+        btn = QPushButton(config.get(key, DEFAULT_COLOR_CONFIG[key]))
+        btn.setMinimumWidth(112)
+        btn.setToolTip(tooltip)
+        btn.setProperty("buttonRole", "color")
+        btn.setStyleSheet(self.color_button_style(config.get(key, DEFAULT_COLOR_CONFIG[key])))
+
+        def choose_color():
+            current = QColor(config.get(key, DEFAULT_COLOR_CONFIG[key]))
+            color = QColorDialog.getColor(current, dialog, label_text)
+            if not color.isValid():
+                return
+            config[key] = color.name()
+            btn.setText(config[key])
+            btn.setStyleSheet(self.color_button_style(config[key]))
+            if on_change:
+                on_change()
+
+        btn.clicked.connect(choose_color)
+        button_map[key] = btn
+        row.addWidget(label)
+        row.addWidget(btn)
+        row.addStretch()
+        return row
+
+    def open_color_settings_dialog(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle("UI Color Settings")
+        dialog.setModal(True)
+        dialog.resize(860, 620)
+
+        original_config = dict(self.color_config)
+        working_config = dict(self.color_config)
+        preview_applied = {"value": False}
+        button_map = {}
+
+        root = QVBoxLayout(dialog)
+        root.setContentsMargins(16, 16, 16, 16)
+        root.setSpacing(10)
+
+        info = QLabel(f"저장 경로: {COLOR_ENV_PATH}\n테마 파일 경로: {COLOR_THEME_DIR}")
+        info.setWordWrap(True)
+        info.setStyleSheet(f"color:{UI_THEME['text_soft']}; font-size:12px; font-weight:700;")
+        root.addWidget(info)
+
+        content = QHBoxLayout()
+        content.setSpacing(14)
+
+        preview = self.create_color_preview(working_config)
+
+        def update_preview():
+            self.update_color_preview(preview, working_config)
+
+        tabs = QTabWidget()
+        for group_name, items in COLOR_DIALOG_GROUPS:
+            tab = QWidget()
+            tab_layout = QVBoxLayout(tab)
+            tab_layout.setContentsMargins(10, 10, 10, 10)
+            tab_layout.setSpacing(8)
+            for label_text, key in items:
+                tab_layout.addLayout(
+                    self.color_picker_row(
+                        dialog,
+                        working_config,
+                        key,
+                        label_text,
+                        button_map,
+                        on_change=update_preview,
+                    )
+                )
+            tab_layout.addStretch()
+            tabs.addTab(tab, group_name)
+
+        content.addWidget(tabs, 2)
+        content.addWidget(preview["frame"], 1)
+        root.addLayout(content)
+
+        actions = QHBoxLayout()
+        actions.addStretch()
+
+        btn_load_theme = QPushButton("테마 불러오기")
+        btn_load_theme.setProperty("buttonRole", "secondary")
+        btn_load_theme.setStyleSheet(self.button_style("secondary"))
+
+        btn_save_theme = QPushButton("테마 저장")
+        btn_save_theme.setProperty("buttonRole", "secondary")
+        btn_save_theme.setStyleSheet(self.button_style("secondary"))
+
+        btn_preview_apply = QPushButton("미리보기 적용")
+        btn_preview_apply.setProperty("buttonRole", "secondary")
+        btn_preview_apply.setStyleSheet(self.button_style("secondary"))
+
+        btn_reset = QPushButton("기본값")
+        btn_reset.setProperty("buttonRole", "secondary")
+        btn_reset.setStyleSheet(self.button_style("secondary"))
+
+        btn_save = QPushButton("저장")
+        btn_save.setProperty("buttonRole", "primary")
+        btn_save.setStyleSheet(self.button_style("primary"))
+
+        btn_close = QPushButton("닫기")
+        btn_close.setProperty("buttonRole", "ghost")
+        btn_close.setStyleSheet(self.button_style("ghost"))
+
+        def refresh_dialog_values():
+            self.refresh_color_buttons(button_map, working_config)
+            update_preview()
+
+        def reset_defaults():
+            working_config.clear()
+            working_config.update(default_color_config())
+            refresh_dialog_values()
+
+        def apply_preview_only():
+            self.apply_runtime_color_config(working_config, persist=False)
+            preview_applied["value"] = True
+            QMessageBox.information(self, "색상 설정", "현재 화면에만 미리보기로 적용했습니다. 저장 버튼을 누르면 파일에 저장됩니다.")
+
+        def save_theme_preset():
+            path, _ = QFileDialog.getSaveFileName(
+                dialog,
+                "테마 저장",
+                os.path.join(COLOR_THEME_DIR, "theme.txt"),
+                "Theme Files (*.txt);;All Files (*)",
+            )
+            if not path:
+                return
+            if not os.path.splitext(path)[1]:
+                path = f"{path}.txt"
+            save_color_env(working_config, path)
+            QMessageBox.information(dialog, "테마 저장", f"테마를 저장했습니다.\n{path}")
+
+        def load_theme_preset():
+            path, _ = QFileDialog.getOpenFileName(
+                dialog,
+                "테마 불러오기",
+                COLOR_THEME_DIR,
+                "Theme Files (*.txt);;All Files (*)",
+            )
+            if not path:
+                return
+            loaded = load_color_env(path)
+            working_config.clear()
+            working_config.update(loaded)
+            refresh_dialog_values()
+            QMessageBox.information(dialog, "테마 불러오기", f"테마를 불러왔습니다.\n저장을 누르면 현재 기본 색상 파일에 반영됩니다.\n{path}")
+
+        def save_and_apply():
+            self.apply_runtime_color_config(working_config, persist=True)
+            preview_applied["value"] = False
+            QMessageBox.information(self, "색상 설정", "색상 설정을 저장하고 현재 화면에 적용했습니다.")
+            dialog.accept()
+
+        def discard_unsaved_preview():
+            if preview_applied["value"]:
+                self.apply_runtime_color_config(original_config, persist=False)
+
+        btn_load_theme.clicked.connect(load_theme_preset)
+        btn_save_theme.clicked.connect(save_theme_preset)
+        btn_preview_apply.clicked.connect(apply_preview_only)
+        btn_reset.clicked.connect(reset_defaults)
+        btn_save.clicked.connect(save_and_apply)
+        btn_close.clicked.connect(dialog.reject)
+        dialog.rejected.connect(discard_unsaved_preview)
+
+        actions.addWidget(btn_load_theme)
+        actions.addWidget(btn_save_theme)
+        actions.addWidget(btn_preview_apply)
+        actions.addWidget(btn_reset)
+        actions.addWidget(btn_close)
+        actions.addWidget(btn_save)
+        root.addLayout(actions)
+
+        dialog.exec_()
+
+    def open_trend_color_dialog(self):
+        self.open_color_settings_dialog()
+
+    def color_button_style(self, color):
+        text_color = "#ffffff" if QColor(color).lightness() < 150 else "#111827"
+        return f"""
+            QPushButton {{
+                background: {color};
+                color: {text_color};
+                border: 1px solid {UI_THEME['border']};
+                border-radius: 10px;
+                padding: 7px 10px;
+                font-weight: 800;
+            }}
+        """
+
+    def top_table_stylesheet(self):
+        return f"""
+            QTableWidget {{
+                border: none;
+                border-radius: 14px;
+                background: {UI_THEME['surface']};
+                color: {UI_THEME['text']};
+                gridline-color: #e5e7eb;
+                selection-background-color: {UI_THEME['table_selection_bg']};
+                selection-color: {UI_THEME['table_selection_text']};
+                font-size: 13px;
+            }}
+            QTableWidget::item {{
+                padding: 6px;
+                border-bottom: 1px solid {UI_THEME['surface_muted']};
+            }}
+            QHeaderView::section {{
+                background: {UI_THEME['table_header_bg']};
+                color: {UI_THEME['table_header_text']};
+                font-weight: 800;
+                border: none;
+                padding: 8px;
+            }}
+        """
+
     def setup_report_font(self):
         try:
             from reportlab.pdfbase import pdfmetrics
@@ -4339,10 +6055,9 @@ class MainWindow(QMainWindow):
             for d in detections:
                 if not isinstance(d, dict):
                     continue
-                sensor = d.get("sensor", {})
-                if not isinstance(sensor, dict):
+                sensor_type = get_detection_sensor_type(d)
+                if not sensor_type:
                     continue
-                sensor_type = sensor.get("type")
 
                 if sensor_type == "endpoint":
                     endpoint_detections.append(d)
@@ -5493,11 +7208,10 @@ class MainWindow(QMainWindow):
                 if not isinstance(d, dict):
                     continue
 
-                sensor = d.get("sensor", {})
-                if not isinstance(sensor, dict):
+                sensor_type = get_detection_sensor_type(d)
+                if not sensor_type:
                     continue
 
-                sensor_type = sensor.get("type")
 
                 dd = d.get("detectionDescription", {})
                 rule = ""
@@ -5533,11 +7247,10 @@ class MainWindow(QMainWindow):
                 if not isinstance(d, dict):
                     continue
 
-                sensor = d.get("sensor", {})
-                if not isinstance(sensor, dict):
+                sensor_type = get_detection_sensor_type(d)
+                if not sensor_type:
                     continue
 
-                sensor_type = sensor.get("type")
 
                 dd = d.get("detectionDescription", {})
                 rule = ""
@@ -5754,7 +7467,24 @@ class MainWindow(QMainWindow):
         self.status_label.setText(f"{self._spin_base}{dots}")
 
     def set_status(self, text, color="gray", spinning=False):
-        self.status_label.setStyleSheet(f"color: {color}")
+        palette = {
+            "gray": (UI_THEME["gray_bg"], UI_THEME["gray_text"], UI_THEME["gray_border"]),
+            "green": (UI_THEME["success_bg"], UI_THEME["status_success_text"], UI_THEME["success_border"]),
+            "red": (UI_THEME["danger_bg"], UI_THEME["status_fail_text"], UI_THEME["danger_border"]),
+            "blue": (UI_THEME["status_blue_bg"], UI_THEME["status_blue_text"], UI_THEME["status_blue_border"]),
+        }
+        bg, fg, border = palette.get(str(color).lower(), (UI_THEME["accent_soft"], str(color), UI_THEME["border"]))
+        self.status_label.setStyleSheet(f"""
+            QLabel#statusPill {{
+                background: {bg};
+                color: {fg};
+                border: 1px solid {border};
+                border-radius: 12px;
+                padding: 6px 12px;
+                font-weight: 700;
+                min-height: 20px;
+            }}
+        """)
         self._spin_timer.stop()
         if spinning:
             self._spin_base = text
@@ -5805,6 +7535,7 @@ class MainWindow(QMainWindow):
 
         self.worker.ok.connect(self._on_refresh_ok)
         self.worker.fail.connect(self._on_refresh_fail)
+        self.worker.progress.connect(self._on_refresh_progress)
         self.worker.start()
         
 
@@ -5873,6 +7604,7 @@ class MainWindow(QMainWindow):
         self.worker = RefreshWorker(job_name="DLP", date_str=date_str)
         self.worker.ok.connect(self._on_refresh_ok)
         self.worker.fail.connect(self._on_refresh_fail)
+        self.worker.progress.connect(self._on_refresh_progress)
         self.worker.start()
         
     def run_refresh_detection_range(self):
@@ -5921,6 +7653,10 @@ class MainWindow(QMainWindow):
         self.worker.ok.connect(self._on_refresh_ok)
         self.worker.fail.connect(self._on_refresh_fail)
         self.worker.start()
+
+    def _on_refresh_progress(self, tab_name, message):
+        if tab_name == "DLP":
+            self.set_status(str(message), color="blue", spinning=True)
 
     def _on_refresh_ok(self, tab_name):
 
@@ -6321,7 +8057,7 @@ Command Line :
                 background-color: #ffffff;
                 gridline-color: #e5e7eb;
                 border: 1px solid #d1d5db;
-                selection-background-color: #dbeafe;
+                selection-background-color: #EEF5FF;
                 selection-color: #111827;
             }
 
@@ -6572,7 +8308,16 @@ Command Line :
     # ==================================================
     def tab_dashboard(self):
         root = QWidget()
+        root.setObjectName("dashboardRoot")
+        root.setStyleSheet("""
+            QWidget#dashboardRoot {
+                background: #FFFFFF;
+                border-radius: 18px;
+            }
+        """)
         layout = QVBoxLayout(root)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(14)
 
         # -------------------------
         # 🔥 TOP CARD AREA
@@ -6613,24 +8358,39 @@ Command Line :
         container.setSpacing(15)
 
         # 그래프
-        self.figure = Figure(figsize=(10, 4))
+        self.figure = Figure(figsize=(10, 4), facecolor="#ffffff")
         self.canvas = FigureCanvas(self.figure)
         container.addWidget(self.canvas, 4)
 
         # 퍼센트
         percent_frame = QFrame()
-        percent_frame.setFixedWidth(300)
+        percent_frame.setMinimumWidth(285)
+        percent_frame.setMaximumWidth(315)
+        percent_frame.setMinimumHeight(210)
+        percent_frame.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
 
         percent_layout = QVBoxLayout(percent_frame)
+        percent_layout.setContentsMargins(0, 0, 0, 0)
+        percent_layout.setSpacing(0)
         self.percent_label = QLabel("")
         self.percent_label.setAlignment(Qt.AlignTop)
-        self.percent_label.setStyleSheet("font-size:13px; font-weight:700;")
+        self.percent_label.setStyleSheet(f"""
+            background: {UI_THEME['surface']};
+            border: 1px solid {UI_THEME['border']};
+            border-radius: 14px;
+            color: {UI_THEME['text']};
+            font-size: 13px;
+            font-weight: 800;
+            padding: 14px;
+        """)
         self.percent_label.setWordWrap(True)
+        self.percent_label.setMinimumHeight(190)
+        self.percent_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
         percent_layout.addWidget(self.percent_label)
         percent_layout.addStretch()
 
-        container.addWidget(percent_frame, 1)
+        container.addWidget(percent_frame, 0)
 
         graph_layout.addLayout(container)
         layout.addWidget(graph_card)
@@ -6648,28 +8408,19 @@ Command Line :
         top_card, top_layout = self.make_card("Top Analysis")
 
         self.top_table = QTableWidget()
-        self.top_table.verticalHeader().setDefaultSectionSize(28)
-        self.top_table.setMinimumHeight(300)
+        self.top_table.verticalHeader().setDefaultSectionSize(24)
+        self.top_table.setMinimumHeight(220)
+        self.top_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.top_table.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.top_table.setVerticalScrollMode(QTableWidget.ScrollPerPixel)
         self.top_table.setColumnCount(3)
         self.top_table.setHorizontalHeaderLabels(
             ["Top Hostname", "Top Rule", "Top Sender IP"]
         )
-        self.top_table.setStyleSheet("""
-            QTableWidget {
-                border: none;
-                background-color: #ffffff;
-                gridline-color: #e5e7eb;
-            }
-            QHeaderView::section {
-                background-color: #f3f4f6;
-                font-weight: 600;
-                border: none;
-                padding: 4px;
-            }
-        """)
+        self.top_table.setStyleSheet(self.top_table_stylesheet())
         self.top_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
 
-        top_layout.addWidget(self.top_table)
+        top_layout.addWidget(self.top_table, 1)
 
         bottom_container.addWidget(top_card, 1)
 
@@ -6700,36 +8451,29 @@ Command Line :
 
     def make_stat_card(self, title, value):
         frame = QFrame()
-        frame.setStyleSheet("""
-            QFrame {
-                background-color: #ffffff;
-                border: 1px solid #e5e7eb;
-                border-left: 4px solid #2563eb;
-                border-radius: 10px;
-            }
-        """)
+        frame.setObjectName("statCard")
+        frame.setStyleSheet(self.card_style("statCard", accent=True))
+        self.apply_soft_shadow(frame)
 
         layout = QVBoxLayout(frame)
-        layout.setContentsMargins(15, 12, 15, 12)
+        layout.setContentsMargins(18, 14, 18, 14)
+        layout.setSpacing(10)
 
-        title_label = QLabel(title)
-        title_label.setStyleSheet("""
-            font-size:16px;
-            font-weight:600;
-            color:#2563eb;
-        """)
+        self.add_card_title(layout, title)
 
         value_label = QLabel(value)
         value_label.setStyleSheet("""
-            font-size:12px;
-            font-weight:600;
+            background: transparent;
+            border: none;
+            font-size:13px;
+            font-weight:700;
             color:#111827;
+            line-height: 150%;
         """)
 
         value_label.setWordWrap(True)
         value_label.setTextFormat(Qt.RichText)
 
-        layout.addWidget(title_label)
         layout.addWidget(value_label)
         layout.addStretch()
 
@@ -6738,24 +8482,15 @@ Command Line :
 
     def make_scroll_stat_card(self, title, value):
         frame = QFrame()
-        frame.setStyleSheet("""
-            QFrame {
-                background-color: #ffffff;
-                border: 1px solid #e5e7eb;
-                border-left: 4px solid #2563eb;
-                border-radius: 10px;
-            }
-        """)
+        frame.setObjectName("scrollStatCard")
+        frame.setStyleSheet(self.card_style("scrollStatCard", accent=True))
+        self.apply_soft_shadow(frame, blur=24, y_offset=10, alpha=80)
 
         layout = QVBoxLayout(frame)
-        layout.setContentsMargins(15, 12, 15, 12)
+        layout.setContentsMargins(18, 14, 18, 14)
+        layout.setSpacing(10)
 
-        title_label = QLabel(title)
-        title_label.setStyleSheet("""
-            font-size:16px;
-            font-weight:600;
-            color:#2563eb;
-        """)
+        self.add_card_title(layout, title)
 
         value_label = QTextEdit()
         value_label.setReadOnly(True)
@@ -6765,14 +8500,13 @@ Command Line :
             QTextEdit {
                 border: none;
                 background: transparent;
-                font-size: 12px;
-                font-weight: 600;
+                font-size: 13px;
+                font-weight: 700;
                 color: #111827;
             }
         """)
         value_label.setHtml(value)
 
-        layout.addWidget(title_label)
         layout.addWidget(value_label)
 
         frame.value_label = value_label
@@ -6825,12 +8559,10 @@ Command Line :
             elif e.get("type") == "server":
                 server_count += 1
 
-        endpoint_html = f"""
-        <div style='line-height:22px;'>
-        PC : {pc_count} 대<br>
-        Server : {server_count} 대
-        </div>
-        """
+        endpoint_html = self.metric_table_html([
+            ("PC", f"{pc_count} 대", UI_THEME["accent"]),
+            ("Server", f"{server_count} 대", UI_THEME["accent"]),
+        ])
         self.card_endpoint.value_label.setText(endpoint_html)
         
         # ==============================
@@ -6869,12 +8601,10 @@ Command Line :
         org_count = len(valid_dept_codes)
         user_count = len(valid_users)
 
-        org_html = f"""
-        <div style='line-height:22px;'>
-        조직부서 : {org_count} 개<br>
-        사원 수 : {user_count} 명
-        </div>
-        """
+        org_html = self.metric_table_html([
+            ("조직부서", f"{org_count} 개", UI_THEME["accent"]),
+            ("사원 수", f"{user_count} 명", UI_THEME["accent"]),
+        ])
         self.card_org.value_label.setText(org_html)
 
         # ==============================
@@ -6894,13 +8624,16 @@ Command Line :
         links = []
         for name, cnt in top_files:
             links.append(
-                f"<a href='{name}' "
-                f"style='text-decoration:none; color:#111827; font-weight:700;'>"
-                f"{name} ({cnt}건)</a>"
+                f"<tr>"
+                f"<td style='padding:2px 12px 2px 0;'>"
+                f"<a href='{name}' style='text-decoration:none; color:#111827; font-weight:700;'>{name}</a>"
+                f"</td>"
+                f"<td align='right' style='padding:2px 0; color:#111827; font-weight:700;'>({cnt})</td>"
+                f"</tr>"
             )
 
-        html = "<br>".join(links)
-        html = f"<div style='line-height:22px;'>{html}</div>"
+        html = "".join(links)
+        html = f"<table width='100%' cellspacing='0' cellpadding='0' style='line-height:22px; font-size:13px;'>{html}</table>"
 
         self.card_file_top.value_label.setText(html)
         self.card_file_top.value_label.setTextFormat(Qt.RichText)
@@ -6934,13 +8667,16 @@ Command Line :
         for sha, cnt in top_hash:
             short_sha = sha[:20] + "..."
             links.append(
-                f"<a href='{sha}' "
-                f"style='text-decoration:none; color:#111111; font-weight:600;'>"
-                f"{short_sha} ({cnt}건)</a>"
+                f"<tr>"
+                f"<td style='padding:2px 12px 2px 0;'>"
+                f"<a href='{sha}' style='text-decoration:none; color:#111111; font-weight:600;'>{short_sha}</a>"
+                f"</td>"
+                f"<td align='right' style='padding:2px 0; color:#111827; font-weight:700;'>({cnt})</td>"
+                f"</tr>"
             )
 
-        html = "<br>".join(links)
-        html = f"<div style='line-height:22px;'>{html}</div>"
+        html = "".join(links)
+        html = f"<table width='100%' cellspacing='0' cellpadding='0' style='line-height:22px; font-size:13px;'>{html}</table>"
         
 
         self.card_hash_top.value_label.setText(html)
@@ -6967,13 +8703,13 @@ Command Line :
         env_size = format_size_text(get_dir_size_bytes(ENV_DIR))
 
         folder_html = f"""
-        <div style='line-height:22px;'>
-        Logs : {logs_size}<br>
-        Cache : {cache_size}<br>
-        Exports : {export_size}<br>
-        Reports : {report_size}<br>
-        Env : {env_size}
-        </div>
+        <table width='100%' cellspacing='0' cellpadding='0' style='line-height:22px; font-size:13px;'>
+            <tr><td>Logs</td><td align='right'>{logs_size}</td></tr>
+            <tr><td>Cache</td><td align='right'>{cache_size}</td></tr>
+            <tr><td>Exports</td><td align='right'>{export_size}</td></tr>
+            <tr><td>Reports</td><td align='right'>{report_size}</td></tr>
+            <tr><td>Env</td><td align='right'>{env_size}</td></tr>
+        </table>
         """
 
         self.card_summary.value_label.setText(folder_html)
@@ -7140,7 +8876,7 @@ Command Line :
 
         def format_block(title, percent):
             if percent is None:
-                return f"{title}\nNo Data", "#6b7280"
+                return "No Data", "#6b7280"
 
             if percent > 0:
                 arrow = "▲"
@@ -7152,7 +8888,7 @@ Command Line :
                 arrow = "■"
                 color = "#6b7280"  # 회색
 
-            return f"{title}\n{arrow} {percent:+.1f}%", color
+            return f"{arrow} {percent:+.1f}%", color
 
 
         # ---- 전일 대비 ----
@@ -7215,26 +8951,26 @@ Command Line :
         self.figure.clf()
         ax = self.figure.add_subplot(111)
 
-        color_det = "#ec4899"      # Detection
-        color_mail = "#38bdf8"     # Email
-        color_xdr = "#7c3aed"      # Detection XDR
-        color_file = "#d4a017"     # File (어두운 황색)
+        color_det = self.trend_colors.get("Detection", UI_THEME["accent"])
+        color_xdr = self.trend_colors.get("Detection XDR", UI_THEME["accent_light"])
+        color_mail = self.trend_colors.get("Email", "#14b8a6")
+        color_file = self.trend_colors.get("File", "#f59e0b")
 
-        dark_det = "#be185d"
-        dark_mail = "#0369a1"
-        dark_xdr = "#4c1d95"
-        dark_file = "#9a7600"
+        dark_det = color_det
+        dark_xdr = color_xdr
+        dark_mail = color_mail
+        dark_file = color_file
 
-        ax.plot(x_dates, det_values, marker='o', linewidth=2.5,
+        ax.plot(x_dates, det_values, marker='o', linewidth=2.8,
                 color=color_det, label="Detection")
 
-        ax.plot(x_dates, xdr_values, marker='o', linewidth=2.5,
+        ax.plot(x_dates, xdr_values, marker='o', linewidth=2.8,
                 color=color_xdr, label="Detection XDR")
 
-        ax.plot(x_dates, mail_values, marker='o', linewidth=2.5,
+        ax.plot(x_dates, mail_values, marker='o', linewidth=2.8,
                 color=color_mail, label="Email")
 
-        ax.plot(x_dates, file_values, marker='o', linewidth=2.5,
+        ax.plot(x_dates, file_values, marker='o', linewidth=2.8,
                 color=color_file, label="File")
 
         # 🔥 tick 강제 고정
@@ -7249,14 +8985,29 @@ Command Line :
 
         self.figure.autofmt_xdate()
 
-        ax.set_title("Threat & Email Trend", fontsize=16, fontweight="700")
-        ax.grid(True, linestyle="--", alpha=0.25)
+        self.figure.patch.set_facecolor("#ffffff")
+        ax.set_facecolor("#ffffff")
+        ax.grid(True, linestyle="--", linewidth=0.8, color=UI_THEME["border_soft"], alpha=0.9)
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
+        ax.spines["left"].set_color(UI_THEME["border"])
+        ax.spines["bottom"].set_color(UI_THEME["border"])
+        ax.tick_params(axis="both", colors=UI_THEME["text_soft"], labelsize=10)
+        # The card header already displays the chart title; avoid a duplicate
+        # matplotlib title because it can render with broken-looking spacing.
+        ax.set_title("")
 
-        ax.set_title("Threat Trend", fontsize=16, fontweight="700")
-
-        ax.legend(frameon=False)
+        legend = ax.legend(
+            loc="upper center",
+            bbox_to_anchor=(0.5, 1.16),
+            ncol=4,
+            frameon=False,
+            columnspacing=1.8,
+            handlelength=1.8,
+        )
+        for text in legend.get_texts():
+            text.set_color(UI_THEME["text_soft"])
+            text.set_fontsize(10)
         max_y = max(max(det_values), max(xdr_values), max(mail_values), max(file_values), 1)        
         ax.set_ylim(0, max_y * 1.8)      
 
@@ -7338,7 +9089,7 @@ Command Line :
         self.figure.subplots_adjust(
             left=0.10,
             right=0.98,
-            top=0.88,
+            top=0.78,
             bottom=0.25
         )
 
@@ -7347,21 +9098,37 @@ Command Line :
         # 🔥 전일 대비 (오른쪽 표시용)
         # ==============================
         percent_html = f"""
-        <b>Detection</b><br>
-        <span style='color:{daily_det_color}'>{daily_det_text}</span><br>
-        <span style='color:{monthly_det_color}'>{monthly_det_text}</span><br><br>
-
-        <b>Detection XDR</b><br>
-        <span style='color:{daily_xdr_color}'>{daily_xdr_text}</span><br>
-        <span style='color:{monthly_xdr_color}'>{monthly_xdr_text}</span><br><br>
-
-        <b>Email</b><br>
-        <span style='color:{daily_mail_color}'>{daily_mail_text}</span><br>
-        <span style='color:{monthly_mail_color}'>{monthly_mail_text}</span>
-        
-        <br><br><b>File</b><br>
-        <span style='color:{daily_file_color}'>{daily_file_text}</span><br>
-        <span style='color:{monthly_file_color}'>{monthly_file_text}</span>
+        <table width='100%' cellspacing='0' cellpadding='0' style='font-size:12px; line-height:19px;'>
+            <tr>
+                <td width='38%'></td>
+                <td width='31%' align='center' style='color:#6b7280; font-size:11px; font-weight:900;'>전일 대비</td>
+                <td width='31%' align='right' style='color:#6b7280; font-size:11px; font-weight:900;'>전월 대비</td>
+            </tr>
+            <tr><td colspan='3' style='height:4px; border-bottom:1px solid #e5e7eb;'></td></tr>
+            <tr>
+                <td style='padding-top:4px; color:{UI_THEME['accent_text']}; font-size:12px; font-weight:900;'>Detection</td>
+                <td align='center' style='padding-top:4px; color:{daily_det_color}; font-size:12px; font-weight:900;'>{daily_det_text}</td>
+                <td align='right' style='padding-top:4px; color:{monthly_det_color}; font-size:12px; font-weight:900;'>{monthly_det_text}</td>
+            </tr>
+            <tr><td colspan='3' style='height:4px; border-bottom:1px solid #e5e7eb;'></td></tr>
+            <tr>
+                <td style='padding-top:4px; color:{UI_THEME['accent_text']}; font-size:12px; font-weight:900;'>XDR</td>
+                <td align='center' style='padding-top:4px; color:{daily_xdr_color}; font-size:12px; font-weight:900;'>{daily_xdr_text}</td>
+                <td align='right' style='padding-top:4px; color:{monthly_xdr_color}; font-size:12px; font-weight:900;'>{monthly_xdr_text}</td>
+            </tr>
+            <tr><td colspan='3' style='height:4px; border-bottom:1px solid #e5e7eb;'></td></tr>
+            <tr>
+                <td style='padding-top:4px; color:{UI_THEME['accent_text']}; font-size:12px; font-weight:900;'>Email</td>
+                <td align='center' style='padding-top:4px; color:{daily_mail_color}; font-size:12px; font-weight:900;'>{daily_mail_text}</td>
+                <td align='right' style='padding-top:4px; color:{monthly_mail_color}; font-size:12px; font-weight:900;'>{monthly_mail_text}</td>
+            </tr>
+            <tr><td colspan='3' style='height:4px; border-bottom:1px solid #e5e7eb;'></td></tr>
+            <tr>
+                <td style='padding-top:4px; color:{UI_THEME['accent_text']}; font-size:12px; font-weight:900;'>File</td>
+                <td align='center' style='padding-top:4px; color:{daily_file_color}; font-size:12px; font-weight:900;'>{daily_file_text}</td>
+                <td align='right' style='padding-top:4px; color:{monthly_file_color}; font-size:12px; font-weight:900;'>{monthly_file_text}</td>
+            </tr>
+        </table>
 """
 
         self.percent_label.setText(percent_html)
@@ -7634,8 +9401,9 @@ Command Line :
         # 🔎 Multi Search UI (wrapper)
         # ===============================
         search_wrapper = QWidget()
+        search_wrapper.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         search_v = QVBoxLayout(search_wrapper)
-        search_v.setContentsMargins(0, 0, 0, 0)
+        search_v.setContentsMargins(0, 0, 0, 4)
         search_v.setSpacing(6)
 
         self.search_container = QVBoxLayout()
@@ -7823,9 +9591,9 @@ Command Line :
         # ===============================
         # 🔥 검색줄 생성 (크기/폰트/엔터/버튼 통일)
         # ===============================
-        FIELD_W = 150
-        BTN_W = 34
-        ROW_H = 28
+        FIELD_W = SEARCH_FIELD_W
+        BTN_W = SEARCH_BTN_W
+        ROW_H = SEARCH_ROW_H
 
         def add_search_row(default_field="ALL", default_value="", removable=True, first=False):
             row = QWidget()
@@ -7892,8 +9660,8 @@ Command Line :
         # 첫 줄(삭제 불가) + 버튼
         add_search_row(removable=False, first=True)
 
-        layout.addWidget(search_wrapper)
-        layout.addWidget(table)
+        layout.addWidget(search_wrapper, 0)
+        layout.addWidget(table, 1)
 
         # expose
         self._refresh_detection = refresh
@@ -7910,8 +9678,9 @@ Command Line :
         layout.setSpacing(8)
 
         search_wrapper = QWidget()
+        search_wrapper.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         search_v = QVBoxLayout(search_wrapper)
-        search_v.setContentsMargins(0, 0, 0, 0)
+        search_v.setContentsMargins(0, 0, 0, 4)
         search_v.setSpacing(6)
 
         self.xdr_search_container = QVBoxLayout()
@@ -8083,9 +9852,9 @@ Command Line :
             if sort_column >= 0:
                 table.sortItems(sort_column, sort_order)
 
-        FIELD_W = 150
-        BTN_W = 34
-        ROW_H = 28
+        FIELD_W = SEARCH_FIELD_W
+        BTN_W = SEARCH_BTN_W
+        ROW_H = SEARCH_ROW_H
 
         def add_search_row(default_field="ALL", removable=True, first=False):
             row = QWidget()
@@ -8150,8 +9919,8 @@ Command Line :
 
         add_search_row(removable=False, first=True)
 
-        layout.addWidget(search_wrapper)
-        layout.addWidget(table)
+        layout.addWidget(search_wrapper, 0)
+        layout.addWidget(table, 1)
 
         self._refresh_detection_xdr = refresh
         refresh()
@@ -8172,8 +9941,9 @@ Command Line :
         # 🔎 Multi Search UI
         # ===============================
         search_wrapper = QWidget()
+        search_wrapper.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         search_v = QVBoxLayout(search_wrapper)
-        search_v.setContentsMargins(0, 0, 0, 0)
+        search_v.setContentsMargins(0, 0, 0, 4)
         search_v.setSpacing(6)
 
         self.email_search_container = QVBoxLayout()
@@ -8312,9 +10082,9 @@ Command Line :
         # ===============================
         # 🔥 검색줄 생성
         # ===============================
-        FIELD_W = 150
-        BTN_W = 34
-        ROW_H = 28
+        FIELD_W = SEARCH_FIELD_W
+        BTN_W = SEARCH_BTN_W
+        ROW_H = SEARCH_ROW_H
 
         def add_search_row(default_field="ALL", removable=True, first=False):
             row = QWidget()
@@ -8369,8 +10139,8 @@ Command Line :
         # 첫 줄
         add_search_row(removable=False, first=True)
 
-        layout.addWidget(search_wrapper)
-        layout.addWidget(table)
+        layout.addWidget(search_wrapper, 0)
+        layout.addWidget(table, 1)
 
         self._refresh_email = refresh
         refresh()
@@ -9150,8 +10920,9 @@ Command Line :
         # 🔎 Multi Search UI
         # ===============================
         search_wrapper = QWidget()
+        search_wrapper.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         search_v = QVBoxLayout(search_wrapper)
-        search_v.setContentsMargins(0, 0, 0, 0)
+        search_v.setContentsMargins(0, 0, 0, 4)
         search_v.setSpacing(6)
 
         self.dlp_search_container = QVBoxLayout()
@@ -9372,9 +11143,9 @@ Command Line :
         # ===============================
         # 검색줄 생성
         # ===============================
-        FIELD_W = 150
-        BTN_W = 34
-        ROW_H = 28
+        FIELD_W = SEARCH_FIELD_W
+        BTN_W = SEARCH_BTN_W
+        ROW_H = SEARCH_ROW_H
 
         def add_search_row(default_field="ALL", default_mode="포함", removable=True, first=False):
             row = QWidget()
@@ -9405,7 +11176,7 @@ Command Line :
             mode_combo = QComboBox()
             mode_combo.addItems(["포함", "제외"])
             mode_combo.setCurrentText(default_mode)
-            mode_combo.setFixedWidth(80)
+            mode_combo.setFixedWidth(SEARCH_MODE_W)
             mode_combo.setFixedHeight(ROW_H)
 
             default_font = QApplication.font()
@@ -9448,8 +11219,8 @@ Command Line :
 
         add_search_row(default_field="ALL", default_mode="포함", removable=False, first=True)
 
-        layout.addWidget(search_wrapper)
-        layout.addWidget(table)
+        layout.addWidget(search_wrapper, 0)
+        layout.addWidget(table, 1)
 
         self._refresh_dlp = refresh
         refresh()
@@ -9522,7 +11293,10 @@ Command Line :
             self.btn_query_fw_icheon,
             self.btn_query_fw_anseong,
         ]:
-            btn.setFixedHeight(30)
+            btn.setFixedHeight(38)
+            btn.setMinimumHeight(38)
+            btn.setProperty("buttonRole", "secondary")
+            btn.setStyleSheet(self.button_style("secondary"))
             query_layout.addWidget(btn)
 
         right_box.addWidget(self.response_mode_combo)
@@ -9945,48 +11719,20 @@ Command Line :
     # Config Tab
     # ==================================================
     def tab_config(self):
-        btn_style = """
-        QPushButton {
-            background-color: qlineargradient(
-                x1:0, y1:0, x2:0, y2:1,
-                stop:0 #3b82f6,
-                stop:1 #2563eb
-            );
-            color: white;
-            border-radius: 8px;
-            padding: 8px;
-            font-weight: 600;
-            border: 1px solid #1e3a8a;   /* 기본 border */
-        }
-
-        QPushButton:hover {
-            background-color: qlineargradient(
-                x1:0, y1:0, x2:0, y2:1,
-                stop:0 #60a5fa,
-                stop:1 #1d4ed8
-            );
-            border: 1px solid #2563eb;   /* hover 시 밝게 */
-        }
-
-        QPushButton:pressed {
-            background-color: #1e40af;
-            border: 1px solid #1d4ed8;
-        }
-
-        QPushButton:disabled {
-            background-color: #94a3b8;
-            color: #e5e7eb;
-            border: 1px solid #94a3b8;
-        }
-        """
+        btn_style = self.button_style("primary")
+        secondary_btn_style = self.button_style("secondary")
+        ghost_btn_style = self.button_style("ghost")
         root = QWidget()
+        root.setObjectName("configRoot")
+        root.setStyleSheet(self.config_root_stylesheet())
         layout = QVBoxLayout(root)
+        layout.setContentsMargins(14, 14, 14, 14)
         layout.setSpacing(20)
 
         # ==================================================
         # 🔹 Cache Data 카드
         # ==================================================
-        cache_card, cache_layout = self.make_card("Cache Data")
+        cache_card, cache_layout = self.make_card("Cache Data", legacy_title=True)
 
         btn_det_refresh = QPushButton("탐지 데이터 최신화")
         btn_mail_refresh = QPushButton("이메일 데이터 최신화")
@@ -10040,8 +11786,7 @@ Command Line :
             self.mail_end_date,
             self.dlp_refresh_date,
         ]:
-            widget.setMinimumHeight(36)
-            widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            self.prepare_form_control(widget, height=38)
 
         for btn in [
             btn_det_refresh,
@@ -10050,8 +11795,9 @@ Command Line :
             btn_org_refresh,
             btn_dlp_refresh,
         ]:
-            btn.setMinimumHeight(36)
-            widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            btn.setMinimumHeight(40)
+            btn.setMinimumWidth(230)
+            btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             btn.setStyleSheet(btn_style)
 
         det_tilde = QLabel("~")
@@ -10106,27 +11852,50 @@ Command Line :
         # ==================================================
         # 🔹 Auto Refresh 카드
         # ==================================================
-        auto_card, auto_layout = self.make_card("Auto Refresh")
+        auto_card, auto_layout = self.make_card("Auto Refresh", legacy_title=True)
 
         self.chk_auto_det = QCheckBox("Detection Auto Refresh")
         self.chk_auto_mail = QCheckBox("Email Auto Refresh")
 
         self.spin_interval = QSpinBox()
+        self.spin_interval.setObjectName("intervalSpin")
         self.spin_interval.setMinimum(1)
         self.spin_interval.setMaximum(1440)
         self.spin_interval.setValue(10)
         self.spin_interval.setSuffix(" min")
+        self.spin_interval.setButtonSymbols(QAbstractSpinBox.UpDownArrows)
+        self.spin_interval.setFixedSize(104, 28)
+        self.spin_interval.setAlignment(Qt.AlignCenter)
+        self.spin_interval.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+
+        interval_label = QLabel("Interval")
+        interval_label.setFixedWidth(56)
+        interval_label.setStyleSheet(f"color:{UI_THEME['accent_text']}; font-size:13px; font-weight:800;")
+
+        interval_row = QHBoxLayout()
+        interval_row.setContentsMargins(0, 0, 0, 0)
+        interval_row.setSpacing(6)
+        interval_row.addWidget(interval_label)
+        interval_row.addWidget(self.spin_interval)
+        interval_row.addStretch()
 
         auto_layout.addWidget(self.chk_auto_det)
         auto_layout.addWidget(self.chk_auto_mail)
-        auto_layout.addWidget(QLabel("Interval"))
-        auto_layout.addWidget(self.spin_interval)
+        auto_layout.addLayout(interval_row)
 
         self.lbl_det_status = QLabel("Last Run: -")
         self.lbl_det_result = QLabel("Status: -")
 
         self.lbl_mail_status = QLabel("Last Run: -")
         self.lbl_mail_result = QLabel("Status: -")
+
+        for label in [
+            self.lbl_det_status,
+            self.lbl_det_result,
+            self.lbl_mail_status,
+            self.lbl_mail_result,
+        ]:
+            label.setStyleSheet("color:#374151; font-size:13px; font-weight:600;")
 
         auto_layout.addWidget(self.lbl_det_status)
         auto_layout.addWidget(self.lbl_det_result)
@@ -10135,6 +11904,7 @@ Command Line :
 
         self.chk_auto_det.stateChanged.connect(self.toggle_det_timer)
         self.chk_auto_mail.stateChanged.connect(self.toggle_mail_timer)
+        self.spin_interval.valueChanged.connect(self.update_auto_interval)
 
         # ===== 여기서 가로 배치 =====
         top_row = QHBoxLayout()
@@ -10148,7 +11918,7 @@ Command Line :
         # ==================================================
         # 🔹 Export 카드
         # ==================================================
-        export_card, export_layout = self.make_card("Export")
+        export_card, export_layout = self.make_card("Export", legacy_title=True)
 
         today = QDate.currentDate()
 
@@ -10182,10 +11952,9 @@ Command Line :
 
         for w in [self.det_export_start_date, self.det_export_start_time,
                   self.det_export_end_date, self.det_export_end_time]:
-            w.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-            w.setMinimumHeight(36)
+            self.prepare_form_control(w, height=38)
         btn_det_export.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        btn_det_export.setMinimumHeight(36)
+        btn_det_export.setMinimumHeight(38)
 
         det_layout.addWidget(self.det_export_start_date, 1)
         det_layout.addWidget(self.det_export_start_time, 1)
@@ -10220,10 +11989,9 @@ Command Line :
 
         for w in [self.xdr_export_start_date, self.xdr_export_start_time,
                   self.xdr_export_end_date, self.xdr_export_end_time]:
-            w.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-            w.setMinimumHeight(36)
+            self.prepare_form_control(w, height=38)
         btn_xdr_export.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        btn_xdr_export.setMinimumHeight(36)
+        btn_xdr_export.setMinimumHeight(38)
 
         xdr_layout.addWidget(self.xdr_export_start_date, 1)
         xdr_layout.addWidget(self.xdr_export_start_time, 1)
@@ -10258,10 +12026,9 @@ Command Line :
 
         for w in [self.mail_export_start_date, self.mail_export_start_time,
                   self.mail_export_end_date, self.mail_export_end_time]:
-            w.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-            w.setMinimumHeight(36)
+            self.prepare_form_control(w, height=38)
         btn_mail_export.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        btn_mail_export.setMinimumHeight(36)
+        btn_mail_export.setMinimumHeight(38)
 
         mail_layout.addWidget(self.mail_export_start_date, 1)
         mail_layout.addWidget(self.mail_export_start_time, 1)
@@ -10300,10 +12067,9 @@ Command Line :
         for w in [self.dlp_export_start_date, self.dlp_export_start_time,
                   self.dlp_export_end_date, self.dlp_export_end_time,
                   self.dlp_export_machine_input]:
-            w.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-            w.setMinimumHeight(36)
+            self.prepare_form_control(w, height=38)
         btn_dlp_export.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        btn_dlp_export.setMinimumHeight(36)
+        btn_dlp_export.setMinimumHeight(38)
 
         dlp_layout.addWidget(self.dlp_export_start_date, 1)
         dlp_layout.addWidget(self.dlp_export_start_time, 1)
@@ -10319,7 +12085,7 @@ Command Line :
         # ==================================================
         # 🔹 Report 카드
         # ==================================================
-        report_card, report_layout = self.make_card("Report")
+        report_card, report_layout = self.make_card("Report", legacy_title=True)
 
         self.report_start_date = QDateEdit()
         self.report_start_time = QTimeEdit()
@@ -10338,15 +12104,23 @@ Command Line :
         self.report_start_time.setDisplayFormat("HH:mm:ss")
         self.report_end_time.setDisplayFormat("HH:mm:ss")
 
+        for w in [
+            self.report_start_date,
+            self.report_start_time,
+            self.report_end_date,
+            self.report_end_time,
+        ]:
+            self.prepare_form_control(w, height=38)
+
         btn_report = QPushButton("Download Security Report (PDF)")
         btn_report.clicked.connect(self.generate_security_report_v2)
         btn_report.setStyleSheet(btn_style)
-        btn_report.setMinimumHeight(36)
+        btn_report.setMinimumHeight(38)
 
         btn_report_exception = QPushButton("Report exception List")
         btn_report_exception.clicked.connect(self.open_report_exception_list_dialog)
-        btn_report_exception.setStyleSheet(btn_style)
-        btn_report_exception.setMinimumHeight(36)
+        btn_report_exception.setStyleSheet(secondary_btn_style)
+        btn_report_exception.setMinimumHeight(38)
 
         row = QHBoxLayout()
         row.addWidget(self.report_start_date)
@@ -10363,7 +12137,7 @@ Command Line :
         # ===============================
         # Folders (Quick Access)
         # ===============================
-        folder_group, folder_layout = self.make_card("Folders")
+        folder_group, folder_layout = self.make_card("Folders", legacy_title=True)
         
         row = QHBoxLayout()   # 👈 가로 레이아웃 생성
 
@@ -10373,8 +12147,8 @@ Command Line :
         btn_report = QPushButton("Reports")
 
         for b in [btn_log, btn_cache, btn_export, btn_report]:
-            b.setStyleSheet(btn_style)
-            b.setMinimumHeight(36)
+            b.setStyleSheet(secondary_btn_style)
+            b.setMinimumHeight(38)
             row.addWidget(b)
         
         folder_layout.addLayout(row)   # 👈 카드에 가로 레이아웃 추가
@@ -12063,44 +13837,36 @@ Command Line :
 
             if success:
                 self.lbl_det_result.setText("Status: SUCCESS")
-                self.lbl_det_result.setStyleSheet("color:#16a34a; font-weight:600;")
+                self.lbl_det_result.setStyleSheet(f"color:{UI_THEME['status_success_text']}; font-weight:600;")
             else:
                 self.lbl_det_result.setText("Status: FAILED")
-                self.lbl_det_result.setStyleSheet("color:#dc2626; font-weight:600;")
+                self.lbl_det_result.setStyleSheet(f"color:{UI_THEME['status_fail_text']}; font-weight:600;")
 
         elif kind == "Email":
             self.lbl_mail_status.setText(f"Last Run: {now}")
 
             if success:
                 self.lbl_mail_result.setText("Status: SUCCESS")
-                self.lbl_mail_result.setStyleSheet("color:#16a34a; font-weight:600;")
+                self.lbl_mail_result.setStyleSheet(f"color:{UI_THEME['status_success_text']}; font-weight:600;")
             else:
                 self.lbl_mail_result.setText("Status: FAILED")
-                self.lbl_mail_result.setStyleSheet("color:#dc2626; font-weight:600;")
+                self.lbl_mail_result.setStyleSheet(f"color:{UI_THEME['status_fail_text']}; font-weight:600;")
  
-    def make_card(self, title):
+    def make_card(self, title, legacy_title=False):
         frame = QFrame()
-        frame.setStyleSheet("""
-            QFrame {
-                background-color: #ffffff;
-                border: 1px solid #e5e7eb;
-                border-radius: 10px;
-            }
-        """)
+        frame.setObjectName("dashboardCard")
+        frame.setStyleSheet(self.card_style("dashboardCard", accent=False))
+        self.apply_soft_shadow(frame, blur=30, y_offset=12, alpha=90)
 
         layout = QVBoxLayout(frame)
-        layout.setContentsMargins(15, 15, 15, 15)
-        layout.setSpacing(10)
-
-        label = QLabel(title)
-        label.setStyleSheet("""
-            font-size:15px;
-            font-weight:700;
-            color:#1d4ed8;
-            padding-left:8px;
-            border-left:4px solid #2563eb;
-        """)
-        layout.addWidget(label)
+        if legacy_title:
+            layout.setContentsMargins(15, 15, 15, 15)
+            layout.setSpacing(10)
+            self.add_legacy_card_title(layout, title)
+        else:
+            layout.setContentsMargins(18, 18, 18, 18)
+            layout.setSpacing(12)
+            self.add_card_title(layout, title)
 
         return frame, layout
         
@@ -12421,6 +14187,15 @@ Command Line :
             return
 
         self.run_refresh("Email")
+
+    def update_auto_interval(self):
+        interval = self.spin_interval.value() * 60 * 1000
+
+        if self.det_timer.isActive():
+            self.det_timer.start(interval)
+
+        if self.mail_timer.isActive():
+            self.mail_timer.start(interval)
 
     def toggle_det_timer(self, state):
         if state:
