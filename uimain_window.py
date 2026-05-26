@@ -2344,6 +2344,11 @@ class DlpClient:
 
         return payload
 
+    def _looks_like_login_html(self, text: str):
+        txt = str(text or "")
+        hints = ["로그아웃", "환영합니다!", "/index.php/logout", "Endpoint Protector"]
+        return any(h in txt for h in hints)
+
     def _fetch_cf_logs(self, payload, timeout=None):
         headers = {
             "X-Requested-With": "XMLHttpRequest",
@@ -2360,25 +2365,43 @@ class DlpClient:
             verify=self.verify_ssl,
         )
         r.raise_for_status()
+        content_type = str(r.headers.get("Content-Type", "") or "")
+        body_preview = r.text[:600]
+        log.info(
+            f"DLP cf_log/list status={r.status_code} url={r.url} content_type={content_type} "
+            f"body_len={len(r.text)}"
+        )
+
+        if self._looks_like_login_html(r.text):
+            raise RuntimeError("DLP cf_log/list returned login/main HTML instead of JSON")
 
         try:
             result = r.json()
         except Exception as e:
-            preview = r.text[:1000]
-            raise RuntimeError(f"Failed to parse DLP response as JSON: {preview}") from e
+            raise RuntimeError(f"Failed to parse DLP response as JSON: {body_preview}") from e
 
         if "data" not in result:
-            raise RuntimeError(f"Unexpected DLP response: {result}")
+            keys = list(result.keys()) if isinstance(result, dict) else []
+            raise RuntimeError(f"Unexpected DLP response keys={keys} preview={body_preview}")
 
         rows = result.get("data", [])
         if not isinstance(rows, list):
             rows = []
 
+        records_total = result.get("recordsTotal", len(rows))
         records_filtered = result.get("recordsFiltered", len(rows))
+        try:
+            records_total = int(records_total)
+        except Exception:
+            records_total = len(rows)
         try:
             records_filtered = int(records_filtered)
         except Exception:
             records_filtered = len(rows)
+
+        log.info(
+            f"DLP cf_log/list parsed recordsTotal={records_total} recordsFiltered={records_filtered} rows={len(rows)}"
+        )
 
         return {
             "rows": rows,
@@ -2429,7 +2452,15 @@ class DlpClient:
                 length=-1,
                 draw=1,
             )
-            return first_try.get("rows", [])
+            first_rows = first_try.get("rows", [])
+            first_filtered = int(first_try.get("records_filtered", len(first_rows)) or 0)
+            if first_filtered > 0 and len(first_rows) == 0:
+                log.warning(
+                    f"DLP full-day fetch returned 0 rows but recordsFiltered={first_filtered}. "
+                    "Retry with paged fetch (start/length)."
+                )
+            else:
+                return first_rows
         except requests.exceptions.Timeout:
             log.warning(f"DLP full-day fetch timed out ({date_str}). Retry with paged fetch (start/length).")
         except requests.exceptions.RequestException as e:
