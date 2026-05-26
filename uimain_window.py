@@ -2343,8 +2343,9 @@ class DlpClient:
             payload[f"columns[{idx}][search][value]"] = ""
             payload[f"columns[{idx}][search][regex]"] = "false"
 
-        payload["columns[33][search][value]"] = start_dt
-        payload["columns[34][search][value]"] = end_dt
+        # 요청 맞춤: 날짜 필터는 columns[30]/[31] 검색값으로 전달
+        payload["columns[30][search][value]"] = start_dt
+        payload["columns[31][search][value]"] = end_dt
 
         return payload
 
