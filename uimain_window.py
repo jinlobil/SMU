@@ -2280,6 +2280,7 @@ class DlpClient:
             ("id", False),
             ("event_id", True),
             ("eventtimelocal", True),
+            ("eventtime", True),
             ("timestamp", True),
             ("machine_name", True),
             ("ip", True),
@@ -2298,6 +2299,7 @@ class DlpClient:
             ("filesize", True),
             ("filehash", True),
             ("os_value", True),
+            ("epp_client_version", True),
             ("vid", True),
             ("pid", True),
             ("serialno", True),
@@ -2313,6 +2315,8 @@ class DlpClient:
             ("use_old_logs", True),
             ("real_filesize", True),
             ("repositoryType", True),
+            ("startClientUtcDate", True),
+            ("endClientUtcDate", True),
             ("loclogid", False),
             ("department_id", False),
             ("machine_id", False),
@@ -2323,7 +2327,7 @@ class DlpClient:
 
         payload = {
             "draw": str(draw),
-            "order[0][column]": "3",
+            "order[0][column]": "4",
             "order[0][dir]": "desc",
             "start": str(start),
             "length": str(length),
@@ -2339,8 +2343,8 @@ class DlpClient:
             payload[f"columns[{idx}][search][value]"] = ""
             payload[f"columns[{idx}][search][regex]"] = "false"
 
-        payload["columns[31][search][value]"] = start_dt
-        payload["columns[32][search][value]"] = end_dt
+        payload["columns[33][search][value]"] = start_dt
+        payload["columns[34][search][value]"] = end_dt
 
         return payload
 
