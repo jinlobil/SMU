@@ -2147,8 +2147,9 @@ requests.packages.urllib3.disable_warnings(category=InsecureRequestWarning)
 
 
 class DlpClient:
-    def __init__(self):
+    def __init__(self, progress_cb=None):
         env = load_dlp_env(DLP_ENV_PATH)
+        self.progress_cb = progress_cb
 
         self.base_url = str(env.get("DLP_BASE_URL", "")).strip().rstrip("/")
         self.username = str(env.get("DLP_USERNAME", "")).strip()
@@ -2178,6 +2179,14 @@ class DlpClient:
                 "Chrome/146.0.0.0 Safari/537.36"
             )
         })
+
+
+    def _notify_progress(self, message: str):
+        if callable(self.progress_cb):
+            try:
+                self.progress_cb(str(message))
+            except Exception:
+                pass
 
     @property
     def login_url(self):
@@ -2321,7 +2330,7 @@ class DlpClient:
 
         return payload
 
-    def _fetch_cf_logs(self, payload):
+    def _fetch_cf_logs(self, payload, timeout=None):
         headers = {
             "X-Requested-With": "XMLHttpRequest",
             "Referer": f"{self.base_url}/index.php/",
@@ -2333,7 +2342,7 @@ class DlpClient:
             self.cf_log_list_url,
             data=payload,
             headers=headers,
-            timeout=self.timeout,
+            timeout=timeout if timeout is not None else self.timeout,
             verify=self.verify_ssl,
         )
         r.raise_for_status()
@@ -2363,7 +2372,7 @@ class DlpClient:
             "raw": result,
         }
 
-    def fetch_daily_logs_window(self, date_str: str, start_dt: str, end_dt: str, length: int = -1, draw: int = 1, start: int = 0):
+    def fetch_daily_logs_window(self, date_str: str, start_dt: str, end_dt: str, length: int = -1, draw: int = 1, start: int = 0, timeout=None):
         payload = self.build_cf_log_payload(
             date_str=date_str,
             draw=draw,
@@ -2372,7 +2381,7 @@ class DlpClient:
             start_dt=start_dt,
             end_dt=end_dt,
         )
-        return self._fetch_cf_logs(payload)
+        return self._fetch_cf_logs(payload, timeout=timeout)
 
     def _merge_rows_unique(self, rows):
         dedup = {}
@@ -2417,15 +2426,31 @@ class DlpClient:
         start_dt = f"{date_str} 00:00:00"
         end_dt = f"{date_str} 23:30:00"
         page_size = 500
+        fallback_timeout = max(self.timeout, 60)
+        retry_count = 2
 
-        first_page = self.fetch_daily_logs_window(
-            date_str=date_str,
-            start_dt=start_dt,
-            end_dt=end_dt,
-            start=0,
-            length=page_size,
-            draw=1,
-        )
+        self._notify_progress("DLP 2차 조회 시작 (페이징 500건 단위)")
+
+        def fetch_page_with_retry(page_start, draw):
+            last_exc = None
+            for attempt in range(1, retry_count + 1):
+                try:
+                    return self.fetch_daily_logs_window(
+                        date_str=date_str,
+                        start_dt=start_dt,
+                        end_dt=end_dt,
+                        start=page_start,
+                        length=page_size,
+                        draw=draw,
+                        timeout=fallback_timeout,
+                    )
+                except requests.exceptions.Timeout as e:
+                    last_exc = e
+                    log.warning(f"DLP fallback page timeout start={page_start} attempt={attempt}/{retry_count}")
+            if last_exc:
+                raise last_exc
+
+        first_page = fetch_page_with_retry(0, 1)
 
         total_count = first_page.get("records_filtered", 0)
         all_rows = list(first_page.get("rows", []))
@@ -2438,14 +2463,8 @@ class DlpClient:
         page_count = (total_count + page_size - 1) // page_size
         for page_index in range(1, page_count):
             page_start = page_index * page_size
-            page = self.fetch_daily_logs_window(
-                date_str=date_str,
-                start_dt=start_dt,
-                end_dt=end_dt,
-                start=page_start,
-                length=page_size,
-                draw=page_index + 1,
-            )
+            self._notify_progress(f"DLP 2차 조회 진행중 {page_index + 1}/{page_count} (start={page_start})")
+            page = fetch_page_with_retry(page_start, page_index + 1)
             page_rows = page.get("rows", [])
             if not page_rows:
                 break
@@ -2453,6 +2472,7 @@ class DlpClient:
 
         merged = self._merge_rows_unique(all_rows)
         log.info(f"DLP fallback paged fetch completed ({date_str}) total={total_count} raw={len(all_rows)} unique={len(merged)}")
+        self._notify_progress(f"DLP 2차 조회 완료 total={total_count} raw={len(all_rows)} unique={len(merged)}")
         return merged
 
     def refresh_dlp_day(self, date_str: str):
@@ -3041,6 +3061,7 @@ class SophosClient:
 class RefreshWorker(QThread):
     ok = pyqtSignal(str)
     fail = pyqtSignal(str, str)
+    progress = pyqtSignal(str, str)
 
     def __init__(self, job_name: str, date_str: str = "", parent=None):
         super().__init__(parent)
@@ -3053,7 +3074,7 @@ class RefreshWorker(QThread):
 
             if self.job_name == "DLP":
                 log.info("STEP 1: DlpClient init")
-                api = DlpClient()
+                api = DlpClient(progress_cb=lambda msg: self.progress.emit("DLP", msg))
 
                 log.info("STEP 2: Before DLP refresh call")
 
@@ -7469,6 +7490,7 @@ class MainWindow(QMainWindow):
 
         self.worker.ok.connect(self._on_refresh_ok)
         self.worker.fail.connect(self._on_refresh_fail)
+        self.worker.progress.connect(self._on_refresh_progress)
         self.worker.start()
         
 
@@ -7537,6 +7559,7 @@ class MainWindow(QMainWindow):
         self.worker = RefreshWorker(job_name="DLP", date_str=date_str)
         self.worker.ok.connect(self._on_refresh_ok)
         self.worker.fail.connect(self._on_refresh_fail)
+        self.worker.progress.connect(self._on_refresh_progress)
         self.worker.start()
         
     def run_refresh_detection_range(self):
@@ -7585,6 +7608,10 @@ class MainWindow(QMainWindow):
         self.worker.ok.connect(self._on_refresh_ok)
         self.worker.fail.connect(self._on_refresh_fail)
         self.worker.start()
+
+    def _on_refresh_progress(self, tab_name, message):
+        if tab_name == "DLP":
+            self.set_status(str(message), color="blue", spinning=True)
 
     def _on_refresh_ok(self, tab_name):
 
