@@ -2189,6 +2189,10 @@ class DlpClient:
                 pass
 
     @property
+    def base_home_url(self):
+        return f"{self.base_url}/"
+
+    @property
     def login_url(self):
         return f"{self.base_url}/index.php/login"
 
@@ -2198,7 +2202,7 @@ class DlpClient:
 
     def fetch_login_page(self):
         r = self.session.get(
-            self.login_url,
+            self.base_home_url,
             timeout=self.timeout,
             verify=self.verify_ssl,
         )
@@ -2241,13 +2245,15 @@ class DlpClient:
         }
 
         headers = {
-            "Referer": self.login_url,
+            "Referer": self.base_home_url,
             "Origin": self.base_url,
         }
 
+        files_payload = {k: (None, str(v)) for k, v in payload.items()}
+
         r = self.session.post(
             self.login_url,
-            data=payload,
+            files=files_payload,
             headers=headers,
             timeout=self.timeout,
             verify=self.verify_ssl,
@@ -2255,7 +2261,15 @@ class DlpClient:
         )
         r.raise_for_status()
 
-        if not self.is_logged_in(r.text):
+        has_ratool_cookie = any(c.name == "ratool" for c in self.session.cookies)
+        final_url = str(getattr(r, "url", "") or "")
+        redirected_to_index = "/index.php/" in final_url
+        log.info(
+            f"DLP login post status={r.status_code} final_url={final_url} "
+            f"redirected_to_index={redirected_to_index} ratool_cookie={has_ratool_cookie}"
+        )
+
+        if not self.is_logged_in(r.text) and not (redirected_to_index and has_ratool_cookie):
             raise RuntimeError("DLP login failed. Check credentials or login flow.")
 
     def build_cf_log_payload(self, date_str: str, draw: int = 1, start: int = 0, length: int = -1, start_dt: str = None, end_dt: str = None):
