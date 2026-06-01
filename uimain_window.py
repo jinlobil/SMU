@@ -1505,29 +1505,8 @@ def save_report_exception_text(raw_text: str):
 
     os.replace(tmp_path, REPORT_EXCEPTION_LIST_PATH)
 
-def make_org_info(dept_name, dept_code, user_name="", user_id=""):
-    return {
-        "dept_name": str(dept_name or "미분류"),
-        "dept_code": str(dept_code or ""),
-        "user_name": str(user_name or ""),
-        "user_id": str(user_id or ""),
-    }
-
-
-def append_unique_org_info(items, info):
-    for item in items:
-        if (
-            item.get("dept_name") == info.get("dept_name")
-            and item.get("dept_code") == info.get("dept_code")
-            and normalize_name_key(item.get("user_id")) == normalize_name_key(info.get("user_id"))
-        ):
-            return
-    items.append(info)
-
-
-def build_org_user_indexes():
-    by_id = {}
-    by_name = defaultdict(list)
+def build_org_user_index():
+    result = {}
 
     for org in ORGS:
         if not isinstance(org, dict):
@@ -1549,29 +1528,17 @@ def build_org_user_indexes():
                 org_user_name = str(u or "").strip()
                 org_user_id = ""
 
-            info = make_org_info(dept_name, dept_code, org_user_name, org_user_id)
+            if org_user_name:
+                result[normalize_name_key(org_user_name)] = {
+                    "dept_name": dept_name,
+                    "dept_code": dept_code,
+                }
 
             if org_user_id:
-                by_id[normalize_name_key(org_user_id)] = info
-
-            if org_user_name:
-                append_unique_org_info(by_name[normalize_name_key(org_user_name)], info)
-
-    return by_id, dict(by_name)
-
-
-def build_org_user_index():
-    """Compatibility index for existing diagnostics.
-
-    User ID entries are always included because User ID is unique. Name entries
-    are included only when the name maps to exactly one org user, preventing
-    duplicate Korean names from being flattened into a misleading single dept.
-    """
-    result = dict(USER_ORG_INDEX_BY_ID)
-
-    for name_key, candidates in USER_ORG_INDEX_BY_NAME.items():
-        if len(candidates) == 1:
-            result[name_key] = candidates[0]
+                result[normalize_name_key(org_user_id)] = {
+                    "dept_name": dept_name,
+                    "dept_code": dept_code,
+                }
 
     return result
 
@@ -1608,117 +1575,31 @@ def build_hostname_user_map():
     return result
 
 
-def resolve_org_info_by_user(user_name="", user_id="", hostname=""):
-    user_name = str(user_name or "").strip()
-    user_id = str(user_id or "").strip()
-    hostname = str(hostname or "").strip()
-
-    user_id_key = normalize_name_key(user_id)
-    if user_id_key:
-        org_info = USER_ORG_INDEX_BY_ID.get(user_id_key)
-        if org_info:
-            return {
-                "dept_name": str(org_info.get("dept_name", "미분류") or "미분류"),
-                "dept_code": str(org_info.get("dept_code", "") or ""),
-                "match_type": "user_id",
-                "ambiguous": False,
-            }
-
-    exc_dept = get_report_exception_dept(user_name=user_name, user_id=user_id, hostname=hostname)
-    if exc_dept and user_id_key:
-        return {
-            "dept_name": exc_dept,
-            "dept_code": "",
-            "match_type": "exception",
-            "ambiguous": False,
-        }
-
-    user_name_key = normalize_name_key(user_name)
-    if user_name_key:
-        candidates = USER_ORG_INDEX_BY_NAME.get(user_name_key, [])
-        if len(candidates) == 1:
-            org_info = candidates[0]
-            return {
-                "dept_name": str(org_info.get("dept_name", "미분류") or "미분류"),
-                "dept_code": str(org_info.get("dept_code", "") or ""),
-                "match_type": "user_name",
-                "ambiguous": False,
-            }
-
-        if len(candidates) > 1:
-            dept_pairs = {
-                (
-                    str(c.get("dept_name", "미분류") or "미분류"),
-                    str(c.get("dept_code", "") or ""),
-                )
-                for c in candidates
-            }
-            if len(dept_pairs) == 1:
-                dept_name, dept_code = next(iter(dept_pairs))
-                return {
-                    "dept_name": dept_name,
-                    "dept_code": dept_code,
-                    "match_type": "user_name_shared_dept",
-                    "ambiguous": False,
-                }
-
-        exc_dept = get_report_exception_dept(user_name=user_name, user_id=user_id, hostname=hostname)
-        if exc_dept:
-            return {
-                "dept_name": exc_dept,
-                "dept_code": "",
-                "match_type": "exception",
-                "ambiguous": False,
-            }
-
-        if len(candidates) > 1:
-            dept_candidates = sorted({
-                str(c.get("dept_name", "미분류") or "미분류")
-                for c in candidates
-            })
-            log.warning(
-                "[ORG MAP] ambiguous user name: "
-                f"hostname={hostname or 'None'} user_name={user_name} "
-                f"user_id={user_id or 'None'} candidates={', '.join(dept_candidates)}"
-            )
-            return {
-                "dept_name": "동명이인확인필요",
-                "dept_code": "",
-                "match_type": "ambiguous_user_name",
-                "ambiguous": True,
-            }
-
-    exc_dept = get_report_exception_dept(user_name=user_name, user_id=user_id, hostname=hostname)
-    if exc_dept:
-        return {
-            "dept_name": exc_dept,
-            "dept_code": "",
-            "match_type": "exception",
-            "ambiguous": False,
-        }
-
-    return {
-        "dept_name": "미분류",
-        "dept_code": "",
-        "match_type": "not_found",
-        "ambiguous": False,
-    }
-
-
 def build_hostname_dept_map():
     result = {}
 
     for host_key, info in HOSTNAME_USER_MAP.items():
-        hostname = str(info.get("hostname", "") or "").strip()
         user_name = str(info.get("user_name", "") or "").strip()
         user_id = str(info.get("user_id", "") or "").strip()
 
-        org_info = resolve_org_info_by_user(user_name=user_name, user_id=user_id, hostname=hostname)
+        dept_name = "미분류"
+        dept_code = ""
+
+        exc_dept = get_report_exception_dept(user_name)
+        if exc_dept:
+            dept_name = exc_dept
+        elif user_name:
+            org_info = USER_ORG_INDEX.get(normalize_name_key(user_name))
+            if not org_info and user_id:
+                org_info = USER_ORG_INDEX.get(normalize_name_key(user_id))
+
+            if org_info:
+                dept_name = str(org_info.get("dept_name", "미분류") or "미분류")
+                dept_code = str(org_info.get("dept_code", "") or "")
 
         result[host_key] = {
-            "dept_name": str(org_info.get("dept_name", "미분류") or "미분류"),
-            "dept_code": str(org_info.get("dept_code", "") or ""),
-            "match_type": str(org_info.get("match_type", "") or ""),
+            "dept_name": dept_name,
+            "dept_code": dept_code,
         }
 
     return result
@@ -1818,23 +1699,19 @@ def get_dept_by_hostname(hostname: str):
 
 def reload_all_data():
     global ENDPOINTS, ORGS, REPORT_EXCEPTION_MAP
-    global USER_ORG_INDEX, USER_ORG_INDEX_BY_ID, USER_ORG_INDEX_BY_NAME
-    global HOSTNAME_USER_MAP, HOSTNAME_DEPT_MAP
+    global USER_ORG_INDEX, HOSTNAME_USER_MAP, HOSTNAME_DEPT_MAP
 
     ENDPOINTS = load_json(os.path.join(CACHE_DIR, "endpoints.json"))
     ORGS = load_json(os.path.join(CACHE_DIR, "user_groups.json"))
     REPORT_EXCEPTION_MAP = load_report_exception_map()
 
-    USER_ORG_INDEX_BY_ID, USER_ORG_INDEX_BY_NAME = build_org_user_indexes()
     USER_ORG_INDEX = build_org_user_index()
     HOSTNAME_USER_MAP = build_hostname_user_map()
     HOSTNAME_DEPT_MAP = build_hostname_dept_map()
 
-    duplicate_name_count = sum(1 for candidates in USER_ORG_INDEX_BY_NAME.values() if len(candidates) > 1)
     log.info(
         f"[ORG MAP] endpoints={len(ENDPOINTS)} orgs={len(ORGS)} "
-        f"user_id_index={len(USER_ORG_INDEX_BY_ID)} unique_user_index={len(USER_ORG_INDEX)} "
-        f"duplicate_names={duplicate_name_count} hostname_index={len(HOSTNAME_DEPT_MAP)}"
+        f"user_index={len(USER_ORG_INDEX)} hostname_index={len(HOSTNAME_DEPT_MAP)}"
     )
 
 
@@ -1871,50 +1748,48 @@ def get_endpoint_user_by_machine_name(machine_name):
     return "", "", "not_found"
 
 
-def get_org_info_by_user(user_name, user_id="", hostname=""):
-    org_info = resolve_org_info_by_user(user_name=user_name, user_id=user_id, hostname=hostname)
-    return (
-        str(org_info.get("dept_name", "미분류") or "미분류"),
-        str(org_info.get("dept_code", "") or ""),
-    )
+def get_org_info_by_user(user_name, user_id=""):
+    exc_dept = get_report_exception_dept(user_name)
+    if exc_dept:
+        return exc_dept, ""
 
-def get_report_exception_dept(user_name="", user_id="", hostname=""):
-    candidates = []
-    hostname_key = normalize_name_key(hostname)
-    user_id_key = normalize_name_key(user_id)
     user_name_key = normalize_name_key(user_name)
+    user_id_key = normalize_name_key(user_id)
 
-    if hostname_key:
-        candidates.extend([
-            f"hostname:{hostname_key}",
-            f"host:{hostname_key}",
-            hostname_key,
-        ])
-
-    if user_id_key:
-        candidates.extend([
-            f"userid:{user_id_key}",
-            f"user_id:{user_id_key}",
-            f"id:{user_id_key}",
-            user_id_key,
-        ])
-
-    if user_name_key:
-        candidates.extend([
-            f"name:{user_name_key}",
-            user_name_key,
-        ])
-
-    seen = set()
-    for key in candidates:
-        if not key or key in seen:
+    for org in ORGS:
+        if not isinstance(org, dict):
             continue
-        seen.add(key)
-        dept = str(REPORT_EXCEPTION_MAP.get(key, "") or "").strip()
-        if dept:
-            return dept
 
-    return ""
+        dept_code = str(org.get("deptCode", "") or "").strip()
+        raw_dept_name = str(org.get("deptName", "") or "").strip()
+        dept_name = DEPT_MAP.get(dept_code, raw_dept_name) or "미분류"
+
+        users = org.get("users", [])
+        if not isinstance(users, list):
+            continue
+
+        for u in users:
+            if isinstance(u, dict):
+                org_user_name = str(u.get("name", "") or "").strip()
+                org_user_id = str(u.get("id", "") or u.get("userId", "") or "").strip()
+            else:
+                org_user_name = str(u or "").strip()
+                org_user_id = ""
+
+            if user_name_key and normalize_name_key(org_user_name) == user_name_key:
+                return dept_name, dept_code
+
+            if user_id_key and org_user_id and normalize_name_key(org_user_id) == user_id_key:
+                return dept_name, dept_code
+
+    return "미분류", ""
+
+def get_report_exception_dept(user_name):
+    key = normalize_name_key(user_name)
+    if not key:
+        return ""
+
+    return str(REPORT_EXCEPTION_MAP.get(key, "") or "").strip()
 
 def resolve_history_endpoint_id_by_hostname(user_input: str):
     key = str(user_input or "").strip().lower()
@@ -3204,13 +3079,17 @@ class SophosClient:
                     if isinstance(uitems, list):
                         for u in uitems:
                             if isinstance(u, dict):
-                                users.append({"name": u.get("name", "None")})
+                                user_entry = dict(u)
+                                user_entry["name"] = u.get("name", "None")
+                                users.append(user_entry)
                             else:
                                 users.append({"name": str(u)})
                 elif isinstance(users_obj, list):
                     for u in users_obj:
                         if isinstance(u, dict):
-                            users.append({"name": u.get("name", "None")})
+                            user_entry = dict(u)
+                            user_entry["name"] = u.get("name", "None")
+                            users.append(user_entry)
                         else:
                             users.append({"name": str(u)})
 
@@ -12762,8 +12641,8 @@ Command Line :
         return "", ""
 
 
-    def get_org_info_by_user(user_name, user_id="", hostname=""):
-        return get_org_info_by_user(user_name=user_name, user_id=user_id, hostname=hostname)
+    def get_org_info_by_user(user_name, user_id=""):
+        return get_org_info_by_user(user_name, user_id)
  
     def build_security_insight_metrics(self, endpoint_detections, emails, dlp_rows, detection_timeline=None):
         rule_counter = Counter()
