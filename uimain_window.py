@@ -1579,16 +1579,14 @@ def build_hostname_dept_map():
     result = {}
 
     for host_key, info in HOSTNAME_USER_MAP.items():
+        hostname = str(info.get("hostname", "") or "").strip()
         user_name = str(info.get("user_name", "") or "").strip()
         user_id = str(info.get("user_id", "") or "").strip()
 
         dept_name = "미분류"
         dept_code = ""
 
-        exc_dept = get_report_exception_dept(user_name)
-        if exc_dept:
-            dept_name = exc_dept
-        elif user_name:
+        if user_name:
             org_info = USER_ORG_INDEX.get(normalize_name_key(user_name))
             if not org_info and user_id:
                 org_info = USER_ORG_INDEX.get(normalize_name_key(user_id))
@@ -1596,6 +1594,12 @@ def build_hostname_dept_map():
             if org_info:
                 dept_name = str(org_info.get("dept_name", "미분류") or "미분류")
                 dept_code = str(org_info.get("dept_code", "") or "")
+
+        # Report_exception_List 는 일반 분류가 끝난 뒤 마지막에 덮어쓴다.
+        exc_dept = get_report_exception_dept(user_name, user_id, hostname)
+        if exc_dept:
+            dept_name = exc_dept
+            dept_code = ""
 
         result[host_key] = {
             "dept_name": dept_name,
@@ -1748,26 +1752,26 @@ def get_endpoint_user_by_machine_name(machine_name):
     return "", "", "not_found"
 
 
-def get_org_info_by_user(user_name, user_id=""):
-    exc_dept = get_report_exception_dept(user_name)
-    if exc_dept:
-        return exc_dept, ""
-
+def get_org_info_by_user(user_name, user_id="", hostname=""):
     user_name_key = normalize_name_key(user_name)
     user_id_key = normalize_name_key(user_id)
+
+    dept_name = "미분류"
+    dept_code = ""
 
     for org in ORGS:
         if not isinstance(org, dict):
             continue
 
-        dept_code = str(org.get("deptCode", "") or "").strip()
+        org_dept_code = str(org.get("deptCode", "") or "").strip()
         raw_dept_name = str(org.get("deptName", "") or "").strip()
-        dept_name = DEPT_MAP.get(dept_code, raw_dept_name) or "미분류"
+        org_dept_name = DEPT_MAP.get(org_dept_code, raw_dept_name) or "미분류"
 
         users = org.get("users", [])
         if not isinstance(users, list):
             continue
 
+        matched = False
         for u in users:
             if isinstance(u, dict):
                 org_user_name = str(u.get("name", "") or "").strip()
@@ -1777,19 +1781,36 @@ def get_org_info_by_user(user_name, user_id=""):
                 org_user_id = ""
 
             if user_name_key and normalize_name_key(org_user_name) == user_name_key:
-                return dept_name, dept_code
+                matched = True
+                break
 
             if user_id_key and org_user_id and normalize_name_key(org_user_id) == user_id_key:
-                return dept_name, dept_code
+                matched = True
+                break
 
-    return "미분류", ""
+        if matched:
+            dept_name = org_dept_name
+            dept_code = org_dept_code
+            break
 
-def get_report_exception_dept(user_name):
-    key = normalize_name_key(user_name)
-    if not key:
-        return ""
+    # Report_exception_List 는 일반 분류가 끝난 뒤 마지막에 덮어쓴다.
+    exc_dept = get_report_exception_dept(user_name, user_id, hostname)
+    if exc_dept:
+        return exc_dept, ""
 
-    return str(REPORT_EXCEPTION_MAP.get(key, "") or "").strip()
+    return dept_name, dept_code
+
+def get_report_exception_dept(*values):
+    for value in values:
+        key = normalize_name_key(value)
+        if not key:
+            continue
+
+        dept = str(REPORT_EXCEPTION_MAP.get(key, "") or "").strip()
+        if dept:
+            return dept
+
+    return ""
 
 def resolve_history_endpoint_id_by_hostname(user_input: str):
     key = str(user_input or "").strip().lower()
@@ -12648,8 +12669,8 @@ Command Line :
         return "", ""
 
 
-    def get_org_info_by_user(user_name, user_id=""):
-        return get_org_info_by_user(user_name, user_id)
+    def get_org_info_by_user(user_name, user_id="", hostname=""):
+        return get_org_info_by_user(user_name, user_id, hostname)
  
     def build_security_insight_metrics(self, endpoint_detections, emails, dlp_rows, detection_timeline=None):
         rule_counter = Counter()
@@ -12851,7 +12872,7 @@ Command Line :
                 dept_name = "공용PC"
                 dept_code = ""
             else:
-                dept_name, dept_code = get_org_info_by_user(endpoint_user_name, endpoint_user_id)
+                dept_name, dept_code = get_org_info_by_user(endpoint_user_name, endpoint_user_id, machine_name)
 
                 if not dept_name or dept_name == "미분류":
                     manual_dept = get_report_exception_dept(endpoint_user_name)
