@@ -1505,8 +1505,29 @@ def save_report_exception_text(raw_text: str):
 
     os.replace(tmp_path, REPORT_EXCEPTION_LIST_PATH)
 
-def build_org_user_index():
-    result = {}
+def make_org_info(dept_name, dept_code, user_name="", user_id=""):
+    return {
+        "dept_name": str(dept_name or "미분류"),
+        "dept_code": str(dept_code or ""),
+        "user_name": str(user_name or ""),
+        "user_id": str(user_id or ""),
+    }
+
+
+def append_unique_org_info(items, info):
+    for item in items:
+        if (
+            item.get("dept_name") == info.get("dept_name")
+            and item.get("dept_code") == info.get("dept_code")
+            and normalize_name_key(item.get("user_id")) == normalize_name_key(info.get("user_id"))
+        ):
+            return
+    items.append(info)
+
+
+def build_org_user_indexes():
+    by_id = {}
+    by_name = defaultdict(list)
 
     for org in ORGS:
         if not isinstance(org, dict):
@@ -1528,17 +1549,29 @@ def build_org_user_index():
                 org_user_name = str(u or "").strip()
                 org_user_id = ""
 
-            if org_user_name:
-                result[normalize_name_key(org_user_name)] = {
-                    "dept_name": dept_name,
-                    "dept_code": dept_code,
-                }
+            info = make_org_info(dept_name, dept_code, org_user_name, org_user_id)
 
             if org_user_id:
-                result[normalize_name_key(org_user_id)] = {
-                    "dept_name": dept_name,
-                    "dept_code": dept_code,
-                }
+                by_id[normalize_name_key(org_user_id)] = info
+
+            if org_user_name:
+                append_unique_org_info(by_name[normalize_name_key(org_user_name)], info)
+
+    return by_id, dict(by_name)
+
+
+def build_org_user_index():
+    """Compatibility index for existing diagnostics.
+
+    User ID entries are always included because User ID is unique. Name entries
+    are included only when the name maps to exactly one org user, preventing
+    duplicate Korean names from being flattened into a misleading single dept.
+    """
+    result = dict(USER_ORG_INDEX_BY_ID)
+
+    for name_key, candidates in USER_ORG_INDEX_BY_NAME.items():
+        if len(candidates) == 1:
+            result[name_key] = candidates[0]
 
     return result
 
@@ -1575,33 +1608,117 @@ def build_hostname_user_map():
     return result
 
 
+def resolve_org_info_by_user(user_name="", user_id="", hostname=""):
+    user_name = str(user_name or "").strip()
+    user_id = str(user_id or "").strip()
+    hostname = str(hostname or "").strip()
+
+    user_id_key = normalize_name_key(user_id)
+    if user_id_key:
+        org_info = USER_ORG_INDEX_BY_ID.get(user_id_key)
+        if org_info:
+            return {
+                "dept_name": str(org_info.get("dept_name", "미분류") or "미분류"),
+                "dept_code": str(org_info.get("dept_code", "") or ""),
+                "match_type": "user_id",
+                "ambiguous": False,
+            }
+
+    exc_dept = get_report_exception_dept(user_name=user_name, user_id=user_id, hostname=hostname)
+    if exc_dept and user_id_key:
+        return {
+            "dept_name": exc_dept,
+            "dept_code": "",
+            "match_type": "exception",
+            "ambiguous": False,
+        }
+
+    user_name_key = normalize_name_key(user_name)
+    if user_name_key:
+        candidates = USER_ORG_INDEX_BY_NAME.get(user_name_key, [])
+        if len(candidates) == 1:
+            org_info = candidates[0]
+            return {
+                "dept_name": str(org_info.get("dept_name", "미분류") or "미분류"),
+                "dept_code": str(org_info.get("dept_code", "") or ""),
+                "match_type": "user_name",
+                "ambiguous": False,
+            }
+
+        if len(candidates) > 1:
+            dept_pairs = {
+                (
+                    str(c.get("dept_name", "미분류") or "미분류"),
+                    str(c.get("dept_code", "") or ""),
+                )
+                for c in candidates
+            }
+            if len(dept_pairs) == 1:
+                dept_name, dept_code = next(iter(dept_pairs))
+                return {
+                    "dept_name": dept_name,
+                    "dept_code": dept_code,
+                    "match_type": "user_name_shared_dept",
+                    "ambiguous": False,
+                }
+
+        exc_dept = get_report_exception_dept(user_name=user_name, user_id=user_id, hostname=hostname)
+        if exc_dept:
+            return {
+                "dept_name": exc_dept,
+                "dept_code": "",
+                "match_type": "exception",
+                "ambiguous": False,
+            }
+
+        if len(candidates) > 1:
+            dept_candidates = sorted({
+                str(c.get("dept_name", "미분류") or "미분류")
+                for c in candidates
+            })
+            log.warning(
+                "[ORG MAP] ambiguous user name: "
+                f"hostname={hostname or 'None'} user_name={user_name} "
+                f"user_id={user_id or 'None'} candidates={', '.join(dept_candidates)}"
+            )
+            return {
+                "dept_name": "동명이인확인필요",
+                "dept_code": "",
+                "match_type": "ambiguous_user_name",
+                "ambiguous": True,
+            }
+
+    exc_dept = get_report_exception_dept(user_name=user_name, user_id=user_id, hostname=hostname)
+    if exc_dept:
+        return {
+            "dept_name": exc_dept,
+            "dept_code": "",
+            "match_type": "exception",
+            "ambiguous": False,
+        }
+
+    return {
+        "dept_name": "미분류",
+        "dept_code": "",
+        "match_type": "not_found",
+        "ambiguous": False,
+    }
+
+
 def build_hostname_dept_map():
     result = {}
 
     for host_key, info in HOSTNAME_USER_MAP.items():
+        hostname = str(info.get("hostname", "") or "").strip()
         user_name = str(info.get("user_name", "") or "").strip()
         user_id = str(info.get("user_id", "") or "").strip()
 
-        dept_name = "미분류"
-        dept_code = ""
-
-        if user_name:
-            org_info = USER_ORG_INDEX.get(normalize_name_key(user_name))
-            if not org_info and user_id:
-                org_info = USER_ORG_INDEX.get(normalize_name_key(user_id))
-
-            if org_info:
-                dept_name = str(org_info.get("dept_name", "미분류") or "미분류")
-                dept_code = str(org_info.get("dept_code", "") or "")
-            else:
-                exc_dept = get_report_exception_dept(user_name)
-                if exc_dept:
-                    dept_name = exc_dept
-                    dept_code = ""
+        org_info = resolve_org_info_by_user(user_name=user_name, user_id=user_id, hostname=hostname)
 
         result[host_key] = {
-            "dept_name": dept_name,
-            "dept_code": dept_code,
+            "dept_name": str(org_info.get("dept_name", "미분류") or "미분류"),
+            "dept_code": str(org_info.get("dept_code", "") or ""),
+            "match_type": str(org_info.get("match_type", "") or ""),
         }
 
     return result
@@ -1701,19 +1818,23 @@ def get_dept_by_hostname(hostname: str):
 
 def reload_all_data():
     global ENDPOINTS, ORGS, REPORT_EXCEPTION_MAP
-    global USER_ORG_INDEX, HOSTNAME_USER_MAP, HOSTNAME_DEPT_MAP
+    global USER_ORG_INDEX, USER_ORG_INDEX_BY_ID, USER_ORG_INDEX_BY_NAME
+    global HOSTNAME_USER_MAP, HOSTNAME_DEPT_MAP
 
     ENDPOINTS = load_json(os.path.join(CACHE_DIR, "endpoints.json"))
     ORGS = load_json(os.path.join(CACHE_DIR, "user_groups.json"))
     REPORT_EXCEPTION_MAP = load_report_exception_map()
 
+    USER_ORG_INDEX_BY_ID, USER_ORG_INDEX_BY_NAME = build_org_user_indexes()
     USER_ORG_INDEX = build_org_user_index()
     HOSTNAME_USER_MAP = build_hostname_user_map()
     HOSTNAME_DEPT_MAP = build_hostname_dept_map()
 
+    duplicate_name_count = sum(1 for candidates in USER_ORG_INDEX_BY_NAME.values() if len(candidates) > 1)
     log.info(
         f"[ORG MAP] endpoints={len(ENDPOINTS)} orgs={len(ORGS)} "
-        f"user_index={len(USER_ORG_INDEX)} hostname_index={len(HOSTNAME_DEPT_MAP)}"
+        f"user_id_index={len(USER_ORG_INDEX_BY_ID)} unique_user_index={len(USER_ORG_INDEX)} "
+        f"duplicate_names={duplicate_name_count} hostname_index={len(HOSTNAME_DEPT_MAP)}"
     )
 
 
@@ -1750,44 +1871,50 @@ def get_endpoint_user_by_machine_name(machine_name):
     return "", "", "not_found"
 
 
-def get_org_info_by_user(user_name, user_id=""):
-    user_name_key = normalize_name_key(user_name)
+def get_org_info_by_user(user_name, user_id="", hostname=""):
+    org_info = resolve_org_info_by_user(user_name=user_name, user_id=user_id, hostname=hostname)
+    return (
+        str(org_info.get("dept_name", "미분류") or "미분류"),
+        str(org_info.get("dept_code", "") or ""),
+    )
+
+def get_report_exception_dept(user_name="", user_id="", hostname=""):
+    candidates = []
+    hostname_key = normalize_name_key(hostname)
     user_id_key = normalize_name_key(user_id)
+    user_name_key = normalize_name_key(user_name)
 
-    for org in ORGS:
-        if not isinstance(org, dict):
+    if hostname_key:
+        candidates.extend([
+            f"hostname:{hostname_key}",
+            f"host:{hostname_key}",
+            hostname_key,
+        ])
+
+    if user_id_key:
+        candidates.extend([
+            f"userid:{user_id_key}",
+            f"user_id:{user_id_key}",
+            f"id:{user_id_key}",
+            user_id_key,
+        ])
+
+    if user_name_key:
+        candidates.extend([
+            f"name:{user_name_key}",
+            user_name_key,
+        ])
+
+    seen = set()
+    for key in candidates:
+        if not key or key in seen:
             continue
+        seen.add(key)
+        dept = str(REPORT_EXCEPTION_MAP.get(key, "") or "").strip()
+        if dept:
+            return dept
 
-        dept_code = str(org.get("deptCode", "") or "").strip()
-        raw_dept_name = str(org.get("deptName", "") or "").strip()
-        dept_name = DEPT_MAP.get(dept_code, raw_dept_name) or "미분류"
-
-        users = org.get("users", [])
-        if not isinstance(users, list):
-            continue
-
-        for u in users:
-            if isinstance(u, dict):
-                org_user_name = str(u.get("name", "") or "").strip()
-                org_user_id = str(u.get("id", "") or u.get("userId", "") or "").strip()
-            else:
-                org_user_name = str(u or "").strip()
-                org_user_id = ""
-
-            if user_name_key and normalize_name_key(org_user_name) == user_name_key:
-                return dept_name, dept_code
-
-            if user_id_key and org_user_id and normalize_name_key(org_user_id) == user_id_key:
-                return dept_name, dept_code
-
-    return "미분류", ""
-
-def get_report_exception_dept(user_name):
-    key = normalize_name_key(user_name)
-    if not key:
-        return ""
-
-    return str(REPORT_EXCEPTION_MAP.get(key, "") or "").strip()
+    return ""
 
 def resolve_history_endpoint_id_by_hostname(user_input: str):
     key = str(user_input or "").strip().lower()
@@ -4115,7 +4242,8 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.tab_detection_xdr(), "Detection XDR")
         self.tabs.addTab(self.tab_email(), "Email")
         self.tabs.addTab(self.tab_live_discover(), "Easy Query")
-        self.tabs.addTab(self.tab_dlp_file(), "File")        
+        self.tabs.addTab(self.tab_dlp_file(), "File")
+        self.tabs.addTab(self.tab_timeline(), "Timeline")
         self.tabs.addTab(self.tab_response(), "Response")
         self.tabs.addTab(self.tab_endpoint(), "Endpoint")
         self.tabs.addTab(self.tab_org(), "Organization")
@@ -7314,7 +7442,14 @@ class MainWindow(QMainWindow):
             self.dlp_range = f"{start_date} ~ {end_date}"
 
             if hasattr(self, "_refresh_dlp"):
-                self._refresh_dlp()        
+                self._refresh_dlp()
+
+        elif current_tab == "Timeline":
+            self.timeline_detections = load_detections_by_range(start_date, end_date)
+            self.timeline_dlp_rows = load_dlp_by_range(start_date, end_date)
+            self.timeline_range = f"{start_date} ~ {end_date}"
+            if hasattr(self, "_refresh_timeline"):
+                self._refresh_timeline()
             
         # 🔥 적용 후 현재 탭 기준으로 표시
         self.update_range_label()
@@ -7338,6 +7473,9 @@ class MainWindow(QMainWindow):
 
         elif tab_name == "File":
             text = self.dlp_range
+
+        elif tab_name == "Timeline":
+            text = getattr(self, "timeline_range", "")
 
         else:
             text = ""
@@ -11233,6 +11371,125 @@ Command Line :
         return root
 
 
+    def tab_timeline(self):
+        root = QWidget()
+        layout = QVBoxLayout(root)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
+
+        top = QHBoxLayout()
+        lbl = QLabel("사용자명")
+        self.timeline_user_input = QLineEdit()
+        self.timeline_user_input.setPlaceholderText("사용자명/메일/ID 입력")
+        btn = QPushButton("조회")
+        btn.setProperty("buttonRole", "secondary")
+        btn.setStyleSheet(self.button_style("secondary"))
+        top.addWidget(lbl)
+        top.addWidget(self.timeline_user_input, 1)
+        top.addWidget(btn)
+
+        table = QTableWidget()
+        headers = ["Time", "Source", "Username", "Host/Mailbox", "Rule/Event", "Summary"]
+        table.setColumnCount(len(headers))
+        table.setHorizontalHeaderLabels(headers)
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        table.setSortingEnabled(True)
+
+        def refresh():
+            keyword = self.timeline_user_input.text().strip().lower()
+            start_date = self.start_date_edit.date().toString("yyyy-MM-dd")
+            end_date = self.end_date_edit.date().toString("yyyy-MM-dd")
+
+            timeline_rows = []
+
+            for d in (getattr(self, "timeline_detections", []) or []):
+                if not isinstance(d, dict):
+                    continue
+                event_time = d.get("time")
+                if not event_time:
+                    continue
+                t = kst_time(event_time)
+                if t[:10] < start_date or t[:10] > end_date:
+                    continue
+
+                sensor = d.get("sensor", {}) if isinstance(d.get("sensor"), dict) else {}
+                sensor_type = sensor.get("type", "")
+
+                if sensor_type == "endpoint":
+                    raw = d.get("rawData", {}) if isinstance(d.get("rawData"), dict) else {}
+                    host = raw.get("meta_hostname", "None")
+                    identity = resolve_identity_by_hostname(host)
+                    username = identity.get("user_name", "None")
+                    rule = (d.get("detectionDescription", {}) or {}).get("createdReasonId", "None") if isinstance(d.get("detectionDescription"), dict) else "None"
+                    if rule == "None":
+                        rule = d.get("rule", "None") or "None"
+                    summary = f"{raw.get('meta_ip_address', 'None')} / {raw.get('meta_public_ip', 'None')}"
+                    search_text = f"{username} {identity.get('user_id','')} {host}"
+                    source = "Detection"
+                    host_or_mail = host
+                elif sensor_type == "email":
+                    row_data = extract_xdr_email_fields(d)
+                    identity = resolve_identity_by_mailbox(row_data["mailbox"])
+                    username = identity.get("user_name", "None")
+                    rule = row_data["rule"]
+                    summary = row_data["subject"]
+                    search_text = f"{username} {identity.get('user_id','')} {row_data['mailbox']}"
+                    source = "XDR"
+                    host_or_mail = row_data["mailbox"]
+                else:
+                    continue
+
+                if keyword and keyword not in search_text.lower():
+                    continue
+
+                timeline_rows.append((t, source, username, host_or_mail, rule, summary, d))
+
+            for d in (getattr(self, "timeline_dlp_rows", []) or []):
+                if not isinstance(d, dict):
+                    continue
+                t = str(d.get("eventtimelocal", "")).strip()
+                if len(t) < 10:
+                    continue
+                if t[:10] < start_date or t[:10] > end_date:
+                    continue
+                username = str(d.get("client_name", "None"))
+                host = str(d.get("machine_name", "None"))
+                event_id = str(d.get("event_id", "None"))
+                summary = str(d.get("filename", "None"))
+                search_text = f"{username} {host}"
+                if keyword and keyword not in search_text.lower():
+                    continue
+                timeline_rows.append((t, "File", username, host, event_id, summary, d))
+
+            timeline_rows.sort(key=lambda x: x[0], reverse=True)
+
+            table.setSortingEnabled(False)
+            table.clearContents()
+            table.setRowCount(0)
+            for t, source, username, hm, rule, summary, raw in timeline_rows:
+                r = table.rowCount()
+                table.insertRow(r)
+                it = QTableWidgetItem(t)
+                it.setData(Qt.UserRole, raw)
+                table.setItem(r, 0, it)
+                table.setItem(r, 1, QTableWidgetItem(source))
+                table.setItem(r, 2, QTableWidgetItem(username))
+                table.setItem(r, 3, QTableWidgetItem(hm))
+                table.setItem(r, 4, QTableWidgetItem(rule))
+                table.setItem(r, 5, QTableWidgetItem(summary))
+            table.setSortingEnabled(True)
+
+        btn.clicked.connect(refresh)
+        self.timeline_user_input.returnPressed.connect(refresh)
+
+        layout.addLayout(top)
+        layout.addWidget(table, 1)
+
+        self._refresh_timeline = refresh
+        refresh()
+        return root
+
+
     # ==================================================
     # Response Tab
     # ==================================================
@@ -12228,8 +12485,7 @@ Command Line :
             try:
                 save_report_exception_text(editor.toPlainText())
 
-                global REPORT_EXCEPTION_MAP
-                REPORT_EXCEPTION_MAP = load_report_exception_map()
+                reload_all_data()
 
                 QMessageBox.information(
                     dialog,
@@ -12506,36 +12762,8 @@ Command Line :
         return "", ""
 
 
-    def get_org_info_by_user(user_name, user_id=""):
-        user_name_key = normalize_name_key(user_name)
-        user_id_key = normalize_name_key(user_id)
-
-        for org in ORGS:
-            if not isinstance(org, dict):
-                continue
-
-            dept_name = str(org.get("deptName", "") or "").strip() or "미분류"
-            dept_code = str(org.get("deptCode", "") or "").strip()
-
-            users = org.get("users", [])
-            if not isinstance(users, list):
-                continue
-
-            for u in users:
-                if isinstance(u, dict):
-                    org_user_name = str(u.get("name", "") or "").strip()
-                    org_user_id = str(u.get("id", "") or u.get("userId", "") or "").strip()
-                else:
-                    org_user_name = str(u or "").strip()
-                    org_user_id = ""
-
-                if user_name_key and normalize_name_key(org_user_name) == user_name_key:
-                    return dept_name, dept_code
-
-                if user_id_key and org_user_id and normalize_name_key(org_user_id) == user_id_key:
-                    return dept_name, dept_code
-
-        return "미분류", ""
+    def get_org_info_by_user(user_name, user_id="", hostname=""):
+        return get_org_info_by_user(user_name=user_name, user_id=user_id, hostname=hostname)
  
     def build_security_insight_metrics(self, endpoint_detections, emails, dlp_rows, detection_timeline=None):
         rule_counter = Counter()
