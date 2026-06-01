@@ -8302,17 +8302,21 @@ Command Line :
     # Tab rendering helpers
     # ==================================================
     def refresh_all_tables(self):
+        self.refresh_tab_table("Dashboard")
         self.refresh_tab_table("Detection")
         self.refresh_tab_table("Detection XDR")
         self.refresh_tab_table("Email")
         self.refresh_tab_table("File")
         self.refresh_tab_table("Endpoint")
         self.refresh_tab_table("Organization")
+        self.refresh_tab_table("Timeline")
         current_tab = self.tabs.tabText(self.tabs.currentIndex())
         self.update_time_range_label(current_tab)
 
     def refresh_tab_table(self, tab_name):
-        if tab_name == "Detection" and hasattr(self, "_refresh_detection"):
+        if tab_name == "Dashboard" and hasattr(self, "_refresh_dashboard"):
+            self._refresh_dashboard()
+        elif tab_name == "Detection" and hasattr(self, "_refresh_detection"):
             self._refresh_detection()
         elif tab_name == "Detection XDR" and hasattr(self, "_refresh_detection_xdr"):
             self._refresh_detection_xdr()
@@ -8324,6 +8328,8 @@ Command Line :
             self._refresh_org()
         elif tab_name == "File" and hasattr(self, "_refresh_dlp"):
             self._refresh_dlp()
+        elif tab_name == "Timeline" and hasattr(self, "_refresh_timeline"):
+            self._refresh_timeline()
 
     # ==================================================
     # Dashboard Tab
@@ -12365,6 +12371,7 @@ Command Line :
                 save_report_exception_text(editor.toPlainText())
 
                 reload_all_data()
+                self.refresh_all_tables()
 
                 QMessageBox.information(
                     dialog,
