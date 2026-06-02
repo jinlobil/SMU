@@ -699,6 +699,15 @@ def load_dlp_by_range(start_date: str, end_date: str):
     log.info(f"Loaded DLP from {start_date} ~ {end_date} : {len(results)}")
     return results
 
+
+def format_dlp_event_id(value):
+    event_id = str(value or "None")
+    mapping = {
+        "Content Threat Detected": "탐지됨",
+        "Content Threat Blocked": "차단",
+    }
+    return mapping.get(event_id.strip(), event_id)
+
 def get_unique_path(path):
     if not os.path.exists(path):
         return path
@@ -11222,7 +11231,7 @@ Command Line :
                 if not isinstance(d, dict):
                     continue
 
-                event_id = str(d.get("event_id", "None"))
+                event_id = format_dlp_event_id(d.get("event_id", "None"))
                 event_time = str(d.get("eventtimelocal", "")).strip()
                 event_date = event_time[:10] if len(event_time) >= 10 else ""
 
@@ -11529,7 +11538,7 @@ Command Line :
                     continue
                 username = str(d.get("client_name", "None"))
                 host = str(d.get("machine_name", "None"))
-                event_id = str(d.get("event_id", "None"))
+                event_id = format_dlp_event_id(d.get("event_id", "None"))
                 summary = str(d.get("filename", "None"))
                 search_text = f"{username} {host}"
                 if keyword and keyword not in search_text.lower():
@@ -14442,7 +14451,7 @@ Command Line :
                 dept_name, dept_code = get_dept_by_hostname(machine_name)
 
                 filtered_rows.append({
-                    "이벤트": str(row.get("event_id", "None")),
+                    "이벤트": format_dlp_event_id(row.get("event_id", "None")),
                     "날짜/시간 (클라이언트)": str(row.get("eventtimelocal", "None")),
                     "부서": str(dept_name or "미분류"),
                     "부서코드": str(dept_code or ""),
