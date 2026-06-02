@@ -1575,6 +1575,80 @@ def build_hostname_user_map():
     return result
 
 
+def get_directory_user_dept(user):
+    if not isinstance(user, dict):
+        return "미분류", ""
+
+    source = user.get("source", {}) if isinstance(user.get("source"), dict) else {}
+    if str(source.get("type", "") or "").strip() != "activeDirectory":
+        return "미분류", ""
+
+    groups = user.get("groups", {}) if isinstance(user.get("groups"), dict) else {}
+    items = groups.get("items", [])
+    if not isinstance(items, list):
+        return "미분류", ""
+
+    for group in reversed(items):
+        if not isinstance(group, dict):
+            continue
+        dept_code = str(group.get("displayName", "") or "").strip()
+        if not dept_code.isdigit():
+            continue
+        return DEPT_MAP.get(dept_code, dept_code) or "미분류", dept_code
+
+    return "미분류", ""
+
+
+def build_directory_user_index():
+    result = {}
+
+    for user in USERS:
+        if not isinstance(user, dict):
+            continue
+
+        source = user.get("source", {}) if isinstance(user.get("source"), dict) else {}
+        if str(source.get("type", "") or "").strip() != "activeDirectory":
+            continue
+
+        dept_name, dept_code = get_directory_user_dept(user)
+        if not dept_code:
+            continue
+
+        entry = {
+            "name": str(user.get("name", "") or "").strip(),
+            "user_id": str(user.get("exchangeLogin", "") or "").strip(),
+            "email": str(user.get("email", "") or "").strip(),
+            "dept_name": dept_name,
+            "dept_code": dept_code,
+        }
+
+        keys = []
+        if entry["user_id"]:
+            keys.append(entry["user_id"])
+        if entry["email"]:
+            keys.append(entry["email"])
+            if "@" in entry["email"]:
+                keys.append(entry["email"].split("@", 1)[0])
+
+        for key in keys:
+            norm_key = normalize_name_key(key)
+            if norm_key:
+                result[norm_key] = entry
+
+    return result
+
+
+def get_directory_user_info(*values):
+    for value in values:
+        key = normalize_name_key(value)
+        if not key:
+            continue
+        info = DIRECTORY_USER_INDEX.get(key)
+        if info:
+            return info
+    return {}
+
+
 def build_hostname_dept_map():
     result = {}
 
@@ -1594,6 +1668,12 @@ def build_hostname_dept_map():
             if org_info:
                 dept_name = str(org_info.get("dept_name", "미분류") or "미분류")
                 dept_code = str(org_info.get("dept_code", "") or "")
+
+        if dept_name == "미분류" and user_id:
+            directory_info = get_directory_user_info(user_id)
+            if directory_info:
+                dept_name = str(directory_info.get("dept_name", "미분류") or "미분류")
+                dept_code = str(directory_info.get("dept_code", "") or "")
 
         # Report_exception_List 는 일반 분류가 끝난 뒤 마지막에 덮어쓴다.
         exc_dept = get_report_exception_dept(user_name, user_id, hostname)
@@ -1633,6 +1713,30 @@ def resolve_identity_by_hostname(hostname: str):
         "dept_name": str(dept_name or "미분류"),
         "dept_code": str(dept_code or ""),
     }
+
+def get_org_user_name_by_user_id(user_id: str):
+    user_id_key = normalize_name_key(user_id)
+    if not user_id_key:
+        return ""
+
+    for org in ORGS:
+        if not isinstance(org, dict):
+            continue
+
+        users = org.get("users", [])
+        if not isinstance(users, list):
+            continue
+
+        for u in users:
+            if not isinstance(u, dict):
+                continue
+
+            org_user_id = str(u.get("id", "") or u.get("userId", "") or "").strip()
+            if org_user_id and normalize_name_key(org_user_id) == user_id_key:
+                return str(u.get("name", "") or "").strip()
+
+    return ""
+
 
 def resolve_identity_by_mailbox(mailbox_addr: str):
     mailbox_addr = str(mailbox_addr or "").strip()
@@ -1679,6 +1783,26 @@ def resolve_identity_by_mailbox(mailbox_addr: str):
 
     if matched_hostname != "None":
         dept_name, dept_code = get_dept_by_hostname(matched_hostname)
+    elif mailbox_user:
+        # Endpoint 매칭이 안 되면 mailbox local-part를 User ID로 보고 User API 맵을 먼저 시도한다.
+        matched_user_id = mailbox_user
+        directory_info = get_directory_user_info(mailbox_addr, mailbox_user)
+        if directory_info:
+            matched_user_name = str(directory_info.get("name", "") or "None")
+            matched_user_id = str(directory_info.get("user_id", "") or mailbox_user)
+            dept_name = str(directory_info.get("dept_name", "미분류") or "미분류")
+            dept_code = str(directory_info.get("dept_code", "") or "")
+        else:
+            org_user_name = get_org_user_name_by_user_id(mailbox_user)
+            if org_user_name:
+                matched_user_name = org_user_name
+            dept_name, dept_code = get_org_info_by_user(org_user_name, mailbox_user, mailbox_user)
+
+    # Report_exception_List 는 Endpoint/User API/조직도 분류가 끝난 뒤 마지막에 덮어쓴다.
+    exc_dept = get_report_exception_dept(matched_user_name, matched_user_id, mailbox_user, mailbox_addr)
+    if exc_dept:
+        dept_name = exc_dept
+        dept_code = ""
 
     return {
         "mailbox": mailbox_addr or "None",
@@ -1702,20 +1826,23 @@ def get_dept_by_hostname(hostname: str):
     )
 
 def reload_all_data():
-    global ENDPOINTS, ORGS, REPORT_EXCEPTION_MAP
-    global USER_ORG_INDEX, HOSTNAME_USER_MAP, HOSTNAME_DEPT_MAP
+    global ENDPOINTS, ORGS, USERS, REPORT_EXCEPTION_MAP
+    global USER_ORG_INDEX, DIRECTORY_USER_INDEX, HOSTNAME_USER_MAP, HOSTNAME_DEPT_MAP
 
     ENDPOINTS = load_json(os.path.join(CACHE_DIR, "endpoints.json"))
     ORGS = load_json(os.path.join(CACHE_DIR, "user_groups.json"))
+    USERS = load_json(os.path.join(CACHE_DIR, "users.json"))
     REPORT_EXCEPTION_MAP = load_report_exception_map()
 
     USER_ORG_INDEX = build_org_user_index()
+    DIRECTORY_USER_INDEX = build_directory_user_index()
     HOSTNAME_USER_MAP = build_hostname_user_map()
     HOSTNAME_DEPT_MAP = build_hostname_dept_map()
 
     log.info(
-        f"[ORG MAP] endpoints={len(ENDPOINTS)} orgs={len(ORGS)} "
-        f"user_index={len(USER_ORG_INDEX)} hostname_index={len(HOSTNAME_DEPT_MAP)}"
+        f"[ORG MAP] endpoints={len(ENDPOINTS)} orgs={len(ORGS)} users={len(USERS)} "
+        f"user_index={len(USER_ORG_INDEX)} directory_user_index={len(DIRECTORY_USER_INDEX)} "
+        f"hostname_index={len(HOSTNAME_DEPT_MAP)}"
     )
 
 
@@ -1792,6 +1919,12 @@ def get_org_info_by_user(user_name, user_id="", hostname=""):
             dept_name = org_dept_name
             dept_code = org_dept_code
             break
+
+    if dept_name == "미분류" and user_id:
+        directory_info = get_directory_user_info(user_id)
+        if directory_info:
+            dept_name = str(directory_info.get("dept_name", "미분류") or "미분류")
+            dept_code = str(directory_info.get("dept_code", "") or "")
 
     # Report_exception_List 는 일반 분류가 끝난 뒤 마지막에 덮어쓴다.
     exc_dept = get_report_exception_dept(user_name, user_id, hostname)
@@ -3131,6 +3264,39 @@ class SophosClient:
         save_json(os.path.join(CACHE_DIR, "user_groups.json"), groups_out)
         log.info(f"Orgs saved: {len(groups_out)}")
 
+    def refresh_users(self):
+        url = f"{self.base_url}/common/v1/directory/users"
+
+        log.info("Refreshing users")
+        users = []
+        page = 1
+
+        while True:
+            r = requests.get(
+                url,
+                headers=self._headers(),
+                params={"pageSize": 100, "pageTotal": "true", "page": page},
+                timeout=45,
+            )
+            r.raise_for_status()
+            j = r.json()
+            items = j.get("items", [])
+            if not items:
+                break
+
+            users.extend([u for u in items if isinstance(u, dict)])
+
+            pages_info = j.get("pages") if isinstance(j.get("pages"), dict) else {}
+            total = pages_info.get("total")
+            if isinstance(total, int) and page >= total:
+                break
+
+            page += 1
+            time.sleep(0.2)
+
+        save_json(os.path.join(CACHE_DIR, "users.json"), users)
+        log.info(f"Users saved: {len(users)}")
+
 
 # ======================================================
 # Background worker (non-blocking UI)
@@ -3191,6 +3357,9 @@ class RefreshWorker(QThread):
 
                 elif self.job_name == "Organization":
                     api.refresh_orgs()
+
+                elif self.job_name == "User":
+                    api.refresh_users()
 
                 else:
                     raise RuntimeError(f"Unknown job: {self.job_name}")
@@ -7708,7 +7877,7 @@ class MainWindow(QMainWindow):
 
         self.set_status(f"{tab_name} OK", color="green", spinning=False)
         
-        if tab_name in ("Endpoint", "Organization"):
+        if tab_name in ("Endpoint", "Organization", "User"):
             reload_all_data()
             self.refresh_all_tables()        
 
@@ -11906,6 +12075,7 @@ Command Line :
         btn_mail_refresh = QPushButton("이메일 데이터 최신화")
         btn_endpoint_refresh = QPushButton("엔드포인트 데이터 최신화")
         btn_org_refresh = QPushButton("조직도 데이터 최신화")
+        btn_user_refresh = QPushButton("유저 데이터 최신화")
 
         self.dlp_refresh_date = QDateEdit()
         self.dlp_refresh_date.setCalendarPopup(True)
@@ -11944,6 +12114,7 @@ Command Line :
         btn_mail_refresh.clicked.connect(self.run_refresh_email_range)
         btn_endpoint_refresh.clicked.connect(lambda: self.run_refresh("Endpoint"))
         btn_org_refresh.clicked.connect(lambda: self.run_refresh("Organization"))
+        btn_user_refresh.clicked.connect(lambda: self.run_refresh("User"))
         btn_dlp_refresh.clicked.connect(self.run_refresh_dlp)
 
 
@@ -11961,10 +12132,11 @@ Command Line :
             btn_mail_refresh,
             btn_endpoint_refresh,
             btn_org_refresh,
+            btn_user_refresh,
             btn_dlp_refresh,
         ]:
             btn.setMinimumHeight(40)
-            btn.setMinimumWidth(230)
+            btn.setMinimumWidth(150)
             btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             btn.setStyleSheet(btn_style)
 
@@ -11999,12 +12171,13 @@ Command Line :
         dlp_row.addWidget(self.dlp_refresh_date, 2)
         dlp_row.addWidget(btn_dlp_refresh, 1)
 
-        # ===== EP/Org row (50:50) =====
+        # ===== EP/Org/User row =====
         ep_org_row = QHBoxLayout()
         ep_org_row.setSpacing(8)
         ep_org_row.setContentsMargins(0, 0, 0, 0)
         ep_org_row.addWidget(btn_endpoint_refresh, 1)
         ep_org_row.addWidget(btn_org_refresh, 1)
+        ep_org_row.addWidget(btn_user_refresh, 1)
 
         # 전체 묶기
         cache_rows = QVBoxLayout()
