@@ -1575,10 +1575,85 @@ def build_hostname_user_map():
     return result
 
 
+def get_directory_user_dept(user):
+    if not isinstance(user, dict):
+        return "미분류", ""
+
+    source = user.get("source", {}) if isinstance(user.get("source"), dict) else {}
+    if str(source.get("type", "") or "").strip() != "activeDirectory":
+        return "미분류", ""
+
+    groups = user.get("groups", {}) if isinstance(user.get("groups"), dict) else {}
+    items = groups.get("items", [])
+    if not isinstance(items, list):
+        return "미분류", ""
+
+    for group in reversed(items):
+        if not isinstance(group, dict):
+            continue
+        dept_code = str(group.get("displayName", "") or "").strip()
+        if not dept_code.isdigit():
+            continue
+        return DEPT_MAP.get(dept_code, dept_code) or "미분류", dept_code
+
+    return "미분류", ""
+
+
+def build_directory_user_index():
+    result = {}
+
+    for user in USERS:
+        if not isinstance(user, dict):
+            continue
+
+        source = user.get("source", {}) if isinstance(user.get("source"), dict) else {}
+        if str(source.get("type", "") or "").strip() != "activeDirectory":
+            continue
+
+        dept_name, dept_code = get_directory_user_dept(user)
+        if not dept_code:
+            continue
+
+        entry = {
+            "name": str(user.get("name", "") or "").strip(),
+            "user_id": str(user.get("exchangeLogin", "") or "").strip(),
+            "email": str(user.get("email", "") or "").strip(),
+            "dept_name": dept_name,
+            "dept_code": dept_code,
+        }
+
+        keys = []
+        if entry["user_id"]:
+            keys.append(entry["user_id"])
+        if entry["email"]:
+            keys.append(entry["email"])
+            if "@" in entry["email"]:
+                keys.append(entry["email"].split("@", 1)[0])
+
+        for key in keys:
+            norm_key = normalize_name_key(key)
+            if norm_key:
+                result[norm_key] = entry
+
+    return result
+
+
+def get_directory_user_info(*values):
+    for value in values:
+        key = normalize_name_key(value)
+        if not key:
+            continue
+        info = DIRECTORY_USER_INDEX.get(key)
+        if info:
+            return info
+    return {}
+
+
 def build_hostname_dept_map():
     result = {}
 
     for host_key, info in HOSTNAME_USER_MAP.items():
+        hostname = str(info.get("hostname", "") or "").strip()
         user_name = str(info.get("user_name", "") or "").strip()
         user_id = str(info.get("user_id", "") or "").strip()
 
@@ -1593,11 +1668,18 @@ def build_hostname_dept_map():
             if org_info:
                 dept_name = str(org_info.get("dept_name", "미분류") or "미분류")
                 dept_code = str(org_info.get("dept_code", "") or "")
-            else:
-                exc_dept = get_report_exception_dept(user_name)
-                if exc_dept:
-                    dept_name = exc_dept
-                    dept_code = ""
+
+        if dept_name == "미분류" and user_id:
+            directory_info = get_directory_user_info(user_id)
+            if directory_info:
+                dept_name = str(directory_info.get("dept_name", "미분류") or "미분류")
+                dept_code = str(directory_info.get("dept_code", "") or "")
+
+        # Report_exception_List 는 일반 분류가 끝난 뒤 마지막에 덮어쓴다.
+        exc_dept = get_report_exception_dept(user_name, user_id, hostname)
+        if exc_dept:
+            dept_name = exc_dept
+            dept_code = ""
 
         result[host_key] = {
             "dept_name": dept_name,
@@ -1631,6 +1713,30 @@ def resolve_identity_by_hostname(hostname: str):
         "dept_name": str(dept_name or "미분류"),
         "dept_code": str(dept_code or ""),
     }
+
+def get_org_user_name_by_user_id(user_id: str):
+    user_id_key = normalize_name_key(user_id)
+    if not user_id_key:
+        return ""
+
+    for org in ORGS:
+        if not isinstance(org, dict):
+            continue
+
+        users = org.get("users", [])
+        if not isinstance(users, list):
+            continue
+
+        for u in users:
+            if not isinstance(u, dict):
+                continue
+
+            org_user_id = str(u.get("id", "") or u.get("userId", "") or "").strip()
+            if org_user_id and normalize_name_key(org_user_id) == user_id_key:
+                return str(u.get("name", "") or "").strip()
+
+    return ""
+
 
 def resolve_identity_by_mailbox(mailbox_addr: str):
     mailbox_addr = str(mailbox_addr or "").strip()
@@ -1677,6 +1783,26 @@ def resolve_identity_by_mailbox(mailbox_addr: str):
 
     if matched_hostname != "None":
         dept_name, dept_code = get_dept_by_hostname(matched_hostname)
+    elif mailbox_user:
+        # Endpoint 매칭이 안 되면 mailbox local-part를 User ID로 보고 User API 맵을 먼저 시도한다.
+        matched_user_id = mailbox_user
+        directory_info = get_directory_user_info(mailbox_addr, mailbox_user)
+        if directory_info:
+            matched_user_name = str(directory_info.get("name", "") or "None")
+            matched_user_id = str(directory_info.get("user_id", "") or mailbox_user)
+            dept_name = str(directory_info.get("dept_name", "미분류") or "미분류")
+            dept_code = str(directory_info.get("dept_code", "") or "")
+        else:
+            org_user_name = get_org_user_name_by_user_id(mailbox_user)
+            if org_user_name:
+                matched_user_name = org_user_name
+            dept_name, dept_code = get_org_info_by_user(org_user_name, mailbox_user, mailbox_user)
+
+    # Report_exception_List 는 Endpoint/User API/조직도 분류가 끝난 뒤 마지막에 덮어쓴다.
+    exc_dept = get_report_exception_dept(matched_user_name, matched_user_id, mailbox_user, mailbox_addr)
+    if exc_dept:
+        dept_name = exc_dept
+        dept_code = ""
 
     return {
         "mailbox": mailbox_addr or "None",
@@ -1700,20 +1826,23 @@ def get_dept_by_hostname(hostname: str):
     )
 
 def reload_all_data():
-    global ENDPOINTS, ORGS, REPORT_EXCEPTION_MAP
-    global USER_ORG_INDEX, HOSTNAME_USER_MAP, HOSTNAME_DEPT_MAP
+    global ENDPOINTS, ORGS, USERS, REPORT_EXCEPTION_MAP
+    global USER_ORG_INDEX, DIRECTORY_USER_INDEX, HOSTNAME_USER_MAP, HOSTNAME_DEPT_MAP
 
     ENDPOINTS = load_json(os.path.join(CACHE_DIR, "endpoints.json"))
     ORGS = load_json(os.path.join(CACHE_DIR, "user_groups.json"))
+    USERS = load_json(os.path.join(CACHE_DIR, "users.json"))
     REPORT_EXCEPTION_MAP = load_report_exception_map()
 
     USER_ORG_INDEX = build_org_user_index()
+    DIRECTORY_USER_INDEX = build_directory_user_index()
     HOSTNAME_USER_MAP = build_hostname_user_map()
     HOSTNAME_DEPT_MAP = build_hostname_dept_map()
 
     log.info(
-        f"[ORG MAP] endpoints={len(ENDPOINTS)} orgs={len(ORGS)} "
-        f"user_index={len(USER_ORG_INDEX)} hostname_index={len(HOSTNAME_DEPT_MAP)}"
+        f"[ORG MAP] endpoints={len(ENDPOINTS)} orgs={len(ORGS)} users={len(USERS)} "
+        f"user_index={len(USER_ORG_INDEX)} directory_user_index={len(DIRECTORY_USER_INDEX)} "
+        f"hostname_index={len(HOSTNAME_DEPT_MAP)}"
     )
 
 
@@ -1750,22 +1879,26 @@ def get_endpoint_user_by_machine_name(machine_name):
     return "", "", "not_found"
 
 
-def get_org_info_by_user(user_name, user_id=""):
+def get_org_info_by_user(user_name, user_id="", hostname=""):
     user_name_key = normalize_name_key(user_name)
     user_id_key = normalize_name_key(user_id)
+
+    dept_name = "미분류"
+    dept_code = ""
 
     for org in ORGS:
         if not isinstance(org, dict):
             continue
 
-        dept_code = str(org.get("deptCode", "") or "").strip()
+        org_dept_code = str(org.get("deptCode", "") or "").strip()
         raw_dept_name = str(org.get("deptName", "") or "").strip()
-        dept_name = DEPT_MAP.get(dept_code, raw_dept_name) or "미분류"
+        org_dept_name = DEPT_MAP.get(org_dept_code, raw_dept_name) or "미분류"
 
         users = org.get("users", [])
         if not isinstance(users, list):
             continue
 
+        matched = False
         for u in users:
             if isinstance(u, dict):
                 org_user_name = str(u.get("name", "") or "").strip()
@@ -1775,19 +1908,42 @@ def get_org_info_by_user(user_name, user_id=""):
                 org_user_id = ""
 
             if user_name_key and normalize_name_key(org_user_name) == user_name_key:
-                return dept_name, dept_code
+                matched = True
+                break
 
             if user_id_key and org_user_id and normalize_name_key(org_user_id) == user_id_key:
-                return dept_name, dept_code
+                matched = True
+                break
 
-    return "미분류", ""
+        if matched:
+            dept_name = org_dept_name
+            dept_code = org_dept_code
+            break
 
-def get_report_exception_dept(user_name):
-    key = normalize_name_key(user_name)
-    if not key:
-        return ""
+    if dept_name == "미분류" and user_id:
+        directory_info = get_directory_user_info(user_id)
+        if directory_info:
+            dept_name = str(directory_info.get("dept_name", "미분류") or "미분류")
+            dept_code = str(directory_info.get("dept_code", "") or "")
 
-    return str(REPORT_EXCEPTION_MAP.get(key, "") or "").strip()
+    # Report_exception_List 는 일반 분류가 끝난 뒤 마지막에 덮어쓴다.
+    exc_dept = get_report_exception_dept(user_name, user_id, hostname)
+    if exc_dept:
+        return exc_dept, ""
+
+    return dept_name, dept_code
+
+def get_report_exception_dept(*values):
+    for value in values:
+        key = normalize_name_key(value)
+        if not key:
+            continue
+
+        dept = str(REPORT_EXCEPTION_MAP.get(key, "") or "").strip()
+        if dept:
+            return dept
+
+    return ""
 
 def resolve_history_endpoint_id_by_hostname(user_input: str):
     key = str(user_input or "").strip().lower()
@@ -3077,13 +3233,17 @@ class SophosClient:
                     if isinstance(uitems, list):
                         for u in uitems:
                             if isinstance(u, dict):
-                                users.append({"name": u.get("name", "None")})
+                                user_entry = dict(u)
+                                user_entry["name"] = u.get("name", "None")
+                                users.append(user_entry)
                             else:
                                 users.append({"name": str(u)})
                 elif isinstance(users_obj, list):
                     for u in users_obj:
                         if isinstance(u, dict):
-                            users.append({"name": u.get("name", "None")})
+                            user_entry = dict(u)
+                            user_entry["name"] = u.get("name", "None")
+                            users.append(user_entry)
                         else:
                             users.append({"name": str(u)})
 
@@ -3103,6 +3263,39 @@ class SophosClient:
 
         save_json(os.path.join(CACHE_DIR, "user_groups.json"), groups_out)
         log.info(f"Orgs saved: {len(groups_out)}")
+
+    def refresh_users(self):
+        url = f"{self.base_url}/common/v1/directory/users"
+
+        log.info("Refreshing users")
+        users = []
+        page = 1
+
+        while True:
+            r = requests.get(
+                url,
+                headers=self._headers(),
+                params={"pageSize": 100, "pageTotal": "true", "page": page},
+                timeout=45,
+            )
+            r.raise_for_status()
+            j = r.json()
+            items = j.get("items", [])
+            if not items:
+                break
+
+            users.extend([u for u in items if isinstance(u, dict)])
+
+            pages_info = j.get("pages") if isinstance(j.get("pages"), dict) else {}
+            total = pages_info.get("total")
+            if isinstance(total, int) and page >= total:
+                break
+
+            page += 1
+            time.sleep(0.2)
+
+        save_json(os.path.join(CACHE_DIR, "users.json"), users)
+        log.info(f"Users saved: {len(users)}")
 
 
 # ======================================================
@@ -3164,6 +3357,9 @@ class RefreshWorker(QThread):
 
                 elif self.job_name == "Organization":
                     api.refresh_orgs()
+
+                elif self.job_name == "User":
+                    api.refresh_users()
 
                 else:
                     raise RuntimeError(f"Unknown job: {self.job_name}")
@@ -4115,7 +4311,8 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.tab_detection_xdr(), "Detection XDR")
         self.tabs.addTab(self.tab_email(), "Email")
         self.tabs.addTab(self.tab_live_discover(), "Easy Query")
-        self.tabs.addTab(self.tab_dlp_file(), "File")        
+        self.tabs.addTab(self.tab_dlp_file(), "File")
+        self.tabs.addTab(self.tab_timeline(), "Timeline")
         self.tabs.addTab(self.tab_response(), "Response")
         self.tabs.addTab(self.tab_endpoint(), "Endpoint")
         self.tabs.addTab(self.tab_org(), "Organization")
@@ -7314,7 +7511,14 @@ class MainWindow(QMainWindow):
             self.dlp_range = f"{start_date} ~ {end_date}"
 
             if hasattr(self, "_refresh_dlp"):
-                self._refresh_dlp()        
+                self._refresh_dlp()
+
+        elif current_tab == "Timeline":
+            self.timeline_detections = load_detections_by_range(start_date, end_date)
+            self.timeline_dlp_rows = load_dlp_by_range(start_date, end_date)
+            self.timeline_range = f"{start_date} ~ {end_date}"
+            if hasattr(self, "_refresh_timeline"):
+                self._refresh_timeline()
             
         # 🔥 적용 후 현재 탭 기준으로 표시
         self.update_range_label()
@@ -7338,6 +7542,9 @@ class MainWindow(QMainWindow):
 
         elif tab_name == "File":
             text = self.dlp_range
+
+        elif tab_name == "Timeline":
+            text = getattr(self, "timeline_range", "")
 
         else:
             text = ""
@@ -7670,7 +7877,7 @@ class MainWindow(QMainWindow):
 
         self.set_status(f"{tab_name} OK", color="green", spinning=False)
         
-        if tab_name in ("Endpoint", "Organization"):
+        if tab_name in ("Endpoint", "Organization", "User"):
             reload_all_data()
             self.refresh_all_tables()        
 
@@ -8285,17 +8492,21 @@ Command Line :
     # Tab rendering helpers
     # ==================================================
     def refresh_all_tables(self):
+        self.refresh_tab_table("Dashboard")
         self.refresh_tab_table("Detection")
         self.refresh_tab_table("Detection XDR")
         self.refresh_tab_table("Email")
         self.refresh_tab_table("File")
         self.refresh_tab_table("Endpoint")
         self.refresh_tab_table("Organization")
+        self.refresh_tab_table("Timeline")
         current_tab = self.tabs.tabText(self.tabs.currentIndex())
         self.update_time_range_label(current_tab)
 
     def refresh_tab_table(self, tab_name):
-        if tab_name == "Detection" and hasattr(self, "_refresh_detection"):
+        if tab_name == "Dashboard" and hasattr(self, "_refresh_dashboard"):
+            self._refresh_dashboard()
+        elif tab_name == "Detection" and hasattr(self, "_refresh_detection"):
             self._refresh_detection()
         elif tab_name == "Detection XDR" and hasattr(self, "_refresh_detection_xdr"):
             self._refresh_detection_xdr()
@@ -8307,6 +8518,8 @@ Command Line :
             self._refresh_org()
         elif tab_name == "File" and hasattr(self, "_refresh_dlp"):
             self._refresh_dlp()
+        elif tab_name == "Timeline" and hasattr(self, "_refresh_timeline"):
+            self._refresh_timeline()
 
     # ==================================================
     # Dashboard Tab
@@ -11233,6 +11446,125 @@ Command Line :
         return root
 
 
+    def tab_timeline(self):
+        root = QWidget()
+        layout = QVBoxLayout(root)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
+
+        top = QHBoxLayout()
+        lbl = QLabel("사용자명")
+        self.timeline_user_input = QLineEdit()
+        self.timeline_user_input.setPlaceholderText("사용자명/메일/ID 입력")
+        btn = QPushButton("조회")
+        btn.setProperty("buttonRole", "secondary")
+        btn.setStyleSheet(self.button_style("secondary"))
+        top.addWidget(lbl)
+        top.addWidget(self.timeline_user_input, 1)
+        top.addWidget(btn)
+
+        table = QTableWidget()
+        headers = ["Time", "Source", "Username", "Host/Mailbox", "Rule/Event", "Summary"]
+        table.setColumnCount(len(headers))
+        table.setHorizontalHeaderLabels(headers)
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        table.setSortingEnabled(True)
+
+        def refresh():
+            keyword = self.timeline_user_input.text().strip().lower()
+            start_date = self.start_date_edit.date().toString("yyyy-MM-dd")
+            end_date = self.end_date_edit.date().toString("yyyy-MM-dd")
+
+            timeline_rows = []
+
+            for d in (getattr(self, "timeline_detections", []) or []):
+                if not isinstance(d, dict):
+                    continue
+                event_time = d.get("time")
+                if not event_time:
+                    continue
+                t = kst_time(event_time)
+                if t[:10] < start_date or t[:10] > end_date:
+                    continue
+
+                sensor = d.get("sensor", {}) if isinstance(d.get("sensor"), dict) else {}
+                sensor_type = sensor.get("type", "")
+
+                if sensor_type == "endpoint":
+                    raw = d.get("rawData", {}) if isinstance(d.get("rawData"), dict) else {}
+                    host = raw.get("meta_hostname", "None")
+                    identity = resolve_identity_by_hostname(host)
+                    username = identity.get("user_name", "None")
+                    rule = (d.get("detectionDescription", {}) or {}).get("createdReasonId", "None") if isinstance(d.get("detectionDescription"), dict) else "None"
+                    if rule == "None":
+                        rule = d.get("rule", "None") or "None"
+                    summary = f"{raw.get('meta_ip_address', 'None')} / {raw.get('meta_public_ip', 'None')}"
+                    search_text = f"{username} {identity.get('user_id','')} {host}"
+                    source = "Detection"
+                    host_or_mail = host
+                elif sensor_type == "email":
+                    row_data = extract_xdr_email_fields(d)
+                    identity = resolve_identity_by_mailbox(row_data["mailbox"])
+                    username = identity.get("user_name", "None")
+                    rule = row_data["rule"]
+                    summary = row_data["subject"]
+                    search_text = f"{username} {identity.get('user_id','')} {row_data['mailbox']}"
+                    source = "XDR"
+                    host_or_mail = row_data["mailbox"]
+                else:
+                    continue
+
+                if keyword and keyword not in search_text.lower():
+                    continue
+
+                timeline_rows.append((t, source, username, host_or_mail, rule, summary, d))
+
+            for d in (getattr(self, "timeline_dlp_rows", []) or []):
+                if not isinstance(d, dict):
+                    continue
+                t = str(d.get("eventtimelocal", "")).strip()
+                if len(t) < 10:
+                    continue
+                if t[:10] < start_date or t[:10] > end_date:
+                    continue
+                username = str(d.get("client_name", "None"))
+                host = str(d.get("machine_name", "None"))
+                event_id = str(d.get("event_id", "None"))
+                summary = str(d.get("filename", "None"))
+                search_text = f"{username} {host}"
+                if keyword and keyword not in search_text.lower():
+                    continue
+                timeline_rows.append((t, "File", username, host, event_id, summary, d))
+
+            timeline_rows.sort(key=lambda x: x[0], reverse=True)
+
+            table.setSortingEnabled(False)
+            table.clearContents()
+            table.setRowCount(0)
+            for t, source, username, hm, rule, summary, raw in timeline_rows:
+                r = table.rowCount()
+                table.insertRow(r)
+                it = QTableWidgetItem(t)
+                it.setData(Qt.UserRole, raw)
+                table.setItem(r, 0, it)
+                table.setItem(r, 1, QTableWidgetItem(source))
+                table.setItem(r, 2, QTableWidgetItem(username))
+                table.setItem(r, 3, QTableWidgetItem(hm))
+                table.setItem(r, 4, QTableWidgetItem(rule))
+                table.setItem(r, 5, QTableWidgetItem(summary))
+            table.setSortingEnabled(True)
+
+        btn.clicked.connect(refresh)
+        self.timeline_user_input.returnPressed.connect(refresh)
+
+        layout.addLayout(top)
+        layout.addWidget(table, 1)
+
+        self._refresh_timeline = refresh
+        refresh()
+        return root
+
+
     # ==================================================
     # Response Tab
     # ==================================================
@@ -11743,6 +12075,7 @@ Command Line :
         btn_mail_refresh = QPushButton("이메일 데이터 최신화")
         btn_endpoint_refresh = QPushButton("엔드포인트 데이터 최신화")
         btn_org_refresh = QPushButton("조직도 데이터 최신화")
+        btn_user_refresh = QPushButton("유저 데이터 최신화")
 
         self.dlp_refresh_date = QDateEdit()
         self.dlp_refresh_date.setCalendarPopup(True)
@@ -11781,6 +12114,7 @@ Command Line :
         btn_mail_refresh.clicked.connect(self.run_refresh_email_range)
         btn_endpoint_refresh.clicked.connect(lambda: self.run_refresh("Endpoint"))
         btn_org_refresh.clicked.connect(lambda: self.run_refresh("Organization"))
+        btn_user_refresh.clicked.connect(lambda: self.run_refresh("User"))
         btn_dlp_refresh.clicked.connect(self.run_refresh_dlp)
 
 
@@ -11798,10 +12132,11 @@ Command Line :
             btn_mail_refresh,
             btn_endpoint_refresh,
             btn_org_refresh,
+            btn_user_refresh,
             btn_dlp_refresh,
         ]:
             btn.setMinimumHeight(40)
-            btn.setMinimumWidth(230)
+            btn.setMinimumWidth(150)
             btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             btn.setStyleSheet(btn_style)
 
@@ -11836,12 +12171,13 @@ Command Line :
         dlp_row.addWidget(self.dlp_refresh_date, 2)
         dlp_row.addWidget(btn_dlp_refresh, 1)
 
-        # ===== EP/Org row (50:50) =====
+        # ===== EP/Org/User row =====
         ep_org_row = QHBoxLayout()
         ep_org_row.setSpacing(8)
         ep_org_row.setContentsMargins(0, 0, 0, 0)
         ep_org_row.addWidget(btn_endpoint_refresh, 1)
         ep_org_row.addWidget(btn_org_refresh, 1)
+        ep_org_row.addWidget(btn_user_refresh, 1)
 
         # 전체 묶기
         cache_rows = QVBoxLayout()
@@ -12228,8 +12564,8 @@ Command Line :
             try:
                 save_report_exception_text(editor.toPlainText())
 
-                global REPORT_EXCEPTION_MAP
-                REPORT_EXCEPTION_MAP = load_report_exception_map()
+                reload_all_data()
+                self.refresh_all_tables()
 
                 QMessageBox.information(
                     dialog,
@@ -12506,36 +12842,8 @@ Command Line :
         return "", ""
 
 
-    def get_org_info_by_user(user_name, user_id=""):
-        user_name_key = normalize_name_key(user_name)
-        user_id_key = normalize_name_key(user_id)
-
-        for org in ORGS:
-            if not isinstance(org, dict):
-                continue
-
-            dept_name = str(org.get("deptName", "") or "").strip() or "미분류"
-            dept_code = str(org.get("deptCode", "") or "").strip()
-
-            users = org.get("users", [])
-            if not isinstance(users, list):
-                continue
-
-            for u in users:
-                if isinstance(u, dict):
-                    org_user_name = str(u.get("name", "") or "").strip()
-                    org_user_id = str(u.get("id", "") or u.get("userId", "") or "").strip()
-                else:
-                    org_user_name = str(u or "").strip()
-                    org_user_id = ""
-
-                if user_name_key and normalize_name_key(org_user_name) == user_name_key:
-                    return dept_name, dept_code
-
-                if user_id_key and org_user_id and normalize_name_key(org_user_id) == user_id_key:
-                    return dept_name, dept_code
-
-        return "미분류", ""
+    def get_org_info_by_user(user_name, user_id="", hostname=""):
+        return get_org_info_by_user(user_name, user_id, hostname)
  
     def build_security_insight_metrics(self, endpoint_detections, emails, dlp_rows, detection_timeline=None):
         rule_counter = Counter()
@@ -12737,7 +13045,7 @@ Command Line :
                 dept_name = "공용PC"
                 dept_code = ""
             else:
-                dept_name, dept_code = get_org_info_by_user(endpoint_user_name, endpoint_user_id)
+                dept_name, dept_code = get_org_info_by_user(endpoint_user_name, endpoint_user_id, machine_name)
 
                 if not dept_name or dept_name == "미분류":
                     manual_dept = get_report_exception_dept(endpoint_user_name)
