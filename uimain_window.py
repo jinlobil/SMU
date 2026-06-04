@@ -50,7 +50,7 @@ from PyQt5.QtWidgets import (
     QHeaderView, QMenu, QFileDialog,
     QLabel, QMessageBox, QComboBox,
     QFrame, QDateEdit, QTimeEdit, QGroupBox, QColorDialog,
-    QCheckBox, QSpinBox,
+    QCheckBox, QSpinBox, QScrollArea, QSplitter,
     QDialog, QTextEdit, QShortcut,
     QSizePolicy, QGraphicsDropShadowEffect, QAbstractSpinBox
 )
@@ -1953,6 +1953,496 @@ def get_report_exception_dept(*values):
             return dept
 
     return ""
+
+
+
+def timeline_add_alias(ctx, category, value):
+    value = str(value or "").strip()
+    if not value or value in {"None", "미분류"}:
+        return
+
+    ctx.setdefault(category, set()).add(value)
+    ctx.setdefault("all_values", set()).add(value)
+
+    key = normalize_name_key(value)
+    if key:
+        ctx.setdefault("all_keys", set()).add(key)
+
+    if "@" in value:
+        local = value.split("@", 1)[0].strip()
+        if local:
+            ctx.setdefault("email_locals", set()).add(local)
+            ctx.setdefault("all_values", set()).add(local)
+            local_key = normalize_name_key(local)
+            if local_key:
+                ctx.setdefault("all_keys", set()).add(local_key)
+
+
+def timeline_add_directory_info(ctx, info):
+    if not isinstance(info, dict) or not info:
+        return False
+
+    timeline_add_alias(ctx, "names", info.get("name"))
+    timeline_add_alias(ctx, "user_ids", info.get("user_id"))
+    timeline_add_alias(ctx, "emails", info.get("email"))
+    timeline_add_alias(ctx, "dept_names", info.get("dept_name"))
+    return True
+
+
+def timeline_add_endpoint_info(ctx, info):
+    if not isinstance(info, dict) or not info:
+        return False
+
+    timeline_add_alias(ctx, "hostnames", info.get("hostname"))
+    timeline_add_alias(ctx, "names", info.get("user_name"))
+    timeline_add_alias(ctx, "user_ids", info.get("user_id"))
+    return True
+
+
+def build_timeline_identity_context(keyword):
+    keyword = str(keyword or "").strip()
+    ctx = {
+        "input": keyword,
+        "input_lower": keyword.lower(),
+        "names": set(),
+        "user_ids": set(),
+        "emails": set(),
+        "email_locals": set(),
+        "hostnames": set(),
+        "dept_names": set(),
+        "all_values": set(),
+        "all_keys": set(),
+    }
+
+    timeline_add_alias(ctx, "all_values", keyword)
+    if "@" in keyword:
+        timeline_add_alias(ctx, "emails", keyword)
+    else:
+        timeline_add_alias(ctx, "user_ids", keyword)
+        timeline_add_alias(ctx, "names", keyword)
+        timeline_add_alias(ctx, "hostnames", keyword)
+
+    # Directory Users API cache: user_id/email/email local-part 기준 확장
+    timeline_add_directory_info(ctx, get_directory_user_info(keyword))
+
+    # Mailbox로 입력된 경우 XDR/email identity resolver를 통해 확장
+    if "@" in keyword:
+        mailbox_identity = resolve_identity_by_mailbox(keyword)
+        timeline_add_alias(ctx, "names", mailbox_identity.get("user_name"))
+        timeline_add_alias(ctx, "user_ids", mailbox_identity.get("user_id"))
+        timeline_add_alias(ctx, "hostnames", mailbox_identity.get("hostname"))
+        timeline_add_alias(ctx, "dept_names", mailbox_identity.get("dept_name"))
+
+    # Hostname으로 입력된 경우 Endpoint identity resolver를 통해 확장
+    host_identity = resolve_identity_by_hostname(keyword)
+    if host_identity.get("hostname") != "None" or host_identity.get("user_name") != "None":
+        timeline_add_alias(ctx, "hostnames", host_identity.get("hostname"))
+        timeline_add_alias(ctx, "names", host_identity.get("user_name"))
+        timeline_add_alias(ctx, "user_ids", host_identity.get("user_id"))
+        timeline_add_alias(ctx, "dept_names", host_identity.get("dept_name"))
+
+    # Endpoint map 역방향 확장: 이름/UserID/Hostname 중 하나가 맞으면 나머지 alias 추가
+    for _ in range(2):
+        changed = False
+        for info in HOSTNAME_USER_MAP.values():
+            if not isinstance(info, dict):
+                continue
+            values = [info.get("hostname"), info.get("user_name"), info.get("user_id")]
+            if any(normalize_name_key(v) in ctx["all_keys"] for v in values if v):
+                before = len(ctx["all_keys"])
+                timeline_add_endpoint_info(ctx, info)
+                changed = changed or len(ctx["all_keys"]) != before
+        if not changed:
+            break
+
+    # Directory index 역방향 확장: 이름/UserID/email 중 하나가 맞으면 나머지 alias 추가
+    seen_entries = set()
+    for info in DIRECTORY_USER_INDEX.values():
+        if not isinstance(info, dict):
+            continue
+        entry_key = (info.get("name"), info.get("user_id"), info.get("email"))
+        if entry_key in seen_entries:
+            continue
+        seen_entries.add(entry_key)
+        values = [info.get("name"), info.get("user_id"), info.get("email")]
+        values += [str(info.get("email", "")).split("@", 1)[0]] if info.get("email") else []
+        if any(normalize_name_key(v) in ctx["all_keys"] for v in values if v):
+            timeline_add_directory_info(ctx, info)
+
+    exc_dept = get_report_exception_dept(keyword)
+    if exc_dept:
+        timeline_add_alias(ctx, "dept_names", exc_dept)
+
+    return ctx
+
+
+def timeline_value_matches_context(value, ctx):
+    value = str(value or "").strip()
+    if not value or value == "None":
+        return False
+
+    key = normalize_name_key(value)
+    if key and key in ctx.get("all_keys", set()):
+        return True
+
+    if "@" in value:
+        local = value.split("@", 1)[0].strip()
+        if normalize_name_key(local) in ctx.get("all_keys", set()):
+            return True
+
+    raw = ctx.get("input_lower", "")
+    if raw and raw in value.lower():
+        return True
+
+    return False
+
+
+def timeline_identity_matches(identity, ctx):
+    if not isinstance(identity, dict):
+        return False
+    return any(timeline_value_matches_context(identity.get(k), ctx) for k in (
+        "user_name", "user_id", "hostname", "mailbox", "dept_name"
+    ))
+
+
+def timeline_parse_dt(value):
+    value = str(value or "").strip()
+    if not value or value == "None":
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+        try:
+            return datetime.strptime(value[:19], fmt)
+        except Exception:
+            pass
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone(timedelta(hours=9))).replace(tzinfo=None)
+    except Exception:
+        return None
+
+
+def timeline_bucket_minute(time_text):
+    dt = timeline_parse_dt(time_text)
+    if dt:
+        return dt.strftime("%Y-%m-%d %H:%M")
+    text = str(time_text or "")
+    return text[:16] if len(text) >= 16 else text
+
+
+def make_timeline_event(time_text, source, user, user_id, dept, asset, event, direction, peer, summary, indicator, raw, match_values):
+    return {
+        "time": str(time_text or "None"),
+        "bucket": timeline_bucket_minute(time_text),
+        "source": str(source or "None"),
+        "user": str(user or "None"),
+        "user_id": str(user_id or "None"),
+        "dept": str(dept or "미분류"),
+        "asset": str(asset or "None"),
+        "event": str(event or "None"),
+        "direction": str(direction or "None"),
+        "peer": str(peer or "None"),
+        "summary": str(summary or "None"),
+        "indicator": str(indicator or "None"),
+        "raw": raw,
+        "match_values": [str(v) for v in (match_values or []) if str(v or "").strip()],
+    }
+
+
+def timeline_event_matches(event, ctx):
+    for value in event.get("match_values", []):
+        if timeline_value_matches_context(value, ctx):
+            return True
+    return False
+
+
+def normalize_timeline_detection(d, ctx):
+    if not isinstance(d, dict):
+        return None
+    if get_detection_sensor_type(d) != "endpoint":
+        return None
+
+    event_time = d.get("time")
+    if not event_time:
+        return None
+
+    raw = d.get("rawData", {}) if isinstance(d.get("rawData"), dict) else {}
+    hostname = raw.get("meta_hostname", "None")
+    identity = resolve_identity_by_hostname(hostname)
+    rule = "None"
+    dd = d.get("detectionDescription", {})
+    if isinstance(dd, dict):
+        rule = dd.get("createdReasonId", "None") or "None"
+    if rule == "None":
+        rule = d.get("rule", "None") or d.get("detectionRule", "None") or "None"
+
+    file_name, sha = get_display_file_and_sha(raw)
+    private_ip = raw.get("meta_ip_address") or "None"
+    public_ip = raw.get("meta_public_ip") or "None"
+    summary = file_name if file_name != "None" else f"{private_ip} / {public_ip}"
+    indicator = sha if sha != "None" else public_ip
+
+    event = make_timeline_event(
+        kst_time(event_time), "Detection",
+        identity.get("user_name", "None"), identity.get("user_id", "None"), identity.get("dept_name", "미분류"),
+        hostname, rule, "Host", private_ip, summary, indicator, d,
+        [hostname, identity.get("user_name"), identity.get("user_id"), identity.get("dept_name")]
+    )
+    return event if timeline_event_matches(event, ctx) else None
+
+
+def normalize_timeline_xdr(d, ctx):
+    if not isinstance(d, dict):
+        return None
+    if get_detection_sensor_type(d) != "email":
+        return None
+
+    row_data = extract_xdr_email_fields(d)
+    if row_data.get("rule") not in XDR_EMAIL_RULES:
+        return None
+
+    identity = resolve_identity_by_mailbox(row_data.get("mailbox"))
+    direction = f"{row_data.get('from', 'None')} → {row_data.get('to', 'None')}"
+    peer = row_data.get("from") or row_data.get("sender_ip") or "None"
+    indicator = row_data.get("ioc") if row_data.get("ioc") != "None" else row_data.get("ioc_sha", "None")
+    event = make_timeline_event(
+        row_data.get("time"), "XDR",
+        identity.get("user_name", "None"), identity.get("user_id", "None"), identity.get("dept_name", "미분류"),
+        row_data.get("mailbox", "None"), row_data.get("rule", "None"), direction, peer,
+        row_data.get("subject", "None"), indicator, row_data.get("raw", d),
+        [row_data.get("mailbox"), identity.get("user_name"), identity.get("user_id"), identity.get("dept_name")]
+    )
+    return event if timeline_event_matches(event, ctx) else None
+
+
+def normalize_timeline_email(m, ctx):
+    if not isinstance(m, dict):
+        return []
+
+    event_time = m.get("receivedAt")
+    if not event_time:
+        return []
+
+    from_addr = email_addr(m.get("from"))
+    to_list = [email_addr(x) for x in (m.get("to", []) or []) if isinstance(x, dict)]
+    cc_list = [email_addr(x) for x in (m.get("cc", []) or []) if isinstance(x, dict)]
+    participants = [from_addr] + to_list + cc_list
+    if not any(timeline_value_matches_context(addr, ctx) for addr in participants):
+        return []
+
+    matched_addr = next((addr for addr in participants if timeline_value_matches_context(addr, ctx)), from_addr)
+    identity = resolve_identity_by_mailbox(matched_addr) if "@" in matched_addr else {}
+    direction = f"{from_addr} → {join_list(to_list)}"
+    reason = str(m.get("reason", "None") or "None")
+    subject = str(m.get("subject", "None") or "None")
+    cip = str(m.get("clientIp", "None") or "None")
+
+    return [make_timeline_event(
+        kst_time(event_time), "Email",
+        identity.get("user_name", matched_addr), identity.get("user_id", matched_addr.split("@", 1)[0] if "@" in matched_addr else "None"),
+        identity.get("dept_name", "미분류"), matched_addr, reason, direction, from_addr, subject, cip, m,
+        participants + [identity.get("user_name"), identity.get("user_id"), identity.get("dept_name")]
+    )]
+
+
+def normalize_timeline_dlp(row, ctx):
+    if not isinstance(row, dict):
+        return None
+
+    t = str(row.get("eventtimelocal", "") or "").strip()
+    if not t:
+        return None
+
+    machine_name = str(row.get("machine_name", "None") or "None")
+    client_name = str(row.get("client_name", "None") or "None")
+    identity = resolve_identity_by_hostname(machine_name)
+    dept_name = identity.get("dept_name", "미분류")
+    user_name = identity.get("user_name") if identity.get("user_name") != "None" else client_name
+    user_id = identity.get("user_id", "None") or "None"
+    event_id = format_dlp_event_id(row.get("event_id", "None"))
+    filename = str(row.get("filename", "None") or "None")
+    destination = str(row.get("destination", "None") or "None")
+    direction = f"{filename} → {destination}"
+    indicator = str(row.get("filehash", "None") or "None")
+
+    event = make_timeline_event(
+        t, "File", user_name, user_id, dept_name, machine_name, event_id,
+        direction, destination, filename, indicator, row,
+        [machine_name, client_name, user_name, user_id, dept_name]
+    )
+    return event if timeline_event_matches(event, ctx) else None
+
+
+def iter_json_files(base_dir, suffix):
+    if not os.path.isdir(base_dir):
+        return []
+    paths = []
+    for name in os.listdir(base_dir):
+        if name.endswith(suffix):
+            paths.append(os.path.join(base_dir, name))
+    return sorted(paths)
+
+
+def group_timeline_events(events):
+    grouped = {}
+    for event in events:
+        user_key = event.get("user_id") if event.get("user_id") != "None" else event.get("user")
+        key = (
+            event.get("bucket"),
+            event.get("source"),
+            normalize_name_key(user_key),
+            normalize_name_key(event.get("asset")),
+            normalize_name_key(event.get("event")),
+            normalize_name_key(event.get("summary")),
+        )
+        if key not in grouped:
+            grouped[key] = {
+                "bucket": event.get("bucket"),
+                "source": event.get("source"),
+                "user": event.get("user"),
+                "user_id": event.get("user_id"),
+                "dept": event.get("dept"),
+                "asset": event.get("asset"),
+                "event": event.get("event"),
+                "summary": event.get("summary"),
+                "items": [],
+            }
+        grouped[key]["items"].append(event)
+
+    groups = list(grouped.values())
+    for group in groups:
+        group["count"] = len(group.get("items", []))
+        group["time"] = min((item.get("time", "") for item in group.get("items", [])), default=group.get("bucket", ""))
+
+    groups.sort(key=lambda g: g.get("time", ""))
+    return groups
+
+
+class TimelineSearchWorker(QThread):
+    ok = pyqtSignal(list, dict)
+    fail = pyqtSignal(str)
+    progress = pyqtSignal(str)
+
+    def __init__(self, keyword, sources=None):
+        super().__init__()
+        self.keyword = str(keyword or "").strip()
+        self.sources = set(sources or ["Detection", "XDR", "Email", "File"])
+
+    def run(self):
+        try:
+            if not self.keyword:
+                self.ok.emit([], {"message": "검색어를 입력하세요.", "events": 0, "groups": 0})
+                return
+
+            ctx = build_timeline_identity_context(self.keyword)
+            events = []
+            files_scanned = 0
+
+            if "Detection" in self.sources or "XDR" in self.sources:
+                paths = iter_json_files(DETECTIONS_DAY_DIR, ".json")
+                for idx, path in enumerate(paths, start=1):
+                    self.progress.emit(f"Detection/XDR 캐시 검색중 {idx}/{len(paths)}")
+                    files_scanned += 1
+                    try:
+                        with open(path, "r", encoding="utf-8") as f:
+                            rows = json.load(f)
+                    except Exception as e:
+                        log.warning(f"Timeline failed to load {path}: {e}")
+                        continue
+                    if not isinstance(rows, list):
+                        continue
+                    for row in rows:
+                        if "Detection" in self.sources:
+                            event = normalize_timeline_detection(row, ctx)
+                            if event:
+                                events.append(event)
+                        if "XDR" in self.sources:
+                            event = normalize_timeline_xdr(row, ctx)
+                            if event:
+                                events.append(event)
+
+            if "Email" in self.sources:
+                paths = iter_json_files(EMAILS_DAY_DIR, ".json")
+                for idx, path in enumerate(paths, start=1):
+                    self.progress.emit(f"Email 캐시 검색중 {idx}/{len(paths)}")
+                    files_scanned += 1
+                    try:
+                        with open(path, "r", encoding="utf-8") as f:
+                            rows = json.load(f)
+                    except Exception as e:
+                        log.warning(f"Timeline failed to load {path}: {e}")
+                        continue
+                    if not isinstance(rows, list):
+                        continue
+                    for row in rows:
+                        events.extend(normalize_timeline_email(row, ctx))
+
+            if "File" in self.sources:
+                paths = iter_json_files(DLP_DAY_DIR, ".jsonl")
+                for idx, path in enumerate(paths, start=1):
+                    self.progress.emit(f"DLP 캐시 검색중 {idx}/{len(paths)}")
+                    files_scanned += 1
+                    for row in load_jsonl(path):
+                        event = normalize_timeline_dlp(row, ctx)
+                        if event:
+                            events.append(event)
+
+            groups = group_timeline_events(events)
+            stats = {
+                "message": f"검색 완료: 이벤트 {len(events):,}건 / 그룹 {len(groups):,}개 / 파일 {files_scanned:,}개",
+                "events": len(events),
+                "groups": len(groups),
+                "files": files_scanned,
+                "aliases": sorted(ctx.get("all_values", set()))[:80],
+            }
+            self.ok.emit(groups, stats)
+        except Exception as e:
+            log.exception("Timeline search failed")
+            self.fail.emit(str(e))
+
+
+class TimelineEventCard(QFrame):
+    clicked = pyqtSignal(object)
+
+    def __init__(self, group, color, parent=None):
+        super().__init__(parent)
+        self.group = group
+        self.color = color
+        self.setCursor(Qt.PointingHandCursor)
+        self.setObjectName("timelineEventCard")
+        self.setStyleSheet(f"""
+            QFrame#timelineEventCard {{
+                background: {UI_THEME['surface']};
+                border: 1px solid {color};
+                border-radius: 12px;
+            }}
+            QLabel {{
+                color: {UI_THEME['text']};
+                background: transparent;
+            }}
+        """)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 10, 12, 10)
+        layout.setSpacing(4)
+
+        title = QLabel(f"{group.get('bucket', 'None')}  [{group.get('source', 'None')}]  {group.get('event', 'None')}  {group.get('count', 0)}건")
+        title.setStyleSheet(f"color:{color}; font-weight:900; font-size:12px;")
+        title.setWordWrap(True)
+        user = QLabel(f"User: {group.get('user', 'None')} / {group.get('user_id', 'None')} / {group.get('dept', '미분류')}")
+        user.setWordWrap(True)
+        target = QLabel(f"Target: {group.get('asset', 'None')}")
+        target.setWordWrap(True)
+        summary = QLabel(f"Summary: {group.get('summary', 'None')}")
+        summary.setWordWrap(True)
+        summary.setStyleSheet(f"color:{UI_THEME['text_muted']};")
+        layout.addWidget(title)
+        layout.addWidget(user)
+        layout.addWidget(target)
+        layout.addWidget(summary)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.clicked.emit(self.group)
+        super().mousePressEvent(event)
+
 
 def resolve_history_endpoint_id_by_hostname(user_input: str):
     key = str(user_input or "").strip().lower()
@@ -7523,11 +8013,8 @@ class MainWindow(QMainWindow):
                 self._refresh_dlp()
 
         elif current_tab == "Timeline":
-            self.timeline_detections = load_detections_by_range(start_date, end_date)
-            self.timeline_dlp_rows = load_dlp_by_range(start_date, end_date)
-            self.timeline_range = f"{start_date} ~ {end_date}"
-            if hasattr(self, "_refresh_timeline"):
-                self._refresh_timeline()
+            # Timeline은 날짜 선택과 무관하게 검색 시점에 전체 캐시를 비동기로 스캔한다.
+            self.timeline_range = "전체 캐시"
             
         # 🔥 적용 후 현재 탭 기준으로 표시
         self.update_range_label()
@@ -11462,115 +11949,252 @@ Command Line :
         layout.setSpacing(8)
 
         top = QHBoxLayout()
-        lbl = QLabel("사용자명")
+        lbl = QLabel("사용자")
         self.timeline_user_input = QLineEdit()
-        self.timeline_user_input.setPlaceholderText("사용자명/메일/ID 입력")
-        btn = QPushButton("조회")
-        btn.setProperty("buttonRole", "secondary")
-        btn.setStyleSheet(self.button_style("secondary"))
+        self.timeline_user_input.setPlaceholderText("사용자명 / User ID / 메일 / Hostname 입력 후 전체 캐시 검색")
+        self.timeline_btn_search = QPushButton("조회")
+        self.timeline_btn_search.setProperty("buttonRole", "secondary")
+        self.timeline_btn_search.setStyleSheet(self.button_style("secondary"))
+        self.timeline_status_label = QLabel("날짜 선택과 무관하게 전체 캐시에서 검색합니다.")
+        self.timeline_status_label.setStyleSheet(f"color:{UI_THEME['text_muted']}; font-weight:700;")
+
+        self.timeline_chk_detection = QCheckBox("Detection")
+        self.timeline_chk_xdr = QCheckBox("XDR")
+        self.timeline_chk_email = QCheckBox("Email")
+        self.timeline_chk_file = QCheckBox("File")
+        for chk in [self.timeline_chk_detection, self.timeline_chk_xdr, self.timeline_chk_email, self.timeline_chk_file]:
+            chk.setChecked(True)
+            chk.setMinimumHeight(32)
+
         top.addWidget(lbl)
         top.addWidget(self.timeline_user_input, 1)
-        top.addWidget(btn)
+        top.addWidget(self.timeline_chk_detection)
+        top.addWidget(self.timeline_chk_xdr)
+        top.addWidget(self.timeline_chk_email)
+        top.addWidget(self.timeline_chk_file)
+        top.addWidget(self.timeline_btn_search)
 
-        table = QTableWidget()
-        headers = ["Time", "Source", "Username", "Host/Mailbox", "Rule/Event", "Summary"]
-        table.setColumnCount(len(headers))
-        table.setHorizontalHeaderLabels(headers)
-        table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        table.setSortingEnabled(True)
+        self.timeline_scroll = QScrollArea()
+        self.timeline_scroll.setWidgetResizable(True)
+        self.timeline_scroll.setFrameShape(QFrame.NoFrame)
+        self.timeline_canvas = QWidget()
+        self.timeline_result_layout = QVBoxLayout(self.timeline_canvas)
+        self.timeline_result_layout.setContentsMargins(10, 10, 10, 10)
+        self.timeline_result_layout.setSpacing(10)
+        self.timeline_scroll.setWidget(self.timeline_canvas)
 
-        def refresh():
-            keyword = self.timeline_user_input.text().strip().lower()
-            start_date = self.start_date_edit.date().toString("yyyy-MM-dd")
-            end_date = self.end_date_edit.date().toString("yyyy-MM-dd")
+        self.timeline_detail_panel = QWidget()
+        detail_layout = QVBoxLayout(self.timeline_detail_panel)
+        detail_layout.setContentsMargins(8, 0, 0, 0)
+        detail_layout.setSpacing(8)
+        self.timeline_detail_title = QLabel("타임라인 항목을 클릭하면 상세 이벤트가 표시됩니다.")
+        self.timeline_detail_title.setStyleSheet(f"color:{UI_THEME['accent_text']}; font-weight:900;")
+        self.timeline_detail_table = QTableWidget()
+        detail_headers = [
+            "Time", "Source", "User", "User ID", "Dept", "Asset/Mailbox",
+            "Event", "Direction", "Peer", "Summary", "Indicator"
+        ]
+        self.timeline_detail_table.setColumnCount(len(detail_headers))
+        self.timeline_detail_table.setHorizontalHeaderLabels(detail_headers)
+        self.timeline_detail_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.timeline_detail_table.setSortingEnabled(True)
+        detail_layout.addWidget(self.timeline_detail_title)
+        detail_layout.addWidget(self.timeline_detail_table, 1)
+        self.timeline_detail_panel.hide()
 
-            timeline_rows = []
+        self.timeline_splitter = QSplitter(Qt.Horizontal)
+        self.timeline_splitter.addWidget(self.timeline_scroll)
+        self.timeline_splitter.addWidget(self.timeline_detail_panel)
+        self.timeline_splitter.setStretchFactor(0, 2)
+        self.timeline_splitter.setStretchFactor(1, 3)
 
-            for d in (getattr(self, "timeline_detections", []) or []):
-                if not isinstance(d, dict):
-                    continue
-                event_time = d.get("time")
-                if not event_time:
-                    continue
-                t = kst_time(event_time)
-                if t[:10] < start_date or t[:10] > end_date:
-                    continue
+        layout.addLayout(top)
+        layout.addWidget(self.timeline_status_label)
+        layout.addWidget(self.timeline_splitter, 1)
 
-                sensor = d.get("sensor", {}) if isinstance(d.get("sensor"), dict) else {}
-                sensor_type = sensor.get("type", "")
+        self.timeline_groups = []
+        self.timeline_worker = None
 
-                if sensor_type == "endpoint":
-                    raw = d.get("rawData", {}) if isinstance(d.get("rawData"), dict) else {}
-                    host = raw.get("meta_hostname", "None")
-                    identity = resolve_identity_by_hostname(host)
-                    username = identity.get("user_name", "None")
-                    rule = (d.get("detectionDescription", {}) or {}).get("createdReasonId", "None") if isinstance(d.get("detectionDescription"), dict) else "None"
-                    if rule == "None":
-                        rule = d.get("rule", "None") or "None"
-                    summary = f"{raw.get('meta_ip_address', 'None')} / {raw.get('meta_public_ip', 'None')}"
-                    search_text = f"{username} {identity.get('user_id','')} {host}"
-                    source = "Detection"
-                    host_or_mail = host
-                elif sensor_type == "email":
-                    row_data = extract_xdr_email_fields(d)
-                    identity = resolve_identity_by_mailbox(row_data["mailbox"])
-                    username = identity.get("user_name", "None")
-                    rule = row_data["rule"]
-                    summary = row_data["subject"]
-                    search_text = f"{username} {identity.get('user_id','')} {row_data['mailbox']}"
-                    source = "XDR"
-                    host_or_mail = row_data["mailbox"]
-                else:
-                    continue
+        def clear_timeline_results():
+            while self.timeline_result_layout.count():
+                item = self.timeline_result_layout.takeAt(0)
+                widget = item.widget()
+                if widget:
+                    widget.deleteLater()
 
-                if keyword and keyword not in search_text.lower():
-                    continue
+        def add_empty_message(message):
+            clear_timeline_results()
+            box = QFrame()
+            box.setStyleSheet(f"""
+                QFrame {{
+                    background: {UI_THEME['surface']};
+                    border: 1px solid {UI_THEME['border_soft']};
+                    border-radius: 14px;
+                }}
+            """)
+            box_layout = QVBoxLayout(box)
+            box_layout.setContentsMargins(18, 18, 18, 18)
+            label = QLabel(message)
+            label.setAlignment(Qt.AlignCenter)
+            label.setWordWrap(True)
+            label.setStyleSheet(f"color:{UI_THEME['text_muted']}; font-weight:800;")
+            box_layout.addWidget(label)
+            self.timeline_result_layout.addWidget(box)
+            self.timeline_result_layout.addStretch(1)
 
-                timeline_rows.append((t, source, username, host_or_mail, rule, summary, d))
+        def source_color(source):
+            return {
+                "Detection": "#ef4444",
+                "XDR": "#7c3aed",
+                "Email": "#0ea5e9",
+                "File": "#f59e0b",
+            }.get(str(source), UI_THEME["accent"])
 
-            for d in (getattr(self, "timeline_dlp_rows", []) or []):
-                if not isinstance(d, dict):
-                    continue
-                t = str(d.get("eventtimelocal", "")).strip()
-                if len(t) < 10:
-                    continue
-                if t[:10] < start_date or t[:10] > end_date:
-                    continue
-                username = str(d.get("client_name", "None"))
-                host = str(d.get("machine_name", "None"))
-                event_id = format_dlp_event_id(d.get("event_id", "None"))
-                summary = str(d.get("filename", "None"))
-                search_text = f"{username} {host}"
-                if keyword and keyword not in search_text.lower():
-                    continue
-                timeline_rows.append((t, "File", username, host, event_id, summary, d))
-
-            timeline_rows.sort(key=lambda x: x[0], reverse=True)
-
+        def show_group_detail(group):
+            items = group.get("items", []) if isinstance(group, dict) else []
+            self.timeline_detail_panel.show()
+            self.timeline_detail_title.setText(
+                f"{group.get('bucket', 'None')} [{group.get('source', 'None')}] {group.get('event', 'None')} - {len(items)}건"
+            )
+            table = self.timeline_detail_table
             table.setSortingEnabled(False)
             table.clearContents()
             table.setRowCount(0)
-            for t, source, username, hm, rule, summary, raw in timeline_rows:
+            for event in items:
                 r = table.rowCount()
                 table.insertRow(r)
-                it = QTableWidgetItem(t)
-                it.setData(Qt.UserRole, raw)
-                table.setItem(r, 0, it)
-                table.setItem(r, 1, QTableWidgetItem(source))
-                table.setItem(r, 2, QTableWidgetItem(username))
-                table.setItem(r, 3, QTableWidgetItem(hm))
-                table.setItem(r, 4, QTableWidgetItem(rule))
-                table.setItem(r, 5, QTableWidgetItem(summary))
+                values = [
+                    event.get("time", "None"),
+                    event.get("source", "None"),
+                    event.get("user", "None"),
+                    event.get("user_id", "None"),
+                    event.get("dept", "미분류"),
+                    event.get("asset", "None"),
+                    event.get("event", "None"),
+                    event.get("direction", "None"),
+                    event.get("peer", "None"),
+                    event.get("summary", "None"),
+                    event.get("indicator", "None"),
+                ]
+                for c, value in enumerate(values):
+                    item = QTableWidgetItem(str(value))
+                    if c == 0:
+                        item.setData(Qt.UserRole, event.get("raw"))
+                    table.setItem(r, c, item)
             table.setSortingEnabled(True)
+            self.timeline_splitter.setSizes([520, 680])
 
-        btn.clicked.connect(refresh)
-        self.timeline_user_input.returnPressed.connect(refresh)
+        def render_timeline(groups):
+            self.timeline_groups = groups or []
+            self.timeline_detail_table.clearContents()
+            self.timeline_detail_table.setRowCount(0)
+            self.timeline_detail_panel.hide()
+            clear_timeline_results()
 
-        layout.addLayout(top)
-        layout.addWidget(table, 1)
+            if not self.timeline_groups:
+                add_empty_message("검색 결과가 없습니다. 사용자명/User ID/메일/Hostname을 확인하세요.")
+                return
 
-        self._refresh_timeline = refresh
-        refresh()
+            current_date = ""
+            for idx, group in enumerate(self.timeline_groups):
+                bucket = str(group.get("bucket", ""))
+                date_key = bucket[:10] if len(bucket) >= 10 else "Unknown"
+                if date_key != current_date:
+                    current_date = date_key
+                    date_label = QLabel(date_key)
+                    date_label.setAlignment(Qt.AlignCenter)
+                    date_label.setStyleSheet(f"color:{UI_THEME['accent_text']}; font-size:16px; font-weight:900; margin:12px;")
+                    self.timeline_result_layout.addWidget(date_label)
+
+                color = source_color(group.get("source"))
+                row = QWidget()
+                row_layout = QHBoxLayout(row)
+                row_layout.setContentsMargins(0, 0, 0, 0)
+                row_layout.setSpacing(10)
+
+                card = TimelineEventCard(group, color)
+                card.clicked.connect(show_group_detail)
+                card.setMinimumWidth(320)
+                card.setMaximumWidth(520)
+
+                marker = QLabel("●\n│")
+                marker.setAlignment(Qt.AlignCenter)
+                marker.setStyleSheet(f"color:{color}; font-size:22px; font-weight:900;")
+                marker.setFixedWidth(36)
+
+                if idx % 2 == 0:
+                    row_layout.addWidget(card, 4)
+                    row_layout.addWidget(marker, 0)
+                    row_layout.addStretch(4)
+                else:
+                    row_layout.addStretch(4)
+                    row_layout.addWidget(marker, 0)
+                    row_layout.addWidget(card, 4)
+
+                self.timeline_result_layout.addWidget(row)
+
+            self.timeline_result_layout.addStretch(1)
+
+        def selected_sources():
+            sources = []
+            if self.timeline_chk_detection.isChecked():
+                sources.append("Detection")
+            if self.timeline_chk_xdr.isChecked():
+                sources.append("XDR")
+            if self.timeline_chk_email.isChecked():
+                sources.append("Email")
+            if self.timeline_chk_file.isChecked():
+                sources.append("File")
+            return sources
+
+        def set_search_enabled(enabled):
+            self.timeline_btn_search.setEnabled(enabled)
+            self.timeline_user_input.setEnabled(enabled)
+            for chk in [self.timeline_chk_detection, self.timeline_chk_xdr, self.timeline_chk_email, self.timeline_chk_file]:
+                chk.setEnabled(enabled)
+
+        def start_search():
+            keyword = self.timeline_user_input.text().strip()
+            if not keyword:
+                add_empty_message("검색어를 입력하세요. Timeline은 전체 캐시 검색이라 빈 검색은 실행하지 않습니다.")
+                self.timeline_status_label.setText("검색어를 입력하세요.")
+                return
+
+            sources = selected_sources()
+            if not sources:
+                add_empty_message("검색할 소스를 하나 이상 선택하세요.")
+                self.timeline_status_label.setText("검색 소스가 선택되지 않았습니다.")
+                return
+
+            if self.timeline_worker and self.timeline_worker.isRunning():
+                self.timeline_status_label.setText("이미 검색 중입니다. 잠시만 기다려주세요.")
+                return
+
+            set_search_enabled(False)
+            clear_timeline_results()
+            add_empty_message("전체 캐시 검색 중입니다...")
+            self.timeline_status_label.setText("전체 캐시 검색 시작...")
+            self.timeline_worker = TimelineSearchWorker(keyword, sources)
+            self.timeline_worker.progress.connect(lambda msg: self.timeline_status_label.setText(msg))
+
+            def on_ok(groups, stats):
+                set_search_enabled(True)
+                render_timeline(groups)
+                self.timeline_status_label.setText(stats.get("message", "검색 완료"))
+
+            def on_fail(message):
+                set_search_enabled(True)
+                add_empty_message(f"Timeline 검색 실패: {message}")
+                self.timeline_status_label.setText(f"검색 실패: {message}")
+
+            self.timeline_worker.ok.connect(on_ok)
+            self.timeline_worker.fail.connect(on_fail)
+            self.timeline_worker.start()
+
+        self.timeline_btn_search.clicked.connect(start_search)
+        self.timeline_user_input.returnPressed.connect(start_search)
+        self._refresh_timeline = lambda: None
+        add_empty_message("Timeline은 날짜 선택 없이 전체 Detection/XDR/Email/File 캐시에서 사용자 alias 기반으로 검색합니다.")
         return root
 
 
