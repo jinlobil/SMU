@@ -53,7 +53,6 @@ from PyQt5.QtWidgets import (
     QLabel, QMessageBox, QComboBox,
     QFrame, QDateEdit, QTimeEdit, QGroupBox, QColorDialog,
     QCheckBox, QSpinBox, QScrollArea, QSplitter,
-    QGraphicsView, QGraphicsScene,
     QDialog, QTextEdit, QShortcut,
     QSizePolicy, QGraphicsDropShadowEffect, QAbstractSpinBox
 )
@@ -65,7 +64,7 @@ from PyQt5.QtGui import (
     QKeySequence,
     QTextCursor,
     QTextCharFormat,
-    QColor, QFont, QPixmap, QPainter, QPen, QPainterPath, QBrush
+    QColor, QFont, QPixmap, QPainter, QPen, QPainterPath
 )
 
 
@@ -99,7 +98,8 @@ REPORT_EXCEPTION_LIST_PATH = os.path.join(ENV_DIR, "Report_exception_List.txt")
 COLOR_ENV_PATH = os.path.join(ENV_DIR, "Color_env.txt")
 COLOR_THEME_DIR = os.path.join(ENV_DIR, "themes")
 DLP_DAY_DIR = os.path.join(CACHE_DIR, "dlp")
-TIMELINE_INDEX_DB_PATH = os.path.join(CACHE_DIR, "timeline_index.db")
+TIMELINE_INDEX_DIR = os.path.join(CACHE_DIR, "index")
+TIMELINE_INDEX_DB_PATH = os.path.join(TIMELINE_INDEX_DIR, "timeline_index.db")
 
 
 os.makedirs(CACHE_DIR, exist_ok=True)
@@ -110,6 +110,7 @@ os.makedirs(LIVE_DISCOVER_DIR, exist_ok=True)
 os.makedirs(EXPORT_DIR, exist_ok=True)
 os.makedirs(REPORT_DIR, exist_ok=True)
 os.makedirs(DLP_DAY_DIR, exist_ok=True)
+os.makedirs(TIMELINE_INDEX_DIR, exist_ok=True)
 os.makedirs(ENV_DIR, exist_ok=True)
 os.makedirs(COLOR_THEME_DIR, exist_ok=True)
 
@@ -12319,28 +12320,16 @@ Command Line :
         top.addWidget(self.timeline_btn_search)
 
         # ===============================
-        # [B안 코드 - ACTIVE] QGraphicsView/QGraphicsScene 타임라인
+        # [A안 코드 - ACTIVE] QScrollArea + QWidget 카드 리스트
         # ===============================
-        self.timeline_scene = QGraphicsScene()
-        self.timeline_graphics_view = QGraphicsView(self.timeline_scene)
-        self.timeline_graphics_view.setRenderHint(QPainter.Antialiasing)
-        self.timeline_graphics_view.setFrameShape(QFrame.NoFrame)
-        self.timeline_graphics_view.setBackgroundBrush(QBrush(QColor(UI_THEME["surface_soft"])))
-        self.timeline_graphics_view.setDragMode(QGraphicsView.ScrollHandDrag)
-        self.timeline_graphics_view.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
-
-        # ===============================
-        # [A안 코드 - 보관/비활성] QScrollArea + QWidget 카드 리스트
-        # 나중에 A안으로 되돌릴 때 아래 블록과 render_timeline_a_legacy()를 다시 연결하면 됩니다.
-        # ===============================
-        # self.timeline_scroll = QScrollArea()
-        # self.timeline_scroll.setWidgetResizable(True)
-        # self.timeline_scroll.setFrameShape(QFrame.NoFrame)
-        # self.timeline_canvas = QWidget()
-        # self.timeline_result_layout = QVBoxLayout(self.timeline_canvas)
-        # self.timeline_result_layout.setContentsMargins(10, 10, 10, 10)
-        # self.timeline_result_layout.setSpacing(10)
-        # self.timeline_scroll.setWidget(self.timeline_canvas)
+        self.timeline_scroll = QScrollArea()
+        self.timeline_scroll.setWidgetResizable(True)
+        self.timeline_scroll.setFrameShape(QFrame.NoFrame)
+        self.timeline_canvas = QWidget()
+        self.timeline_result_layout = QVBoxLayout(self.timeline_canvas)
+        self.timeline_result_layout.setContentsMargins(10, 10, 10, 10)
+        self.timeline_result_layout.setSpacing(10)
+        self.timeline_scroll.setWidget(self.timeline_canvas)
 
         self.timeline_detail_panel = QWidget()
         detail_layout = QVBoxLayout(self.timeline_detail_panel)
@@ -12399,7 +12388,7 @@ Command Line :
         self.timeline_detail_panel.hide()
 
         self.timeline_splitter = QSplitter(Qt.Horizontal)
-        self.timeline_splitter.addWidget(self.timeline_graphics_view)
+        self.timeline_splitter.addWidget(self.timeline_scroll)
         self.timeline_splitter.addWidget(self.timeline_detail_panel)
         self.timeline_splitter.setStretchFactor(0, 2)
         self.timeline_splitter.setStretchFactor(1, 3)
@@ -12412,21 +12401,31 @@ Command Line :
         self.timeline_worker = None
 
         def clear_timeline_results():
-            self.timeline_scene.clear()
+            while self.timeline_result_layout.count():
+                item = self.timeline_result_layout.takeAt(0)
+                widget = item.widget()
+                if widget:
+                    widget.deleteLater()
 
         def add_empty_message(message):
             clear_timeline_results()
-            self.timeline_scene.setSceneRect(0, 0, 960, 420)
-            title = self.timeline_scene.addText(message)
-            title.setDefaultTextColor(QColor(UI_THEME["text_muted"]))
-            font = title.font()
-            font.setPointSize(12)
-            font.setBold(True)
-            title.setFont(font)
-            title.setTextWidth(820)
-            title.setPos(60, 170)
-            self.timeline_scene.addRect(30, 120, 900, 160, QPen(QColor(UI_THEME["border_soft"])), QBrush(QColor(UI_THEME["surface"])))
-            title.setZValue(2)
+            box = QFrame()
+            box.setStyleSheet(f"""
+                QFrame {{
+                    background: {UI_THEME['surface']};
+                    border: 1px solid {UI_THEME['border_soft']};
+                    border-radius: 14px;
+                }}
+            """)
+            box_layout = QVBoxLayout(box)
+            box_layout.setContentsMargins(18, 18, 18, 18)
+            label = QLabel(message)
+            label.setAlignment(Qt.AlignCenter)
+            label.setWordWrap(True)
+            label.setStyleSheet(f"color:{UI_THEME['text_muted']}; font-weight:800;")
+            box_layout.addWidget(label)
+            self.timeline_result_layout.addWidget(box)
+            self.timeline_result_layout.addStretch(1)
 
         def source_color(source):
             return {
@@ -12479,9 +12478,9 @@ Command Line :
             self.timeline_splitter.setSizes([520, 680])
 
         # ===============================
-        # [A안 코드 - 보관/비활성] QScrollArea + QWidget 렌더링
+        # [A안 코드 - ACTIVE] QScrollArea + QWidget 렌더링
         # ===============================
-        def render_timeline_a_legacy(groups):
+        def render_timeline(groups):
             self.timeline_groups = groups or []
             self.timeline_detail_table.clearContents()
             self.timeline_detail_table.setRowCount(0)
@@ -12531,86 +12530,6 @@ Command Line :
                 self.timeline_result_layout.addWidget(row)
 
             self.timeline_result_layout.addStretch(1)
-
-        # ===============================
-        # [B안 코드 - ACTIVE] QGraphicsView/QGraphicsScene 렌더링
-        # ===============================
-        def render_timeline(groups):
-            self.timeline_groups = groups or []
-            self.timeline_detail_table.clearContents()
-            self.timeline_detail_table.setRowCount(0)
-            self.timeline_detail_panel.hide()
-            clear_timeline_results()
-
-            if not self.timeline_groups:
-                add_empty_message("검색 결과가 없습니다. 사용자명/User ID/메일/Hostname을 확인하세요.")
-                return
-
-            scene = self.timeline_scene
-            scene.setBackgroundBrush(QBrush(QColor(UI_THEME["surface_soft"])))
-
-            view_w = max(self.timeline_graphics_view.viewport().width(), 980)
-            center_x = view_w / 2
-            left_x = 45
-            right_x = center_x + 52
-            card_w = int(max(320, min(430, center_x - 95)))
-            y = 32
-            current_date = ""
-
-            for idx, group in enumerate(self.timeline_groups):
-                bucket = str(group.get("bucket", ""))
-                date_key = bucket[:10] if len(bucket) >= 10 else "Unknown"
-                if date_key != current_date:
-                    current_date = date_key
-                    scene.addLine(36, y + 16, view_w - 36, y + 16, QPen(QColor(UI_THEME["border_soft"]), 1))
-                    date_text = scene.addText(date_key)
-                    date_text.setDefaultTextColor(QColor(UI_THEME["accent_text"]))
-                    font = date_text.font()
-                    font.setPointSize(13)
-                    font.setBold(True)
-                    date_text.setFont(font)
-                    date_rect = date_text.boundingRect()
-                    date_text.setPos(center_x - date_rect.width() / 2, y)
-                    y += 48
-
-                color = source_color(group.get("source"))
-                side_left = idx % 2 == 0
-                card_x = left_x if side_left else right_x
-
-                card = TimelineEventCard(group, color)
-                card.clicked.connect(show_group_detail)
-                card.setFixedWidth(card_w)
-                card.adjustSize()
-                card_h = max(112, card.sizeHint().height())
-                card.setMinimumHeight(card_h)
-
-                node_y = y + 28
-                proxy = scene.addWidget(card)
-                proxy.setPos(card_x, y)
-                proxy.setZValue(3)
-
-                connector_start_x = card_x + card_w if side_left else card_x
-                connector_end_x = center_x - 9 if side_left else center_x + 9
-                connector_item = scene.addLine(connector_start_x, node_y + 8, connector_end_x, node_y + 8, QPen(QColor(color), 2))
-                connector_item.setZValue(1)
-                node_item = scene.addEllipse(center_x - 9, node_y, 18, 18, QPen(QColor(color), 2), QBrush(QColor(color)))
-                node_item.setZValue(2)
-
-                source_badge = scene.addText(str(group.get("source", "")))
-                source_badge.setDefaultTextColor(QColor(color))
-                badge_font = source_badge.font()
-                badge_font.setPointSize(8)
-                badge_font.setBold(True)
-                source_badge.setFont(badge_font)
-                source_badge.setPos(center_x + 16 if side_left else center_x - 66, node_y - 4)
-
-                y += card_h + 36
-
-            axis_item = scene.addLine(center_x, 26, center_x, max(y + 30, 420), QPen(QColor(UI_THEME["border"]), 3))
-            axis_item.setZValue(-1)
-            scene.setSceneRect(0, 0, view_w, max(y + 80, 520))
-            self.timeline_graphics_view.resetTransform()
-            self.timeline_graphics_view.ensureVisible(QRectF(0, 0, view_w, 80), 0, 0)
 
         def selected_sources():
             sources = []
