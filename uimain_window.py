@@ -7,6 +7,8 @@ import webbrowser
 import urllib.parse
 import traceback
 import logging
+import sqlite3
+import hashlib
 from datetime import datetime, timezone, timedelta
 from collections import Counter, defaultdict
 
@@ -50,7 +52,7 @@ from PyQt5.QtWidgets import (
     QHeaderView, QMenu, QFileDialog,
     QLabel, QMessageBox, QComboBox,
     QFrame, QDateEdit, QTimeEdit, QGroupBox, QColorDialog,
-    QCheckBox, QSpinBox,
+    QCheckBox, QSpinBox, QScrollArea, QSplitter,
     QDialog, QTextEdit, QShortcut,
     QSizePolicy, QGraphicsDropShadowEffect, QAbstractSpinBox
 )
@@ -96,6 +98,8 @@ REPORT_EXCEPTION_LIST_PATH = os.path.join(ENV_DIR, "Report_exception_List.txt")
 COLOR_ENV_PATH = os.path.join(ENV_DIR, "Color_env.txt")
 COLOR_THEME_DIR = os.path.join(ENV_DIR, "themes")
 DLP_DAY_DIR = os.path.join(CACHE_DIR, "dlp")
+TIMELINE_INDEX_DIR = os.path.join(CACHE_DIR, "index")
+TIMELINE_INDEX_DB_PATH = os.path.join(TIMELINE_INDEX_DIR, "timeline_index.db")
 
 
 os.makedirs(CACHE_DIR, exist_ok=True)
@@ -106,6 +110,7 @@ os.makedirs(LIVE_DISCOVER_DIR, exist_ok=True)
 os.makedirs(EXPORT_DIR, exist_ok=True)
 os.makedirs(REPORT_DIR, exist_ok=True)
 os.makedirs(DLP_DAY_DIR, exist_ok=True)
+os.makedirs(TIMELINE_INDEX_DIR, exist_ok=True)
 os.makedirs(ENV_DIR, exist_ok=True)
 os.makedirs(COLOR_THEME_DIR, exist_ok=True)
 
@@ -698,6 +703,15 @@ def load_dlp_by_range(start_date: str, end_date: str):
 
     log.info(f"Loaded DLP from {start_date} ~ {end_date} : {len(results)}")
     return results
+
+
+def format_dlp_event_id(value):
+    event_id = str(value or "None")
+    mapping = {
+        "Content Threat Detected": "탐지됨",
+        "Content Threat Blocked": "차단",
+    }
+    return mapping.get(event_id.strip(), event_id)
 
 def get_unique_path(path):
     if not os.path.exists(path):
@@ -1575,10 +1589,85 @@ def build_hostname_user_map():
     return result
 
 
+def get_directory_user_dept(user):
+    if not isinstance(user, dict):
+        return "미분류", ""
+
+    source = user.get("source", {}) if isinstance(user.get("source"), dict) else {}
+    if str(source.get("type", "") or "").strip() != "activeDirectory":
+        return "미분류", ""
+
+    groups = user.get("groups", {}) if isinstance(user.get("groups"), dict) else {}
+    items = groups.get("items", [])
+    if not isinstance(items, list):
+        return "미분류", ""
+
+    for group in reversed(items):
+        if not isinstance(group, dict):
+            continue
+        dept_code = str(group.get("displayName", "") or "").strip()
+        if not dept_code.isdigit():
+            continue
+        return DEPT_MAP.get(dept_code, dept_code) or "미분류", dept_code
+
+    return "미분류", ""
+
+
+def build_directory_user_index():
+    result = {}
+
+    for user in USERS:
+        if not isinstance(user, dict):
+            continue
+
+        source = user.get("source", {}) if isinstance(user.get("source"), dict) else {}
+        if str(source.get("type", "") or "").strip() != "activeDirectory":
+            continue
+
+        dept_name, dept_code = get_directory_user_dept(user)
+        if not dept_code:
+            continue
+
+        entry = {
+            "name": str(user.get("name", "") or "").strip(),
+            "user_id": str(user.get("exchangeLogin", "") or "").strip(),
+            "email": str(user.get("email", "") or "").strip(),
+            "dept_name": dept_name,
+            "dept_code": dept_code,
+        }
+
+        keys = []
+        if entry["user_id"]:
+            keys.append(entry["user_id"])
+        if entry["email"]:
+            keys.append(entry["email"])
+            if "@" in entry["email"]:
+                keys.append(entry["email"].split("@", 1)[0])
+
+        for key in keys:
+            norm_key = normalize_name_key(key)
+            if norm_key:
+                result[norm_key] = entry
+
+    return result
+
+
+def get_directory_user_info(*values):
+    for value in values:
+        key = normalize_name_key(value)
+        if not key:
+            continue
+        info = DIRECTORY_USER_INDEX.get(key)
+        if info:
+            return info
+    return {}
+
+
 def build_hostname_dept_map():
     result = {}
 
     for host_key, info in HOSTNAME_USER_MAP.items():
+        hostname = str(info.get("hostname", "") or "").strip()
         user_name = str(info.get("user_name", "") or "").strip()
         user_id = str(info.get("user_id", "") or "").strip()
 
@@ -1593,11 +1682,18 @@ def build_hostname_dept_map():
             if org_info:
                 dept_name = str(org_info.get("dept_name", "미분류") or "미분류")
                 dept_code = str(org_info.get("dept_code", "") or "")
-            else:
-                exc_dept = get_report_exception_dept(user_name)
-                if exc_dept:
-                    dept_name = exc_dept
-                    dept_code = ""
+
+        if dept_name == "미분류" and user_id:
+            directory_info = get_directory_user_info(user_id)
+            if directory_info:
+                dept_name = str(directory_info.get("dept_name", "미분류") or "미분류")
+                dept_code = str(directory_info.get("dept_code", "") or "")
+
+        # Report_exception_List 는 일반 분류가 끝난 뒤 마지막에 덮어쓴다.
+        exc_dept = get_report_exception_dept(user_name, user_id, hostname)
+        if exc_dept:
+            dept_name = exc_dept
+            dept_code = ""
 
         result[host_key] = {
             "dept_name": dept_name,
@@ -1631,6 +1727,30 @@ def resolve_identity_by_hostname(hostname: str):
         "dept_name": str(dept_name or "미분류"),
         "dept_code": str(dept_code or ""),
     }
+
+def get_org_user_name_by_user_id(user_id: str):
+    user_id_key = normalize_name_key(user_id)
+    if not user_id_key:
+        return ""
+
+    for org in ORGS:
+        if not isinstance(org, dict):
+            continue
+
+        users = org.get("users", [])
+        if not isinstance(users, list):
+            continue
+
+        for u in users:
+            if not isinstance(u, dict):
+                continue
+
+            org_user_id = str(u.get("id", "") or u.get("userId", "") or "").strip()
+            if org_user_id and normalize_name_key(org_user_id) == user_id_key:
+                return str(u.get("name", "") or "").strip()
+
+    return ""
+
 
 def resolve_identity_by_mailbox(mailbox_addr: str):
     mailbox_addr = str(mailbox_addr or "").strip()
@@ -1677,6 +1797,26 @@ def resolve_identity_by_mailbox(mailbox_addr: str):
 
     if matched_hostname != "None":
         dept_name, dept_code = get_dept_by_hostname(matched_hostname)
+    elif mailbox_user:
+        # Endpoint 매칭이 안 되면 mailbox local-part를 User ID로 보고 User API 맵을 먼저 시도한다.
+        matched_user_id = mailbox_user
+        directory_info = get_directory_user_info(mailbox_addr, mailbox_user)
+        if directory_info:
+            matched_user_name = str(directory_info.get("name", "") or "None")
+            matched_user_id = str(directory_info.get("user_id", "") or mailbox_user)
+            dept_name = str(directory_info.get("dept_name", "미분류") or "미분류")
+            dept_code = str(directory_info.get("dept_code", "") or "")
+        else:
+            org_user_name = get_org_user_name_by_user_id(mailbox_user)
+            if org_user_name:
+                matched_user_name = org_user_name
+            dept_name, dept_code = get_org_info_by_user(org_user_name, mailbox_user, mailbox_user)
+
+    # Report_exception_List 는 Endpoint/User API/조직도 분류가 끝난 뒤 마지막에 덮어쓴다.
+    exc_dept = get_report_exception_dept(matched_user_name, matched_user_id, mailbox_user, mailbox_addr)
+    if exc_dept:
+        dept_name = exc_dept
+        dept_code = ""
 
     return {
         "mailbox": mailbox_addr or "None",
@@ -1700,20 +1840,23 @@ def get_dept_by_hostname(hostname: str):
     )
 
 def reload_all_data():
-    global ENDPOINTS, ORGS, REPORT_EXCEPTION_MAP
-    global USER_ORG_INDEX, HOSTNAME_USER_MAP, HOSTNAME_DEPT_MAP
+    global ENDPOINTS, ORGS, USERS, REPORT_EXCEPTION_MAP
+    global USER_ORG_INDEX, DIRECTORY_USER_INDEX, HOSTNAME_USER_MAP, HOSTNAME_DEPT_MAP
 
     ENDPOINTS = load_json(os.path.join(CACHE_DIR, "endpoints.json"))
     ORGS = load_json(os.path.join(CACHE_DIR, "user_groups.json"))
+    USERS = load_json(os.path.join(CACHE_DIR, "users.json"))
     REPORT_EXCEPTION_MAP = load_report_exception_map()
 
     USER_ORG_INDEX = build_org_user_index()
+    DIRECTORY_USER_INDEX = build_directory_user_index()
     HOSTNAME_USER_MAP = build_hostname_user_map()
     HOSTNAME_DEPT_MAP = build_hostname_dept_map()
 
     log.info(
-        f"[ORG MAP] endpoints={len(ENDPOINTS)} orgs={len(ORGS)} "
-        f"user_index={len(USER_ORG_INDEX)} hostname_index={len(HOSTNAME_DEPT_MAP)}"
+        f"[ORG MAP] endpoints={len(ENDPOINTS)} orgs={len(ORGS)} users={len(USERS)} "
+        f"user_index={len(USER_ORG_INDEX)} directory_user_index={len(DIRECTORY_USER_INDEX)} "
+        f"hostname_index={len(HOSTNAME_DEPT_MAP)}"
     )
 
 
@@ -1750,22 +1893,26 @@ def get_endpoint_user_by_machine_name(machine_name):
     return "", "", "not_found"
 
 
-def get_org_info_by_user(user_name, user_id=""):
+def get_org_info_by_user(user_name, user_id="", hostname=""):
     user_name_key = normalize_name_key(user_name)
     user_id_key = normalize_name_key(user_id)
+
+    dept_name = "미분류"
+    dept_code = ""
 
     for org in ORGS:
         if not isinstance(org, dict):
             continue
 
-        dept_code = str(org.get("deptCode", "") or "").strip()
+        org_dept_code = str(org.get("deptCode", "") or "").strip()
         raw_dept_name = str(org.get("deptName", "") or "").strip()
-        dept_name = DEPT_MAP.get(dept_code, raw_dept_name) or "미분류"
+        org_dept_name = DEPT_MAP.get(org_dept_code, raw_dept_name) or "미분류"
 
         users = org.get("users", [])
         if not isinstance(users, list):
             continue
 
+        matched = False
         for u in users:
             if isinstance(u, dict):
                 org_user_name = str(u.get("name", "") or "").strip()
@@ -1775,19 +1922,852 @@ def get_org_info_by_user(user_name, user_id=""):
                 org_user_id = ""
 
             if user_name_key and normalize_name_key(org_user_name) == user_name_key:
-                return dept_name, dept_code
+                matched = True
+                break
 
             if user_id_key and org_user_id and normalize_name_key(org_user_id) == user_id_key:
-                return dept_name, dept_code
+                matched = True
+                break
 
-    return "미분류", ""
+        if matched:
+            dept_name = org_dept_name
+            dept_code = org_dept_code
+            break
 
-def get_report_exception_dept(user_name):
-    key = normalize_name_key(user_name)
-    if not key:
-        return ""
+    if dept_name == "미분류" and user_id:
+        directory_info = get_directory_user_info(user_id)
+        if directory_info:
+            dept_name = str(directory_info.get("dept_name", "미분류") or "미분류")
+            dept_code = str(directory_info.get("dept_code", "") or "")
 
-    return str(REPORT_EXCEPTION_MAP.get(key, "") or "").strip()
+    # Report_exception_List 는 일반 분류가 끝난 뒤 마지막에 덮어쓴다.
+    exc_dept = get_report_exception_dept(user_name, user_id, hostname)
+    if exc_dept:
+        return exc_dept, ""
+
+    return dept_name, dept_code
+
+def get_report_exception_dept(*values):
+    for value in values:
+        key = normalize_name_key(value)
+        if not key:
+            continue
+
+        dept = str(REPORT_EXCEPTION_MAP.get(key, "") or "").strip()
+        if dept:
+            return dept
+
+    return ""
+
+
+
+def timeline_add_alias(ctx, category, value):
+    value = str(value or "").strip()
+    if not value or value in {"None", "미분류"}:
+        return
+
+    ctx.setdefault(category, set()).add(value)
+    if category == "dept_names":
+        return
+
+    ctx.setdefault("all_values", set()).add(value)
+
+    key = normalize_name_key(value)
+    if key:
+        ctx.setdefault("all_keys", set()).add(key)
+
+    if "@" in value:
+        local = value.split("@", 1)[0].strip()
+        if local:
+            ctx.setdefault("email_locals", set()).add(local)
+            ctx.setdefault("all_values", set()).add(local)
+            local_key = normalize_name_key(local)
+            if local_key:
+                ctx.setdefault("all_keys", set()).add(local_key)
+
+
+def timeline_add_directory_info(ctx, info):
+    if not isinstance(info, dict) or not info:
+        return False
+
+    timeline_add_alias(ctx, "names", info.get("name"))
+    timeline_add_alias(ctx, "user_ids", info.get("user_id"))
+    timeline_add_alias(ctx, "emails", info.get("email"))
+    timeline_add_alias(ctx, "dept_names", info.get("dept_name"))
+    return True
+
+
+def timeline_add_endpoint_info(ctx, info):
+    if not isinstance(info, dict) or not info:
+        return False
+
+    timeline_add_alias(ctx, "hostnames", info.get("hostname"))
+    timeline_add_alias(ctx, "names", info.get("user_name"))
+    timeline_add_alias(ctx, "user_ids", info.get("user_id"))
+    return True
+
+
+def build_timeline_identity_context(keyword):
+    keyword = str(keyword or "").strip()
+    ctx = {
+        "input": keyword,
+        "input_lower": keyword.lower(),
+        "names": set(),
+        "user_ids": set(),
+        "emails": set(),
+        "email_locals": set(),
+        "hostnames": set(),
+        "dept_names": set(),
+        "all_values": set(),
+        "all_keys": set(),
+    }
+
+    timeline_add_alias(ctx, "all_values", keyword)
+    if "@" in keyword:
+        timeline_add_alias(ctx, "emails", keyword)
+    else:
+        timeline_add_alias(ctx, "user_ids", keyword)
+        timeline_add_alias(ctx, "names", keyword)
+        timeline_add_alias(ctx, "hostnames", keyword)
+
+    # Directory Users API cache: user_id/email/email local-part 기준 확장
+    timeline_add_directory_info(ctx, get_directory_user_info(keyword))
+
+    # Mailbox로 입력된 경우 XDR/email identity resolver를 통해 확장
+    if "@" in keyword:
+        mailbox_identity = resolve_identity_by_mailbox(keyword)
+        timeline_add_alias(ctx, "names", mailbox_identity.get("user_name"))
+        timeline_add_alias(ctx, "user_ids", mailbox_identity.get("user_id"))
+        timeline_add_alias(ctx, "hostnames", mailbox_identity.get("hostname"))
+        timeline_add_alias(ctx, "dept_names", mailbox_identity.get("dept_name"))
+
+    # Hostname으로 입력된 경우 Endpoint identity resolver를 통해 확장
+    host_identity = resolve_identity_by_hostname(keyword)
+    if host_identity.get("hostname") != "None" or host_identity.get("user_name") != "None":
+        timeline_add_alias(ctx, "hostnames", host_identity.get("hostname"))
+        timeline_add_alias(ctx, "names", host_identity.get("user_name"))
+        timeline_add_alias(ctx, "user_ids", host_identity.get("user_id"))
+        timeline_add_alias(ctx, "dept_names", host_identity.get("dept_name"))
+
+    # Endpoint map 역방향 확장: 이름/UserID/Hostname 중 하나가 맞으면 나머지 alias 추가
+    for _ in range(2):
+        changed = False
+        for info in HOSTNAME_USER_MAP.values():
+            if not isinstance(info, dict):
+                continue
+            values = [info.get("hostname"), info.get("user_name"), info.get("user_id")]
+            if any(normalize_name_key(v) in ctx["all_keys"] for v in values if v):
+                before = len(ctx["all_keys"])
+                timeline_add_endpoint_info(ctx, info)
+                changed = changed or len(ctx["all_keys"]) != before
+        if not changed:
+            break
+
+    # Directory index 역방향 확장: 이름/UserID/email 중 하나가 맞으면 나머지 alias 추가
+    seen_entries = set()
+    for info in DIRECTORY_USER_INDEX.values():
+        if not isinstance(info, dict):
+            continue
+        entry_key = (info.get("name"), info.get("user_id"), info.get("email"))
+        if entry_key in seen_entries:
+            continue
+        seen_entries.add(entry_key)
+        values = [info.get("name"), info.get("user_id"), info.get("email")]
+        values += [str(info.get("email", "")).split("@", 1)[0]] if info.get("email") else []
+        if any(normalize_name_key(v) in ctx["all_keys"] for v in values if v):
+            timeline_add_directory_info(ctx, info)
+
+    exc_dept = get_report_exception_dept(keyword)
+    if exc_dept:
+        timeline_add_alias(ctx, "dept_names", exc_dept)
+
+    return ctx
+
+
+def timeline_value_matches_context(value, ctx):
+    value = str(value or "").strip()
+    if not value or value == "None":
+        return False
+
+    key = normalize_name_key(value)
+    if key and key in ctx.get("all_keys", set()):
+        return True
+
+    if "@" in value:
+        local = value.split("@", 1)[0].strip()
+        if normalize_name_key(local) in ctx.get("all_keys", set()):
+            return True
+
+    raw = ctx.get("input_lower", "")
+    if raw and raw in value.lower():
+        return True
+
+    return False
+
+
+def timeline_identity_matches(identity, ctx):
+    if not isinstance(identity, dict):
+        return False
+    return any(timeline_value_matches_context(identity.get(k), ctx) for k in (
+        "user_name", "user_id", "hostname", "mailbox"
+    ))
+
+
+def timeline_parse_dt(value):
+    value = str(value or "").strip()
+    if not value or value == "None":
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+        try:
+            return datetime.strptime(value[:19], fmt)
+        except Exception:
+            pass
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone(timedelta(hours=9))).replace(tzinfo=None)
+    except Exception:
+        return None
+
+
+def timeline_bucket_minute(time_text):
+    dt = timeline_parse_dt(time_text)
+    if dt:
+        bucket_minute = (dt.minute // 5) * 5
+        return dt.replace(minute=bucket_minute, second=0, microsecond=0).strftime("%Y-%m-%d %H:%M")
+    text = str(time_text or "")
+    return text[:16] if len(text) >= 16 else text
+
+
+def make_timeline_event(time_text, source, user, user_id, dept, asset, event, direction, peer, summary, indicator, raw, match_values):
+    return {
+        "time": str(time_text or "None"),
+        "bucket": timeline_bucket_minute(time_text),
+        "source": str(source or "None"),
+        "user": str(user or "None"),
+        "user_id": str(user_id or "None"),
+        "dept": str(dept or "미분류"),
+        "asset": str(asset or "None"),
+        "event": str(event or "None"),
+        "direction": str(direction or "None"),
+        "peer": str(peer or "None"),
+        "summary": str(summary or "None"),
+        "indicator": str(indicator or "None"),
+        "raw": raw,
+        "match_values": [str(v) for v in (match_values or []) if str(v or "").strip()],
+    }
+
+
+def timeline_event_matches(event, ctx):
+    for value in event.get("match_values", []):
+        if timeline_value_matches_context(value, ctx):
+            return True
+    return False
+
+
+def normalize_timeline_detection(d, ctx):
+    if not isinstance(d, dict):
+        return None
+    if get_detection_sensor_type(d) != "endpoint":
+        return None
+
+    event_time = d.get("time")
+    if not event_time:
+        return None
+
+    raw = d.get("rawData", {}) if isinstance(d.get("rawData"), dict) else {}
+    hostname = raw.get("meta_hostname", "None")
+    identity = resolve_identity_by_hostname(hostname)
+    rule = "None"
+    dd = d.get("detectionDescription", {})
+    if isinstance(dd, dict):
+        rule = dd.get("createdReasonId", "None") or "None"
+    if rule == "None":
+        rule = d.get("rule", "None") or d.get("detectionRule", "None") or "None"
+
+    file_name, sha = get_display_file_and_sha(raw)
+    private_ip = raw.get("meta_ip_address") or "None"
+    public_ip = raw.get("meta_public_ip") or "None"
+    summary = file_name if file_name != "None" else f"{private_ip} / {public_ip}"
+    indicator = sha if sha != "None" else public_ip
+
+    event = make_timeline_event(
+        kst_time(event_time), "Detection",
+        identity.get("user_name", "None"), identity.get("user_id", "None"), identity.get("dept_name", "미분류"),
+        hostname, rule, "Host", private_ip, summary, indicator, d,
+        [hostname, identity.get("user_name"), identity.get("user_id")]
+    )
+    return event if ctx is None or timeline_event_matches(event, ctx) else None
+
+
+def normalize_timeline_xdr(d, ctx):
+    if not isinstance(d, dict):
+        return None
+    if get_detection_sensor_type(d) != "email":
+        return None
+
+    row_data = extract_xdr_email_fields(d)
+    if row_data.get("rule") not in XDR_EMAIL_RULES:
+        return None
+
+    identity = resolve_identity_by_mailbox(row_data.get("mailbox"))
+    direction = f"{row_data.get('from', 'None')} → {row_data.get('to', 'None')}"
+    peer = row_data.get("from") or row_data.get("sender_ip") or "None"
+    indicator = row_data.get("ioc") if row_data.get("ioc") != "None" else row_data.get("ioc_sha", "None")
+    event = make_timeline_event(
+        row_data.get("time"), "XDR",
+        identity.get("user_name", "None"), identity.get("user_id", "None"), identity.get("dept_name", "미분류"),
+        row_data.get("mailbox", "None"), row_data.get("rule", "None"), direction, peer,
+        row_data.get("subject", "None"), indicator, row_data.get("raw", d),
+        [row_data.get("mailbox"), identity.get("user_name"), identity.get("user_id")]
+    )
+    return event if ctx is None or timeline_event_matches(event, ctx) else None
+
+
+def normalize_timeline_email(m, ctx):
+    if not isinstance(m, dict):
+        return []
+
+    event_time = m.get("receivedAt")
+    if not event_time:
+        return []
+
+    from_addr = email_addr(m.get("from"))
+    to_list = [email_addr(x) for x in (m.get("to", []) or []) if isinstance(x, dict)]
+    cc_list = [email_addr(x) for x in (m.get("cc", []) or []) if isinstance(x, dict)]
+    participants = [from_addr] + to_list + cc_list
+    if ctx is not None and not any(timeline_value_matches_context(addr, ctx) for addr in participants):
+        return []
+
+    matched_addr = next((addr for addr in participants if ctx is not None and timeline_value_matches_context(addr, ctx)), from_addr)
+    identity = resolve_identity_by_mailbox(matched_addr) if "@" in matched_addr else {}
+    direction = f"{from_addr} → {join_list(to_list)}"
+    reason = str(m.get("reason", "None") or "None")
+    subject = str(m.get("subject", "None") or "None")
+    cip = str(m.get("clientIp", "None") or "None")
+
+    return [make_timeline_event(
+        kst_time(event_time), "Email",
+        identity.get("user_name", matched_addr), identity.get("user_id", matched_addr.split("@", 1)[0] if "@" in matched_addr else "None"),
+        identity.get("dept_name", "미분류"), matched_addr, reason, direction, from_addr, subject, cip, m,
+        participants + [identity.get("user_name"), identity.get("user_id")]
+    )]
+
+
+def normalize_timeline_dlp(row, ctx):
+    if not isinstance(row, dict):
+        return None
+
+    t = str(row.get("eventtimelocal", "") or "").strip()
+    if not t:
+        return None
+
+    machine_name = str(row.get("machine_name", "None") or "None")
+    client_name = str(row.get("client_name", "None") or "None")
+    identity = resolve_identity_by_hostname(machine_name)
+    dept_name = identity.get("dept_name", "미분류")
+    user_name = identity.get("user_name") if identity.get("user_name") != "None" else client_name
+    user_id = identity.get("user_id", "None") or "None"
+    event_id = format_dlp_event_id(row.get("event_id", "None"))
+    filename = str(row.get("filename", "None") or "None")
+    destination = str(row.get("destination", "None") or "None")
+    direction = f"{filename} → {destination}"
+    indicator = str(row.get("filehash", "None") or "None")
+
+    event = make_timeline_event(
+        t, "File", user_name, user_id, dept_name, machine_name, event_id,
+        direction, destination, filename, indicator, row,
+        [machine_name, client_name, user_name, user_id]
+    )
+    return event if ctx is None or timeline_event_matches(event, ctx) else None
+
+
+def iter_json_files(base_dir, suffix):
+    if not os.path.isdir(base_dir):
+        return []
+    paths = []
+    for name in os.listdir(base_dir):
+        if name.endswith(suffix):
+            paths.append(os.path.join(base_dir, name))
+    return sorted(paths)
+
+
+def group_timeline_events(events):
+    grouped = {}
+    for event in events:
+        user_key = event.get("user_id") if event.get("user_id") != "None" else event.get("user")
+        key = (
+            event.get("bucket"),
+            event.get("source"),
+            normalize_name_key(user_key),
+            normalize_name_key(event.get("asset")),
+            normalize_name_key(event.get("event")),
+            normalize_name_key(event.get("summary")),
+        )
+        if key not in grouped:
+            grouped[key] = {
+                "bucket": event.get("bucket"),
+                "source": event.get("source"),
+                "user": event.get("user"),
+                "user_id": event.get("user_id"),
+                "dept": event.get("dept"),
+                "asset": event.get("asset"),
+                "event": event.get("event"),
+                "summary": event.get("summary"),
+                "items": [],
+            }
+        grouped[key]["items"].append(event)
+
+    groups = list(grouped.values())
+    for group in groups:
+        group["count"] = len(group.get("items", []))
+        group["time"] = min((item.get("time", "") for item in group.get("items", [])), default=group.get("bucket", ""))
+
+    groups.sort(key=lambda g: g.get("time", ""))
+    return groups
+
+
+def timeline_event_tokens(event):
+    tokens = set()
+    for value in event.get("match_values", []) or []:
+        value = str(value or "").strip()
+        if not value or value in {"None", "미분류"}:
+            continue
+        key = normalize_name_key(value)
+        if key:
+            tokens.add(key)
+        if "@" in value:
+            local_key = normalize_name_key(value.split("@", 1)[0])
+            if local_key:
+                tokens.add(local_key)
+    return sorted(tokens)
+
+
+def timeline_event_key(source, cache_file, row_index, event):
+    date_part = os.path.splitext(os.path.basename(cache_file))[0]
+    raw = "|".join([
+        str(source or ""),
+        str(date_part or ""),
+        str(row_index),
+        str(event.get("time", "")),
+        str(event.get("asset", "")),
+        str(event.get("event", "")),
+        str(event.get("summary", "")),
+    ])
+    digest = hashlib.sha1(raw.encode("utf-8", errors="ignore")).hexdigest()[:12]
+    return f"{str(source or 'event').lower()}:{date_part}:{row_index}:{digest}"
+
+
+def init_timeline_index_db(conn):
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS timeline_events (
+            event_key TEXT PRIMARY KEY,
+            source TEXT NOT NULL,
+            time TEXT,
+            bucket TEXT,
+            user TEXT,
+            user_id TEXT,
+            dept TEXT,
+            asset TEXT,
+            event TEXT,
+            direction TEXT,
+            peer TEXT,
+            summary TEXT,
+            indicator TEXT,
+            cache_file TEXT NOT NULL,
+            row_index INTEGER NOT NULL
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS timeline_tokens (
+            token TEXT NOT NULL,
+            event_key TEXT NOT NULL
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS timeline_files (
+            path TEXT PRIMARY KEY,
+            source TEXT,
+            mtime REAL,
+            size INTEGER,
+            rows INTEGER,
+            indexed_at TEXT
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_timeline_tokens_token ON timeline_tokens(token)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_timeline_tokens_event_key ON timeline_tokens(event_key)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_timeline_events_source ON timeline_events(source)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_timeline_events_time ON timeline_events(time)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_timeline_events_bucket ON timeline_events(bucket)")
+    conn.commit()
+
+
+def insert_timeline_index_event(conn, event, cache_file, row_index):
+    if not isinstance(event, dict):
+        return 0
+    source = str(event.get("source", "None") or "None")
+    event_key = timeline_event_key(source, cache_file, row_index, event)
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO timeline_events (
+            event_key, source, time, bucket, user, user_id, dept, asset, event,
+            direction, peer, summary, indicator, cache_file, row_index
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            event_key,
+            source,
+            event.get("time", "None"),
+            event.get("bucket", "None"),
+            event.get("user", "None"),
+            event.get("user_id", "None"),
+            event.get("dept", "미분류"),
+            event.get("asset", "None"),
+            event.get("event", "None"),
+            event.get("direction", "None"),
+            event.get("peer", "None"),
+            event.get("summary", "None"),
+            event.get("indicator", "None"),
+            cache_file,
+            int(row_index),
+        ),
+    )
+    token_count = 0
+    for token in timeline_event_tokens(event):
+        conn.execute("INSERT INTO timeline_tokens (token, event_key) VALUES (?, ?)", (token, event_key))
+        token_count += 1
+    return token_count
+
+
+def timeline_events_from_db_rows(rows):
+    events = []
+    for row in rows:
+        events.append({
+            "event_key": row[0],
+            "source": row[1],
+            "time": row[2],
+            "bucket": row[3],
+            "user": row[4],
+            "user_id": row[5],
+            "dept": row[6],
+            "asset": row[7],
+            "event": row[8],
+            "direction": row[9],
+            "peer": row[10],
+            "summary": row[11],
+            "indicator": row[12],
+            "cache_file": row[13],
+            "row_index": row[14],
+            "raw": None,
+            "match_values": [],
+        })
+    return events
+
+
+def load_timeline_raw_event(cache_file, row_index):
+    try:
+        row_index = int(row_index)
+    except Exception:
+        return None
+
+    if not cache_file or not os.path.exists(cache_file):
+        return None
+
+    try:
+        if str(cache_file).endswith(".jsonl"):
+            with open(cache_file, "r", encoding="utf-8") as f:
+                for idx, line in enumerate(f):
+                    if idx == row_index:
+                        line = line.strip()
+                        return json.loads(line) if line else None
+            return None
+
+        with open(cache_file, "r", encoding="utf-8") as f:
+            rows = json.load(f)
+        if isinstance(rows, list) and 0 <= row_index < len(rows):
+            return rows[row_index]
+    except Exception as e:
+        log.warning(f"Failed to load timeline raw event {cache_file}#{row_index}: {e}")
+    return None
+
+
+def query_timeline_index(keyword, sources=None):
+    if not os.path.exists(TIMELINE_INDEX_DB_PATH):
+        return None, {"message": "Timeline index DB not found"}
+
+    ctx = build_timeline_identity_context(keyword)
+    tokens = sorted(ctx.get("all_keys", set()))
+    if not tokens:
+        return [], {"message": "검색 token 없음", "events": 0, "groups": 0, "files": 0, "index": True}
+
+    sources = sorted(set(sources or ["Detection", "XDR", "Email", "File"]))
+    token_placeholders = ",".join(["?"] * len(tokens))
+    source_clause = ""
+    params = list(tokens)
+    if sources:
+        source_placeholders = ",".join(["?"] * len(sources))
+        source_clause = f" AND e.source IN ({source_placeholders})"
+        params.extend(sources)
+
+    sql = f"""
+        SELECT DISTINCT
+            e.event_key, e.source, e.time, e.bucket, e.user, e.user_id, e.dept,
+            e.asset, e.event, e.direction, e.peer, e.summary, e.indicator,
+            e.cache_file, e.row_index
+        FROM timeline_tokens t
+        JOIN timeline_events e ON e.event_key = t.event_key
+        WHERE t.token IN ({token_placeholders})
+        {source_clause}
+        ORDER BY e.time ASC
+    """
+
+    with sqlite3.connect(TIMELINE_INDEX_DB_PATH) as conn:
+        init_timeline_index_db(conn)
+        rows = conn.execute(sql, params).fetchall()
+        file_count = conn.execute("SELECT COUNT(*) FROM timeline_files").fetchone()[0]
+
+    events = timeline_events_from_db_rows(rows)
+    groups = group_timeline_events(events)
+    return groups, {
+        "message": f"인덱스 검색 완료: 이벤트 {len(events):,}건 / 그룹 {len(groups):,}개 / 파일 {file_count:,}개",
+        "events": len(events),
+        "groups": len(groups),
+        "files": file_count,
+        "aliases": sorted(ctx.get("all_values", set()))[:80],
+        "index": True,
+    }
+
+
+def index_timeline_cache_file(conn, cache_file, logical_source):
+    events_count = 0
+    tokens_count = 0
+    rows_count = 0
+
+    if logical_source == "detections":
+        try:
+            with open(cache_file, "r", encoding="utf-8") as f:
+                rows = json.load(f)
+        except Exception as e:
+            log.warning(f"Timeline index failed to load {cache_file}: {e}")
+            rows = []
+        if not isinstance(rows, list):
+            rows = []
+        rows_count = len(rows)
+        for idx, row in enumerate(rows):
+            for event in (normalize_timeline_detection(row, None), normalize_timeline_xdr(row, None)):
+                if event:
+                    tokens_count += insert_timeline_index_event(conn, event, cache_file, idx)
+                    events_count += 1
+
+    elif logical_source == "emails":
+        try:
+            with open(cache_file, "r", encoding="utf-8") as f:
+                rows = json.load(f)
+        except Exception as e:
+            log.warning(f"Timeline index failed to load {cache_file}: {e}")
+            rows = []
+        if not isinstance(rows, list):
+            rows = []
+        rows_count = len(rows)
+        for idx, row in enumerate(rows):
+            for event in normalize_timeline_email(row, None):
+                tokens_count += insert_timeline_index_event(conn, event, cache_file, idx)
+                events_count += 1
+
+    elif logical_source == "dlp":
+        rows = load_jsonl(cache_file)
+        rows_count = len(rows)
+        for idx, row in enumerate(rows):
+            event = normalize_timeline_dlp(row, None)
+            if event:
+                tokens_count += insert_timeline_index_event(conn, event, cache_file, idx)
+                events_count += 1
+
+    stat = os.stat(cache_file)
+    conn.execute(
+        "INSERT OR REPLACE INTO timeline_files (path, source, mtime, size, rows, indexed_at) VALUES (?, ?, ?, ?, ?, ?)",
+        (cache_file, logical_source, float(stat.st_mtime), int(stat.st_size), rows_count, datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+    )
+    return events_count, tokens_count, rows_count
+
+
+def rebuild_timeline_index(progress_cb=None):
+    for path in (TIMELINE_INDEX_DB_PATH, f"{TIMELINE_INDEX_DB_PATH}-wal", f"{TIMELINE_INDEX_DB_PATH}-shm"):
+        if os.path.exists(path):
+            os.remove(path)
+
+    file_specs = []
+    file_specs += [(path, "detections") for path in iter_json_files(DETECTIONS_DAY_DIR, ".json")]
+    file_specs += [(path, "emails") for path in iter_json_files(EMAILS_DAY_DIR, ".json")]
+    file_specs += [(path, "dlp") for path in iter_json_files(DLP_DAY_DIR, ".jsonl")]
+
+    totals = {"events": 0, "tokens": 0, "files": 0, "rows": 0}
+    with sqlite3.connect(TIMELINE_INDEX_DB_PATH) as conn:
+        init_timeline_index_db(conn)
+        for idx, (path, logical_source) in enumerate(file_specs, start=1):
+            if progress_cb:
+                progress_cb(f"Timeline 인덱싱중 {idx}/{len(file_specs)} - {logical_source} {os.path.basename(path)}")
+            events_count, tokens_count, rows_count = index_timeline_cache_file(conn, path, logical_source)
+            totals["events"] += events_count
+            totals["tokens"] += tokens_count
+            totals["rows"] += rows_count
+            totals["files"] += 1
+            if idx % 10 == 0:
+                conn.commit()
+        conn.commit()
+
+    totals["built_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    totals["db_path"] = TIMELINE_INDEX_DB_PATH
+    return totals
+
+
+class TimelineIndexWorker(QThread):
+    ok = pyqtSignal(dict)
+    fail = pyqtSignal(str)
+    progress = pyqtSignal(str)
+
+    def run(self):
+        try:
+            stats = rebuild_timeline_index(progress_cb=self.progress.emit)
+            self.ok.emit(stats)
+        except Exception as e:
+            log.exception("Timeline index rebuild failed")
+            self.fail.emit(str(e))
+
+
+
+class TimelineSearchWorker(QThread):
+    ok = pyqtSignal(list, dict)
+    fail = pyqtSignal(str)
+    progress = pyqtSignal(str)
+
+    def __init__(self, keyword, sources=None):
+        super().__init__()
+        self.keyword = str(keyword or "").strip()
+        self.sources = set(sources or ["Detection", "XDR", "Email", "File"])
+
+    def run(self):
+        try:
+            if not self.keyword:
+                self.ok.emit([], {"message": "검색어를 입력하세요.", "events": 0, "groups": 0})
+                return
+
+            index_groups, index_stats = query_timeline_index(self.keyword, self.sources)
+            if index_groups is not None:
+                self.ok.emit(index_groups, index_stats)
+                return
+
+            ctx = build_timeline_identity_context(self.keyword)
+            events = []
+            files_scanned = 0
+
+            if "Detection" in self.sources or "XDR" in self.sources:
+                paths = iter_json_files(DETECTIONS_DAY_DIR, ".json")
+                for idx, path in enumerate(paths, start=1):
+                    self.progress.emit(f"Detection/XDR 캐시 검색중 {idx}/{len(paths)}")
+                    files_scanned += 1
+                    try:
+                        with open(path, "r", encoding="utf-8") as f:
+                            rows = json.load(f)
+                    except Exception as e:
+                        log.warning(f"Timeline failed to load {path}: {e}")
+                        continue
+                    if not isinstance(rows, list):
+                        continue
+                    for row in rows:
+                        if "Detection" in self.sources:
+                            event = normalize_timeline_detection(row, ctx)
+                            if event:
+                                events.append(event)
+                        if "XDR" in self.sources:
+                            event = normalize_timeline_xdr(row, ctx)
+                            if event:
+                                events.append(event)
+
+            if "Email" in self.sources:
+                paths = iter_json_files(EMAILS_DAY_DIR, ".json")
+                for idx, path in enumerate(paths, start=1):
+                    self.progress.emit(f"Email 캐시 검색중 {idx}/{len(paths)}")
+                    files_scanned += 1
+                    try:
+                        with open(path, "r", encoding="utf-8") as f:
+                            rows = json.load(f)
+                    except Exception as e:
+                        log.warning(f"Timeline failed to load {path}: {e}")
+                        continue
+                    if not isinstance(rows, list):
+                        continue
+                    for row in rows:
+                        events.extend(normalize_timeline_email(row, ctx))
+
+            if "File" in self.sources:
+                paths = iter_json_files(DLP_DAY_DIR, ".jsonl")
+                for idx, path in enumerate(paths, start=1):
+                    self.progress.emit(f"DLP 캐시 검색중 {idx}/{len(paths)}")
+                    files_scanned += 1
+                    for row in load_jsonl(path):
+                        event = normalize_timeline_dlp(row, ctx)
+                        if event:
+                            events.append(event)
+
+            groups = group_timeline_events(events)
+            stats = {
+                "message": f"전체 캐시 검색 완료: 이벤트 {len(events):,}건 / 그룹 {len(groups):,}개 / 파일 {files_scanned:,}개",
+                "events": len(events),
+                "groups": len(groups),
+                "files": files_scanned,
+                "aliases": sorted(ctx.get("all_values", set()))[:80],
+            }
+            self.ok.emit(groups, stats)
+        except Exception as e:
+            log.exception("Timeline search failed")
+            self.fail.emit(str(e))
+
+
+class TimelineEventCard(QFrame):
+    clicked = pyqtSignal(object)
+
+    def __init__(self, group, color, parent=None):
+        super().__init__(parent)
+        self.group = group
+        self.color = color
+        self.setCursor(Qt.PointingHandCursor)
+        self.setObjectName("timelineEventCard")
+        self.setStyleSheet(f"""
+            QFrame#timelineEventCard {{
+                background: {UI_THEME['surface']};
+                border: 1px solid {color};
+                border-radius: 12px;
+            }}
+            QLabel {{
+                color: {UI_THEME['text']};
+                background: transparent;
+            }}
+        """)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 10, 12, 10)
+        layout.setSpacing(4)
+
+        title = QLabel(f"{group.get('bucket', 'None')}  [{group.get('source', 'None')}]  {group.get('event', 'None')}  {group.get('count', 0)}건")
+        title.setStyleSheet(f"color:{color}; font-weight:900; font-size:12px;")
+        title.setWordWrap(True)
+        user = QLabel(f"User: {group.get('user', 'None')} / {group.get('user_id', 'None')} / {group.get('dept', '미분류')}")
+        user.setWordWrap(True)
+        target = QLabel(f"Target: {group.get('asset', 'None')}")
+        target.setWordWrap(True)
+        summary = QLabel(f"Summary: {group.get('summary', 'None')}")
+        summary.setWordWrap(True)
+        summary.setStyleSheet(f"color:{UI_THEME['text_muted']};")
+        layout.addWidget(title)
+        layout.addWidget(user)
+        layout.addWidget(target)
+        layout.addWidget(summary)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.clicked.emit(self.group)
+        super().mousePressEvent(event)
+
 
 def resolve_history_endpoint_id_by_hostname(user_input: str):
     key = str(user_input or "").strip().lower()
@@ -3077,13 +4057,17 @@ class SophosClient:
                     if isinstance(uitems, list):
                         for u in uitems:
                             if isinstance(u, dict):
-                                users.append({"name": u.get("name", "None")})
+                                user_entry = dict(u)
+                                user_entry["name"] = u.get("name", "None")
+                                users.append(user_entry)
                             else:
                                 users.append({"name": str(u)})
                 elif isinstance(users_obj, list):
                     for u in users_obj:
                         if isinstance(u, dict):
-                            users.append({"name": u.get("name", "None")})
+                            user_entry = dict(u)
+                            user_entry["name"] = u.get("name", "None")
+                            users.append(user_entry)
                         else:
                             users.append({"name": str(u)})
 
@@ -3103,6 +4087,39 @@ class SophosClient:
 
         save_json(os.path.join(CACHE_DIR, "user_groups.json"), groups_out)
         log.info(f"Orgs saved: {len(groups_out)}")
+
+    def refresh_users(self):
+        url = f"{self.base_url}/common/v1/directory/users"
+
+        log.info("Refreshing users")
+        users = []
+        page = 1
+
+        while True:
+            r = requests.get(
+                url,
+                headers=self._headers(),
+                params={"pageSize": 100, "pageTotal": "true", "page": page},
+                timeout=45,
+            )
+            r.raise_for_status()
+            j = r.json()
+            items = j.get("items", [])
+            if not items:
+                break
+
+            users.extend([u for u in items if isinstance(u, dict)])
+
+            pages_info = j.get("pages") if isinstance(j.get("pages"), dict) else {}
+            total = pages_info.get("total")
+            if isinstance(total, int) and page >= total:
+                break
+
+            page += 1
+            time.sleep(0.2)
+
+        save_json(os.path.join(CACHE_DIR, "users.json"), users)
+        log.info(f"Users saved: {len(users)}")
 
 
 # ======================================================
@@ -3164,6 +4181,9 @@ class RefreshWorker(QThread):
 
                 elif self.job_name == "Organization":
                     api.refresh_orgs()
+
+                elif self.job_name == "User":
+                    api.refresh_users()
 
                 else:
                     raise RuntimeError(f"Unknown job: {self.job_name}")
@@ -4115,7 +5135,8 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.tab_detection_xdr(), "Detection XDR")
         self.tabs.addTab(self.tab_email(), "Email")
         self.tabs.addTab(self.tab_live_discover(), "Easy Query")
-        self.tabs.addTab(self.tab_dlp_file(), "File")        
+        self.tabs.addTab(self.tab_dlp_file(), "File")
+        self.tabs.addTab(self.tab_timeline(), "Timeline")
         self.tabs.addTab(self.tab_response(), "Response")
         self.tabs.addTab(self.tab_endpoint(), "Endpoint")
         self.tabs.addTab(self.tab_org(), "Organization")
@@ -7314,7 +8335,11 @@ class MainWindow(QMainWindow):
             self.dlp_range = f"{start_date} ~ {end_date}"
 
             if hasattr(self, "_refresh_dlp"):
-                self._refresh_dlp()        
+                self._refresh_dlp()
+
+        elif current_tab == "Timeline":
+            # Timeline은 날짜 선택과 무관하게 검색 시점에 전체 캐시를 비동기로 스캔한다.
+            self.timeline_range = "전체 캐시"
             
         # 🔥 적용 후 현재 탭 기준으로 표시
         self.update_range_label()
@@ -7338,6 +8363,9 @@ class MainWindow(QMainWindow):
 
         elif tab_name == "File":
             text = self.dlp_range
+
+        elif tab_name == "Timeline":
+            text = getattr(self, "timeline_range", "")
 
         else:
             text = ""
@@ -7670,7 +8698,7 @@ class MainWindow(QMainWindow):
 
         self.set_status(f"{tab_name} OK", color="green", spinning=False)
         
-        if tab_name in ("Endpoint", "Organization"):
+        if tab_name in ("Endpoint", "Organization", "User"):
             reload_all_data()
             self.refresh_all_tables()        
 
@@ -8285,17 +9313,21 @@ Command Line :
     # Tab rendering helpers
     # ==================================================
     def refresh_all_tables(self):
+        self.refresh_tab_table("Dashboard")
         self.refresh_tab_table("Detection")
         self.refresh_tab_table("Detection XDR")
         self.refresh_tab_table("Email")
         self.refresh_tab_table("File")
         self.refresh_tab_table("Endpoint")
         self.refresh_tab_table("Organization")
+        self.refresh_tab_table("Timeline")
         current_tab = self.tabs.tabText(self.tabs.currentIndex())
         self.update_time_range_label(current_tab)
 
     def refresh_tab_table(self, tab_name):
-        if tab_name == "Detection" and hasattr(self, "_refresh_detection"):
+        if tab_name == "Dashboard" and hasattr(self, "_refresh_dashboard"):
+            self._refresh_dashboard()
+        elif tab_name == "Detection" and hasattr(self, "_refresh_detection"):
             self._refresh_detection()
         elif tab_name == "Detection XDR" and hasattr(self, "_refresh_detection_xdr"):
             self._refresh_detection_xdr()
@@ -8307,6 +9339,8 @@ Command Line :
             self._refresh_org()
         elif tab_name == "File" and hasattr(self, "_refresh_dlp"):
             self._refresh_dlp()
+        elif tab_name == "Timeline" and hasattr(self, "_refresh_timeline"):
+            self._refresh_timeline()
 
     # ==================================================
     # Dashboard Tab
@@ -11009,7 +12043,7 @@ Command Line :
                 if not isinstance(d, dict):
                     continue
 
-                event_id = str(d.get("event_id", "None"))
+                event_id = format_dlp_event_id(d.get("event_id", "None"))
                 event_time = str(d.get("eventtimelocal", "")).strip()
                 event_date = event_time[:10] if len(event_time) >= 10 else ""
 
@@ -11230,6 +12264,333 @@ Command Line :
         self._refresh_dlp = refresh
         refresh()
 
+        return root
+
+
+    def tab_timeline(self):
+        root = QWidget()
+        layout = QVBoxLayout(root)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
+
+        top = QHBoxLayout()
+        lbl = QLabel("사용자")
+        self.timeline_user_input = QLineEdit()
+        self.timeline_user_input.setPlaceholderText("사용자명 / User ID / 메일 / Hostname 입력 후 전체 캐시 검색")
+        self.timeline_btn_search = QPushButton("조회")
+        self.timeline_btn_search.setProperty("buttonRole", "secondary")
+        self.timeline_btn_search.setStyleSheet(self.button_style("secondary"))
+        self.timeline_status_label = QLabel("날짜 선택과 무관하게 전체 캐시에서 검색합니다.")
+        self.timeline_status_label.setStyleSheet(f"color:{UI_THEME['text_muted']}; font-weight:700;")
+
+        self.timeline_chk_detection = QCheckBox("탐지")
+        self.timeline_chk_xdr = QCheckBox("XDR")
+        self.timeline_chk_email = QCheckBox("이메일")
+        self.timeline_chk_file = QCheckBox("파일")
+        for chk in [self.timeline_chk_detection, self.timeline_chk_xdr, self.timeline_chk_email, self.timeline_chk_file]:
+            chk.setChecked(True)
+            chk.setMinimumHeight(32)
+            chk.setMinimumWidth(78)
+            chk.setStyleSheet(f"""
+                QCheckBox {{
+                    color: {UI_THEME['text']};
+                    font-weight: 800;
+                    spacing: 6px;
+                    background: transparent;
+                }}
+                QCheckBox::indicator {{
+                    width: 16px;
+                    height: 16px;
+                    border: 1px solid {UI_THEME['accent']};
+                    border-radius: 4px;
+                    background: {UI_THEME['surface']};
+                }}
+                QCheckBox::indicator:checked {{
+                    background: {UI_THEME['accent']};
+                    border: 1px solid {UI_THEME['accent']};
+                }}
+            """)
+
+        top.addWidget(lbl)
+        top.addWidget(self.timeline_user_input, 1)
+        top.addWidget(self.timeline_chk_detection)
+        top.addWidget(self.timeline_chk_xdr)
+        top.addWidget(self.timeline_chk_email)
+        top.addWidget(self.timeline_chk_file)
+        top.addWidget(self.timeline_btn_search)
+
+        # ===============================
+        # [A안 코드 - ACTIVE] QScrollArea + QWidget 카드 리스트
+        # ===============================
+        self.timeline_scroll = QScrollArea()
+        self.timeline_scroll.setWidgetResizable(True)
+        self.timeline_scroll.setFrameShape(QFrame.NoFrame)
+        self.timeline_canvas = QWidget()
+        self.timeline_result_layout = QVBoxLayout(self.timeline_canvas)
+        self.timeline_result_layout.setContentsMargins(10, 10, 10, 10)
+        self.timeline_result_layout.setSpacing(10)
+        self.timeline_scroll.setWidget(self.timeline_canvas)
+
+        self.timeline_detail_panel = QWidget()
+        detail_layout = QVBoxLayout(self.timeline_detail_panel)
+        detail_layout.setContentsMargins(8, 0, 0, 0)
+        detail_layout.setSpacing(8)
+        detail_header = QHBoxLayout()
+        detail_header.setContentsMargins(0, 0, 0, 0)
+        detail_header.setSpacing(8)
+        self.timeline_detail_title = QLabel("타임라인 항목을 클릭하면 상세 이벤트가 표시됩니다.")
+        self.timeline_detail_title.setStyleSheet(f"color:{UI_THEME['accent_text']}; font-weight:900;")
+        self.timeline_detail_close_btn = QPushButton("닫기")
+        self.timeline_detail_close_btn.setFixedWidth(64)
+        self.timeline_detail_close_btn.setMinimumHeight(30)
+        self.timeline_detail_close_btn.setStyleSheet(self.button_style("secondary"))
+        detail_header.addWidget(self.timeline_detail_title, 1)
+        detail_header.addWidget(self.timeline_detail_close_btn, 0)
+        self.timeline_detail_table = QTableWidget()
+        detail_headers = [
+            "Time", "Source", "User", "User ID", "Dept", "Asset/Mailbox",
+            "Event", "Direction", "Peer", "Summary", "Indicator"
+        ]
+        self.timeline_detail_table.setColumnCount(len(detail_headers))
+        self.timeline_detail_table.setHorizontalHeaderLabels(detail_headers)
+        self.timeline_detail_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.timeline_detail_table.setSortingEnabled(True)
+        self.timeline_detail_table.setContextMenuPolicy(Qt.CustomContextMenu)
+
+        def open_timeline_detail_menu(pos):
+            item = self.timeline_detail_table.itemAt(pos)
+            if not item:
+                return
+
+            raw_item = self.timeline_detail_table.item(item.row(), 0)
+            if not raw_item:
+                return
+
+            payload = raw_item.data(Qt.UserRole)
+            if not payload:
+                return
+
+            raw = payload.get("raw") if isinstance(payload, dict) else payload
+            if not raw and isinstance(payload, dict):
+                raw = load_timeline_raw_event(payload.get("cache_file"), payload.get("row_index"))
+            if not raw:
+                return
+
+            menu = QMenu(self.timeline_detail_table)
+            detail_action = menu.addAction("View Raw Detail")
+            action = menu.exec_(self.timeline_detail_table.viewport().mapToGlobal(pos))
+            if action == detail_action:
+                self.show_raw_dialog(raw)
+
+        self.timeline_detail_table.customContextMenuRequested.connect(open_timeline_detail_menu)
+        detail_layout.addLayout(detail_header)
+        detail_layout.addWidget(self.timeline_detail_table, 1)
+        self.timeline_detail_panel.hide()
+
+        self.timeline_splitter = QSplitter(Qt.Horizontal)
+        self.timeline_splitter.addWidget(self.timeline_scroll)
+        self.timeline_splitter.addWidget(self.timeline_detail_panel)
+        self.timeline_splitter.setStretchFactor(0, 2)
+        self.timeline_splitter.setStretchFactor(1, 3)
+
+        layout.addLayout(top)
+        layout.addWidget(self.timeline_status_label)
+        layout.addWidget(self.timeline_splitter, 1)
+
+        self.timeline_groups = []
+        self.timeline_worker = None
+
+        def clear_timeline_results():
+            while self.timeline_result_layout.count():
+                item = self.timeline_result_layout.takeAt(0)
+                widget = item.widget()
+                if widget:
+                    widget.deleteLater()
+
+        def add_empty_message(message):
+            clear_timeline_results()
+            box = QFrame()
+            box.setStyleSheet(f"""
+                QFrame {{
+                    background: {UI_THEME['surface']};
+                    border: 1px solid {UI_THEME['border_soft']};
+                    border-radius: 14px;
+                }}
+            """)
+            box_layout = QVBoxLayout(box)
+            box_layout.setContentsMargins(18, 18, 18, 18)
+            label = QLabel(message)
+            label.setAlignment(Qt.AlignCenter)
+            label.setWordWrap(True)
+            label.setStyleSheet(f"color:{UI_THEME['text_muted']}; font-weight:800;")
+            box_layout.addWidget(label)
+            self.timeline_result_layout.addWidget(box)
+            self.timeline_result_layout.addStretch(1)
+
+        def source_color(source):
+            return {
+                "Detection": "#ef4444",
+                "XDR": "#7c3aed",
+                "Email": "#0ea5e9",
+                "File": "#f59e0b",
+            }.get(str(source), UI_THEME["accent"])
+
+        def close_detail_panel():
+            self.timeline_detail_table.clearContents()
+            self.timeline_detail_table.setRowCount(0)
+            self.timeline_detail_title.setText("타임라인 항목을 클릭하면 상세 이벤트가 표시됩니다.")
+            self.timeline_detail_panel.hide()
+
+        self.timeline_detail_close_btn.clicked.connect(close_detail_panel)
+
+        def show_group_detail(group):
+            items = group.get("items", []) if isinstance(group, dict) else []
+            self.timeline_detail_panel.show()
+            self.timeline_detail_title.setText(
+                f"{group.get('bucket', 'None')} [{group.get('source', 'None')}] {group.get('event', 'None')} - {len(items)}건"
+            )
+            table = self.timeline_detail_table
+            table.setSortingEnabled(False)
+            table.clearContents()
+            table.setRowCount(0)
+            for event in items:
+                r = table.rowCount()
+                table.insertRow(r)
+                values = [
+                    event.get("time", "None"),
+                    event.get("source", "None"),
+                    event.get("user", "None"),
+                    event.get("user_id", "None"),
+                    event.get("dept", "미분류"),
+                    event.get("asset", "None"),
+                    event.get("event", "None"),
+                    event.get("direction", "None"),
+                    event.get("peer", "None"),
+                    event.get("summary", "None"),
+                    event.get("indicator", "None"),
+                ]
+                for c, value in enumerate(values):
+                    item = QTableWidgetItem(str(value))
+                    if c == 0:
+                        item.setData(Qt.UserRole, event)
+                    table.setItem(r, c, item)
+            table.setSortingEnabled(True)
+            self.timeline_splitter.setSizes([520, 680])
+
+        # ===============================
+        # [A안 코드 - ACTIVE] QScrollArea + QWidget 렌더링
+        # ===============================
+        def render_timeline(groups):
+            self.timeline_groups = groups or []
+            self.timeline_detail_table.clearContents()
+            self.timeline_detail_table.setRowCount(0)
+            self.timeline_detail_panel.hide()
+            clear_timeline_results()
+
+            if not self.timeline_groups:
+                add_empty_message("검색 결과가 없습니다. 사용자명/User ID/메일/Hostname을 확인하세요.")
+                return
+
+            current_date = ""
+            for idx, group in enumerate(self.timeline_groups):
+                bucket = str(group.get("bucket", ""))
+                date_key = bucket[:10] if len(bucket) >= 10 else "Unknown"
+                if date_key != current_date:
+                    current_date = date_key
+                    date_label = QLabel(date_key)
+                    date_label.setAlignment(Qt.AlignCenter)
+                    date_label.setStyleSheet(f"color:{UI_THEME['accent_text']}; font-size:16px; font-weight:900; margin:12px;")
+                    self.timeline_result_layout.addWidget(date_label)
+
+                color = source_color(group.get("source"))
+                row = QWidget()
+                row_layout = QHBoxLayout(row)
+                row_layout.setContentsMargins(0, 0, 0, 0)
+                row_layout.setSpacing(10)
+
+                card = TimelineEventCard(group, color)
+                card.clicked.connect(show_group_detail)
+                card.setMinimumWidth(320)
+                card.setMaximumWidth(520)
+
+                marker = QLabel("●\n│")
+                marker.setAlignment(Qt.AlignCenter)
+                marker.setStyleSheet(f"color:{color}; font-size:22px; font-weight:900;")
+                marker.setFixedWidth(36)
+
+                if idx % 2 == 0:
+                    row_layout.addWidget(card, 4)
+                    row_layout.addWidget(marker, 0)
+                    row_layout.addStretch(4)
+                else:
+                    row_layout.addStretch(4)
+                    row_layout.addWidget(marker, 0)
+                    row_layout.addWidget(card, 4)
+
+                self.timeline_result_layout.addWidget(row)
+
+            self.timeline_result_layout.addStretch(1)
+
+        def selected_sources():
+            sources = []
+            if self.timeline_chk_detection.isChecked():
+                sources.append("Detection")
+            if self.timeline_chk_xdr.isChecked():
+                sources.append("XDR")
+            if self.timeline_chk_email.isChecked():
+                sources.append("Email")
+            if self.timeline_chk_file.isChecked():
+                sources.append("File")
+            return sources
+
+        def set_search_enabled(enabled):
+            self.timeline_btn_search.setEnabled(enabled)
+            self.timeline_user_input.setEnabled(enabled)
+            for chk in [self.timeline_chk_detection, self.timeline_chk_xdr, self.timeline_chk_email, self.timeline_chk_file]:
+                chk.setEnabled(enabled)
+
+        def start_search():
+            keyword = self.timeline_user_input.text().strip()
+            if not keyword:
+                add_empty_message("검색어를 입력하세요. Timeline은 전체 캐시 검색이라 빈 검색은 실행하지 않습니다.")
+                self.timeline_status_label.setText("검색어를 입력하세요.")
+                return
+
+            sources = selected_sources()
+            if not sources:
+                add_empty_message("검색할 소스를 하나 이상 선택하세요.")
+                self.timeline_status_label.setText("검색 소스가 선택되지 않았습니다.")
+                return
+
+            if self.timeline_worker and self.timeline_worker.isRunning():
+                self.timeline_status_label.setText("이미 검색 중입니다. 잠시만 기다려주세요.")
+                return
+
+            set_search_enabled(False)
+            clear_timeline_results()
+            add_empty_message("전체 캐시 검색 중입니다...")
+            self.timeline_status_label.setText("전체 캐시 검색 시작...")
+            self.timeline_worker = TimelineSearchWorker(keyword, sources)
+            self.timeline_worker.progress.connect(lambda msg: self.timeline_status_label.setText(msg))
+
+            def on_ok(groups, stats):
+                set_search_enabled(True)
+                render_timeline(groups)
+                self.timeline_status_label.setText(stats.get("message", "검색 완료"))
+
+            def on_fail(message):
+                set_search_enabled(True)
+                add_empty_message(f"Timeline 검색 실패: {message}")
+                self.timeline_status_label.setText(f"검색 실패: {message}")
+
+            self.timeline_worker.ok.connect(on_ok)
+            self.timeline_worker.fail.connect(on_fail)
+            self.timeline_worker.start()
+
+        self.timeline_btn_search.clicked.connect(start_search)
+        self.timeline_user_input.returnPressed.connect(start_search)
+        self._refresh_timeline = lambda: None
+        add_empty_message("Timeline은 날짜 선택 없이 전체 Detection/XDR/Email/File 캐시에서 사용자 alias 기반으로 검색합니다.")
         return root
 
 
@@ -11723,6 +13084,42 @@ Command Line :
     # ==================================================
     # Config Tab
     # ==================================================
+    def run_timeline_index(self):
+        if getattr(self, "timeline_index_worker", None) and self.timeline_index_worker.isRunning():
+            self.set_status("Timeline index running", color="blue", spinning=True)
+            return
+
+        self.btn_timeline_index.setEnabled(False)
+        self.set_status("Timeline index", color="blue", spinning=True)
+        self.lbl_index_status.setText("Status: RUNNING")
+        self.timeline_index_worker = TimelineIndexWorker()
+        self.timeline_index_worker.progress.connect(self._on_timeline_index_progress)
+        self.timeline_index_worker.ok.connect(self._on_timeline_index_ok)
+        self.timeline_index_worker.fail.connect(self._on_timeline_index_fail)
+        self.timeline_index_worker.start()
+
+    def _on_timeline_index_progress(self, message):
+        self.lbl_index_status.setText(f"Status: {message}")
+        self.set_status(str(message), color="blue", spinning=True)
+
+    def _on_timeline_index_ok(self, stats):
+        self.btn_timeline_index.setEnabled(True)
+        self._spin_timer.stop()
+        self.set_status("Timeline index OK", color="green", spinning=False)
+        built_at = stats.get("built_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        self.lbl_index_last.setText(f"Last Build: {built_at}")
+        self.lbl_index_status.setText("Status: OK")
+        self.lbl_index_events.setText(f"Events: {int(stats.get('events', 0)):,}")
+        self.lbl_index_tokens.setText(f"Tokens: {int(stats.get('tokens', 0)):,}")
+        self.lbl_index_files.setText(f"Files: {int(stats.get('files', 0)):,}")
+
+    def _on_timeline_index_fail(self, err):
+        self.btn_timeline_index.setEnabled(True)
+        self._spin_timer.stop()
+        self.set_status("Timeline index FAIL", color="red", spinning=False)
+        self.lbl_index_status.setText(f"Status: FAIL - {err}")
+        QMessageBox.critical(self, "Timeline Index 실패", err)
+
     def tab_config(self):
         btn_style = self.button_style("primary")
         secondary_btn_style = self.button_style("secondary")
@@ -11743,6 +13140,7 @@ Command Line :
         btn_mail_refresh = QPushButton("이메일 데이터 최신화")
         btn_endpoint_refresh = QPushButton("엔드포인트 데이터 최신화")
         btn_org_refresh = QPushButton("조직도 데이터 최신화")
+        btn_user_refresh = QPushButton("유저 데이터 최신화")
 
         self.dlp_refresh_date = QDateEdit()
         self.dlp_refresh_date.setCalendarPopup(True)
@@ -11781,6 +13179,7 @@ Command Line :
         btn_mail_refresh.clicked.connect(self.run_refresh_email_range)
         btn_endpoint_refresh.clicked.connect(lambda: self.run_refresh("Endpoint"))
         btn_org_refresh.clicked.connect(lambda: self.run_refresh("Organization"))
+        btn_user_refresh.clicked.connect(lambda: self.run_refresh("User"))
         btn_dlp_refresh.clicked.connect(self.run_refresh_dlp)
 
 
@@ -11798,10 +13197,11 @@ Command Line :
             btn_mail_refresh,
             btn_endpoint_refresh,
             btn_org_refresh,
+            btn_user_refresh,
             btn_dlp_refresh,
         ]:
             btn.setMinimumHeight(40)
-            btn.setMinimumWidth(230)
+            btn.setMinimumWidth(150)
             btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             btn.setStyleSheet(btn_style)
 
@@ -11836,12 +13236,13 @@ Command Line :
         dlp_row.addWidget(self.dlp_refresh_date, 2)
         dlp_row.addWidget(btn_dlp_refresh, 1)
 
-        # ===== EP/Org row (50:50) =====
+        # ===== EP/Org/User row =====
         ep_org_row = QHBoxLayout()
         ep_org_row.setSpacing(8)
         ep_org_row.setContentsMargins(0, 0, 0, 0)
         ep_org_row.addWidget(btn_endpoint_refresh, 1)
         ep_org_row.addWidget(btn_org_refresh, 1)
+        ep_org_row.addWidget(btn_user_refresh, 1)
 
         # 전체 묶기
         cache_rows = QVBoxLayout()
@@ -11911,12 +13312,53 @@ Command Line :
         self.chk_auto_mail.stateChanged.connect(self.toggle_mail_timer)
         self.spin_interval.valueChanged.connect(self.update_auto_interval)
 
+        # ==================================================
+        # 🔹 Index Data 카드
+        # ==================================================
+        index_card, index_layout = self.make_card("Index Data", legacy_title=True)
+        self.btn_timeline_index = QPushButton("전체 데이터 인덱싱")
+        self.btn_timeline_index.setMinimumHeight(40)
+        self.btn_timeline_index.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.btn_timeline_index.setStyleSheet(btn_style)
+
+        self.lbl_index_last = QLabel("Last Build: -")
+        self.lbl_index_status = QLabel("Status: -")
+        self.lbl_index_events = QLabel("Events: -")
+        self.lbl_index_tokens = QLabel("Tokens: -")
+        self.lbl_index_files = QLabel("Files: -")
+        for label in [
+            self.lbl_index_last,
+            self.lbl_index_status,
+            self.lbl_index_events,
+            self.lbl_index_tokens,
+            self.lbl_index_files,
+        ]:
+            label.setStyleSheet("color:#374151; font-size:13px; font-weight:600;")
+
+        index_desc = QLabel("Timeline 전체 캐시를 SQLite로 인덱싱합니다.")
+        index_desc.setWordWrap(True)
+        index_desc.setStyleSheet(f"color:{UI_THEME['text_muted']}; font-size:12px; font-weight:700;")
+        index_layout.addWidget(index_desc)
+        index_layout.addWidget(self.btn_timeline_index)
+        index_layout.addWidget(self.lbl_index_last)
+        index_layout.addWidget(self.lbl_index_status)
+        index_layout.addWidget(self.lbl_index_events)
+        index_layout.addWidget(self.lbl_index_tokens)
+        index_layout.addWidget(self.lbl_index_files)
+        index_layout.addStretch()
+        self.btn_timeline_index.clicked.connect(self.run_timeline_index)
+
         # ===== 여기서 가로 배치 =====
         top_row = QHBoxLayout()
         top_row.setContentsMargins(0, 0, 0, 0)
         top_row.setSpacing(12)
+        right_top = QHBoxLayout()
+        right_top.setContentsMargins(0, 0, 0, 0)
+        right_top.setSpacing(12)
+        right_top.addWidget(auto_card, 1)
+        right_top.addWidget(index_card, 1)
         top_row.addWidget(cache_card, 1)
-        top_row.addWidget(auto_card, 1)
+        top_row.addLayout(right_top, 1)
 
         layout.addLayout(top_row)
 
@@ -12228,8 +13670,8 @@ Command Line :
             try:
                 save_report_exception_text(editor.toPlainText())
 
-                global REPORT_EXCEPTION_MAP
-                REPORT_EXCEPTION_MAP = load_report_exception_map()
+                reload_all_data()
+                self.refresh_all_tables()
 
                 QMessageBox.information(
                     dialog,
@@ -12506,36 +13948,8 @@ Command Line :
         return "", ""
 
 
-    def get_org_info_by_user(user_name, user_id=""):
-        user_name_key = normalize_name_key(user_name)
-        user_id_key = normalize_name_key(user_id)
-
-        for org in ORGS:
-            if not isinstance(org, dict):
-                continue
-
-            dept_name = str(org.get("deptName", "") or "").strip() or "미분류"
-            dept_code = str(org.get("deptCode", "") or "").strip()
-
-            users = org.get("users", [])
-            if not isinstance(users, list):
-                continue
-
-            for u in users:
-                if isinstance(u, dict):
-                    org_user_name = str(u.get("name", "") or "").strip()
-                    org_user_id = str(u.get("id", "") or u.get("userId", "") or "").strip()
-                else:
-                    org_user_name = str(u or "").strip()
-                    org_user_id = ""
-
-                if user_name_key and normalize_name_key(org_user_name) == user_name_key:
-                    return dept_name, dept_code
-
-                if user_id_key and org_user_id and normalize_name_key(org_user_id) == user_id_key:
-                    return dept_name, dept_code
-
-        return "미분류", ""
+    def get_org_info_by_user(user_name, user_id="", hostname=""):
+        return get_org_info_by_user(user_name, user_id, hostname)
  
     def build_security_insight_metrics(self, endpoint_detections, emails, dlp_rows, detection_timeline=None):
         rule_counter = Counter()
@@ -12737,7 +14151,7 @@ Command Line :
                 dept_name = "공용PC"
                 dept_code = ""
             else:
-                dept_name, dept_code = get_org_info_by_user(endpoint_user_name, endpoint_user_id)
+                dept_name, dept_code = get_org_info_by_user(endpoint_user_name, endpoint_user_id, machine_name)
 
                 if not dept_name or dept_name == "미분류":
                     manual_dept = get_report_exception_dept(endpoint_user_name)
@@ -14134,7 +15548,7 @@ Command Line :
                 dept_name, dept_code = get_dept_by_hostname(machine_name)
 
                 filtered_rows.append({
-                    "이벤트": str(row.get("event_id", "None")),
+                    "이벤트": format_dlp_event_id(row.get("event_id", "None")),
                     "날짜/시간 (클라이언트)": str(row.get("eventtimelocal", "None")),
                     "부서": str(dept_name or "미분류"),
                     "부서코드": str(dept_code or ""),
