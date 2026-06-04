@@ -1962,6 +1962,9 @@ def timeline_add_alias(ctx, category, value):
         return
 
     ctx.setdefault(category, set()).add(value)
+    if category == "dept_names":
+        return
+
     ctx.setdefault("all_values", set()).add(value)
 
     key = normalize_name_key(value)
@@ -2101,7 +2104,7 @@ def timeline_identity_matches(identity, ctx):
     if not isinstance(identity, dict):
         return False
     return any(timeline_value_matches_context(identity.get(k), ctx) for k in (
-        "user_name", "user_id", "hostname", "mailbox", "dept_name"
+        "user_name", "user_id", "hostname", "mailbox"
     ))
 
 
@@ -2184,7 +2187,7 @@ def normalize_timeline_detection(d, ctx):
         kst_time(event_time), "Detection",
         identity.get("user_name", "None"), identity.get("user_id", "None"), identity.get("dept_name", "미분류"),
         hostname, rule, "Host", private_ip, summary, indicator, d,
-        [hostname, identity.get("user_name"), identity.get("user_id"), identity.get("dept_name")]
+        [hostname, identity.get("user_name"), identity.get("user_id")]
     )
     return event if timeline_event_matches(event, ctx) else None
 
@@ -2208,7 +2211,7 @@ def normalize_timeline_xdr(d, ctx):
         identity.get("user_name", "None"), identity.get("user_id", "None"), identity.get("dept_name", "미분류"),
         row_data.get("mailbox", "None"), row_data.get("rule", "None"), direction, peer,
         row_data.get("subject", "None"), indicator, row_data.get("raw", d),
-        [row_data.get("mailbox"), identity.get("user_name"), identity.get("user_id"), identity.get("dept_name")]
+        [row_data.get("mailbox"), identity.get("user_name"), identity.get("user_id")]
     )
     return event if timeline_event_matches(event, ctx) else None
 
@@ -2239,7 +2242,7 @@ def normalize_timeline_email(m, ctx):
         kst_time(event_time), "Email",
         identity.get("user_name", matched_addr), identity.get("user_id", matched_addr.split("@", 1)[0] if "@" in matched_addr else "None"),
         identity.get("dept_name", "미분류"), matched_addr, reason, direction, from_addr, subject, cip, m,
-        participants + [identity.get("user_name"), identity.get("user_id"), identity.get("dept_name")]
+        participants + [identity.get("user_name"), identity.get("user_id")]
     )]
 
 
@@ -2266,7 +2269,7 @@ def normalize_timeline_dlp(row, ctx):
     event = make_timeline_event(
         t, "File", user_name, user_id, dept_name, machine_name, event_id,
         direction, destination, filename, indicator, row,
-        [machine_name, client_name, user_name, user_id, dept_name]
+        [machine_name, client_name, user_name, user_id]
     )
     return event if timeline_event_matches(event, ctx) else None
 
@@ -11958,13 +11961,33 @@ Command Line :
         self.timeline_status_label = QLabel("날짜 선택과 무관하게 전체 캐시에서 검색합니다.")
         self.timeline_status_label.setStyleSheet(f"color:{UI_THEME['text_muted']}; font-weight:700;")
 
-        self.timeline_chk_detection = QCheckBox("Detection")
+        self.timeline_chk_detection = QCheckBox("탐지")
         self.timeline_chk_xdr = QCheckBox("XDR")
-        self.timeline_chk_email = QCheckBox("Email")
-        self.timeline_chk_file = QCheckBox("File")
+        self.timeline_chk_email = QCheckBox("이메일")
+        self.timeline_chk_file = QCheckBox("파일")
         for chk in [self.timeline_chk_detection, self.timeline_chk_xdr, self.timeline_chk_email, self.timeline_chk_file]:
             chk.setChecked(True)
             chk.setMinimumHeight(32)
+            chk.setMinimumWidth(78)
+            chk.setStyleSheet(f"""
+                QCheckBox {{
+                    color: {UI_THEME['text']};
+                    font-weight: 800;
+                    spacing: 6px;
+                    background: transparent;
+                }}
+                QCheckBox::indicator {{
+                    width: 16px;
+                    height: 16px;
+                    border: 1px solid {UI_THEME['accent']};
+                    border-radius: 4px;
+                    background: {UI_THEME['surface']};
+                }}
+                QCheckBox::indicator:checked {{
+                    background: {UI_THEME['accent']};
+                    border: 1px solid {UI_THEME['accent']};
+                }}
+            """)
 
         top.addWidget(lbl)
         top.addWidget(self.timeline_user_input, 1)
@@ -11987,8 +12010,17 @@ Command Line :
         detail_layout = QVBoxLayout(self.timeline_detail_panel)
         detail_layout.setContentsMargins(8, 0, 0, 0)
         detail_layout.setSpacing(8)
+        detail_header = QHBoxLayout()
+        detail_header.setContentsMargins(0, 0, 0, 0)
+        detail_header.setSpacing(8)
         self.timeline_detail_title = QLabel("타임라인 항목을 클릭하면 상세 이벤트가 표시됩니다.")
         self.timeline_detail_title.setStyleSheet(f"color:{UI_THEME['accent_text']}; font-weight:900;")
+        self.timeline_detail_close_btn = QPushButton("닫기")
+        self.timeline_detail_close_btn.setFixedWidth(64)
+        self.timeline_detail_close_btn.setMinimumHeight(30)
+        self.timeline_detail_close_btn.setStyleSheet(self.button_style("secondary"))
+        detail_header.addWidget(self.timeline_detail_title, 1)
+        detail_header.addWidget(self.timeline_detail_close_btn, 0)
         self.timeline_detail_table = QTableWidget()
         detail_headers = [
             "Time", "Source", "User", "User ID", "Dept", "Asset/Mailbox",
@@ -11998,7 +12030,7 @@ Command Line :
         self.timeline_detail_table.setHorizontalHeaderLabels(detail_headers)
         self.timeline_detail_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.timeline_detail_table.setSortingEnabled(True)
-        detail_layout.addWidget(self.timeline_detail_title)
+        detail_layout.addLayout(detail_header)
         detail_layout.addWidget(self.timeline_detail_table, 1)
         self.timeline_detail_panel.hide()
 
@@ -12049,6 +12081,14 @@ Command Line :
                 "Email": "#0ea5e9",
                 "File": "#f59e0b",
             }.get(str(source), UI_THEME["accent"])
+
+        def close_detail_panel():
+            self.timeline_detail_table.clearContents()
+            self.timeline_detail_table.setRowCount(0)
+            self.timeline_detail_title.setText("타임라인 항목을 클릭하면 상세 이벤트가 표시됩니다.")
+            self.timeline_detail_panel.hide()
+
+        self.timeline_detail_close_btn.clicked.connect(close_detail_panel)
 
         def show_group_detail(group):
             items = group.get("items", []) if isinstance(group, dict) else []
