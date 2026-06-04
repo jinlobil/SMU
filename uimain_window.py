@@ -7,6 +7,8 @@ import webbrowser
 import urllib.parse
 import traceback
 import logging
+import sqlite3
+import hashlib
 from datetime import datetime, timezone, timedelta
 from collections import Counter, defaultdict
 
@@ -96,6 +98,7 @@ REPORT_EXCEPTION_LIST_PATH = os.path.join(ENV_DIR, "Report_exception_List.txt")
 COLOR_ENV_PATH = os.path.join(ENV_DIR, "Color_env.txt")
 COLOR_THEME_DIR = os.path.join(ENV_DIR, "themes")
 DLP_DAY_DIR = os.path.join(CACHE_DIR, "dlp")
+TIMELINE_INDEX_DB_PATH = os.path.join(CACHE_DIR, "timeline_index.db")
 
 
 os.makedirs(CACHE_DIR, exist_ok=True)
@@ -2190,7 +2193,7 @@ def normalize_timeline_detection(d, ctx):
         hostname, rule, "Host", private_ip, summary, indicator, d,
         [hostname, identity.get("user_name"), identity.get("user_id")]
     )
-    return event if timeline_event_matches(event, ctx) else None
+    return event if ctx is None or timeline_event_matches(event, ctx) else None
 
 
 def normalize_timeline_xdr(d, ctx):
@@ -2214,7 +2217,7 @@ def normalize_timeline_xdr(d, ctx):
         row_data.get("subject", "None"), indicator, row_data.get("raw", d),
         [row_data.get("mailbox"), identity.get("user_name"), identity.get("user_id")]
     )
-    return event if timeline_event_matches(event, ctx) else None
+    return event if ctx is None or timeline_event_matches(event, ctx) else None
 
 
 def normalize_timeline_email(m, ctx):
@@ -2229,10 +2232,10 @@ def normalize_timeline_email(m, ctx):
     to_list = [email_addr(x) for x in (m.get("to", []) or []) if isinstance(x, dict)]
     cc_list = [email_addr(x) for x in (m.get("cc", []) or []) if isinstance(x, dict)]
     participants = [from_addr] + to_list + cc_list
-    if not any(timeline_value_matches_context(addr, ctx) for addr in participants):
+    if ctx is not None and not any(timeline_value_matches_context(addr, ctx) for addr in participants):
         return []
 
-    matched_addr = next((addr for addr in participants if timeline_value_matches_context(addr, ctx)), from_addr)
+    matched_addr = next((addr for addr in participants if ctx is not None and timeline_value_matches_context(addr, ctx)), from_addr)
     identity = resolve_identity_by_mailbox(matched_addr) if "@" in matched_addr else {}
     direction = f"{from_addr} → {join_list(to_list)}"
     reason = str(m.get("reason", "None") or "None")
@@ -2272,7 +2275,7 @@ def normalize_timeline_dlp(row, ctx):
         direction, destination, filename, indicator, row,
         [machine_name, client_name, user_name, user_id]
     )
-    return event if timeline_event_matches(event, ctx) else None
+    return event if ctx is None or timeline_event_matches(event, ctx) else None
 
 
 def iter_json_files(base_dir, suffix):
@@ -2320,6 +2323,317 @@ def group_timeline_events(events):
     return groups
 
 
+def timeline_event_tokens(event):
+    tokens = set()
+    for value in event.get("match_values", []) or []:
+        value = str(value or "").strip()
+        if not value or value in {"None", "미분류"}:
+            continue
+        key = normalize_name_key(value)
+        if key:
+            tokens.add(key)
+        if "@" in value:
+            local_key = normalize_name_key(value.split("@", 1)[0])
+            if local_key:
+                tokens.add(local_key)
+    return sorted(tokens)
+
+
+def timeline_event_key(source, cache_file, row_index, event):
+    date_part = os.path.splitext(os.path.basename(cache_file))[0]
+    raw = "|".join([
+        str(source or ""),
+        str(date_part or ""),
+        str(row_index),
+        str(event.get("time", "")),
+        str(event.get("asset", "")),
+        str(event.get("event", "")),
+        str(event.get("summary", "")),
+    ])
+    digest = hashlib.sha1(raw.encode("utf-8", errors="ignore")).hexdigest()[:12]
+    return f"{str(source or 'event').lower()}:{date_part}:{row_index}:{digest}"
+
+
+def init_timeline_index_db(conn):
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS timeline_events (
+            event_key TEXT PRIMARY KEY,
+            source TEXT NOT NULL,
+            time TEXT,
+            bucket TEXT,
+            user TEXT,
+            user_id TEXT,
+            dept TEXT,
+            asset TEXT,
+            event TEXT,
+            direction TEXT,
+            peer TEXT,
+            summary TEXT,
+            indicator TEXT,
+            cache_file TEXT NOT NULL,
+            row_index INTEGER NOT NULL
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS timeline_tokens (
+            token TEXT NOT NULL,
+            event_key TEXT NOT NULL
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS timeline_files (
+            path TEXT PRIMARY KEY,
+            source TEXT,
+            mtime REAL,
+            size INTEGER,
+            rows INTEGER,
+            indexed_at TEXT
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_timeline_tokens_token ON timeline_tokens(token)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_timeline_tokens_event_key ON timeline_tokens(event_key)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_timeline_events_source ON timeline_events(source)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_timeline_events_time ON timeline_events(time)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_timeline_events_bucket ON timeline_events(bucket)")
+    conn.commit()
+
+
+def insert_timeline_index_event(conn, event, cache_file, row_index):
+    if not isinstance(event, dict):
+        return 0
+    source = str(event.get("source", "None") or "None")
+    event_key = timeline_event_key(source, cache_file, row_index, event)
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO timeline_events (
+            event_key, source, time, bucket, user, user_id, dept, asset, event,
+            direction, peer, summary, indicator, cache_file, row_index
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            event_key,
+            source,
+            event.get("time", "None"),
+            event.get("bucket", "None"),
+            event.get("user", "None"),
+            event.get("user_id", "None"),
+            event.get("dept", "미분류"),
+            event.get("asset", "None"),
+            event.get("event", "None"),
+            event.get("direction", "None"),
+            event.get("peer", "None"),
+            event.get("summary", "None"),
+            event.get("indicator", "None"),
+            cache_file,
+            int(row_index),
+        ),
+    )
+    token_count = 0
+    for token in timeline_event_tokens(event):
+        conn.execute("INSERT INTO timeline_tokens (token, event_key) VALUES (?, ?)", (token, event_key))
+        token_count += 1
+    return token_count
+
+
+def timeline_events_from_db_rows(rows):
+    events = []
+    for row in rows:
+        events.append({
+            "event_key": row[0],
+            "source": row[1],
+            "time": row[2],
+            "bucket": row[3],
+            "user": row[4],
+            "user_id": row[5],
+            "dept": row[6],
+            "asset": row[7],
+            "event": row[8],
+            "direction": row[9],
+            "peer": row[10],
+            "summary": row[11],
+            "indicator": row[12],
+            "cache_file": row[13],
+            "row_index": row[14],
+            "raw": None,
+            "match_values": [],
+        })
+    return events
+
+
+def load_timeline_raw_event(cache_file, row_index):
+    try:
+        row_index = int(row_index)
+    except Exception:
+        return None
+
+    if not cache_file or not os.path.exists(cache_file):
+        return None
+
+    try:
+        if str(cache_file).endswith(".jsonl"):
+            with open(cache_file, "r", encoding="utf-8") as f:
+                for idx, line in enumerate(f):
+                    if idx == row_index:
+                        line = line.strip()
+                        return json.loads(line) if line else None
+            return None
+
+        with open(cache_file, "r", encoding="utf-8") as f:
+            rows = json.load(f)
+        if isinstance(rows, list) and 0 <= row_index < len(rows):
+            return rows[row_index]
+    except Exception as e:
+        log.warning(f"Failed to load timeline raw event {cache_file}#{row_index}: {e}")
+    return None
+
+
+def query_timeline_index(keyword, sources=None):
+    if not os.path.exists(TIMELINE_INDEX_DB_PATH):
+        return None, {"message": "Timeline index DB not found"}
+
+    ctx = build_timeline_identity_context(keyword)
+    tokens = sorted(ctx.get("all_keys", set()))
+    if not tokens:
+        return [], {"message": "검색 token 없음", "events": 0, "groups": 0, "files": 0, "index": True}
+
+    sources = sorted(set(sources or ["Detection", "XDR", "Email", "File"]))
+    token_placeholders = ",".join(["?"] * len(tokens))
+    source_clause = ""
+    params = list(tokens)
+    if sources:
+        source_placeholders = ",".join(["?"] * len(sources))
+        source_clause = f" AND e.source IN ({source_placeholders})"
+        params.extend(sources)
+
+    sql = f"""
+        SELECT DISTINCT
+            e.event_key, e.source, e.time, e.bucket, e.user, e.user_id, e.dept,
+            e.asset, e.event, e.direction, e.peer, e.summary, e.indicator,
+            e.cache_file, e.row_index
+        FROM timeline_tokens t
+        JOIN timeline_events e ON e.event_key = t.event_key
+        WHERE t.token IN ({token_placeholders})
+        {source_clause}
+        ORDER BY e.time ASC
+    """
+
+    with sqlite3.connect(TIMELINE_INDEX_DB_PATH) as conn:
+        init_timeline_index_db(conn)
+        rows = conn.execute(sql, params).fetchall()
+        file_count = conn.execute("SELECT COUNT(*) FROM timeline_files").fetchone()[0]
+
+    events = timeline_events_from_db_rows(rows)
+    groups = group_timeline_events(events)
+    return groups, {
+        "message": f"인덱스 검색 완료: 이벤트 {len(events):,}건 / 그룹 {len(groups):,}개 / 파일 {file_count:,}개",
+        "events": len(events),
+        "groups": len(groups),
+        "files": file_count,
+        "aliases": sorted(ctx.get("all_values", set()))[:80],
+        "index": True,
+    }
+
+
+def index_timeline_cache_file(conn, cache_file, logical_source):
+    events_count = 0
+    tokens_count = 0
+    rows_count = 0
+
+    if logical_source == "detections":
+        try:
+            with open(cache_file, "r", encoding="utf-8") as f:
+                rows = json.load(f)
+        except Exception as e:
+            log.warning(f"Timeline index failed to load {cache_file}: {e}")
+            rows = []
+        if not isinstance(rows, list):
+            rows = []
+        rows_count = len(rows)
+        for idx, row in enumerate(rows):
+            for event in (normalize_timeline_detection(row, None), normalize_timeline_xdr(row, None)):
+                if event:
+                    tokens_count += insert_timeline_index_event(conn, event, cache_file, idx)
+                    events_count += 1
+
+    elif logical_source == "emails":
+        try:
+            with open(cache_file, "r", encoding="utf-8") as f:
+                rows = json.load(f)
+        except Exception as e:
+            log.warning(f"Timeline index failed to load {cache_file}: {e}")
+            rows = []
+        if not isinstance(rows, list):
+            rows = []
+        rows_count = len(rows)
+        for idx, row in enumerate(rows):
+            for event in normalize_timeline_email(row, None):
+                tokens_count += insert_timeline_index_event(conn, event, cache_file, idx)
+                events_count += 1
+
+    elif logical_source == "dlp":
+        rows = load_jsonl(cache_file)
+        rows_count = len(rows)
+        for idx, row in enumerate(rows):
+            event = normalize_timeline_dlp(row, None)
+            if event:
+                tokens_count += insert_timeline_index_event(conn, event, cache_file, idx)
+                events_count += 1
+
+    stat = os.stat(cache_file)
+    conn.execute(
+        "INSERT OR REPLACE INTO timeline_files (path, source, mtime, size, rows, indexed_at) VALUES (?, ?, ?, ?, ?, ?)",
+        (cache_file, logical_source, float(stat.st_mtime), int(stat.st_size), rows_count, datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+    )
+    return events_count, tokens_count, rows_count
+
+
+def rebuild_timeline_index(progress_cb=None):
+    for path in (TIMELINE_INDEX_DB_PATH, f"{TIMELINE_INDEX_DB_PATH}-wal", f"{TIMELINE_INDEX_DB_PATH}-shm"):
+        if os.path.exists(path):
+            os.remove(path)
+
+    file_specs = []
+    file_specs += [(path, "detections") for path in iter_json_files(DETECTIONS_DAY_DIR, ".json")]
+    file_specs += [(path, "emails") for path in iter_json_files(EMAILS_DAY_DIR, ".json")]
+    file_specs += [(path, "dlp") for path in iter_json_files(DLP_DAY_DIR, ".jsonl")]
+
+    totals = {"events": 0, "tokens": 0, "files": 0, "rows": 0}
+    with sqlite3.connect(TIMELINE_INDEX_DB_PATH) as conn:
+        init_timeline_index_db(conn)
+        for idx, (path, logical_source) in enumerate(file_specs, start=1):
+            if progress_cb:
+                progress_cb(f"Timeline 인덱싱중 {idx}/{len(file_specs)} - {logical_source} {os.path.basename(path)}")
+            events_count, tokens_count, rows_count = index_timeline_cache_file(conn, path, logical_source)
+            totals["events"] += events_count
+            totals["tokens"] += tokens_count
+            totals["rows"] += rows_count
+            totals["files"] += 1
+            if idx % 10 == 0:
+                conn.commit()
+        conn.commit()
+
+    totals["built_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    totals["db_path"] = TIMELINE_INDEX_DB_PATH
+    return totals
+
+
+class TimelineIndexWorker(QThread):
+    ok = pyqtSignal(dict)
+    fail = pyqtSignal(str)
+    progress = pyqtSignal(str)
+
+    def run(self):
+        try:
+            stats = rebuild_timeline_index(progress_cb=self.progress.emit)
+            self.ok.emit(stats)
+        except Exception as e:
+            log.exception("Timeline index rebuild failed")
+            self.fail.emit(str(e))
+
+
+
 class TimelineSearchWorker(QThread):
     ok = pyqtSignal(list, dict)
     fail = pyqtSignal(str)
@@ -2334,6 +2648,11 @@ class TimelineSearchWorker(QThread):
         try:
             if not self.keyword:
                 self.ok.emit([], {"message": "검색어를 입력하세요.", "events": 0, "groups": 0})
+                return
+
+            index_groups, index_stats = query_timeline_index(self.keyword, self.sources)
+            if index_groups is not None:
+                self.ok.emit(index_groups, index_stats)
                 return
 
             ctx = build_timeline_identity_context(self.keyword)
@@ -2391,7 +2710,7 @@ class TimelineSearchWorker(QThread):
 
             groups = group_timeline_events(events)
             stats = {
-                "message": f"검색 완료: 이벤트 {len(events):,}건 / 그룹 {len(groups):,}개 / 파일 {files_scanned:,}개",
+                "message": f"전체 캐시 검색 완료: 이벤트 {len(events):,}건 / 그룹 {len(groups):,}개 / 파일 {files_scanned:,}개",
                 "events": len(events),
                 "groups": len(groups),
                 "files": files_scanned,
@@ -12042,7 +12361,13 @@ Command Line :
             if not raw_item:
                 return
 
-            raw = raw_item.data(Qt.UserRole)
+            payload = raw_item.data(Qt.UserRole)
+            if not payload:
+                return
+
+            raw = payload.get("raw") if isinstance(payload, dict) else payload
+            if not raw and isinstance(payload, dict):
+                raw = load_timeline_raw_event(payload.get("cache_file"), payload.get("row_index"))
             if not raw:
                 return
 
@@ -12142,7 +12467,7 @@ Command Line :
                 for c, value in enumerate(values):
                     item = QTableWidgetItem(str(value))
                     if c == 0:
-                        item.setData(Qt.UserRole, event.get("raw"))
+                        item.setData(Qt.UserRole, event)
                     table.setItem(r, c, item)
             table.setSortingEnabled(True)
             self.timeline_splitter.setSizes([520, 680])
@@ -12751,6 +13076,42 @@ Command Line :
     # ==================================================
     # Config Tab
     # ==================================================
+    def run_timeline_index(self):
+        if getattr(self, "timeline_index_worker", None) and self.timeline_index_worker.isRunning():
+            self.set_status("Timeline index running", color="blue", spinning=True)
+            return
+
+        self.btn_timeline_index.setEnabled(False)
+        self.set_status("Timeline index", color="blue", spinning=True)
+        self.lbl_index_status.setText("Status: RUNNING")
+        self.timeline_index_worker = TimelineIndexWorker()
+        self.timeline_index_worker.progress.connect(self._on_timeline_index_progress)
+        self.timeline_index_worker.ok.connect(self._on_timeline_index_ok)
+        self.timeline_index_worker.fail.connect(self._on_timeline_index_fail)
+        self.timeline_index_worker.start()
+
+    def _on_timeline_index_progress(self, message):
+        self.lbl_index_status.setText(f"Status: {message}")
+        self.set_status(str(message), color="blue", spinning=True)
+
+    def _on_timeline_index_ok(self, stats):
+        self.btn_timeline_index.setEnabled(True)
+        self._spin_timer.stop()
+        self.set_status("Timeline index OK", color="green", spinning=False)
+        built_at = stats.get("built_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        self.lbl_index_last.setText(f"Last Build: {built_at}")
+        self.lbl_index_status.setText("Status: OK")
+        self.lbl_index_events.setText(f"Events: {int(stats.get('events', 0)):,}")
+        self.lbl_index_tokens.setText(f"Tokens: {int(stats.get('tokens', 0)):,}")
+        self.lbl_index_files.setText(f"Files: {int(stats.get('files', 0)):,}")
+
+    def _on_timeline_index_fail(self, err):
+        self.btn_timeline_index.setEnabled(True)
+        self._spin_timer.stop()
+        self.set_status("Timeline index FAIL", color="red", spinning=False)
+        self.lbl_index_status.setText(f"Status: FAIL - {err}")
+        QMessageBox.critical(self, "Timeline Index 실패", err)
+
     def tab_config(self):
         btn_style = self.button_style("primary")
         secondary_btn_style = self.button_style("secondary")
@@ -12943,12 +13304,53 @@ Command Line :
         self.chk_auto_mail.stateChanged.connect(self.toggle_mail_timer)
         self.spin_interval.valueChanged.connect(self.update_auto_interval)
 
+        # ==================================================
+        # 🔹 Index Data 카드
+        # ==================================================
+        index_card, index_layout = self.make_card("Index Data", legacy_title=True)
+        self.btn_timeline_index = QPushButton("전체 데이터 인덱싱")
+        self.btn_timeline_index.setMinimumHeight(40)
+        self.btn_timeline_index.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.btn_timeline_index.setStyleSheet(btn_style)
+
+        self.lbl_index_last = QLabel("Last Build: -")
+        self.lbl_index_status = QLabel("Status: -")
+        self.lbl_index_events = QLabel("Events: -")
+        self.lbl_index_tokens = QLabel("Tokens: -")
+        self.lbl_index_files = QLabel("Files: -")
+        for label in [
+            self.lbl_index_last,
+            self.lbl_index_status,
+            self.lbl_index_events,
+            self.lbl_index_tokens,
+            self.lbl_index_files,
+        ]:
+            label.setStyleSheet("color:#374151; font-size:13px; font-weight:600;")
+
+        index_desc = QLabel("Timeline 전체 캐시를 SQLite로 인덱싱합니다.")
+        index_desc.setWordWrap(True)
+        index_desc.setStyleSheet(f"color:{UI_THEME['text_muted']}; font-size:12px; font-weight:700;")
+        index_layout.addWidget(index_desc)
+        index_layout.addWidget(self.btn_timeline_index)
+        index_layout.addWidget(self.lbl_index_last)
+        index_layout.addWidget(self.lbl_index_status)
+        index_layout.addWidget(self.lbl_index_events)
+        index_layout.addWidget(self.lbl_index_tokens)
+        index_layout.addWidget(self.lbl_index_files)
+        index_layout.addStretch()
+        self.btn_timeline_index.clicked.connect(self.run_timeline_index)
+
         # ===== 여기서 가로 배치 =====
         top_row = QHBoxLayout()
         top_row.setContentsMargins(0, 0, 0, 0)
         top_row.setSpacing(12)
+        right_top = QHBoxLayout()
+        right_top.setContentsMargins(0, 0, 0, 0)
+        right_top.setSpacing(12)
+        right_top.addWidget(auto_card, 1)
+        right_top.addWidget(index_card, 1)
         top_row.addWidget(cache_card, 1)
-        top_row.addWidget(auto_card, 1)
+        top_row.addLayout(right_top, 1)
 
         layout.addLayout(top_row)
 
