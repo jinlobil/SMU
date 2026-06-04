@@ -2126,7 +2126,8 @@ def timeline_parse_dt(value):
 def timeline_bucket_minute(time_text):
     dt = timeline_parse_dt(time_text)
     if dt:
-        return dt.strftime("%Y-%m-%d %H:%M")
+        bucket_minute = (dt.minute // 5) * 5
+        return dt.replace(minute=bucket_minute, second=0, microsecond=0).strftime("%Y-%m-%d %H:%M")
     text = str(time_text or "")
     return text[:16] if len(text) >= 16 else text
 
@@ -12030,6 +12031,28 @@ Command Line :
         self.timeline_detail_table.setHorizontalHeaderLabels(detail_headers)
         self.timeline_detail_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.timeline_detail_table.setSortingEnabled(True)
+        self.timeline_detail_table.setContextMenuPolicy(Qt.CustomContextMenu)
+
+        def open_timeline_detail_menu(pos):
+            item = self.timeline_detail_table.itemAt(pos)
+            if not item:
+                return
+
+            raw_item = self.timeline_detail_table.item(item.row(), 0)
+            if not raw_item:
+                return
+
+            raw = raw_item.data(Qt.UserRole)
+            if not raw:
+                return
+
+            menu = QMenu(self.timeline_detail_table)
+            detail_action = menu.addAction("View Raw Detail")
+            action = menu.exec_(self.timeline_detail_table.viewport().mapToGlobal(pos))
+            if action == detail_action:
+                self.show_raw_dialog(raw)
+
+        self.timeline_detail_table.customContextMenuRequested.connect(open_timeline_detail_menu)
         detail_layout.addLayout(detail_header)
         detail_layout.addWidget(self.timeline_detail_table, 1)
         self.timeline_detail_panel.hide()
