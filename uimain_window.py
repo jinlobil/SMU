@@ -100,6 +100,8 @@ COLOR_THEME_DIR = os.path.join(ENV_DIR, "themes")
 DLP_DAY_DIR = os.path.join(CACHE_DIR, "dlp")
 TIMELINE_INDEX_DIR = os.path.join(CACHE_DIR, "index")
 TIMELINE_INDEX_DB_PATH = os.path.join(TIMELINE_INDEX_DIR, "timeline_index.db")
+TIMELINE_RENDER_BATCH_SIZE = 250
+TIMELINE_DETAIL_ROW_LIMIT = 1000
 
 
 os.makedirs(CACHE_DIR, exist_ok=True)
@@ -12445,15 +12447,17 @@ Command Line :
 
         def show_group_detail(group):
             items = group.get("items", []) if isinstance(group, dict) else []
+            visible_items = items[:TIMELINE_DETAIL_ROW_LIMIT]
             self.timeline_detail_panel.show()
+            suffix = "" if len(visible_items) == len(items) else f" / 상위 {len(visible_items):,}건 표시"
             self.timeline_detail_title.setText(
-                f"{group.get('bucket', 'None')} [{group.get('source', 'None')}] {group.get('event', 'None')} - {len(items)}건"
+                f"{group.get('bucket', 'None')} [{group.get('source', 'None')}] {group.get('event', 'None')} - {len(items):,}건{suffix}"
             )
             table = self.timeline_detail_table
             table.setSortingEnabled(False)
             table.clearContents()
             table.setRowCount(0)
-            for event in items:
+            for event in visible_items:
                 r = table.rowCount()
                 table.insertRow(r)
                 values = [
@@ -12479,20 +12483,37 @@ Command Line :
 
         # ===============================
         # [A안 코드 - ACTIVE] QScrollArea + QWidget 렌더링
+        # 대량 검색 결과에서 QWidget 수천 개를 한 번에 만들면 UI가 멈출 수 있어
+        # 250개 단위로 점진 렌더링합니다.
         # ===============================
-        def render_timeline(groups):
-            self.timeline_groups = groups or []
-            self.timeline_detail_table.clearContents()
-            self.timeline_detail_table.setRowCount(0)
-            self.timeline_detail_panel.hide()
-            clear_timeline_results()
+        def remove_load_more_button():
+            btn = getattr(self, "timeline_load_more_btn", None)
+            if btn is not None:
+                self.timeline_result_layout.removeWidget(btn)
+                btn.deleteLater()
+                self.timeline_load_more_btn = None
 
-            if not self.timeline_groups:
-                add_empty_message("검색 결과가 없습니다. 사용자명/User ID/메일/Hostname을 확인하세요.")
+        def add_load_more_button():
+            remaining = max(0, len(self.timeline_groups) - self.timeline_render_offset)
+            if remaining <= 0:
+                self.timeline_result_layout.addStretch(1)
                 return
 
-            current_date = ""
-            for idx, group in enumerate(self.timeline_groups):
+            button = QPushButton(f"더 보기 ({min(TIMELINE_RENDER_BATCH_SIZE, remaining):,}개 추가 / 남은 {remaining:,}개)")
+            button.setMinimumHeight(38)
+            button.setStyleSheet(self.button_style("secondary"))
+            button.clicked.connect(render_timeline_batch)
+            self.timeline_load_more_btn = button
+            self.timeline_result_layout.addWidget(button)
+
+        def render_timeline_batch():
+            remove_load_more_button()
+            start = getattr(self, "timeline_render_offset", 0)
+            end = min(start + TIMELINE_RENDER_BATCH_SIZE, len(self.timeline_groups))
+            current_date = getattr(self, "timeline_render_current_date", "")
+
+            for idx in range(start, end):
+                group = self.timeline_groups[idx]
                 bucket = str(group.get("bucket", ""))
                 date_key = bucket[:10] if len(bucket) >= 10 else "Unknown"
                 if date_key != current_date:
@@ -12529,7 +12550,24 @@ Command Line :
 
                 self.timeline_result_layout.addWidget(row)
 
-            self.timeline_result_layout.addStretch(1)
+            self.timeline_render_offset = end
+            self.timeline_render_current_date = current_date
+            add_load_more_button()
+
+        def render_timeline(groups):
+            self.timeline_groups = groups or []
+            self.timeline_render_offset = 0
+            self.timeline_render_current_date = ""
+            self.timeline_detail_table.clearContents()
+            self.timeline_detail_table.setRowCount(0)
+            self.timeline_detail_panel.hide()
+            clear_timeline_results()
+
+            if not self.timeline_groups:
+                add_empty_message("검색 결과가 없습니다. 사용자명/User ID/메일/Hostname을 확인하세요.")
+                return
+
+            render_timeline_batch()
 
         def selected_sources():
             sources = []
@@ -12576,7 +12614,9 @@ Command Line :
             def on_ok(groups, stats):
                 set_search_enabled(True)
                 render_timeline(groups)
-                self.timeline_status_label.setText(stats.get("message", "검색 완료"))
+                shown = min(len(groups or []), TIMELINE_RENDER_BATCH_SIZE)
+                render_note = f" / 화면 표시 {shown:,}/{len(groups or []):,}그룹" if groups else ""
+                self.timeline_status_label.setText(f"{stats.get('message', '검색 완료')}{render_note}")
 
             def on_fail(message):
                 set_search_enabled(True)
