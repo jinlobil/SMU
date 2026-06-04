@@ -12403,6 +12403,7 @@ Command Line :
         self.timeline_worker = None
 
         def clear_timeline_results():
+            self.timeline_load_more_btn = None
             while self.timeline_result_layout.count():
                 item = self.timeline_result_layout.takeAt(0)
                 widget = item.widget()
@@ -12488,10 +12489,13 @@ Command Line :
         # ===============================
         def remove_load_more_button():
             btn = getattr(self, "timeline_load_more_btn", None)
+            self.timeline_load_more_btn = None
             if btn is not None:
-                self.timeline_result_layout.removeWidget(btn)
-                btn.deleteLater()
-                self.timeline_load_more_btn = None
+                try:
+                    self.timeline_result_layout.removeWidget(btn)
+                    btn.deleteLater()
+                except RuntimeError:
+                    pass
 
         def add_load_more_button():
             remaining = max(0, len(self.timeline_groups) - self.timeline_render_offset)
