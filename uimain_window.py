@@ -864,6 +864,20 @@ def combine_date_time(date_edit, time_edit):
     t = time_edit.time().toPyTime()
     return datetime.combine(d, t)
 
+
+def kst_date_range_to_utc_iso(start_date: str, end_date: str):
+    start_dt = datetime.strptime(start_date, "%Y-%m-%d").replace(
+        hour=0, minute=0, second=0, microsecond=0, tzinfo=timezone(timedelta(hours=9))
+    )
+    end_dt = datetime.strptime(end_date, "%Y-%m-%d").replace(
+        hour=23, minute=59, second=59, microsecond=0, tzinfo=timezone(timedelta(hours=9))
+    )
+    return (
+        start_dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+        end_dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+    )
+
+
 def unix_ms_to_kst(unix_ms):
     try:
         sec = int(unix_ms) // 1000
@@ -3615,22 +3629,23 @@ class SophosFirewallClient:
         return f"AIDR_{ip_address}"
 
     def build_ip_host_xml(self, ip_address: str) -> str:
-        object_name = self.build_ip_host_name(ip_address)
+        object_name = self._xml_value(self.build_ip_host_name(ip_address))
+        ip_value = self._xml_value(ip_address)
 
         group_xml = ""
         if self.iphost_group:
             group_xml = f"""
       <HostGroupList>
-        <HostGroup>{self.iphost_group}</HostGroup>
+        <HostGroup>{self._xml_value(self.iphost_group)}</HostGroup>
       </HostGroupList>"""
 
-        description_xml = f"<Description>{self.iphost_description}</Description>" if self.iphost_description else ""
+        description_xml = f"<Description>{self._xml_value(self.iphost_description)}</Description>" if self.iphost_description else ""
 
         reqxml = f"""
 <Request>
   <Login>
-    <Username>{self.username}</Username>
-    <Password>{self.password}</Password>
+    <Username>{self._xml_value(self.username)}</Username>
+    <Password>{self._xml_value(self.password)}</Password>
   </Login>
   <Set operation="add">
     <IPHost>
@@ -3638,7 +3653,7 @@ class SophosFirewallClient:
       <IPFamily>IPv4</IPFamily>
       {description_xml}
       <HostType>IP</HostType>
-      <IPAddress>{ip_address}</IPAddress>{group_xml}
+      <IPAddress>{ip_value}</IPAddress>{group_xml}
     </IPHost>
   </Set>
 </Request>
@@ -3682,30 +3697,31 @@ class SophosFirewallClient:
         return f"AIDR_{domain}"
 
     def build_fqdn_host_xml(self, domain: str) -> str:
-        object_name = self.build_fqdn_host_name(domain)
+        object_name = self._xml_value(self.build_fqdn_host_name(domain))
+        domain_value = self._xml_value(domain)
 
         desc_xml = ""
         if self.iphost_description:
-            desc_xml = f"<Description>{self.iphost_description}</Description>"
+            desc_xml = f"<Description>{self._xml_value(self.iphost_description)}</Description>"
 
         group_xml = ""
         if self.fqdnhost_group:
             group_xml = f"""
           <FQDNHostGroupList>
-            <FQDNHostGroup>{self.fqdnhost_group}</FQDNHostGroup>
+            <FQDNHostGroup>{self._xml_value(self.fqdnhost_group)}</FQDNHostGroup>
           </FQDNHostGroupList>"""
 
         reqxml = f"""
 <Request>
   <Login>
-    <Username>{self.username}</Username>
-    <Password>{self.password}</Password>
+    <Username>{self._xml_value(self.username)}</Username>
+    <Password>{self._xml_value(self.password)}</Password>
   </Login>
   <Set operation="add">
     <FQDNHost>
       <Name>{object_name}</Name>
       {desc_xml}
-      <FQDN>{domain}</FQDN>{group_xml}
+      <FQDN>{domain_value}</FQDN>{group_xml}
     </FQDNHost>
   </Set>
 </Request>
@@ -4203,8 +4219,7 @@ class RefreshWorker(QThread):
                         raise RuntimeError("Detection date_str missing")
 
                     start, end = self.date_str.split("|")
-                    from_ts = f"{start}T00:00:00.000Z"
-                    to_ts = f"{end}T23:59:59.000Z"
+                    from_ts, to_ts = kst_date_range_to_utc_iso(start, end)
 
                     api.refresh_detections_range(from_ts, to_ts)
 
@@ -4213,8 +4228,7 @@ class RefreshWorker(QThread):
                         raise RuntimeError("Email date_str missing")
 
                     start, end = self.date_str.split("|")
-                    from_ts = f"{start}T00:00:00.000Z"
-                    to_ts = f"{end}T23:59:59.000Z"
+                    from_ts, to_ts = kst_date_range_to_utc_iso(start, end)
 
                     api.refresh_emails_range(from_ts, to_ts)
 
@@ -4262,12 +4276,17 @@ class LiveDiscoverWorker(QThread):
 
             keyword = self.program_name.strip().lower()
 
+            def sql_literal(value):
+                return str(value or "").replace("'", "''")
+
+            keyword_sql = sql_literal(keyword)
+
             if self.query_type == "Process":
                 if keyword:
                     sql = f"""
                     SELECT name, path, pid
                     FROM processes
-                    WHERE lower(name) LIKE '%{keyword}%'
+                    WHERE lower(name) LIKE '%{keyword_sql}%'
                     LIMIT 200
                     """
                 else:
@@ -4283,8 +4302,8 @@ class LiveDiscoverWorker(QThread):
                     SELECT name, display_name, status, start_type
                     FROM services
                     WHERE
-                        lower(name) LIKE '%{keyword}%'
-                        OR lower(display_name) LIKE '%{keyword}%'
+                        lower(name) LIKE '%{keyword_sql}%'
+                        OR lower(display_name) LIKE '%{keyword_sql}%'
                     LIMIT 200
                     """
                 else:
@@ -4300,8 +4319,8 @@ class LiveDiscoverWorker(QThread):
                     SELECT name, path, enabled, state
                     FROM scheduled_tasks
                     WHERE
-                        lower(name) LIKE '%{keyword}%'
-                        OR lower(path) LIKE '%{keyword}%'
+                        lower(name) LIKE '%{keyword_sql}%'
+                        OR lower(path) LIKE '%{keyword_sql}%'
                     LIMIT 200
                     """
                 else:
@@ -4316,7 +4335,7 @@ class LiveDiscoverWorker(QThread):
                     sql = f"""
                     SELECT name, version, install_location
                     FROM programs
-                    WHERE lower(name) LIKE '%{keyword}%'
+                    WHERE lower(name) LIKE '%{keyword_sql}%'
                     LIMIT 200
                     """
                 else:
@@ -4332,10 +4351,10 @@ class LiveDiscoverWorker(QThread):
                     SELECT pid, local_address, local_port, remote_address, remote_port, state
                     FROM process_open_sockets
                     WHERE
-                        lower(local_address) LIKE '%{keyword}%'
-                        OR lower(remote_address) LIKE '%{keyword}%'
-                        OR cast(local_port as varchar) LIKE '%{keyword}%'
-                        OR cast(remote_port as varchar) LIKE '%{keyword}%'
+                        lower(local_address) LIKE '%{keyword_sql}%'
+                        OR lower(remote_address) LIKE '%{keyword_sql}%'
+                        OR cast(local_port as varchar) LIKE '%{keyword_sql}%'
+                        OR cast(remote_port as varchar) LIKE '%{keyword_sql}%'
                     LIMIT 200
                     """
                 else:
@@ -4353,7 +4372,7 @@ class LiveDiscoverWorker(QThread):
 
                 # 1) 폴더 경로 입력 → 하위 파일 목록
                 if raw_input.endswith("\\") or raw_input.endswith("/"):
-                    normalized_dir = raw_input.rstrip("\\/").replace("\\", "\\\\")
+                    normalized_dir = sql_literal(raw_input.rstrip("\\/").replace("\\", "\\\\"))
                     sql = f"""
                     SELECT path, filename, size, datetime(mtime, 'unixepoch') as mtime
                     FROM file
@@ -4363,7 +4382,7 @@ class LiveDiscoverWorker(QThread):
 
                 # 2) 전체 경로 입력 → 해당 파일 확인
                 elif "\\" in raw_input or "/" in raw_input:
-                    normalized_path = raw_input.replace("\\", "\\\\")
+                    normalized_path = sql_literal(raw_input.replace("\\", "\\\\"))
                     sql = f"""
                     SELECT path, filename, size, datetime(mtime, 'unixepoch') as mtime
                     FROM file
@@ -4376,7 +4395,7 @@ class LiveDiscoverWorker(QThread):
                     sql = f"""
                     SELECT path, filename, size, datetime(mtime, 'unixepoch') as mtime
                     FROM file
-                    WHERE lower(filename) LIKE '%{keyword}%'
+                    WHERE lower(filename) LIKE '%{sql_literal(keyword)}%'
                     LIMIT 200
                     """
 
@@ -7339,8 +7358,6 @@ class MainWindow(QMainWindow):
                 return y_pos - 6
 
             def mini_table_multiline(x, y_pos, headers, rows, col_widths, font_size=8, line_height=11):
-                from reportlab.pdfbase.pdfmetrics import stringWidth
-
                 def wrap_cell_text(text, max_width, max_lines=None):
                     from reportlab.pdfbase.pdfmetrics import stringWidth
 
@@ -8260,6 +8277,10 @@ class MainWindow(QMainWindow):
     def apply_date_range(self):
 
         log.info("=== APPLY CLICK ===")
+
+        if self.start_date_edit.date() > self.end_date_edit.date():
+            QMessageBox.warning(self, "날짜 오류", "시작일이 종료일보다 늦습니다.")
+            return
 
         start_date = self.start_date_edit.date().toString("yyyy-MM-dd")
         end_date = self.end_date_edit.date().toString("yyyy-MM-dd")
@@ -9201,35 +9222,6 @@ Command Line :
 
         return root
 
-        def toggle_raw():
-            raw_box.setVisible(not raw_box.isVisible())
-
-        btn_toggle_raw.clicked.connect(toggle_raw)
-
-        btn_copy = QPushButton(f"{display_type} 목록 복사")
-
-        def copy_list():
-            lines = []
-            for member in members:
-                if not isinstance(member, dict):
-                    continue
-                lines.append(f"{member.get('object_name', '')}\t{member.get('value', '')}")
-
-            QApplication.clipboard().setText("\n".join(lines))
-            QMessageBox.information(root, "Copy", f"{display_type} 목록을 복사했습니다.")
-
-        btn_copy.clicked.connect(copy_list)
-
-        btn_row = QHBoxLayout()
-        btn_row.addWidget(btn_toggle_raw)
-        btn_row.addWidget(btn_copy)
-        btn_row.addStretch()
-
-        layout.addLayout(btn_row)
-        layout.addWidget(raw_box)
-
-        return root
-
     def show_raw_dialog(self, data):
 
         if not data:
@@ -9814,6 +9806,10 @@ Command Line :
             date_list.append(current.strftime("%Y-%m-%d"))
             current += timedelta(days=1)
 
+        if not date_list:
+            QMessageBox.warning(self, "날짜 오류", "시작일이 종료일보다 늦습니다.")
+            return
+
         x_dates = [datetime.strptime(d, "%Y-%m-%d") for d in date_list]
 
         det_counts = defaultdict(int)
@@ -9981,17 +9977,10 @@ Command Line :
         mail_daily = None
         file_daily = None
 
-        if today_str in compare_day_map_det and yesterday in compare_day_map_det:
-            det_daily = calc_percent(compare_day_map_det[yesterday], compare_day_map_det[today_str])
-
-        if today_str in compare_day_map_xdr and yesterday in compare_day_map_xdr:
-            xdr_daily = calc_percent(compare_day_map_xdr[yesterday], compare_day_map_xdr[today_str])
-
-        if today_str in compare_day_map_mail and yesterday in compare_day_map_mail:
-            mail_daily = calc_percent(compare_day_map_mail[yesterday], compare_day_map_mail[today_str])
-            
-        if today_str in compare_day_map_file and yesterday in compare_day_map_file:
-            file_daily = calc_percent(compare_day_map_file[yesterday], compare_day_map_file[today_str])
+        det_daily = calc_percent(compare_day_map_det.get(yesterday, 0), compare_day_map_det.get(today_str, 0))
+        xdr_daily = calc_percent(compare_day_map_xdr.get(yesterday, 0), compare_day_map_xdr.get(today_str, 0))
+        mail_daily = calc_percent(compare_day_map_mail.get(yesterday, 0), compare_day_map_mail.get(today_str, 0))
+        file_daily = calc_percent(compare_day_map_file.get(yesterday, 0), compare_day_map_file.get(today_str, 0))
 
         daily_det_text, daily_det_color = format_block("전일 Detection", det_daily)
         daily_xdr_text, daily_xdr_color = format_block("전일 Detection XDR", xdr_daily)
@@ -10006,17 +9995,10 @@ Command Line :
         mail_month = None
         file_month = None
 
-        if today_str in compare_day_map_det and one_month_ago in compare_day_map_det:
-            det_month = calc_percent(compare_day_map_det[one_month_ago], compare_day_map_det[today_str])
-
-        if today_str in compare_day_map_xdr and one_month_ago in compare_day_map_xdr:
-            xdr_month = calc_percent(compare_day_map_xdr[one_month_ago], compare_day_map_xdr[today_str])
-
-        if today_str in compare_day_map_mail and one_month_ago in compare_day_map_mail:
-            mail_month = calc_percent(compare_day_map_mail[one_month_ago], compare_day_map_mail[today_str])
-
-        if today_str in compare_day_map_file and one_month_ago in compare_day_map_file:
-            file_month = calc_percent(compare_day_map_file[one_month_ago], compare_day_map_file[today_str])
+        det_month = calc_percent(compare_day_map_det.get(one_month_ago, 0), compare_day_map_det.get(today_str, 0))
+        xdr_month = calc_percent(compare_day_map_xdr.get(one_month_ago, 0), compare_day_map_xdr.get(today_str, 0))
+        mail_month = calc_percent(compare_day_map_mail.get(one_month_ago, 0), compare_day_map_mail.get(today_str, 0))
+        file_month = calc_percent(compare_day_map_file.get(one_month_ago, 0), compare_day_map_file.get(today_str, 0))
 
         monthly_det_text, monthly_det_color = format_block("전월 Detection", det_month)
         monthly_xdr_text, monthly_xdr_color = format_block("전월 Detection XDR", xdr_month)
@@ -11095,6 +11077,7 @@ Command Line :
                 cc_list = [email_addr(x) for x in (m.get("cc", []) or []) if isinstance(x, dict)]
 
                 subject = str(m.get("subject", ""))
+                reason = str(m.get("reason", "None"))
                 cip = str(m.get("clientIp", ""))
 
                 # 🔥 AND 조건 적용
@@ -11102,8 +11085,6 @@ Command Line :
                 for field, key in search_conditions:
 
                     if field == "ALL":
-                        reason = str(m.get("reason", "None"))
-
                         row_text = (
                             from_addr +
                             ",".join(to_list) +
@@ -11811,6 +11792,13 @@ Command Line :
             tzinfo=timezone(timedelta(hours=9))
         ).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
+        query_label = HISTORY_QUERY_LABELS.get(selected_query_name, selected_query_name)
+        self.history_pending_context = {
+            "endpoint_name": endpoint_name,
+            "selected_query_name": selected_query_name,
+            "query_label": query_label,
+        }
+
         self.btn_live_run.setEnabled(False)
 
         self.running = True
@@ -11954,9 +11942,10 @@ Command Line :
         self.set_status("History Query OK", color="green", spinning=False)
         self.btn_live_run.setEnabled(True)
 
-        endpoint_name = self.live_endpoint_input.text().strip()
-        selected_query_name = str(self.history_query_combo.currentData() or "").strip()
-        query_label = HISTORY_QUERY_LABELS.get(selected_query_name, selected_query_name)
+        context = getattr(self, "history_pending_context", {}) or {}
+        endpoint_name = str(context.get("endpoint_name", self.live_endpoint_input.text().strip()))
+        selected_query_name = str(context.get("selected_query_name", self.history_query_combo.currentData() or "")).strip()
+        query_label = str(context.get("query_label", HISTORY_QUERY_LABELS.get(selected_query_name, selected_query_name)))
 
         normalized_rows = normalize_history_rows(selected_query_name, rows)
 
@@ -13103,7 +13092,7 @@ Command Line :
             if not isinstance(raw_data, dict):
                 continue
 
-            if not raw_data.get("success", False):
+            if raw_data.get("result") != "SUCCESS":
                 continue
 
             results.append(raw_data)
@@ -13706,8 +13695,10 @@ Command Line :
 
 
     def open_cache_folder(self):
-        import os
-        os.startfile("cache")
+        try:
+            os.startfile(CACHE_DIR)
+        except Exception:
+            QMessageBox.warning(self, "실패", "캐시 폴더를 열 수 없습니다.")
 
     def open_export_folder(self):
         os.startfile(EXPORT_DIR)
@@ -15714,23 +15705,11 @@ Command Line :
 
     def refresh_endpoint_manual(self):
         log.info("Manual Refresh - Endpoint")
-        self.endpoint_data = load_endpoints()
-        reload_all_data()
-        self._refresh_endpoint()
-        if hasattr(self, "_refresh_dlp"):
-            self._refresh_dlp()
-
-
+        self.run_refresh("Endpoint")
 
     def refresh_org_manual(self):
         log.info("Manual Refresh - Organization")
-        self.org_data = load_org()
-        reload_all_data()
-        self._refresh_org()
-        if hasattr(self, "_refresh_endpoint"):
-            self._refresh_endpoint()
-        if hasattr(self, "_refresh_dlp"):
-            self._refresh_dlp()
+        self.run_refresh("Organization")
 
     def toggle_mail_timer(self, state):
         if state:
