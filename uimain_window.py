@@ -2593,30 +2593,70 @@ def index_timeline_cache_file(conn, cache_file, logical_source):
     return events_count, tokens_count, rows_count
 
 
-def rebuild_timeline_index(progress_cb=None):
-    for path in (TIMELINE_INDEX_DB_PATH, f"{TIMELINE_INDEX_DB_PATH}-wal", f"{TIMELINE_INDEX_DB_PATH}-shm"):
-        if os.path.exists(path):
-            os.remove(path)
+def delete_timeline_index_file(conn, cache_file):
+    conn.execute(
+        "DELETE FROM timeline_tokens WHERE event_key IN (SELECT event_key FROM timeline_events WHERE cache_file = ?)",
+        (cache_file,),
+    )
+    conn.execute("DELETE FROM timeline_events WHERE cache_file = ?", (cache_file,))
+    conn.execute("DELETE FROM timeline_files WHERE path = ?", (cache_file,))
 
+
+def rebuild_timeline_index(progress_cb=None, force=False):
     file_specs = []
     file_specs += [(path, "detections") for path in iter_json_files(DETECTIONS_DAY_DIR, ".json")]
     file_specs += [(path, "emails") for path in iter_json_files(EMAILS_DAY_DIR, ".json")]
     file_specs += [(path, "dlp") for path in iter_json_files(DLP_DAY_DIR, ".jsonl")]
+    current_paths = {path for path, _ in file_specs}
 
-    totals = {"events": 0, "tokens": 0, "files": 0, "rows": 0}
+    if force:
+        for path in (TIMELINE_INDEX_DB_PATH, f"{TIMELINE_INDEX_DB_PATH}-wal", f"{TIMELINE_INDEX_DB_PATH}-shm"):
+            if os.path.exists(path):
+                os.remove(path)
+
+    totals = {"events": 0, "tokens": 0, "files": 0, "rows": 0, "indexed": 0, "skipped": 0, "removed": 0}
     with sqlite3.connect(TIMELINE_INDEX_DB_PATH) as conn:
         init_timeline_index_db(conn)
-        for idx, (path, logical_source) in enumerate(file_specs, start=1):
+        indexed_meta = {
+            row[0]: {"mtime": float(row[1] or 0), "size": int(row[2] or 0)}
+            for row in conn.execute("SELECT path, mtime, size FROM timeline_files").fetchall()
+        }
+
+        stale_paths = sorted(set(indexed_meta) - current_paths)
+        for stale_path in stale_paths:
             if progress_cb:
-                progress_cb(f"Timeline 인덱싱중 {idx}/{len(file_specs)} - {logical_source} {os.path.basename(path)}")
+                progress_cb(f"Timeline 인덱스 정리중 - {os.path.basename(stale_path)}")
+            delete_timeline_index_file(conn, stale_path)
+            totals["removed"] += 1
+
+        for idx, (path, logical_source) in enumerate(file_specs, start=1):
+            stat = os.stat(path)
+            cached = indexed_meta.get(path)
+            unchanged = (
+                cached is not None
+                and float(cached.get("mtime", 0)) == float(stat.st_mtime)
+                and int(cached.get("size", 0)) == int(stat.st_size)
+            )
+            if unchanged:
+                totals["skipped"] += 1
+                continue
+
+            if progress_cb:
+                progress_cb(f"Timeline 증분 인덱싱중 {idx}/{len(file_specs)} - {logical_source} {os.path.basename(path)}")
+            delete_timeline_index_file(conn, path)
             events_count, tokens_count, rows_count = index_timeline_cache_file(conn, path, logical_source)
             totals["events"] += events_count
             totals["tokens"] += tokens_count
             totals["rows"] += rows_count
-            totals["files"] += 1
-            if idx % 10 == 0:
+            totals["indexed"] += 1
+            if totals["indexed"] % 10 == 0:
                 conn.commit()
         conn.commit()
+
+        totals["events"] = conn.execute("SELECT COUNT(*) FROM timeline_events").fetchone()[0]
+        totals["tokens"] = conn.execute("SELECT COUNT(*) FROM timeline_tokens").fetchone()[0]
+        totals["files"] = conn.execute("SELECT COUNT(*) FROM timeline_files").fetchone()[0]
+        totals["rows"] = conn.execute("SELECT COALESCE(SUM(rows), 0) FROM timeline_files").fetchone()[0]
 
     totals["built_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     totals["db_path"] = TIMELINE_INDEX_DB_PATH
@@ -8194,7 +8234,7 @@ class MainWindow(QMainWindow):
                         c.drawString(
                             MARGIN,
                             y,
-                            f"외 {len(unclassified_user_names) - 15}명 추가"
+                            f"외 {len(unclassified_user_counts) - 15}명 추가"
                         )
                         y -= 12
 
@@ -13152,7 +13192,9 @@ Command Line :
         self.set_status("Timeline index OK", color="green", spinning=False)
         built_at = stats.get("built_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         self.lbl_index_last.setText(f"Last Build: {built_at}")
-        self.lbl_index_status.setText("Status: OK")
+        self.lbl_index_status.setText(
+            f"Status: OK (Indexed {int(stats.get('indexed', 0)):,} / Skipped {int(stats.get('skipped', 0)):,} / Removed {int(stats.get('removed', 0)):,})"
+        )
         self.lbl_index_events.setText(f"Events: {int(stats.get('events', 0)):,}")
         self.lbl_index_tokens.setText(f"Tokens: {int(stats.get('tokens', 0)):,}")
         self.lbl_index_files.setText(f"Files: {int(stats.get('files', 0)):,}")
@@ -13360,7 +13402,7 @@ Command Line :
         # 🔹 Index Data 카드
         # ==================================================
         index_card, index_layout = self.make_card("Index Data", legacy_title=True)
-        self.btn_timeline_index = QPushButton("전체 데이터 인덱싱")
+        self.btn_timeline_index = QPushButton("전체/변경분 데이터 인덱싱")
         self.btn_timeline_index.setMinimumHeight(40)
         self.btn_timeline_index.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.btn_timeline_index.setStyleSheet(btn_style)
@@ -13379,7 +13421,7 @@ Command Line :
         ]:
             label.setStyleSheet("color:#374151; font-size:13px; font-weight:600;")
 
-        index_desc = QLabel("Timeline 전체 캐시를 SQLite로 인덱싱합니다.")
+        index_desc = QLabel("Timeline 전체 캐시를 SQLite로 확인하고, 변경/신규 파일만 증분 인덱싱합니다.")
         index_desc.setWordWrap(True)
         index_desc.setStyleSheet(f"color:{UI_THEME['text_muted']}; font-size:12px; font-weight:700;")
         index_layout.addWidget(index_desc)
