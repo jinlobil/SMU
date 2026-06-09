@@ -38,7 +38,8 @@ import matplotlib.patheffects as path_effects
 # =============================
 from PyQt5.QtCore import (
     Qt, QTimer, QThread, pyqtSignal,
-    QDate, QTime, QRectF, QPointF
+    QDate, QTime, QRectF, QPointF,
+    QPropertyAnimation, QEasingCurve
 )
 
 # =============================
@@ -54,7 +55,7 @@ from PyQt5.QtWidgets import (
     QFrame, QDateEdit, QTimeEdit, QGroupBox, QColorDialog,
     QCheckBox, QSpinBox, QScrollArea, QSplitter,
     QDialog, QTextEdit, QShortcut,
-    QSizePolicy, QGraphicsDropShadowEffect, QAbstractSpinBox
+    QSizePolicy, QGraphicsDropShadowEffect, QGraphicsOpacityEffect, QAbstractSpinBox
 )
 
 # =============================
@@ -5212,11 +5213,12 @@ class MainWindow(QMainWindow):
             page_layout.setContentsMargins(0, 0, 0, 0)
             page_layout.setSpacing(0)
 
-            subbar = QFrame()
+            subbar = QFrame(page)
             subbar.setObjectName("subtabBar")
             subbar_layout = QVBoxLayout(subbar)
             subbar_layout.setContentsMargins(0, 0, 0, 0)
             subbar_layout.setSpacing(0)
+            subbar.setFixedWidth(260)
             subbar.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
 
             stack = QStackedWidget()
@@ -5239,8 +5241,9 @@ class MainWindow(QMainWindow):
                 )
                 subbar_layout.addWidget(btn)
 
-            page_layout.addWidget(subbar, 0, Qt.AlignLeft)
             page_layout.addWidget(stack, 1)
+            subbar.adjustSize()
+            subbar.move(0, 0)
             subbar.hide()
             return stack
 
@@ -8371,7 +8374,39 @@ class MainWindow(QMainWindow):
 
     def hide_all_subtab_bars(self):
         for bar in getattr(self, "group_subtab_bars", {}).values():
+            if bar.graphicsEffect():
+                bar.graphicsEffect().setEnabled(False)
             bar.hide()
+
+    def fade_subtab_bar(self, bar, show):
+        if not bar:
+            return
+        effect = bar.graphicsEffect()
+        if not isinstance(effect, QGraphicsOpacityEffect):
+            effect = QGraphicsOpacityEffect(bar)
+            bar.setGraphicsEffect(effect)
+        effect.setEnabled(True)
+
+        anim = QPropertyAnimation(effect, b"opacity", bar)
+        anim.setDuration(130 if show else 90)
+        anim.setEasingCurve(QEasingCurve.OutCubic)
+        anim.setStartValue(0.0 if show else effect.opacity())
+        anim.setEndValue(1.0 if show else 0.0)
+
+        if show:
+            bar.move(0, 0)
+            bar.raise_()
+            effect.setOpacity(0.0)
+            bar.show()
+        else:
+            def finish_hide():
+                bar.hide()
+                effect.setOpacity(1.0)
+                effect.setEnabled(False)
+            anim.finished.connect(finish_hide)
+
+        bar._subtab_fade_animation = anim
+        anim.start()
 
     def set_subtab_bar_visible(self, parent_idx, visible):
         bar = getattr(self, "group_subtab_bars", {}).get(parent_idx)
@@ -8380,9 +8415,9 @@ class MainWindow(QMainWindow):
         if visible:
             self.hide_all_subtab_bars()
             self.sync_group_subtab_buttons(parent_idx)
-            bar.show()
+            self.fade_subtab_bar(bar, True)
         else:
-            bar.hide()
+            self.fade_subtab_bar(bar, False)
 
     def sync_group_subtab_buttons(self, parent_idx):
         active_child_idx = None
