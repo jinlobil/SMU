@@ -70,7 +70,23 @@ from matplotlib.figure import Figure
 
 
 # ======================================================
-# Base
+# File layout / future module boundaries
+# ======================================================
+# 1) Base paths and global constants
+# 2) Theme/color configuration
+# 3) Core utilities: JSON, SQLite cache/index, time, validation
+# 4) Identity/org resolution and report exceptions
+# 5) Timeline normalization, indexing, and search
+# 6) API clients and background workers
+# 7) UI widgets and MainWindow tabs
+#
+# Keep these sections clean so they can be moved into modules later without
+# changing behavior.  The current file is still single-file on purpose while
+# SQLite/index behavior stabilizes.
+
+# ======================================================
+# Base paths / global constants
+# - Defines all local folders, env files, DB paths, and shared UI constants.
 # ======================================================
 def get_base_dir():
     if getattr(sys, "frozen", False):
@@ -178,6 +194,11 @@ UI_THEME = {
     "gray_border": "#e2e8f0",
 }
 
+# ======================================================
+# Color / theme configuration
+# - Runtime-editable color tokens used by the whole UI.
+# - Later module target: core/theme.py
+# ======================================================
 DEFAULT_COLOR_CONFIG = {
     "UI_Background": "#FFFFFF",
     "UI_Surface": "#FFFFFF",
@@ -476,9 +497,12 @@ SEARCH_BTN_W = 34
 SEARCH_ROW_H = 40
 
 
-# ===============================
-# 날짜 범위별 캐시 로드 함수
-# ===============================
+# ======================================================
+# Core storage / JSON cache fallback
+# - Reads the original JSON/JSONL cache files.
+# - SQLite loaders below fall back here if DB/index access fails.
+# - Later module target: core/storage/json_cache.py
+# ======================================================
 
 def load_detections_by_range_json(start_date: str, end_date: str):
     results = []
@@ -681,6 +705,13 @@ def save_jsonl(path, rows):
     os.replace(tmp, path)
 
 
+# ======================================================
+# Core storage / SQLite app cache and indexed query tables
+# - JSON refresh remains the source of truth.
+# - app_cache_records stores raw rows for compatibility.
+# - detection_events/email_events/dlp_events are indexed read models used by tabs, exports, and reports.
+# - Later module target: core/storage/sqlite_cache.py
+# ======================================================
 APP_CACHE_SOURCES = {
     "detections": {"dir": DETECTIONS_DAY_DIR, "ext": ".json", "format": "json"},
     "emails": {"dir": EMAILS_DAY_DIR, "ext": ".json", "format": "json"},
@@ -1236,6 +1267,11 @@ def load_dlp_by_range_json(start_date: str, end_date: str):
     return results
 
 
+# ======================================================
+# Core utilities / DLP display helpers
+# - Small formatting helpers shared by File tab, Timeline, export, and report.
+# - Later module target: modules/dlp/formatters.py
+# ======================================================
 def format_dlp_event_id(value):
     event_id = str(value or "None")
     mapping = {
@@ -1244,6 +1280,11 @@ def format_dlp_event_id(value):
     }
     return mapping.get(event_id.strip(), event_id)
 
+# ======================================================
+# Core utilities / file, session, time, and validation helpers
+# - Generic helpers that are not tied to a single UI tab.
+# - Later module targets: core/path.py, core/time.py, core/validator.py
+# ======================================================
 def get_unique_path(path):
     if not os.path.exists(path):
         return path
@@ -1996,7 +2037,10 @@ def save_day_json(base_dir, day_key, items):
 
 
 # ======================================================
-# Cache load (startup)
+# Identity / organization mapping
+# - Normalizes user names, user IDs, hostnames, mailbox aliases, and exception rules.
+# - Builds lookup maps used by Detection, Email-XDR, File/DLP, reports, exports, and Timeline.
+# - Later module target: core/identity.py or modules/directory/identity.py.
 # ======================================================
 
 def normalize_name_key(value):
@@ -2506,6 +2550,13 @@ def get_report_exception_dept(*values):
 
 
 
+# ======================================================
+# Timeline / identity context, normalization, search index
+# - Expands a user search term into related hostnames/mailboxes/user IDs.
+# - Normalizes Detection, Email-XDR, Email, and DLP rows into timeline events.
+# - Builds/query token indexes for fast timeline search.
+# - Later module target: modules/timeline/
+# ======================================================
 def timeline_add_alias(ctx, category, value):
     value = str(value or "").strip()
     if not value or value in {"None", "미분류"}:
@@ -3206,7 +3257,13 @@ def rebuild_timeline_index(progress_cb=None, force=False):
     return totals
 
 
-class TimelineIndexWorker(QThread):
+# ======================================================
+# Workers / data indexing
+# - Runs full/incremental SQLite app-cache indexing and Timeline token indexing off the UI thread.
+# - This is the shared Index Data button worker, not Timeline-only.
+# - Later module target: modules/indexing/workers.py
+# ======================================================
+class DataIndexWorker(QThread):
     ok = pyqtSignal(dict)
     fail = pyqtSignal(str)
     progress = pyqtSignal(str)
@@ -3223,6 +3280,11 @@ class TimelineIndexWorker(QThread):
 
 
 
+# ======================================================
+# Workers / Timeline search
+# - Searches indexed Timeline data in the background and falls back to cache scanning if needed.
+# - Later module target: modules/timeline/workers.py
+# ======================================================
 class TimelineSearchWorker(QThread):
     ok = pyqtSignal(list, dict)
     fail = pyqtSignal(str)
@@ -3311,6 +3373,11 @@ class TimelineSearchWorker(QThread):
             self.fail.emit(str(e))
 
 
+# ======================================================
+# UI components / Timeline
+# - Lightweight clickable card for grouped timeline events.
+# - Later module target: modules/timeline/widgets.py
+# ======================================================
 class TimelineEventCard(QFrame):
     clicked = pyqtSignal(object)
 
@@ -3652,7 +3719,9 @@ def normalize_history_rows(query_name: str, rows: list):
     return normalized
 
 # ======================================================
-# Dept map
+# Configuration data / environment loaders
+# - Loads department code mappings and environment files shared by API clients.
+# - Later module target: core/env.py and core/config_data.py.
 # ======================================================
 def load_dept_map():
     path = USER_GROUP_ENV_PATH
@@ -3677,7 +3746,9 @@ DEPT_MAP = load_dept_map()
 reload_all_data()
 
 # ======================================================
-# Sophos API (UI integrated)
+# API clients and UI-integrated service adapters
+# - Keeps external-service clients grouped before MainWindow so they can move into modules later.
+# - Later module targets: modules/sophos_event, modules/sophos_query, modules/firewall, modules/dlp.
 # ======================================================
 def load_env_from_file(path):
     if not os.path.exists(path):
@@ -3713,6 +3784,11 @@ def load_dlp_env(path):
 requests.packages.urllib3.disable_warnings(category=InsecureRequestWarning)
 
 
+# ======================================================
+# API clients / DLP
+# - Handles DLP login, paged retrieval, retry/fallback, and JSONL cache writes.
+# - Later module target: modules/dlp/client.py
+# ======================================================
 class DlpClient:
     def __init__(self, progress_cb=None):
         env = load_dlp_env(DLP_ENV_PATH)
@@ -4109,6 +4185,11 @@ class DlpClient:
         }
 
 
+# ======================================================
+# API clients / Sophos Firewall
+# - Handles firewall XML API group lookup and response actions.
+# - Later module target: modules/firewall/client.py
+# ======================================================
 class SophosFirewallClient:
     def __init__(self, firewall_config: dict = None):
         if firewall_config is None:
@@ -4357,6 +4438,11 @@ class SophosFirewallClient:
         reqxml = self.build_fqdn_host_group_get_xml()
         return self._post_xml(reqxml)
 
+# ======================================================
+# API clients / Sophos Central
+# - Refreshes detections, emails, endpoints, organization groups, and directory users into JSON cache.
+# - Later module target: modules/sophos/client.py
+# ======================================================
 class SophosClient:
     def __init__(self):
         load_env_from_file(ENV_PATH)
@@ -5307,7 +5393,8 @@ class FirewallGroupQueryWorker(QThread):
             self.fail.emit(f"{fw_name}: {type(e).__name__}: {e}")
 
 # ======================================================
-# Live Discover
+# API clients / Sophos Live Discover
+# - Runs Live Discover and History Query requests used by the Easy Query screen.
 # ======================================================
 class SophosLiveDiscoverClient:
     def __init__(self):
@@ -5445,7 +5532,8 @@ class SophosLiveDiscoverClient:
         return r.json()
 
 # ======================================================
-# XdrQuery
+# API clients / Sophos XDR Query
+# - Runs saved/custom XDR data-lake queries and returns tabular results to the UI workers.
 # ======================================================
 class SophosXdrQueryClient:
     def __init__(self):
@@ -13802,28 +13890,30 @@ Command Line :
 
 
     # ==================================================
-    # Config Tab
+    # Config Tab / Data Index actions
+    # - Handles the Index Data card button and status labels.
+    # - Uses DataIndexWorker to update app_cache.db and timeline_index.db without blocking the UI.
     # ==================================================
-    def run_timeline_index(self):
-        if getattr(self, "timeline_index_worker", None) and self.timeline_index_worker.isRunning():
+    def run_data_index(self):
+        if getattr(self, "data_index_worker", None) and self.data_index_worker.isRunning():
             self.set_status("Data index running", color="blue", spinning=True)
             return
 
-        self.btn_timeline_index.setEnabled(False)
+        self.btn_data_index.setEnabled(False)
         self.set_status("Data index", color="blue", spinning=True)
         self.lbl_index_status.setText("Status: RUNNING")
-        self.timeline_index_worker = TimelineIndexWorker()
-        self.timeline_index_worker.progress.connect(self._on_timeline_index_progress)
-        self.timeline_index_worker.ok.connect(self._on_timeline_index_ok)
-        self.timeline_index_worker.fail.connect(self._on_timeline_index_fail)
-        self.timeline_index_worker.start()
+        self.data_index_worker = DataIndexWorker()
+        self.data_index_worker.progress.connect(self._on_data_index_progress)
+        self.data_index_worker.ok.connect(self._on_data_index_ok)
+        self.data_index_worker.fail.connect(self._on_data_index_fail)
+        self.data_index_worker.start()
 
-    def _on_timeline_index_progress(self, message):
+    def _on_data_index_progress(self, message):
         self.lbl_index_status.setText(f"Status: {message}")
         self.set_status(str(message), color="blue", spinning=True)
 
-    def _on_timeline_index_ok(self, stats):
-        self.btn_timeline_index.setEnabled(True)
+    def _on_data_index_ok(self, stats):
+        self.btn_data_index.setEnabled(True)
         self._spin_timer.stop()
         self.set_status("Data index OK", color="green", spinning=False)
         built_at = stats.get("built_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
@@ -13836,8 +13926,8 @@ Command Line :
         self.lbl_index_tokens.setText(f"Search Tokens: {int(stats.get('tokens', 0)):,}")
         self.lbl_index_files.setText(f"Cache Files: {int(stats.get('data_total_files', stats.get('files', 0))):,}")
 
-    def _on_timeline_index_fail(self, err):
-        self.btn_timeline_index.setEnabled(True)
+    def _on_data_index_fail(self, err):
+        self.btn_data_index.setEnabled(True)
         self._spin_timer.stop()
         self.set_status("Data index FAIL", color="red", spinning=False)
         self.lbl_index_status.setText(f"Status: FAIL - {err}")
@@ -14036,13 +14126,15 @@ Command Line :
         self.spin_interval.valueChanged.connect(self.update_auto_interval)
 
         # ==================================================
-        # 🔹 Index Data 카드
+        # Index Data card
+        # - One button prepares SQLite data tables for normal tabs and search tokens for Timeline.
+        # - The card shows row/event/token/file counts so index health is visible from Config.
         # ==================================================
         index_card, index_layout = self.make_card("Index Data", legacy_title=True)
-        self.btn_timeline_index = QPushButton("전체 캐시 데이터 인덱싱")
-        self.btn_timeline_index.setMinimumHeight(40)
-        self.btn_timeline_index.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.btn_timeline_index.setStyleSheet(btn_style)
+        self.btn_data_index = QPushButton("전체 캐시 데이터 인덱싱")
+        self.btn_data_index.setMinimumHeight(40)
+        self.btn_data_index.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.btn_data_index.setStyleSheet(btn_style)
 
         self.lbl_index_last = QLabel("Last Build: -")
         self.lbl_index_status = QLabel("Status: -")
@@ -14064,7 +14156,7 @@ Command Line :
         index_desc.setWordWrap(True)
         index_desc.setStyleSheet(f"color:{UI_THEME['text_muted']}; font-size:12px; font-weight:700;")
         index_layout.addWidget(index_desc)
-        index_layout.addWidget(self.btn_timeline_index)
+        index_layout.addWidget(self.btn_data_index)
         index_layout.addWidget(self.lbl_index_last)
         index_layout.addWidget(self.lbl_index_status)
         index_layout.addWidget(self.lbl_index_rows)
@@ -14072,9 +14164,9 @@ Command Line :
         index_layout.addWidget(self.lbl_index_tokens)
         index_layout.addWidget(self.lbl_index_files)
         index_layout.addStretch()
-        self.btn_timeline_index.clicked.connect(self.run_timeline_index)
+        self.btn_data_index.clicked.connect(self.run_data_index)
 
-        # ===== 여기서 가로 배치 =====
+        # Top card layout: Cache Data stays on the left; Auto Refresh and Index Data share the right side.
         top_row = QHBoxLayout()
         top_row.setContentsMargins(0, 0, 0, 0)
         top_row.setSpacing(12)
