@@ -5214,9 +5214,10 @@ class MainWindow(QMainWindow):
 
             subbar = QFrame()
             subbar.setObjectName("subtabBar")
-            subbar_layout = QHBoxLayout(subbar)
+            subbar_layout = QVBoxLayout(subbar)
             subbar_layout.setContentsMargins(0, 0, 0, 0)
             subbar_layout.setSpacing(0)
+            subbar.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
 
             stack = QStackedWidget()
             parent_idx = self.tabs.addTab(page, group_name)
@@ -5230,14 +5231,15 @@ class MainWindow(QMainWindow):
                 btn = QPushButton(display_name)
                 btn.setObjectName("subtabButton")
                 btn.setCheckable(True)
+                btn.setMinimumWidth(260)
+                btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
                 btn.clicked.connect(
                     lambda checked=False, p_idx=parent_idx, c_idx=child_idx, name=logical_name:
                         self.select_group_child_tab(p_idx, c_idx, name, hide_subtabs=True)
                 )
                 subbar_layout.addWidget(btn)
 
-            subbar_layout.addStretch(1)
-            page_layout.addWidget(subbar)
+            page_layout.addWidget(subbar, 0, Qt.AlignLeft)
             page_layout.addWidget(stack, 1)
             subbar.hide()
             return stack
@@ -5355,13 +5357,13 @@ class MainWindow(QMainWindow):
 
         QPushButton#subtabButton {{
             background: #f8fafc;
-            color: #64748b;
-            padding: 9px 18px;
+            color: #334155;
+            padding: 10px 18px;
             border: 1px solid #e5e7eb;
-            border-left: 0px;
             border-top: 0px;
             border-radius: 0px;
-            min-height: 18px;
+            min-height: 22px;
+            text-align: left;
         }}
 
         QPushButton#subtabButton:hover {{
