@@ -736,6 +736,68 @@ def init_app_cache_db(conn):
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_app_cache_records_source_date ON app_cache_records(source, cache_date)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_app_cache_records_file ON app_cache_records(source_file)")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS detection_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_file TEXT NOT NULL,
+            row_index INTEGER NOT NULL,
+            cache_date TEXT,
+            event_time TEXT,
+            event_date_kst TEXT,
+            sensor_type TEXT,
+            rule TEXT,
+            hostname TEXT,
+            mailbox TEXT,
+            sender_ip TEXT,
+            subject TEXT,
+            raw_json TEXT NOT NULL,
+            UNIQUE(source_file, row_index)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_detection_events_date_sensor ON detection_events(event_date_kst, sensor_type)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_detection_events_rule ON detection_events(rule)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_detection_events_file ON detection_events(source_file)")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS email_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_file TEXT NOT NULL,
+            row_index INTEGER NOT NULL,
+            cache_date TEXT,
+            event_time TEXT,
+            event_date_kst TEXT,
+            sender TEXT,
+            recipients TEXT,
+            subject TEXT,
+            reason TEXT,
+            client_ip TEXT,
+            raw_json TEXT NOT NULL,
+            UNIQUE(source_file, row_index)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_email_events_date ON email_events(event_date_kst)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_email_events_file ON email_events(source_file)")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS dlp_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_file TEXT NOT NULL,
+            row_index INTEGER NOT NULL,
+            cache_date TEXT,
+            event_time TEXT,
+            event_date_kst TEXT,
+            machine_name TEXT,
+            client_name TEXT,
+            event_id TEXT,
+            event_label TEXT,
+            filename TEXT,
+            destination TEXT,
+            filehash TEXT,
+            raw_json TEXT NOT NULL,
+            UNIQUE(source_file, row_index)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_dlp_events_date ON dlp_events(event_date_kst)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_dlp_events_machine ON dlp_events(machine_name)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_dlp_events_file ON dlp_events(source_file)")
 
 
 def load_cache_file_rows(path, file_format):
@@ -745,6 +807,137 @@ def load_cache_file_rows(path, file_format):
     return data if isinstance(data, list) else []
 
 
+def dt_to_kst_date_text(dt, fallback_date=""):
+    if not dt:
+        return fallback_date or ""
+    try:
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(timezone(timedelta(hours=9))).replace(tzinfo=None)
+        return dt.strftime("%Y-%m-%d")
+    except Exception:
+        return fallback_date or ""
+
+
+def detection_index_values(row, source, path, idx, cache_date, raw_json):
+    event_dt = iso_to_kst_dt(row.get("time")) if isinstance(row, dict) else None
+    event_date = dt_to_kst_date_text(event_dt, cache_date)
+    sensor_type = get_detection_sensor_type(row)
+    dd = row.get("detectionDescription", {}) if isinstance(row, dict) else {}
+    rule = ""
+    if isinstance(dd, dict):
+        rule = str(dd.get("createdReasonId", "") or "").strip()
+    if not rule and isinstance(row, dict):
+        rule = str(row.get("detectionRule", "") or "").strip()
+    raw = row.get("rawData", {}) if isinstance(row, dict) and isinstance(row.get("rawData"), dict) else {}
+    hostname = str(raw.get("meta_hostname", "") or "").strip()
+    mailbox = ""
+    sender_ip = ""
+    subject = ""
+    if sensor_type == "email":
+        try:
+            xdr = extract_xdr_email_fields(row)
+            mailbox = str(xdr.get("mailbox", "") or "").strip()
+            sender_ip = str(xdr.get("sender_ip", "") or "").strip()
+            subject = str(xdr.get("subject", "") or "").strip()
+        except Exception:
+            pass
+    return (
+        path,
+        idx,
+        cache_date,
+        row.get("time") if isinstance(row, dict) else "",
+        event_date,
+        sensor_type,
+        rule,
+        hostname,
+        mailbox,
+        sender_ip,
+        subject,
+        raw_json,
+    )
+
+
+def email_index_values(row, source, path, idx, cache_date, raw_json):
+    event_time = row.get("receivedAt") if isinstance(row, dict) else ""
+    event_date = dt_to_kst_date_text(iso_to_kst_dt(event_time), cache_date)
+    from_addr = ""
+    recipients = ""
+    if isinstance(row, dict):
+        try:
+            from_addr = email_addr(row.get("from"))
+            to_list = [email_addr(x) for x in (row.get("to", []) or []) if isinstance(x, dict)]
+            cc_list = [email_addr(x) for x in (row.get("cc", []) or []) if isinstance(x, dict)]
+            recipients = join_list(to_list + cc_list)
+        except Exception:
+            pass
+    return (
+        path,
+        idx,
+        cache_date,
+        event_time,
+        event_date,
+        from_addr,
+        recipients,
+        str(row.get("subject", "") or "") if isinstance(row, dict) else "",
+        str(row.get("reason", "") or "") if isinstance(row, dict) else "",
+        str(row.get("clientIp", "") or "") if isinstance(row, dict) else "",
+        raw_json,
+    )
+
+
+def dlp_index_values(row, source, path, idx, cache_date, raw_json):
+    event_time = str(row.get("eventtimelocal", "") or "") if isinstance(row, dict) else ""
+    event_dt = dlp_time_to_dt(event_time)
+    event_date = dt_to_kst_date_text(event_dt, cache_date)
+    event_id = str(row.get("event_id", "") or "") if isinstance(row, dict) else ""
+    return (
+        path,
+        idx,
+        cache_date,
+        event_time,
+        event_date,
+        str(row.get("machine_name", "") or "") if isinstance(row, dict) else "",
+        str(row.get("client_name", "") or "") if isinstance(row, dict) else "",
+        event_id,
+        format_dlp_event_id(event_id),
+        str(row.get("filename", "") or "") if isinstance(row, dict) else "",
+        str(row.get("destination", "") or "") if isinstance(row, dict) else "",
+        str(row.get("filehash", "") or "") if isinstance(row, dict) else "",
+        raw_json,
+    )
+
+
+APP_CACHE_INDEX_INSERTS = {
+    "detections": (
+        "DELETE FROM detection_events WHERE source_file = ?",
+        """
+        INSERT OR REPLACE INTO detection_events
+            (source_file, row_index, cache_date, event_time, event_date_kst, sensor_type, rule, hostname, mailbox, sender_ip, subject, raw_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        detection_index_values,
+    ),
+    "emails": (
+        "DELETE FROM email_events WHERE source_file = ?",
+        """
+        INSERT OR REPLACE INTO email_events
+            (source_file, row_index, cache_date, event_time, event_date_kst, sender, recipients, subject, reason, client_ip, raw_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        email_index_values,
+    ),
+    "dlp": (
+        "DELETE FROM dlp_events WHERE source_file = ?",
+        """
+        INSERT OR REPLACE INTO dlp_events
+            (source_file, row_index, cache_date, event_time, event_date_kst, machine_name, client_name, event_id, event_label, filename, destination, filehash, raw_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        dlp_index_values,
+    ),
+}
+
+
 def sync_app_cache_file(conn, source, path, cache_date=None, file_format="json"):
     stat = os.stat(path)
     rows = load_cache_file_rows(path, file_format)
@@ -752,11 +945,22 @@ def sync_app_cache_file(conn, source, path, cache_date=None, file_format="json")
         rows = []
 
     conn.execute("DELETE FROM app_cache_records WHERE source_file = ?", (path,))
-    payload = [
-        (source, cache_date, path, idx, json.dumps(row, ensure_ascii=False))
-        for idx, row in enumerate(rows)
-        if isinstance(row, (dict, list))
-    ]
+    index_spec = APP_CACHE_INDEX_INSERTS.get(source)
+    if index_spec:
+        conn.execute(index_spec[0], (path,))
+
+    payload = []
+    index_payload = []
+    for idx, row in enumerate(rows):
+        if not isinstance(row, (dict, list)):
+            continue
+        raw_json = json.dumps(row, ensure_ascii=False)
+        payload.append((source, cache_date, path, idx, raw_json))
+        if index_spec and isinstance(row, dict):
+            try:
+                index_payload.append(index_spec[2](row, source, path, idx, cache_date, raw_json))
+            except Exception as e:
+                log.warning(f"SQLite index row build failed source={source} path={path} row={idx}: {e}")
     if payload:
         conn.executemany(
             """
@@ -766,6 +970,8 @@ def sync_app_cache_file(conn, source, path, cache_date=None, file_format="json")
             """,
             payload,
         )
+    if index_payload:
+        conn.executemany(index_spec[1], index_payload)
     conn.execute(
         """
         INSERT OR REPLACE INTO app_cache_files
@@ -798,6 +1004,23 @@ def app_cache_file_current(conn, path):
     return float(row[0] or 0) == float(stat.st_mtime) and int(row[1] or 0) == int(stat.st_size)
 
 
+def app_cache_index_current(conn, source, path):
+    if not app_cache_file_current(conn, path):
+        return False
+    table_map = {
+        "detections": "detection_events",
+        "emails": "email_events",
+        "dlp": "dlp_events",
+    }
+    table = table_map.get(source)
+    if not table:
+        return True
+    try:
+        return conn.execute(f"SELECT 1 FROM {table} WHERE source_file = ? LIMIT 1", (path,)).fetchone() is not None
+    except sqlite3.Error:
+        return False
+
+
 def sync_app_cache_range(source, start_date, end_date, progress_cb=None):
     cfg = APP_CACHE_SOURCES[source]
     stats = {"indexed": 0, "skipped": 0, "rows": 0, "files": 0, "source": source}
@@ -807,7 +1030,7 @@ def sync_app_cache_range(source, start_date, end_date, progress_cb=None):
             if not os.path.exists(path):
                 continue
             stats["files"] += 1
-            if app_cache_file_current(conn, path):
+            if app_cache_index_current(conn, source, path):
                 stats["skipped"] += 1
                 continue
             if progress_cb:
@@ -825,7 +1048,7 @@ def sync_app_cache_all(progress_cb=None):
             for path in iter_json_files(cfg["dir"], cfg["ext"]):
                 cache_date = os.path.splitext(os.path.basename(path))[0]
                 totals["data_files"] += 1
-                if app_cache_file_current(conn, path):
+                if app_cache_index_current(conn, source, path):
                     totals["data_skipped"] += 1
                     continue
                 if progress_cb:
@@ -852,6 +1075,9 @@ def sync_app_cache_all(progress_cb=None):
         for (path,) in stale_rows:
             if path not in existing_paths:
                 conn.execute("DELETE FROM app_cache_records WHERE source_file = ?", (path,))
+                conn.execute("DELETE FROM detection_events WHERE source_file = ?", (path,))
+                conn.execute("DELETE FROM email_events WHERE source_file = ?", (path,))
+                conn.execute("DELETE FROM dlp_events WHERE source_file = ?", (path,))
                 conn.execute("DELETE FROM app_cache_files WHERE path = ?", (path,))
                 removed += 1
         totals["data_removed"] = removed
@@ -912,33 +1138,77 @@ def load_app_cache_single(source, path, json_fallback=True):
     return load_json(path)
 
 
+def load_indexed_raw_rows(table, start_date, end_date, extra_where="", params=()):
+    with app_cache_connect() as conn:
+        sql = f"""
+            SELECT raw_json FROM {table}
+            WHERE COALESCE(NULLIF(event_date_kst, ''), cache_date) BETWEEN ? AND ?
+            {extra_where}
+            ORDER BY COALESCE(NULLIF(event_time, ''), cache_date) ASC, source_file ASC, row_index ASC
+        """
+        rows = conn.execute(sql, (start_date, end_date, *params)).fetchall()
+    results = []
+    for (raw_json,) in rows:
+        try:
+            value = json.loads(raw_json)
+            if isinstance(value, dict):
+                results.append(value)
+        except Exception as e:
+            log.warning(f"SQLite indexed row parse failed table={table}: {e}")
+    return results
+
+
+def load_indexed_detections_by_range(start_date, end_date, sensor_type=None, xdr_email_only=False):
+    sync_app_cache_range("detections", start_date, end_date)
+    extra = ""
+    params = []
+    if sensor_type:
+        extra += " AND sensor_type = ?"
+        params.append(sensor_type)
+    if xdr_email_only:
+        placeholders = ",".join(["?"] * len(XDR_EMAIL_RULES))
+        extra += f" AND rule IN ({placeholders})"
+        params.extend(sorted(XDR_EMAIL_RULES))
+    return load_indexed_raw_rows("detection_events", start_date, end_date, extra, tuple(params))
+
+
+def load_endpoint_detections_by_range(start_date, end_date):
+    return load_indexed_detections_by_range(start_date, end_date, sensor_type="endpoint")
+
+
+def load_xdr_email_detections_by_range(start_date, end_date):
+    return load_indexed_detections_by_range(start_date, end_date, sensor_type="email", xdr_email_only=True)
+
+
 def load_detections_by_range(start_date: str, end_date: str):
     try:
-        rows = load_app_cache_records("detections", start_date, end_date)
-        log.info(f"Loaded detections from SQLite {start_date} ~ {end_date} : {len(rows)}")
+        rows = load_indexed_detections_by_range(start_date, end_date)
+        log.info(f"Loaded detections from SQLite index {start_date} ~ {end_date} : {len(rows)}")
         return rows
     except Exception as e:
-        log.warning(f"SQLite detections load failed, fallback to JSON: {e}")
+        log.warning(f"SQLite detections index load failed, fallback to JSON: {e}")
         return load_detections_by_range_json(start_date, end_date)
 
 
 def load_emails_by_range(start_date: str, end_date: str):
     try:
-        rows = load_app_cache_records("emails", start_date, end_date)
-        log.info(f"Loaded emails from SQLite {start_date} ~ {end_date} : {len(rows)}")
+        sync_app_cache_range("emails", start_date, end_date)
+        rows = load_indexed_raw_rows("email_events", start_date, end_date)
+        log.info(f"Loaded emails from SQLite index {start_date} ~ {end_date} : {len(rows)}")
         return rows
     except Exception as e:
-        log.warning(f"SQLite emails load failed, fallback to JSON: {e}")
+        log.warning(f"SQLite emails index load failed, fallback to JSON: {e}")
         return load_emails_by_range_json(start_date, end_date)
 
 
 def load_dlp_by_range(start_date: str, end_date: str):
     try:
-        rows = load_app_cache_records("dlp", start_date, end_date)
-        log.info(f"Loaded DLP from SQLite {start_date} ~ {end_date} : {len(rows)}")
+        sync_app_cache_range("dlp", start_date, end_date)
+        rows = load_indexed_raw_rows("dlp_events", start_date, end_date)
+        log.info(f"Loaded DLP from SQLite index {start_date} ~ {end_date} : {len(rows)}")
         return rows
     except Exception as e:
-        log.warning(f"SQLite DLP load failed, fallback to JSON: {e}")
+        log.warning(f"SQLite DLP index load failed, fallback to JSON: {e}")
         return load_dlp_by_range_json(start_date, end_date)
 
 
@@ -7476,7 +7746,8 @@ class MainWindow(QMainWindow):
             start_date = start_dt.strftime("%Y-%m-%d")
             end_date   = end_dt.strftime("%Y-%m-%d")
 
-            detections = load_detections_by_range(start_date, end_date)
+            endpoint_detections = load_endpoint_detections_by_range(start_date, end_date)
+            xdr_detections_report = load_xdr_email_detections_by_range(start_date, end_date)
             emails     = load_emails_by_range(start_date, end_date)
             dlp_rows   = load_dlp_by_range(start_date, end_date)
 
@@ -7490,36 +7761,18 @@ class MainWindow(QMainWindow):
             dlp_blocked_pct = round((dlp_blocked_count / dlp_total_count) * 100, 1) if dlp_total_count else 0.0
             dlp_allowed_pct = round((dlp_allowed_count / dlp_total_count) * 100, 1) if dlp_total_count else 0.0
 
-            endpoint_detections     = []
-            xdr_detections_report   = []
-            detection_timeline      = defaultdict(int)
-
-            for d in detections:
+            detection_timeline = defaultdict(int)
+            for d in endpoint_detections:
                 if not isinstance(d, dict):
                     continue
-                sensor_type = get_detection_sensor_type(d)
-                if not sensor_type:
-                    continue
-
-                if sensor_type == "endpoint":
-                    endpoint_detections.append(d)
-                    t = d.get("time")
-                    if t:
-                        try:
-                            dt  = datetime.fromisoformat(str(t).replace("Z", "+00:00"))
-                            kst = dt.astimezone(timezone(timedelta(hours=9)))
-                            detection_timeline[kst.strftime("%Y-%m-%d")] += 1
-                        except Exception:
-                            pass
-                elif sensor_type == "email":
-                    dd = d.get("detectionDescription", {})
-                    rule = ""
-                    if isinstance(dd, dict):
-                        rule = str(dd.get("createdReasonId", "") or "").strip()
-                    if not rule:
-                        rule = str(d.get("detectionRule", "") or "").strip()
-                    if rule in XDR_EMAIL_RULES:
-                        xdr_detections_report.append(d)
+                t = d.get("time")
+                if t:
+                    try:
+                        dt  = datetime.fromisoformat(str(t).replace("Z", "+00:00"))
+                        kst = dt.astimezone(timezone(timedelta(hours=9)))
+                        detection_timeline[kst.strftime("%Y-%m-%d")] += 1
+                    except Exception:
+                        pass
 
             # ── Email - XDR 부서별 집계 ─────────────────────────────
             _xdr_dept_stats = defaultdict(lambda: {
@@ -8756,31 +9009,8 @@ class MainWindow(QMainWindow):
         current_tab = self.current_logical_tab_name()
 
         if current_tab == "Dashboard":
-            all_detections = load_detections_by_range(start_date, end_date)
-
-            self.dashboard_detections = []
-            self.dashboard_xdr_detections = []
-
-            for d in all_detections:
-                if not isinstance(d, dict):
-                    continue
-
-                sensor_type = get_detection_sensor_type(d)
-                if not sensor_type:
-                    continue
-
-
-                dd = d.get("detectionDescription", {})
-                rule = ""
-                if isinstance(dd, dict):
-                    rule = dd.get("createdReasonId", "") or ""
-                if not rule:
-                    rule = d.get("detectionRule", "") or ""
-
-                if sensor_type == "endpoint":
-                    self.dashboard_detections.append(d)
-                elif sensor_type == "email" and rule in XDR_EMAIL_RULES:
-                    self.dashboard_xdr_detections.append(d)
+            self.dashboard_detections = load_endpoint_detections_by_range(start_date, end_date)
+            self.dashboard_xdr_detections = load_xdr_email_detections_by_range(start_date, end_date)
 
             self.dashboard_emails = load_emails_by_range(start_date, end_date)
             self.dlp_rows = load_dlp_by_range(start_date, end_date)
@@ -8795,31 +9025,8 @@ class MainWindow(QMainWindow):
             compare_start = compare_start_dt.strftime("%Y-%m-%d")
             self.dashboard_compare_dlp = load_dlp_by_range(compare_start, end_date)            
 
-            compare_all_detections = load_detections_by_range(compare_start, end_date)
-
-            self.dashboard_compare_detections = []
-            self.dashboard_compare_xdr_detections = []
-
-            for d in compare_all_detections:
-                if not isinstance(d, dict):
-                    continue
-
-                sensor_type = get_detection_sensor_type(d)
-                if not sensor_type:
-                    continue
-
-
-                dd = d.get("detectionDescription", {})
-                rule = ""
-                if isinstance(dd, dict):
-                    rule = dd.get("createdReasonId", "") or ""
-                if not rule:
-                    rule = d.get("detectionRule", "") or ""
-
-                if sensor_type == "endpoint":
-                    self.dashboard_compare_detections.append(d)
-                elif sensor_type == "email" and rule in XDR_EMAIL_RULES:
-                    self.dashboard_compare_xdr_detections.append(d)
+            self.dashboard_compare_detections = load_endpoint_detections_by_range(compare_start, end_date)
+            self.dashboard_compare_xdr_detections = load_xdr_email_detections_by_range(compare_start, end_date)
 
             self.dashboard_compare_emails = load_emails_by_range(compare_start, end_date)
 
@@ -8827,31 +9034,12 @@ class MainWindow(QMainWindow):
             self.refresh_dashboard()
 
         elif current_tab == "Detection - XDR":
-            self.detection_detections = load_detections_by_range(start_date, end_date)
+            self.detection_detections = load_endpoint_detections_by_range(start_date, end_date)
             self.detection_range = f"{start_date} ~ {end_date}"
             self._refresh_detection()
 
         elif current_tab == "Email - XDR":
-            all_detections = load_detections_by_range(start_date, end_date)
-            self.xdr_detections = []
-
-            for d in all_detections:
-                if not isinstance(d, dict):
-                    continue
-
-                sensor = d.get("sensor", {})
-                if not isinstance(sensor, dict) or sensor.get("type") != "email":
-                    continue
-
-                dd = d.get("detectionDescription", {})
-                rule = ""
-                if isinstance(dd, dict):
-                    rule = dd.get("createdReasonId", "") or ""
-                if not rule:
-                    rule = d.get("detectionRule", "") or ""
-
-                if rule in XDR_EMAIL_RULES:
-                    self.xdr_detections.append(d)
+            self.xdr_detections = load_xdr_email_detections_by_range(start_date, end_date)
 
             self.xdr_range = f"{start_date} ~ {end_date}"
             self._refresh_detection_xdr()
@@ -14409,8 +14597,9 @@ Command Line :
         fig = Figure(figsize=(8.4, 3.4))
         ax = fig.add_subplot(111)
 
+        x_positions = list(range(len(x_labels)))
         ax.plot(
-            x_labels,
+            x_positions,
             y_values,
             marker="o",
             linewidth=2.2,
@@ -14431,26 +14620,22 @@ Command Line :
         for i, value in enumerate(y_values):
             ax.annotate(
                 str(value),
-                xy=(x_labels[i], value),
+                xy=(x_positions[i], value),
                 xytext=(0, 8),
                 textcoords="offset points",
                 ha="center",
                 fontsize=9
             )
 
-        if len(x_labels) >= 10:
-            step = max(1, len(x_labels) // 8)
-            visible_labels = []
-            for idx, label in enumerate(x_labels):
-                if idx % step == 0 or idx == len(x_labels) - 1:
-                    visible_labels.append(label[5:])   # MM-DD
-                else:
-                    visible_labels.append("")
-            ax.set_xticks(range(len(x_labels)))
-            ax.set_xticklabels(visible_labels, rotation=35, ha="right", fontsize=9)
-            ax.plot(range(len(x_labels)), y_values, marker="o", linewidth=0)  # tick index 안정화용
-        else:
-            ax.tick_params(axis="x", rotation=35, labelsize=9)
+        step = max(1, len(x_labels) // 8) if len(x_labels) >= 10 else 1
+        visible_labels = []
+        for idx, label in enumerate(x_labels):
+            if idx % step == 0 or idx == len(x_labels) - 1:
+                visible_labels.append(label[5:] if len(label) >= 10 else label)
+            else:
+                visible_labels.append("")
+        ax.set_xticks(x_positions)
+        ax.set_xticklabels(visible_labels, rotation=35, ha="right", fontsize=9)
 
         ax.tick_params(axis="y", labelsize=9)
 
@@ -15821,7 +16006,7 @@ Command Line :
         start = start_dt.strftime("%Y-%m-%d")
         end = end_dt.strftime("%Y-%m-%d")
 
-        detections = load_detections_by_range(start, end)
+        detections = load_endpoint_detections_by_range(start, end)
 
         if not detections:
             QMessageBox.information(self, "Info", "No Detection - XDR Data")
@@ -15912,7 +16097,7 @@ Command Line :
         start = start_dt.strftime("%Y-%m-%d")
         end = end_dt.strftime("%Y-%m-%d")
 
-        detections = load_detections_by_range(start, end)
+        detections = load_xdr_email_detections_by_range(start, end)
 
         if not detections:
             QMessageBox.information(self, "Info", "No Email - XDR Data")
