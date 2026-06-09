@@ -13358,11 +13358,11 @@ Command Line :
     # ==================================================
     def run_timeline_index(self):
         if getattr(self, "timeline_index_worker", None) and self.timeline_index_worker.isRunning():
-            self.set_status("Timeline index running", color="blue", spinning=True)
+            self.set_status("Data index running", color="blue", spinning=True)
             return
 
         self.btn_timeline_index.setEnabled(False)
-        self.set_status("Timeline index", color="blue", spinning=True)
+        self.set_status("Data index", color="blue", spinning=True)
         self.lbl_index_status.setText("Status: RUNNING")
         self.timeline_index_worker = TimelineIndexWorker()
         self.timeline_index_worker.progress.connect(self._on_timeline_index_progress)
@@ -13377,22 +13377,22 @@ Command Line :
     def _on_timeline_index_ok(self, stats):
         self.btn_timeline_index.setEnabled(True)
         self._spin_timer.stop()
-        self.set_status("Timeline index OK", color="green", spinning=False)
+        self.set_status("Data index OK", color="green", spinning=False)
         built_at = stats.get("built_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         self.lbl_index_last.setText(f"Last Build: {built_at}")
         self.lbl_index_status.setText(
             f"Status: OK (Indexed {int(stats.get('indexed', 0)):,} / Skipped {int(stats.get('skipped', 0)):,} / Removed {int(stats.get('removed', 0)):,})"
         )
-        self.lbl_index_events.setText(f"Events: {int(stats.get('events', 0)):,}")
-        self.lbl_index_tokens.setText(f"Tokens: {int(stats.get('tokens', 0)):,}")
-        self.lbl_index_files.setText(f"Files: {int(stats.get('files', 0)):,}")
+        self.lbl_index_events.setText(f"Indexed Events: {int(stats.get('events', 0)):,}")
+        self.lbl_index_tokens.setText(f"Search Tokens: {int(stats.get('tokens', 0)):,}")
+        self.lbl_index_files.setText(f"Cache Files: {int(stats.get('files', 0)):,}")
 
     def _on_timeline_index_fail(self, err):
         self.btn_timeline_index.setEnabled(True)
         self._spin_timer.stop()
-        self.set_status("Timeline index FAIL", color="red", spinning=False)
+        self.set_status("Data index FAIL", color="red", spinning=False)
         self.lbl_index_status.setText(f"Status: FAIL - {err}")
-        QMessageBox.critical(self, "Timeline Index 실패", err)
+        QMessageBox.critical(self, "Data Index 실패", err)
 
     def tab_config(self):
         btn_style = self.button_style("primary")
@@ -13590,16 +13590,16 @@ Command Line :
         # 🔹 Index Data 카드
         # ==================================================
         index_card, index_layout = self.make_card("Index Data", legacy_title=True)
-        self.btn_timeline_index = QPushButton("전체/변경분 데이터 인덱싱")
+        self.btn_timeline_index = QPushButton("전체 캐시 데이터 인덱싱")
         self.btn_timeline_index.setMinimumHeight(40)
         self.btn_timeline_index.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.btn_timeline_index.setStyleSheet(btn_style)
 
         self.lbl_index_last = QLabel("Last Build: -")
         self.lbl_index_status = QLabel("Status: -")
-        self.lbl_index_events = QLabel("Events: -")
-        self.lbl_index_tokens = QLabel("Tokens: -")
-        self.lbl_index_files = QLabel("Files: -")
+        self.lbl_index_events = QLabel("Indexed Events: -")
+        self.lbl_index_tokens = QLabel("Search Tokens: -")
+        self.lbl_index_files = QLabel("Cache Files: -")
         for label in [
             self.lbl_index_last,
             self.lbl_index_status,
@@ -13609,7 +13609,7 @@ Command Line :
         ]:
             label.setStyleSheet("color:#374151; font-size:13px; font-weight:600;")
 
-        index_desc = QLabel("Timeline 전체 캐시를 SQLite로 확인하고, 변경/신규 파일만 증분 인덱싱합니다.")
+        index_desc = QLabel("전체 캐시 데이터를 SQLite 조회/검색 인덱스로 준비하고, 변경/신규 파일만 증분 반영합니다.")
         index_desc.setWordWrap(True)
         index_desc.setStyleSheet(f"color:{UI_THEME['text_muted']}; font-size:12px; font-weight:700;")
         index_layout.addWidget(index_desc)
