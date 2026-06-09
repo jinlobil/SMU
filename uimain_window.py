@@ -326,8 +326,8 @@ COLOR_DIALOG_GROUPS = [
         ("테이블 헤더 글씨", "Table_Header_Text"),
     ]),
     ("그래프", [
-        ("Threat Trend - Detection", "Threat_trend_Detection"),
-        ("Threat Trend - Detection XDR", "Threat_trend_Detection_XDR"),
+        ("Threat Trend - Detection - XDR", "Threat_trend_Detection"),
+        ("Threat Trend - Email - XDR", "Threat_trend_Detection_XDR"),
         ("Threat Trend - Email", "Threat_trend_Email"),
         ("Threat Trend - File", "Threat_trend_File"),
     ]),
@@ -357,8 +357,8 @@ COLOR_SETTING_TOOLTIPS = {
     "Table_Selection_Background": "테이블에서 선택된 행의 배경색입니다.",
     "Table_Selection_Text": "테이블에서 선택된 행의 글씨 색입니다.",
     "Table_Header_Text": "테이블 헤더 라벨의 글씨 색입니다.",
-    "Threat_trend_Detection": "Threat Trend 그래프의 Detection 선/막대 색입니다.",
-    "Threat_trend_Detection_XDR": "Threat Trend 그래프의 Detection XDR 선/막대 색입니다.",
+    "Threat_trend_Detection": "Threat Trend 그래프의 Detection - XDR 선/막대 색입니다.",
+    "Threat_trend_Detection_XDR": "Threat Trend 그래프의 Email - XDR 선/막대 색입니다.",
     "Threat_trend_Email": "Threat Trend 그래프의 Email 선/막대 색입니다.",
     "Threat_trend_File": "Threat Trend 그래프의 File 선/막대 색입니다.",
 }
@@ -5191,17 +5191,48 @@ class MainWindow(QMainWindow):
         top.addWidget(self.btn_color_settings)
 
         self.tabs = QTabWidget()
-        self.tabs.addTab(self.tab_dashboard(), "Dashboard")
-        self.tabs.addTab(self.tab_detection(), "Detection")
-        self.tabs.addTab(self.tab_detection_xdr(), "Detection XDR")
-        self.tabs.addTab(self.tab_email(), "Email")
-        self.tabs.addTab(self.tab_live_discover(), "Easy Query")
-        self.tabs.addTab(self.tab_dlp_file(), "File")
-        self.tabs.addTab(self.tab_timeline(), "Timeline")
-        self.tabs.addTab(self.tab_response(), "Response")
-        self.tabs.addTab(self.tab_endpoint(), "Endpoint")
-        self.tabs.addTab(self.tab_org(), "Organization")
-        self.tabs.addTab(self.tab_config(), "Config")
+        self.logical_tab_widgets = {}
+        self.logical_tab_locations = {}
+        self.logical_tab_aliases = {
+            "Detection": "Detection - XDR",
+            "Detection XDR": "Email - XDR",
+            "Response": "Firewall",
+        }
+
+        def register_top_tab(logical_name, widget, display_name):
+            idx = self.tabs.addTab(widget, display_name)
+            self.logical_tab_widgets[logical_name] = widget
+            self.logical_tab_locations[logical_name] = (self.tabs, idx, None, None)
+            return idx
+
+        def add_group_tab(group_name, children):
+            child_tabs = QTabWidget()
+            child_tabs.setObjectName(f"{group_name.replace(' ', '')}SubTabs")
+            parent_idx = self.tabs.addTab(child_tabs, group_name)
+            for logical_name, display_name, widget in children:
+                child_idx = child_tabs.addTab(widget, display_name)
+                self.logical_tab_widgets[logical_name] = widget
+                self.logical_tab_locations[logical_name] = (self.tabs, parent_idx, child_tabs, child_idx)
+            child_tabs.currentChanged.connect(lambda _: self.update_range_label())
+            return child_tabs
+
+        register_top_tab("Dashboard", self.tab_dashboard(), "Dashboard")
+        self.detection_tabs = add_group_tab("Detection", [
+            ("Detection - XDR", "Detection - XDR", self.tab_detection_xdr()),
+            ("Email - XDR", "Email - XDR", self.tab_email_xdr()),
+            ("Email", "Email", self.tab_email()),
+            ("File", "File", self.tab_dlp_file()),
+        ])
+        self.response_tabs = add_group_tab("Response", [
+            ("Firewall", "Firewall", self.tab_firewall()),
+            ("Easy Query", "Easy Query", self.tab_live_discover()),
+            ("Timeline", "Timeline", self.tab_timeline()),
+        ])
+        self.asset_tabs = add_group_tab("Asset", [
+            ("Endpoint", "Endpoint", self.tab_endpoint()),
+            ("Organization", "Organization", self.tab_org()),
+        ])
+        register_top_tab("Config", self.tab_config(), "Config")
 
         root = QWidget()
         root.setObjectName("appRoot")
@@ -5224,8 +5255,8 @@ class MainWindow(QMainWindow):
 
     def trend_colors_from_config(self, config):
         return {
-            "Detection": normalize_hex_color(config.get("Threat_trend_Detection"), DEFAULT_COLOR_CONFIG["Threat_trend_Detection"]),
-            "Detection XDR": normalize_hex_color(config.get("Threat_trend_Detection_XDR"), DEFAULT_COLOR_CONFIG["Threat_trend_Detection_XDR"]),
+            "Detection - XDR": normalize_hex_color(config.get("Threat_trend_Detection"), DEFAULT_COLOR_CONFIG["Threat_trend_Detection"]),
+            "Email - XDR": normalize_hex_color(config.get("Threat_trend_Detection_XDR"), DEFAULT_COLOR_CONFIG["Threat_trend_Detection_XDR"]),
             "Email": normalize_hex_color(config.get("Threat_trend_Email"), DEFAULT_COLOR_CONFIG["Threat_trend_Email"]),
             "File": normalize_hex_color(config.get("Threat_trend_File"), DEFAULT_COLOR_CONFIG["Threat_trend_File"]),
         }
@@ -5699,8 +5730,9 @@ class MainWindow(QMainWindow):
             "Folder Usage": "folder",
             "Threat Trend": "trend",
             "Top Analysis": "bars",
+            "Detection - XDR Summary": "shield",
             "Detection Summary": "shield",
-            "Detection XDR Summary": "radar",
+            "Email - XDR Summary": "radar",
             "Email Summary": "mail",
             "File Summary": "file",
             "Cache Data": "database",
@@ -7166,7 +7198,7 @@ class MainWindow(QMainWindow):
                     if rule in XDR_EMAIL_RULES:
                         xdr_detections_report.append(d)
 
-            # ── Detection XDR 부서별 집계 ─────────────────────────────
+            # ── Email - XDR 부서별 집계 ─────────────────────────────
             _xdr_dept_stats = defaultdict(lambda: {
                 "total": 0,
                 "rules": Counter(),
@@ -8018,21 +8050,21 @@ class MainWindow(QMainWindow):
                     y -= 10
 
             # ═══════════════════════════════════════════════════
-            # PAGE XDR — Detection XDR 부서별 분석
+            # PAGE XDR — Email - XDR 부서별 분석
             # ═══════════════════════════════════════════════════
             if xdr_dept_rank:
                 y = new_page()
 
-                y = section_bar("Detection XDR 전체 현황", y)
+                y = section_bar("Email - XDR 전체 현황", y)
                 c.setFont(rf, 10)
                 total_xdr_cnt = len(xdr_detections_report)
                 c.drawString(
                     MARGIN + 6, y,
-                    f"Detection XDR 총 {total_xdr_cnt:,}건  /  부서 {len(xdr_dept_rank)}개"
+                    f"Email - XDR 총 {total_xdr_cnt:,}건  /  부서 {len(xdr_dept_rank)}개"
                 )
                 y -= 22
 
-                y = section_bar("Detection XDR 부서별 현황", y)
+                y = section_bar("Email - XDR 부서별 현황", y)
 
                 xdr_summary_rows = []
                 for item in xdr_dept_rank[:5]:
@@ -8052,7 +8084,7 @@ class MainWindow(QMainWindow):
                 )
                 y -= 10
 
-                y = section_bar("Detection XDR 상위 부서 상세", y)
+                y = section_bar("Email - XDR 상위 부서 상세", y)
 
                 for xi, item in enumerate(xdr_dept_rank[:5], start=1):
                     dept_name     = item.get("dept_name", "미분류")
@@ -8274,6 +8306,36 @@ class MainWindow(QMainWindow):
             log.exception("generate_security_report_v2 failed")
             QMessageBox.critical(self, "오류", f"{type(e).__name__}: {e}")
 
+    def normalize_logical_tab_name(self, tab_name):
+        return self.logical_tab_aliases.get(str(tab_name or ""), str(tab_name or ""))
+
+    def current_logical_tab_name(self):
+        current_index = self.tabs.currentIndex()
+        for logical_name, location in getattr(self, "logical_tab_locations", {}).items():
+            parent_tabs, parent_idx, child_tabs, child_idx = location
+            if parent_tabs is not self.tabs or parent_idx != current_index:
+                continue
+            if child_tabs is None:
+                return logical_name
+            if child_tabs.currentIndex() == child_idx:
+                return logical_name
+        return self.tabs.tabText(current_index)
+
+    def logical_tab_widget(self, tab_name):
+        tab_name = self.normalize_logical_tab_name(tab_name)
+        return getattr(self, "logical_tab_widgets", {}).get(tab_name)
+
+    def select_logical_tab(self, tab_name):
+        tab_name = self.normalize_logical_tab_name(tab_name)
+        location = getattr(self, "logical_tab_locations", {}).get(tab_name)
+        if not location:
+            return None
+        parent_tabs, parent_idx, child_tabs, child_idx = location
+        parent_tabs.setCurrentIndex(parent_idx)
+        if child_tabs is not None:
+            child_tabs.setCurrentIndex(child_idx)
+        return self.logical_tab_widget(tab_name)
+
     def apply_date_range(self):
 
         log.info("=== APPLY CLICK ===")
@@ -8285,7 +8347,7 @@ class MainWindow(QMainWindow):
         start_date = self.start_date_edit.date().toString("yyyy-MM-dd")
         end_date = self.end_date_edit.date().toString("yyyy-MM-dd")
 
-        current_tab = self.tabs.tabText(self.tabs.currentIndex())
+        current_tab = self.current_logical_tab_name()
 
         if current_tab == "Dashboard":
             all_detections = load_detections_by_range(start_date, end_date)
@@ -8358,12 +8420,12 @@ class MainWindow(QMainWindow):
             self.dashboard_range = f"{start_date} ~ {end_date}"
             self.refresh_dashboard()
 
-        elif current_tab == "Detection":
+        elif current_tab == "Detection - XDR":
             self.detection_detections = load_detections_by_range(start_date, end_date)
             self.detection_range = f"{start_date} ~ {end_date}"
             self._refresh_detection()
 
-        elif current_tab == "Detection XDR":
+        elif current_tab == "Email - XDR":
             all_detections = load_detections_by_range(start_date, end_date)
             self.xdr_detections = []
 
@@ -8410,15 +8472,15 @@ class MainWindow(QMainWindow):
     
     def update_range_label(self):
 
-        tab_name = self.tabs.tabText(self.tabs.currentIndex())
+        tab_name = self.current_logical_tab_name()
 
         if tab_name == "Dashboard":
             text = self.dashboard_range
 
-        elif tab_name == "Detection":
+        elif tab_name == "Detection - XDR":
             text = self.detection_range
 
-        elif tab_name == "Detection XDR":
+        elif tab_name == "Email - XDR":
             text = self.xdr_range
 
         elif tab_name == "Email":
@@ -8603,17 +8665,17 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "진행 중", "이미 최신화가 진행 중입니다.")
             return
 
-        tab_name = self.tabs.tabText(self.tabs.currentIndex())
+        tab_name = self.current_logical_tab_name()
 
         self.running = True
         self.set_status(f"{tab_name} refresh", color="blue", spinning=True)
 
-        if tab_name == "Detection":
+        if tab_name in ("Detection - XDR", "Email - XDR"):
             start_date = self.det_start_date.date().toString("yyyy-MM-dd")
             end_date = self.det_end_date.date().toString("yyyy-MM-dd")
 
             self.worker = RefreshWorker(
-                job_name=tab_name,
+                job_name="Detection",
                 date_str=f"{start_date}|{end_date}"
             )
 
@@ -8814,10 +8876,10 @@ class MainWindow(QMainWindow):
             col = item.column()
             menu = QMenu()
 
-            current_tab = self.tabs.tabText(self.tabs.currentIndex())
+            current_tab = self.current_logical_tab_name()
 
             # 기본 Search
-            for name in ["Detection", "Email", "Endpoint", "Organization"]:
+            for name in ["Detection - XDR", "Email", "Endpoint", "Organization"]:
                 menu.addAction(
                     f"Search in {name}",
                     lambda v=value, t=name: self.search_other_tab(t, v)
@@ -8856,7 +8918,7 @@ class MainWindow(QMainWindow):
 
             # 🔥 Detection 탭에서만 Raw GPT 분석 추가
             raw_gpt_action = None
-            if current_tab == "Detection":
+            if current_tab == "Detection - XDR":
                 def open_raw_gpt():
 
                     row = item.row()
@@ -9333,37 +9395,36 @@ Command Line :
         dialog.exec_()
     
     def search_other_tab(self, tab_name, value):
-        for i in range(self.tabs.count()):
-            if self.tabs.tabText(i) == tab_name:
-                widget = self.tabs.widget(i)
-                box = widget.findChild(QLineEdit)
-                if box:
-                    box.setText(value)
-                    box.returnPressed.emit()
-                self.tabs.setCurrentIndex(i)
-                break
+        widget = self.select_logical_tab(tab_name)
+        if not widget:
+            return
+        box = widget.findChild(QLineEdit)
+        if box:
+            box.setText(value)
+            box.returnPressed.emit()
 
     # ==================================================
     # Tab rendering helpers
     # ==================================================
     def refresh_all_tables(self):
         self.refresh_tab_table("Dashboard")
-        self.refresh_tab_table("Detection")
-        self.refresh_tab_table("Detection XDR")
+        self.refresh_tab_table("Detection - XDR")
+        self.refresh_tab_table("Email - XDR")
         self.refresh_tab_table("Email")
         self.refresh_tab_table("File")
         self.refresh_tab_table("Endpoint")
         self.refresh_tab_table("Organization")
         self.refresh_tab_table("Timeline")
-        current_tab = self.tabs.tabText(self.tabs.currentIndex())
+        current_tab = self.current_logical_tab_name()
         self.update_time_range_label(current_tab)
 
     def refresh_tab_table(self, tab_name):
+        tab_name = self.normalize_logical_tab_name(tab_name)
         if tab_name == "Dashboard" and hasattr(self, "_refresh_dashboard"):
             self._refresh_dashboard()
-        elif tab_name == "Detection" and hasattr(self, "_refresh_detection"):
+        elif tab_name == "Detection - XDR" and hasattr(self, "_refresh_detection"):
             self._refresh_detection()
-        elif tab_name == "Detection XDR" and hasattr(self, "_refresh_detection_xdr"):
+        elif tab_name == "Email - XDR" and hasattr(self, "_refresh_detection_xdr"):
             self._refresh_detection_xdr()
         elif tab_name == "Email" and hasattr(self, "_refresh_email"):
             self._refresh_email()
@@ -9503,8 +9564,8 @@ Command Line :
         right_box = QGridLayout()
         right_box.setSpacing(15)
 
-        self.card_det_summary = self.make_scroll_stat_card("Detection Summary", "")
-        self.card_xdr_summary = self.make_scroll_stat_card("Detection XDR Summary", "")
+        self.card_det_summary = self.make_scroll_stat_card("Detection - XDR Summary", "")
+        self.card_xdr_summary = self.make_scroll_stat_card("Email - XDR Summary", "")
         self.card_email_summary = self.make_scroll_stat_card("Email Summary", "")
         self.card_file_summary = self.make_scroll_stat_card("File Summary", "")
 
@@ -9832,7 +9893,7 @@ Command Line :
                 continue
 
         # -------------------------
-        # 🔥 Detection XDR 집계 (KST 기준)
+        # 🔥 Email - XDR 집계 (KST 기준)
         # -------------------------
         for d in XDR_DETECTIONS:
             t = d.get("time")
@@ -9982,8 +10043,8 @@ Command Line :
         mail_daily = calc_percent(compare_day_map_mail.get(yesterday, 0), compare_day_map_mail.get(today_str, 0))
         file_daily = calc_percent(compare_day_map_file.get(yesterday, 0), compare_day_map_file.get(today_str, 0))
 
-        daily_det_text, daily_det_color = format_block("전일 Detection", det_daily)
-        daily_xdr_text, daily_xdr_color = format_block("전일 Detection XDR", xdr_daily)
+        daily_det_text, daily_det_color = format_block("전일 Detection - XDR", det_daily)
+        daily_xdr_text, daily_xdr_color = format_block("전일 Email - XDR", xdr_daily)
         daily_mail_text, daily_mail_color = format_block("전일 Email", mail_daily)
         daily_file_text, daily_file_color = format_block("전일 File", file_daily)
 
@@ -10000,8 +10061,8 @@ Command Line :
         mail_month = calc_percent(compare_day_map_mail.get(one_month_ago, 0), compare_day_map_mail.get(today_str, 0))
         file_month = calc_percent(compare_day_map_file.get(one_month_ago, 0), compare_day_map_file.get(today_str, 0))
 
-        monthly_det_text, monthly_det_color = format_block("전월 Detection", det_month)
-        monthly_xdr_text, monthly_xdr_color = format_block("전월 Detection XDR", xdr_month)
+        monthly_det_text, monthly_det_color = format_block("전월 Detection - XDR", det_month)
+        monthly_xdr_text, monthly_xdr_color = format_block("전월 Email - XDR", xdr_month)
         monthly_mail_text, monthly_mail_color = format_block("전월 Email", mail_month)
         monthly_file_text, monthly_file_color = format_block("전월 File", file_month)
 
@@ -10014,8 +10075,8 @@ Command Line :
         self.figure.clf()
         ax = self.figure.add_subplot(111)
 
-        color_det = self.trend_colors.get("Detection", UI_THEME["accent"])
-        color_xdr = self.trend_colors.get("Detection XDR", UI_THEME["accent_light"])
+        color_det = self.trend_colors.get("Detection - XDR", UI_THEME["accent"])
+        color_xdr = self.trend_colors.get("Email - XDR", UI_THEME["accent_light"])
         color_mail = self.trend_colors.get("Email", "#14b8a6")
         color_file = self.trend_colors.get("File", "#f59e0b")
 
@@ -10025,10 +10086,10 @@ Command Line :
         dark_file = color_file
 
         ax.plot(x_dates, det_values, marker='o', linewidth=2.8,
-                color=color_det, label="Detection")
+                color=color_det, label="Detection - XDR")
 
         ax.plot(x_dates, xdr_values, marker='o', linewidth=2.8,
-                color=color_xdr, label="Detection XDR")
+                color=color_xdr, label="Email - XDR")
 
         ax.plot(x_dates, mail_values, marker='o', linewidth=2.8,
                 color=color_mail, label="Email")
@@ -10095,7 +10156,7 @@ Command Line :
                 path_effects.Normal()
             ])
 
-            # Detection XDR → 오른쪽
+            # Email - XDR → 오른쪽
             txt2 = ax.annotate(
                 str(xdr_values[i]),
                 xy=(x, xdr_values[i]),
@@ -10250,7 +10311,7 @@ Command Line :
         # 🔥 오른쪽 Summary 카드
         # ==============================
 
-        # Detection Summary
+        # Detection - XDR Summary
         det_host_counter = Counter()
         det_rule_counter = Counter()
         det_file_counter = Counter()
@@ -10289,7 +10350,7 @@ Command Line :
 
         self.card_det_summary.value_label.setHtml(det_html)
 
-        # Detection XDR Summary
+        # Email - XDR Summary
         xdr_rule_counter = Counter()
         xdr_from_counter = Counter()
         xdr_ip_counter = Counter()
@@ -10418,28 +10479,20 @@ Command Line :
         
     
     def go_to_detection_with_filter(self, keyword):
+        widget = self.select_logical_tab("Detection - XDR")
+        if not widget:
+            return
 
-        # Detection 탭으로 이동
-        for i in range(self.tabs.count()):
-            if self.tabs.tabText(i) == "Detection":
-                self.tabs.setCurrentIndex(i)
-                break
-
-        # Detection 탭 내부 검색창 찾기
-        widget = self.tabs.currentWidget()
         search_box = widget.findChild(QLineEdit)
-
         if search_box:
             search_box.setText(keyword)
             search_box.returnPressed.emit()
             
     def jump_to_detection(self, keyword):
-        for i in range(self.tabs.count()):
-            if self.tabs.tabText(i) == "Detection":
-                self.tabs.setCurrentIndex(i)
-                break
+        tab = self.select_logical_tab("Detection - XDR")
+        if not tab:
+            return
 
-        tab = self.tabs.widget(i)
         search_box = tab.findChild(QLineEdit)
         combo = tab.findChild(QComboBox)
 
@@ -10454,7 +10507,7 @@ Command Line :
     # ==================================================
     # Detection Tab
     # ==================================================
-    def tab_detection(self):
+    def tab_detection_xdr(self):
         root = QWidget()
         layout = QVBoxLayout(root)
         layout.setContentsMargins(8, 8, 8, 8)
@@ -10734,7 +10787,7 @@ Command Line :
     # ==================================================
     # Detection_xdr Tab (Detection과 동일 구조)
     # ==================================================
-    def tab_detection_xdr(self):
+    def tab_email_xdr(self):
         root = QWidget()
         layout = QVBoxLayout(root)
         layout.setContentsMargins(8, 8, 8, 8)
@@ -12670,7 +12723,7 @@ Command Line :
     # ==================================================
     # Response Tab
     # ==================================================
-    def tab_response(self):
+    def tab_firewall(self):
         root = QWidget()
         layout = QVBoxLayout(root)
 
@@ -13468,7 +13521,7 @@ Command Line :
         self.det_export_start_time.setDisplayFormat("HH:mm:ss")
         self.det_export_end_time.setDisplayFormat("HH:mm:ss")
 
-        btn_det_export = QPushButton("Download Detection Excel")
+        btn_det_export = QPushButton("Download Detection - XDR Excel")
         btn_det_export.clicked.connect(self.export_detection_excel)
         btn_det_export.setStyleSheet(btn_style)
 
@@ -13486,7 +13539,7 @@ Command Line :
 
         export_layout.addLayout(det_layout)
 
-        # Detection XDR Export
+        # Email - XDR Export
         xdr_layout = QHBoxLayout()
         xdr_layout.setSpacing(8)
         xdr_layout.setContentsMargins(0, 0, 0, 0)
@@ -13505,7 +13558,7 @@ Command Line :
         self.xdr_export_start_time.setDisplayFormat("HH:mm:ss")
         self.xdr_export_end_time.setDisplayFormat("HH:mm:ss")
 
-        btn_xdr_export = QPushButton("Download Detection XDR Excel")
+        btn_xdr_export = QPushButton("Download Email - XDR Excel")
         btn_xdr_export.clicked.connect(self.export_detection_xdr_excel)
         btn_xdr_export.setStyleSheet(btn_style)
 
@@ -14025,9 +14078,6 @@ Command Line :
         return "", ""
 
 
-    def get_org_info_by_user(user_name, user_id="", hostname=""):
-        return get_org_info_by_user(user_name, user_id, hostname)
- 
     def build_security_insight_metrics(self, endpoint_detections, emails, dlp_rows, detection_timeline=None):
         rule_counter = Counter()
         host_counter = Counter()
@@ -14127,18 +14177,6 @@ Command Line :
 
         det_dept_rank = sorted(det_dept_rows, key=lambda x: (-x["total"], x["dept_name"]))
 
-        # ── Detection XDR 부서별 통계 ─────────────────────────────────
-        xdr_dept_stats = defaultdict(lambda: {
-            "total": 0,
-            "rules": Counter(),
-            "mailboxes": set(),
-            "users": set(),
-        })
-
-        for d in endpoint_detections:
-            pass  # placeholder — XDR detections 별도 파라미터로 추가 처리
-
-        xdr_dept_rank = []  # generate_security_report_v2 에서 직접 집계
 
         high_risk_email_count = 0
         email_date_set = set()
@@ -15376,10 +15414,10 @@ Command Line :
         detections = load_detections_by_range(start, end)
 
         if not detections:
-            QMessageBox.information(self, "Info", "No Detection Data")
+            QMessageBox.information(self, "Info", "No Detection - XDR Data")
             return
 
-        path = os.path.join(EXPORT_DIR, f"Detection_{start}_{end}.xlsx")
+        path = os.path.join(EXPORT_DIR, f"Detection_XDR_{start}_{end}.xlsx")
         path = get_unique_path(path)
 
         rows = []
@@ -15450,12 +15488,12 @@ Command Line :
             })
 
         if not rows:
-            QMessageBox.information(self, "Info", "No Detection Data")
+            QMessageBox.information(self, "Info", "No Detection - XDR Data")
             return
 
         df = pd.DataFrame(rows)
         df.to_excel(path, index=False)
-        QMessageBox.information(self, "Export", f"Detection Excel saved\n{path}")
+        QMessageBox.information(self, "Export", f"Detection - XDR Excel saved\n{path}")
 
     def export_detection_xdr_excel(self):
         start_dt = combine_date_time(self.xdr_export_start_date, self.xdr_export_start_time)
@@ -15467,7 +15505,7 @@ Command Line :
         detections = load_detections_by_range(start, end)
 
         if not detections:
-            QMessageBox.information(self, "Info", "No Detection XDR Data")
+            QMessageBox.information(self, "Info", "No Email - XDR Data")
             return
 
         rows = []
@@ -15517,16 +15555,16 @@ Command Line :
             })
 
         if not rows:
-            QMessageBox.information(self, "Info", "No Detection XDR Data")
+            QMessageBox.information(self, "Info", "No Email - XDR Data")
             return
 
-        path = os.path.join(EXPORT_DIR, f"Detection_XDR_{start}_{end}.xlsx")
+        path = os.path.join(EXPORT_DIR, f"Email_XDR_{start}_{end}.xlsx")
         path = get_unique_path(path)
 
         df = pd.DataFrame(rows)
         df.to_excel(path, index=False)
 
-        QMessageBox.information(self, "Export", f"Detection XDR Excel saved\n{path}")
+        QMessageBox.information(self, "Export", f"Email - XDR Excel saved\n{path}")
 
 
     def export_email_excel(self):
