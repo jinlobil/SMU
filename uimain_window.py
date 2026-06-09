@@ -14,7 +14,6 @@ from collections import Counter, defaultdict
 
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
-from reportlab.lib.units import mm
 from reportlab.lib import colors
 
 import re
@@ -22,15 +21,12 @@ import xml.etree.ElementTree as ET
 
 import requests
 import pandas as pd
-import mplcursors
 
 from bs4 import BeautifulSoup
 from urllib3.exceptions import InsecureRequestWarning
 
 from dateutil.relativedelta import relativedelta
 
-import matplotlib.dates as mdates
-from matplotlib.dates import DateFormatter
 import matplotlib.patheffects as path_effects
 
 # =============================
@@ -65,7 +61,7 @@ from PyQt5.QtGui import (
     QKeySequence,
     QTextCursor,
     QTextCharFormat,
-    QColor, QFont, QPixmap, QPainter, QPen, QPainterPath
+    QColor, QPixmap, QPainter, QPen, QPainterPath
 )
 
 
@@ -100,6 +96,7 @@ COLOR_ENV_PATH = os.path.join(ENV_DIR, "Color_env.txt")
 COLOR_THEME_DIR = os.path.join(ENV_DIR, "themes")
 DLP_DAY_DIR = os.path.join(CACHE_DIR, "dlp")
 TIMELINE_INDEX_DIR = os.path.join(CACHE_DIR, "index")
+APP_CACHE_DB_PATH = os.path.join(TIMELINE_INDEX_DIR, "app_cache.db")
 TIMELINE_INDEX_DB_PATH = os.path.join(TIMELINE_INDEX_DIR, "timeline_index.db")
 TIMELINE_RENDER_BATCH_SIZE = 250
 TIMELINE_DETAIL_ROW_LIMIT = 1000
@@ -483,7 +480,7 @@ SEARCH_ROW_H = 40
 # 날짜 범위별 캐시 로드 함수
 # ===============================
 
-def load_detections_by_range(start_date: str, end_date: str):
+def load_detections_by_range_json(start_date: str, end_date: str):
     results = []
 
     current = datetime.strptime(start_date, "%Y-%m-%d")
@@ -510,7 +507,7 @@ def load_detections_by_range(start_date: str, end_date: str):
     return results
 
 
-def load_emails_by_range(start_date: str, end_date: str):
+def load_emails_by_range_json(start_date: str, end_date: str):
     results = []
 
     current = datetime.strptime(start_date, "%Y-%m-%d")
@@ -684,7 +681,268 @@ def save_jsonl(path, rows):
     os.replace(tmp, path)
 
 
+APP_CACHE_SOURCES = {
+    "detections": {"dir": DETECTIONS_DAY_DIR, "ext": ".json", "format": "json"},
+    "emails": {"dir": EMAILS_DAY_DIR, "ext": ".json", "format": "json"},
+    "dlp": {"dir": DLP_DAY_DIR, "ext": ".jsonl", "format": "jsonl"},
+}
+
+APP_CACHE_SINGLE_FILES = {
+    "endpoints": os.path.join(CACHE_DIR, "endpoints.json"),
+    "orgs": os.path.join(CACHE_DIR, "user_groups.json"),
+    "users": os.path.join(CACHE_DIR, "users.json"),
+}
+
+
+def iter_date_strings(start_date: str, end_date: str):
+    current = datetime.strptime(start_date, "%Y-%m-%d")
+    end = datetime.strptime(end_date, "%Y-%m-%d")
+    while current <= end:
+        yield current.strftime("%Y-%m-%d")
+        current += timedelta(days=1)
+
+
+def app_cache_connect():
+    os.makedirs(TIMELINE_INDEX_DIR, exist_ok=True)
+    conn = sqlite3.connect(APP_CACHE_DB_PATH)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    init_app_cache_db(conn)
+    return conn
+
+
+def init_app_cache_db(conn):
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS app_cache_files (
+            path TEXT PRIMARY KEY,
+            source TEXT NOT NULL,
+            cache_date TEXT,
+            mtime REAL NOT NULL,
+            size INTEGER NOT NULL,
+            rows INTEGER NOT NULL DEFAULT 0,
+            indexed_at TEXT NOT NULL
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS app_cache_records (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source TEXT NOT NULL,
+            cache_date TEXT,
+            source_file TEXT NOT NULL,
+            row_index INTEGER NOT NULL,
+            raw_json TEXT NOT NULL,
+            UNIQUE(source_file, row_index)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_app_cache_records_source_date ON app_cache_records(source, cache_date)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_app_cache_records_file ON app_cache_records(source_file)")
+
+
+def load_cache_file_rows(path, file_format):
+    if file_format == "jsonl":
+        return load_jsonl(path)
+    data = load_json(path)
+    return data if isinstance(data, list) else []
+
+
+def sync_app_cache_file(conn, source, path, cache_date=None, file_format="json"):
+    stat = os.stat(path)
+    rows = load_cache_file_rows(path, file_format)
+    if not isinstance(rows, list):
+        rows = []
+
+    conn.execute("DELETE FROM app_cache_records WHERE source_file = ?", (path,))
+    payload = [
+        (source, cache_date, path, idx, json.dumps(row, ensure_ascii=False))
+        for idx, row in enumerate(rows)
+        if isinstance(row, (dict, list))
+    ]
+    if payload:
+        conn.executemany(
+            """
+            INSERT OR REPLACE INTO app_cache_records
+                (source, cache_date, source_file, row_index, raw_json)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            payload,
+        )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO app_cache_files
+            (path, source, cache_date, mtime, size, rows, indexed_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            path,
+            source,
+            cache_date,
+            float(stat.st_mtime),
+            int(stat.st_size),
+            len(payload),
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        ),
+    )
+    return len(payload)
+
+
+def app_cache_file_current(conn, path):
+    if not os.path.exists(path):
+        return True
+    stat = os.stat(path)
+    row = conn.execute(
+        "SELECT mtime, size FROM app_cache_files WHERE path = ?",
+        (path,),
+    ).fetchone()
+    if not row:
+        return False
+    return float(row[0] or 0) == float(stat.st_mtime) and int(row[1] or 0) == int(stat.st_size)
+
+
+def sync_app_cache_range(source, start_date, end_date, progress_cb=None):
+    cfg = APP_CACHE_SOURCES[source]
+    stats = {"indexed": 0, "skipped": 0, "rows": 0, "files": 0, "source": source}
+    with app_cache_connect() as conn:
+        for cache_date in iter_date_strings(start_date, end_date):
+            path = os.path.join(cfg["dir"], f"{cache_date}{cfg['ext']}")
+            if not os.path.exists(path):
+                continue
+            stats["files"] += 1
+            if app_cache_file_current(conn, path):
+                stats["skipped"] += 1
+                continue
+            if progress_cb:
+                progress_cb(f"SQLite 데이터 반영중 - {source} {cache_date}")
+            stats["rows"] += sync_app_cache_file(conn, source, path, cache_date, cfg["format"])
+            stats["indexed"] += 1
+        conn.commit()
+    return stats
+
+
+def sync_app_cache_all(progress_cb=None):
+    totals = {"data_rows": 0, "data_files": 0, "data_indexed": 0, "data_skipped": 0}
+    with app_cache_connect() as conn:
+        for source, cfg in APP_CACHE_SOURCES.items():
+            for path in iter_json_files(cfg["dir"], cfg["ext"]):
+                cache_date = os.path.splitext(os.path.basename(path))[0]
+                totals["data_files"] += 1
+                if app_cache_file_current(conn, path):
+                    totals["data_skipped"] += 1
+                    continue
+                if progress_cb:
+                    progress_cb(f"SQLite 데이터 반영중 - {source} {cache_date}")
+                totals["data_rows"] += sync_app_cache_file(conn, source, path, cache_date, cfg["format"])
+                totals["data_indexed"] += 1
+        for source, path in APP_CACHE_SINGLE_FILES.items():
+            if not os.path.exists(path):
+                continue
+            totals["data_files"] += 1
+            if app_cache_file_current(conn, path):
+                totals["data_skipped"] += 1
+                continue
+            if progress_cb:
+                progress_cb(f"SQLite 데이터 반영중 - {source}")
+            totals["data_rows"] += sync_app_cache_file(conn, source, path, None, "json")
+            totals["data_indexed"] += 1
+        existing_paths = set()
+        for source, cfg in APP_CACHE_SOURCES.items():
+            existing_paths.update(iter_json_files(cfg["dir"], cfg["ext"]))
+        existing_paths.update(path for path in APP_CACHE_SINGLE_FILES.values() if os.path.exists(path))
+        stale_rows = conn.execute("SELECT path FROM app_cache_files").fetchall()
+        removed = 0
+        for (path,) in stale_rows:
+            if path not in existing_paths:
+                conn.execute("DELETE FROM app_cache_records WHERE source_file = ?", (path,))
+                conn.execute("DELETE FROM app_cache_files WHERE path = ?", (path,))
+                removed += 1
+        totals["data_removed"] = removed
+        conn.commit()
+        totals["data_total_rows"] = conn.execute("SELECT COUNT(*) FROM app_cache_records").fetchone()[0]
+        totals["data_total_files"] = conn.execute("SELECT COUNT(*) FROM app_cache_files").fetchone()[0]
+    totals["app_db_path"] = APP_CACHE_DB_PATH
+    return totals
+
+
+def load_app_cache_records(source, start_date=None, end_date=None):
+    if start_date is not None and end_date is not None:
+        sync_app_cache_range(source, start_date, end_date)
+
+    with app_cache_connect() as conn:
+        if start_date is not None and end_date is not None:
+            rows = conn.execute(
+                """
+                SELECT raw_json FROM app_cache_records
+                WHERE source = ? AND cache_date BETWEEN ? AND ?
+                ORDER BY cache_date ASC, source_file ASC, row_index ASC
+                """,
+                (source, start_date, end_date),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT raw_json FROM app_cache_records
+                WHERE source = ?
+                ORDER BY source_file ASC, row_index ASC
+                """,
+                (source,),
+            ).fetchall()
+    results = []
+    for (raw_json,) in rows:
+        try:
+            value = json.loads(raw_json)
+            if isinstance(value, dict):
+                results.append(value)
+        except Exception as e:
+            log.warning(f"SQLite cache row parse failed source={source}: {e}")
+    return results
+
+
+def load_app_cache_single(source, path, json_fallback=True):
+    try:
+        if os.path.exists(path):
+            with app_cache_connect() as conn:
+                if not app_cache_file_current(conn, path):
+                    sync_app_cache_file(conn, source, path, None, "json")
+                    conn.commit()
+        rows = load_app_cache_records(source)
+        if rows or not json_fallback:
+            log.info(f"Loaded {source} from SQLite cache : {len(rows)}")
+            return rows
+    except Exception as e:
+        log.warning(f"SQLite {source} load failed, fallback to JSON: {e}")
+    return load_json(path)
+
+
+def load_detections_by_range(start_date: str, end_date: str):
+    try:
+        rows = load_app_cache_records("detections", start_date, end_date)
+        log.info(f"Loaded detections from SQLite {start_date} ~ {end_date} : {len(rows)}")
+        return rows
+    except Exception as e:
+        log.warning(f"SQLite detections load failed, fallback to JSON: {e}")
+        return load_detections_by_range_json(start_date, end_date)
+
+
+def load_emails_by_range(start_date: str, end_date: str):
+    try:
+        rows = load_app_cache_records("emails", start_date, end_date)
+        log.info(f"Loaded emails from SQLite {start_date} ~ {end_date} : {len(rows)}")
+        return rows
+    except Exception as e:
+        log.warning(f"SQLite emails load failed, fallback to JSON: {e}")
+        return load_emails_by_range_json(start_date, end_date)
+
+
 def load_dlp_by_range(start_date: str, end_date: str):
+    try:
+        rows = load_app_cache_records("dlp", start_date, end_date)
+        log.info(f"Loaded DLP from SQLite {start_date} ~ {end_date} : {len(rows)}")
+        return rows
+    except Exception as e:
+        log.warning(f"SQLite DLP load failed, fallback to JSON: {e}")
+        return load_dlp_by_range_json(start_date, end_date)
+
+
+def load_dlp_by_range_json(start_date: str, end_date: str):
     results = []
 
     current = datetime.strptime(start_date, "%Y-%m-%d")
@@ -1860,9 +2118,9 @@ def reload_all_data():
     global ENDPOINTS, ORGS, USERS, REPORT_EXCEPTION_MAP
     global USER_ORG_INDEX, DIRECTORY_USER_INDEX, HOSTNAME_USER_MAP, HOSTNAME_DEPT_MAP
 
-    ENDPOINTS = load_json(os.path.join(CACHE_DIR, "endpoints.json"))
-    ORGS = load_json(os.path.join(CACHE_DIR, "user_groups.json"))
-    USERS = load_json(os.path.join(CACHE_DIR, "users.json"))
+    ENDPOINTS = load_app_cache_single("endpoints", os.path.join(CACHE_DIR, "endpoints.json"))
+    ORGS = load_app_cache_single("orgs", os.path.join(CACHE_DIR, "user_groups.json"))
+    USERS = load_app_cache_single("users", os.path.join(CACHE_DIR, "users.json"))
     REPORT_EXCEPTION_MAP = load_report_exception_map()
 
     USER_ORG_INDEX = build_org_user_index()
@@ -2685,10 +2943,12 @@ class TimelineIndexWorker(QThread):
 
     def run(self):
         try:
-            stats = rebuild_timeline_index(progress_cb=self.progress.emit)
+            stats = sync_app_cache_all(progress_cb=self.progress.emit)
+            timeline_stats = rebuild_timeline_index(progress_cb=self.progress.emit)
+            stats.update(timeline_stats)
             self.ok.emit(stats)
         except Exception as e:
-            log.exception("Timeline index rebuild failed")
+            log.exception("Data index rebuild failed")
             self.fail.emit(str(e))
 
 
@@ -13381,11 +13641,12 @@ Command Line :
         built_at = stats.get("built_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         self.lbl_index_last.setText(f"Last Build: {built_at}")
         self.lbl_index_status.setText(
-            f"Status: OK (Indexed {int(stats.get('indexed', 0)):,} / Skipped {int(stats.get('skipped', 0)):,} / Removed {int(stats.get('removed', 0)):,})"
+            f"Status: OK (Data {int(stats.get('data_indexed', 0)):,} indexed / {int(stats.get('data_skipped', 0)):,} skipped, Timeline {int(stats.get('indexed', 0)):,} indexed / {int(stats.get('skipped', 0)):,} skipped)"
         )
-        self.lbl_index_events.setText(f"Indexed Events: {int(stats.get('events', 0)):,}")
+        self.lbl_index_rows.setText(f"Data Rows: {int(stats.get('data_total_rows', stats.get('data_rows', 0))):,}")
+        self.lbl_index_events.setText(f"Timeline Events: {int(stats.get('events', 0)):,}")
         self.lbl_index_tokens.setText(f"Search Tokens: {int(stats.get('tokens', 0)):,}")
-        self.lbl_index_files.setText(f"Cache Files: {int(stats.get('files', 0)):,}")
+        self.lbl_index_files.setText(f"Cache Files: {int(stats.get('data_total_files', stats.get('files', 0))):,}")
 
     def _on_timeline_index_fail(self, err):
         self.btn_timeline_index.setEnabled(True)
@@ -13597,12 +13858,14 @@ Command Line :
 
         self.lbl_index_last = QLabel("Last Build: -")
         self.lbl_index_status = QLabel("Status: -")
-        self.lbl_index_events = QLabel("Indexed Events: -")
+        self.lbl_index_rows = QLabel("Data Rows: -")
+        self.lbl_index_events = QLabel("Timeline Events: -")
         self.lbl_index_tokens = QLabel("Search Tokens: -")
         self.lbl_index_files = QLabel("Cache Files: -")
         for label in [
             self.lbl_index_last,
             self.lbl_index_status,
+            self.lbl_index_rows,
             self.lbl_index_events,
             self.lbl_index_tokens,
             self.lbl_index_files,
@@ -13616,6 +13879,7 @@ Command Line :
         index_layout.addWidget(self.btn_timeline_index)
         index_layout.addWidget(self.lbl_index_last)
         index_layout.addWidget(self.lbl_index_status)
+        index_layout.addWidget(self.lbl_index_rows)
         index_layout.addWidget(self.lbl_index_events)
         index_layout.addWidget(self.lbl_index_tokens)
         index_layout.addWidget(self.lbl_index_files)
