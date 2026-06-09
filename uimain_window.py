@@ -48,7 +48,7 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget,
     QVBoxLayout, QHBoxLayout, QGridLayout,
     QTableWidget, QTableWidgetItem,
-    QPushButton, QLineEdit, QTabWidget,
+    QPushButton, QLineEdit, QTabWidget, QStackedWidget,
     QHeaderView, QMenu, QFileDialog,
     QLabel, QMessageBox, QComboBox,
     QFrame, QDateEdit, QTimeEdit, QGroupBox, QColorDialog,
@@ -5198,6 +5198,7 @@ class MainWindow(QMainWindow):
             "Detection XDR": "Email - XDR",
             "Response": "Firewall",
         }
+        self.group_subtab_bars = {}
 
         def register_top_tab(logical_name, widget, display_name):
             idx = self.tabs.addTab(widget, display_name)
@@ -5206,15 +5207,40 @@ class MainWindow(QMainWindow):
             return idx
 
         def add_group_tab(group_name, children):
-            child_tabs = QTabWidget()
-            child_tabs.setObjectName(f"{group_name.replace(' ', '')}SubTabs")
-            parent_idx = self.tabs.addTab(child_tabs, group_name)
+            page = QWidget()
+            page_layout = QVBoxLayout(page)
+            page_layout.setContentsMargins(0, 0, 0, 0)
+            page_layout.setSpacing(0)
+
+            subbar = QFrame()
+            subbar.setObjectName("subtabBar")
+            subbar_layout = QHBoxLayout(subbar)
+            subbar_layout.setContentsMargins(0, 0, 0, 0)
+            subbar_layout.setSpacing(0)
+
+            stack = QStackedWidget()
+            parent_idx = self.tabs.addTab(page, group_name)
+            self.group_subtab_bars[parent_idx] = subbar
+
             for logical_name, display_name, widget in children:
-                child_idx = child_tabs.addTab(widget, display_name)
+                child_idx = stack.addWidget(widget)
                 self.logical_tab_widgets[logical_name] = widget
-                self.logical_tab_locations[logical_name] = (self.tabs, parent_idx, child_tabs, child_idx)
-            child_tabs.currentChanged.connect(lambda _: self.update_range_label())
-            return child_tabs
+                self.logical_tab_locations[logical_name] = (self.tabs, parent_idx, stack, child_idx)
+
+                btn = QPushButton(display_name)
+                btn.setObjectName("subtabButton")
+                btn.setCheckable(True)
+                btn.clicked.connect(
+                    lambda checked=False, p_idx=parent_idx, c_idx=child_idx, name=logical_name:
+                        self.select_group_child_tab(p_idx, c_idx, name, hide_subtabs=True)
+                )
+                subbar_layout.addWidget(btn)
+
+            subbar_layout.addStretch(1)
+            page_layout.addWidget(subbar)
+            page_layout.addWidget(stack, 1)
+            subbar.hide()
+            return stack
 
         register_top_tab("Dashboard", self.tab_dashboard(), "Dashboard")
         self.detection_tabs = add_group_tab("Detection", [
@@ -5243,9 +5269,11 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.tabs)
         self.setCentralWidget(root)
 
+        self.tabs.currentChanged.connect(self.on_top_tab_changed)
+        self.tabs.tabBarClicked.connect(self.on_top_tab_clicked)
+
         # 🔥 시작 시 기본 7일 데이터 로드
         self.apply_date_range()
-        self.tabs.currentChanged.connect(lambda _: self.update_range_label())
         
         self.apply_main_stylesheet()
 
@@ -5315,6 +5343,36 @@ class MainWindow(QMainWindow):
         QTabBar::tab:hover {{
             background: {t['accent_soft']};
             color: {t['accent']};
+        }}
+
+        QFrame#subtabBar {{
+            background: {t['surface']};
+            border: 1px solid #e5e7eb;
+            border-top: 0px;
+            border-bottom-left-radius: 10px;
+            border-bottom-right-radius: 10px;
+        }}
+
+        QPushButton#subtabButton {{
+            background: #f8fafc;
+            color: #64748b;
+            padding: 9px 18px;
+            border: 1px solid #e5e7eb;
+            border-left: 0px;
+            border-top: 0px;
+            border-radius: 0px;
+            min-height: 18px;
+        }}
+
+        QPushButton#subtabButton:hover {{
+            background: {t['accent_soft']};
+            color: {t['accent']};
+        }}
+
+        QPushButton#subtabButton:checked {{
+            background: {t['surface']};
+            color: {t['accent']};
+            border-bottom: 2px solid {t['accent']};
         }}
 
         QCheckBox {{
@@ -8309,6 +8367,55 @@ class MainWindow(QMainWindow):
     def normalize_logical_tab_name(self, tab_name):
         return self.logical_tab_aliases.get(str(tab_name or ""), str(tab_name or ""))
 
+    def hide_all_subtab_bars(self):
+        for bar in getattr(self, "group_subtab_bars", {}).values():
+            bar.hide()
+
+    def set_subtab_bar_visible(self, parent_idx, visible):
+        bar = getattr(self, "group_subtab_bars", {}).get(parent_idx)
+        if not bar:
+            return
+        if visible:
+            self.hide_all_subtab_bars()
+            self.sync_group_subtab_buttons(parent_idx)
+            bar.show()
+        else:
+            bar.hide()
+
+    def sync_group_subtab_buttons(self, parent_idx):
+        active_child_idx = None
+        for _logical_name, location in getattr(self, "logical_tab_locations", {}).items():
+            _parent_tabs, location_parent_idx, stack, child_idx = location
+            if location_parent_idx == parent_idx and stack is not None:
+                active_child_idx = stack.currentIndex()
+                break
+        bar = getattr(self, "group_subtab_bars", {}).get(parent_idx)
+        if bar is None or active_child_idx is None:
+            return
+        buttons = bar.findChildren(QPushButton)
+        for idx, btn in enumerate(buttons):
+            btn.setChecked(idx == active_child_idx)
+
+    def on_top_tab_clicked(self, index):
+        self.set_subtab_bar_visible(index, index in getattr(self, "group_subtab_bars", {}))
+
+    def on_top_tab_changed(self, index):
+        self.set_subtab_bar_visible(index, index in getattr(self, "group_subtab_bars", {}))
+        self.update_range_label()
+
+    def select_group_child_tab(self, parent_idx, child_idx, logical_name, hide_subtabs=True):
+        location = getattr(self, "logical_tab_locations", {}).get(logical_name)
+        if not location:
+            return
+        _parent_tabs, _parent_idx, stack, _child_idx = location
+        if stack is not None:
+            stack.setCurrentIndex(child_idx)
+        self.sync_group_subtab_buttons(parent_idx)
+        if hide_subtabs:
+            self.set_subtab_bar_visible(parent_idx, False)
+        self.update_range_label()
+
+
     def current_logical_tab_name(self):
         current_index = self.tabs.currentIndex()
         for logical_name, location in getattr(self, "logical_tab_locations", {}).items():
@@ -8330,10 +8437,12 @@ class MainWindow(QMainWindow):
         location = getattr(self, "logical_tab_locations", {}).get(tab_name)
         if not location:
             return None
-        parent_tabs, parent_idx, child_tabs, child_idx = location
+        parent_tabs, parent_idx, child_stack, child_idx = location
         parent_tabs.setCurrentIndex(parent_idx)
-        if child_tabs is not None:
-            child_tabs.setCurrentIndex(child_idx)
+        if child_stack is not None:
+            self.select_group_child_tab(parent_idx, child_idx, tab_name, hide_subtabs=True)
+        else:
+            self.hide_all_subtab_bars()
         return self.logical_tab_widget(tab_name)
 
     def apply_date_range(self):
