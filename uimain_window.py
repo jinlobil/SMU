@@ -12,7 +12,6 @@ from collections import Counter, defaultdict
 
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
-from reportlab.lib.units import mm
 from reportlab.lib import colors
 
 import re
@@ -20,15 +19,12 @@ import xml.etree.ElementTree as ET
 
 import requests
 import pandas as pd
-import mplcursors
 
 from bs4 import BeautifulSoup
 from urllib3.exceptions import InsecureRequestWarning
 
 from dateutil.relativedelta import relativedelta
 
-import matplotlib.dates as mdates
-from matplotlib.dates import DateFormatter
 import matplotlib.patheffects as path_effects
 
 # =============================
@@ -62,7 +58,7 @@ from PyQt5.QtGui import (
     QKeySequence,
     QTextCursor,
     QTextCharFormat,
-    QColor, QFont, QPixmap, QPainter, QPen, QPainterPath
+    QColor, QPixmap, QPainter, QPen, QPainterPath
 )
 
 
@@ -527,7 +523,7 @@ def load_emails_by_range(start_date: str, end_date: str):
 
     log.info(f"Loaded emails from {start_date} ~ {end_date} : {len(results)}")
     return results
-    
+
 def get_selected_range_days(days: int):
     end = datetime.now()
     start = end - timedelta(days=days)
@@ -535,7 +531,7 @@ def get_selected_range_days(days: int):
     return (
         start.strftime("%Y-%m-%d"),
         end.strftime("%Y-%m-%d"),
-    )    
+    )
 
 
 # ======================================================
@@ -4013,25 +4009,25 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.color_config = ensure_color_env_file()
         apply_color_config_to_theme(self.color_config)
-        
+
         self.auto_pending = None
-        
+
         self.dashboard_range = ""
         self.detection_range = ""
         self.email_range = ""
         self.xdr_range = ""
         self.dlp_range = ""
-        
-        
+
+
         # 🔥 탭별 데이터 저장소
         self.dashboard_detections = []
         self.dashboard_xdr_detections = []
         self.dashboard_emails = []
-        
+
         self.dashboard_compare_detections = []
         self.dashboard_compare_xdr_detections = []
         self.dashboard_compare_emails = []
-        self.dashboard_compare_dlp = []        
+        self.dashboard_compare_dlp = []
 
         self.detection_detections = []
         self.email_emails = []
@@ -4039,7 +4035,7 @@ class MainWindow(QMainWindow):
         self.dlp_rows = []
 
         self.trend_colors = self.trend_colors_from_config(self.color_config)
-        
+
         self.setWindowTitle("Sophos Monitoring UI")
         self.resize(1500, 850)
 
@@ -4051,7 +4047,7 @@ class MainWindow(QMainWindow):
         self.status_label = QLabel("Idle")
         self.status_label.setObjectName("statusPill")
         self.status_label.setAlignment(Qt.AlignCenter)
-        
+
         self.range_label = QLabel("")
         self.range_label.setObjectName("rangePill")
         self.range_label.setAlignment(Qt.AlignCenter)
@@ -4060,7 +4056,7 @@ class MainWindow(QMainWindow):
         self._spin_timer.timeout.connect(self._spin_tick)
         self._spin_phase = 0
         self._spin_base = "Running"
-        
+
         # 🔥 자동 새로고침 타이머
         self.det_timer = QTimer()
         self.det_timer.timeout.connect(self.auto_refresh_detection)
@@ -4078,7 +4074,7 @@ class MainWindow(QMainWindow):
         self.end_date_edit.setObjectName("datePicker")
         self.end_date_edit.setCalendarPopup(True)
         self.end_date_edit.setDisplayFormat("yyyy-MM-dd")
-        
+
         self.start_date_edit.setMinimumWidth(184)
         self.end_date_edit.setMinimumWidth(184)
         self.apply_date_picker_style(self.start_date_edit)
@@ -4115,7 +4111,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.tab_detection_xdr(), "Detection XDR")
         self.tabs.addTab(self.tab_email(), "Email")
         self.tabs.addTab(self.tab_live_discover(), "Easy Query")
-        self.tabs.addTab(self.tab_dlp_file(), "File")        
+        self.tabs.addTab(self.tab_dlp_file(), "File")
         self.tabs.addTab(self.tab_response(), "Response")
         self.tabs.addTab(self.tab_endpoint(), "Endpoint")
         self.tabs.addTab(self.tab_org(), "Organization")
@@ -4133,7 +4129,7 @@ class MainWindow(QMainWindow):
         # 🔥 시작 시 기본 7일 데이터 로드
         self.apply_date_range()
         self.tabs.currentChanged.connect(lambda _: self.update_range_label())
-        
+
         self.apply_main_stylesheet()
 
 
@@ -5377,7 +5373,7 @@ class MainWindow(QMainWindow):
             pass
 
         return "Helvetica"
-      
+
     def draw_multiline_text(
         self,
         c,
@@ -6141,7 +6137,7 @@ class MainWindow(QMainWindow):
             action_items = self.build_security_action_items(metrics, risk)
             manager_summary = self.build_security_manager_summary(metrics, risk)
             score_breakdown = risk.get("score_breakdown", [])
-            
+
             cross_host_count       = metrics.get("cross_host_count", 0)
             cross_host_ratio       = metrics.get("cross_host_ratio", 0.0)
             overlap_day_count      = metrics.get("overlap_day_count", 0)
@@ -6155,7 +6151,7 @@ class MainWindow(QMainWindow):
                 f"Security_Report_{start_date}_{end_date}.pdf"
             )
             pdf_path = get_unique_path(pdf_path)
-            
+
             c          = canvas.Canvas(pdf_path, pagesize=A4)
             PAGE_W, _  = A4
             rf         = self.setup_report_font()
@@ -6276,8 +6272,6 @@ class MainWindow(QMainWindow):
                 return y_pos - 6
 
             def mini_table_multiline(x, y_pos, headers, rows, col_widths, font_size=8, line_height=11):
-                from reportlab.pdfbase.pdfmetrics import stringWidth
-
                 def wrap_cell_text(text, max_width, max_lines=None):
                     from reportlab.pdfbase.pdfmetrics import stringWidth
 
@@ -7048,7 +7042,7 @@ class MainWindow(QMainWindow):
                 # DLP 전체 상위 3개 분석
                 # =========================
                 y = section_bar("DLP 전체 유형 분석", y)
-                
+
                 c.setFont(rf, 10)
                 c.drawString(
                     MARGIN + 6,
@@ -7056,7 +7050,7 @@ class MainWindow(QMainWindow):
                     f"DLP 전체 총 건수 : {dlp_total_count:,}건 (차단 {dlp_blocked_pct}%, 탐지 {dlp_allowed_pct}%)"
                 )
                 y -= 18
-                
+
                 overall_dlp_lines = self.build_dlp_overall_insight_lines(dlp_allowed_rows)
                 y = numbered_list(overall_dlp_lines, y)
                 y -= 12
@@ -7171,7 +7165,7 @@ class MainWindow(QMainWindow):
                         c.drawString(
                             MARGIN,
                             y,
-                            f"외 {len(unclassified_user_names) - 15}명 추가"
+                            f"외 {len(unclassified_user_counts) - 15}명 추가"
                         )
                         y -= 12
 
@@ -7232,8 +7226,8 @@ class MainWindow(QMainWindow):
 
             self.dashboard_emails = load_emails_by_range(start_date, end_date)
             self.dlp_rows = load_dlp_by_range(start_date, end_date)
-            self.dlp_range = f"{start_date} ~ {end_date}"          
-            
+            self.dlp_range = f"{start_date} ~ {end_date}"
+
             # =========================
             # 비교용 추가 범위 로드
             # 종료일 기준 전일 / 전월 계산용
@@ -7241,7 +7235,7 @@ class MainWindow(QMainWindow):
             end_dt = datetime.strptime(end_date, "%Y-%m-%d")
             compare_start_dt = end_dt - relativedelta(months=1)
             compare_start = compare_start_dt.strftime("%Y-%m-%d")
-            self.dashboard_compare_dlp = load_dlp_by_range(compare_start, end_date)            
+            self.dashboard_compare_dlp = load_dlp_by_range(compare_start, end_date)
 
             compare_all_detections = load_detections_by_range(compare_start, end_date)
 
@@ -7308,18 +7302,18 @@ class MainWindow(QMainWindow):
             self.email_emails = load_emails_by_range(start_date, end_date)
             self.email_range = f"{start_date} ~ {end_date}"
             self._refresh_email()
-            
+
         elif current_tab == "File":
             self.dlp_rows = load_dlp_by_range(start_date, end_date)
             self.dlp_range = f"{start_date} ~ {end_date}"
 
             if hasattr(self, "_refresh_dlp"):
-                self._refresh_dlp()        
-            
+                self._refresh_dlp()
+
         # 🔥 적용 후 현재 탭 기준으로 표시
         self.update_range_label()
 
-    
+
     def update_range_label(self):
 
         tab_name = self.tabs.tabText(self.tabs.currentIndex())
@@ -7342,8 +7336,8 @@ class MainWindow(QMainWindow):
         else:
             text = ""
 
-        self.range_label.setText(text)   
-        
+        self.range_label.setText(text)
+
     def update_time_range_label(self, tab_name):
         self.range_label.setText("")
 
@@ -7542,7 +7536,7 @@ class MainWindow(QMainWindow):
         self.worker.fail.connect(self._on_refresh_fail)
         self.worker.progress.connect(self._on_refresh_progress)
         self.worker.start()
-        
+
 
     def run_refresh(self, job_name):
 
@@ -7611,7 +7605,7 @@ class MainWindow(QMainWindow):
         self.worker.fail.connect(self._on_refresh_fail)
         self.worker.progress.connect(self._on_refresh_progress)
         self.worker.start()
-        
+
     def run_refresh_detection_range(self):
         if self.running:
             QMessageBox.warning(self, "진행 중", "이미 최신화가 진행 중입니다.")
@@ -7669,10 +7663,10 @@ class MainWindow(QMainWindow):
         self._spin_timer.stop()
 
         self.set_status(f"{tab_name} OK", color="green", spinning=False)
-        
+
         if tab_name in ("Endpoint", "Organization"):
             reload_all_data()
-            self.refresh_all_tables()        
+            self.refresh_all_tables()
 
         if tab_name == "DLP":
             start_date = self.start_date_edit.date().toString("yyyy-MM-dd")
@@ -7696,7 +7690,7 @@ class MainWindow(QMainWindow):
             next_job = self.auto_pending
             self.auto_pending = None
             self.run_refresh(next_job)
-            
+
 
     def _on_refresh_fail(self, tab_name, err):
 
@@ -8131,35 +8125,6 @@ Command Line :
 
         return root
 
-        def toggle_raw():
-            raw_box.setVisible(not raw_box.isVisible())
-
-        btn_toggle_raw.clicked.connect(toggle_raw)
-
-        btn_copy = QPushButton(f"{display_type} 목록 복사")
-
-        def copy_list():
-            lines = []
-            for member in members:
-                if not isinstance(member, dict):
-                    continue
-                lines.append(f"{member.get('object_name', '')}\t{member.get('value', '')}")
-
-            QApplication.clipboard().setText("\n".join(lines))
-            QMessageBox.information(root, "Copy", f"{display_type} 목록을 복사했습니다.")
-
-        btn_copy.clicked.connect(copy_list)
-
-        btn_row = QHBoxLayout()
-        btn_row.addWidget(btn_toggle_raw)
-        btn_row.addWidget(btn_copy)
-        btn_row.addStretch()
-
-        layout.addLayout(btn_row)
-        layout.addWidget(raw_box)
-
-        return root
-
     def show_raw_dialog(self, data):
 
         if not data:
@@ -8180,7 +8145,7 @@ Command Line :
 
         btn_prev = QPushButton("Prev")
         btn_next = QPushButton("Next")
-        
+
 
         search_layout.addWidget(search_box)
         search_layout.addWidget(btn_prev)
@@ -8222,7 +8187,7 @@ Command Line :
 
         btn_next.clicked.connect(find_next)
         btn_prev.clicked.connect(find_prev)
-        
+
         def highlight_all():
             keyword = search_box.text().strip()
             text.setExtraSelections([])
@@ -8269,7 +8234,7 @@ Command Line :
         dialog.shortcut.activated.connect(focus_search)
 
         dialog.exec_()
-    
+
     def search_other_tab(self, tab_name, value):
         for i in range(self.tabs.count()):
             if self.tabs.tabText(i) == tab_name:
@@ -8520,10 +8485,10 @@ Command Line :
     def refresh_dashboard(self):
         log.info(">>> ENTER refresh_dashboard()")
         log.info(f"Canvas ID → {id(self.canvas) if hasattr(self,'canvas') else 'NO CANVAS'}")
-        
+
         if not hasattr(self, "figure"):
             return
-        
+
         start_date = self.start_date_edit.date().toString("yyyy-MM-dd")
         end_date = self.end_date_edit.date().toString("yyyy-MM-dd")
 
@@ -8531,7 +8496,7 @@ Command Line :
         XDR_DETECTIONS = self.dashboard_xdr_detections or []
         EMAILS = self.dashboard_emails or []
         FILES = self.dlp_rows or []
-        
+
         COMPARE_DETECTIONS = self.dashboard_compare_detections or []
         COMPARE_XDR_DETECTIONS = self.dashboard_compare_xdr_detections or []
         COMPARE_EMAILS = self.dashboard_compare_emails or []
@@ -8540,12 +8505,12 @@ Command Line :
         log.info(f"DETECTIONS LENGTH → {len(DETECTIONS)}")
         log.info(f"XDR DETECTIONS LENGTH → {len(XDR_DETECTIONS)}")
         log.info(f"EMAILS LENGTH → {len(EMAILS)}")
-        log.info(f"FILES LENGTH → {len(FILES)}")        
+        log.info(f"FILES LENGTH → {len(FILES)}")
         log.info(f"COMPARE DETECTIONS LENGTH → {len(COMPARE_DETECTIONS)}")
         log.info(f"COMPARE XDR DETECTIONS LENGTH → {len(COMPARE_XDR_DETECTIONS)}")
         log.info(f"COMPARE EMAILS LENGTH → {len(COMPARE_EMAILS)}")
-        log.info(f"COMPARE FILES LENGTH → {len(COMPARE_FILES)}")       
-        
+        log.info(f"COMPARE FILES LENGTH → {len(COMPARE_FILES)}")
+
         log.info(f"DASHBOARD LOAD → {start_date} ~ {end_date}")
         log.info(f"DASHBOARD DET COUNT → {len(DETECTIONS)}")
 
@@ -8569,7 +8534,7 @@ Command Line :
             ("Server", f"{server_count} 대", UI_THEME["accent"]),
         ])
         self.card_endpoint.value_label.setText(endpoint_html)
-        
+
         # ==============================
         # 🔥 Organization 집계
         # DeptCode 중복 제거 + User None 제외
@@ -8682,7 +8647,7 @@ Command Line :
 
         html = "".join(links)
         html = f"<table width='100%' cellspacing='0' cellpadding='0' style='line-height:22px; font-size:13px;'>{html}</table>"
-        
+
 
         self.card_hash_top.value_label.setText(html)
         self.card_hash_top.value_label.setTextFormat(Qt.RichText)
@@ -8844,7 +8809,7 @@ Command Line :
                 kst = dt.astimezone(timezone(timedelta(hours=9)))
                 compare_mail_counts[kst.strftime("%Y-%m-%d")] += 1
             except:
-                continue               
+                continue
 
         for f in COMPARE_FILES:
             if not isinstance(f, dict):
@@ -8854,11 +8819,11 @@ Command Line :
             if len(t) >= 10:
                 day = t[:10]
                 compare_file_counts[day] += 1
-        
+
         # =========================
         # 🔥 오늘 기준 전일 / 전월 계산
         # =========================
-        
+
 
         today_str = self.end_date_edit.date().toString("yyyy-MM-dd")   # 선택한 종료일 기준
 
@@ -8913,7 +8878,7 @@ Command Line :
 
         if today_str in compare_day_map_mail and yesterday in compare_day_map_mail:
             mail_daily = calc_percent(compare_day_map_mail[yesterday], compare_day_map_mail[today_str])
-            
+
         if today_str in compare_day_map_file and yesterday in compare_day_map_file:
             file_daily = calc_percent(compare_day_map_file[yesterday], compare_day_map_file[today_str])
 
@@ -9013,8 +8978,8 @@ Command Line :
         for text in legend.get_texts():
             text.set_color(UI_THEME["text_soft"])
             text.set_fontsize(10)
-        max_y = max(max(det_values), max(xdr_values), max(mail_values), max(file_values), 1)        
-        ax.set_ylim(0, max_y * 1.8)      
+        max_y = max(max(det_values), max(xdr_values), max(mail_values), max(file_values), 1)
+        ax.set_ylim(0, max_y * 1.8)
 
         # 🔥 숫자 표시
         for i, x in enumerate(x_dates):
@@ -9098,7 +9063,7 @@ Command Line :
             bottom=0.25
         )
 
-        
+
         # ==============================
         # 🔥 전일 대비 (오른쪽 표시용)
         # ==============================
@@ -9296,7 +9261,7 @@ Command Line :
         """
 
         self.card_email_summary.value_label.setText(email_html)
-        
+
         # File Summary
         file_machine_counter = Counter()
         file_source_counter = Counter()
@@ -9331,12 +9296,12 @@ Command Line :
         <div style='line-height:22px;'>No Data</div>
         """
 
-        self.card_file_summary.value_label.setHtml(file_html)        
+        self.card_file_summary.value_label.setHtml(file_html)
 
         log.info(">>> DRAW CANVAS")
         self.canvas.draw_idle()
         log.info(">>> EXIT refresh_dashboard()")
-        
+
     def on_file_click(self, event):
         text = self.card_file_top.value_label.text()
         if not text:
@@ -9357,8 +9322,8 @@ Command Line :
         keyword = first_line.split(" (")[0]
 
         self.go_to_detection_with_filter(keyword)
-        
-    
+
+
     def go_to_detection_with_filter(self, keyword):
 
         # Detection 탭으로 이동
@@ -9374,7 +9339,7 @@ Command Line :
         if search_box:
             search_box.setText(keyword)
             search_box.returnPressed.emit()
-            
+
     def jump_to_detection(self, keyword):
         for i in range(self.tabs.count()):
             if self.tabs.tabText(i) == "Detection":
@@ -9391,8 +9356,8 @@ Command Line :
         if search_box:
             search_box.setText(keyword)
             search_box.returnPressed.emit()
-    
-    
+
+
     # ==================================================
     # Detection Tab
     # ==================================================
@@ -9452,7 +9417,7 @@ Command Line :
             table.setRowCount(0)
 
             data = self.detection_detections or []
-            
+
 
             # ✅ AND 조건 수집 (row는 QWidget로 add됨)
             search_conditions = []
@@ -10055,7 +10020,7 @@ Command Line :
 
                     elif field == "Reason" and key not in reason.lower():
                         matched = False; break
-                    
+
                     elif field == "Sender IP" and key not in cip.lower():
                         matched = False; break
 
@@ -10101,7 +10066,7 @@ Command Line :
             combo.addItems([
                 "ALL", "From", "To", "CC", "Subject", "Reason", "Sender IP"
             ])
-            
+
             default_font = QApplication.font()
 
             combo.setFont(default_font)
@@ -10269,7 +10234,7 @@ Command Line :
     def tab_org(self):
         root = QWidget()
         layout = QVBoxLayout(root)
-        
+
         search_bar = QHBoxLayout()
 
         search_option = QComboBox()
@@ -10368,11 +10333,11 @@ Command Line :
         self._refresh_org = refresh
         refresh()
         return root
- 
+
 
     # ==================================================
     # Live_discover Tab
-    # ================================================== 
+    # ==================================================
     def tab_live_discover(self):
         root = QWidget()
         layout = QVBoxLayout(root)
@@ -10814,7 +10779,7 @@ Command Line :
 
         log.error(f"[LIVE DISCOVER UI] fail: {err}")
         QMessageBox.critical(self, "Live Discover Error", err)
-      
+
     def on_easy_mode_changed(self, mode: str):
         log.info(f"[EASY QUERY UI] mode changed: {mode}")
 
@@ -10871,7 +10836,7 @@ Command Line :
             )
         else:
             self.live_program_input.setPlaceholderText("Keyword (blank = all)")
-      
+
     def _on_history_query_ok(self, rows):
         self.running = False
         self._spin_timer.stop()
@@ -10973,12 +10938,12 @@ Command Line :
             table.setRowCount(0)
 
             data = self.dlp_rows or []
-            
+
             def match_text(value, keyword, mode):
                 text = str(value or "").lower()
                 if mode == "제외":
                     return keyword not in text
-                return keyword in text            
+                return keyword in text
 
             search_conditions = []
             for i in range(self.dlp_search_container.count()):
@@ -11345,11 +11310,11 @@ Command Line :
         self.btn_response_run.clicked.connect(self.run_response_ip_create)
         self.btn_response_clear.clicked.connect(self.response_input.clear)
         self.response_mode_combo.currentTextChanged.connect(self.on_response_mode_changed)
-        
+
         self.btn_query_fw_cloud.clicked.connect(lambda: self.run_firewall_group_query("Cloud"))
         self.btn_query_fw_seoul.clicked.connect(lambda: self.run_firewall_group_query("Seoul"))
         self.btn_query_fw_icheon.clicked.connect(lambda: self.run_firewall_group_query("Icheon"))
-        self.btn_query_fw_anseong.clicked.connect(lambda: self.run_firewall_group_query("Anseong"))        
+        self.btn_query_fw_anseong.clicked.connect(lambda: self.run_firewall_group_query("Anseong"))
 
         self.response_result_table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.response_result_table.customContextMenuRequested.connect(self.open_response_result_menu)
@@ -12138,12 +12103,12 @@ Command Line :
         report_layout.addLayout(row)
 
         layout.addWidget(report_card)
-        
+
         # ===============================
         # Folders (Quick Access)
         # ===============================
         folder_group, folder_layout = self.make_card("Folders", legacy_title=True)
-        
+
         row = QHBoxLayout()   # 👈 가로 레이아웃 생성
 
         btn_log = QPushButton("Logs")
@@ -12155,7 +12120,7 @@ Command Line :
             b.setStyleSheet(secondary_btn_style)
             b.setMinimumHeight(38)
             row.addWidget(b)
-        
+
         folder_layout.addLayout(row)   # 👈 카드에 가로 레이아웃 추가
 
         folder_layout.setStretch(0,1)
@@ -12186,7 +12151,7 @@ Command Line :
 
     def open_report_folder(self):
         os.startfile(REPORT_DIR)
- 
+
     def open_report_exception_list_dialog(self):
         dialog = QDialog(self)
         dialog.setWindowTitle("Report exception List")
@@ -12243,7 +12208,7 @@ Command Line :
         btn_close.clicked.connect(dialog.accept)
 
         dialog.exec_()
- 
+
     def draw_table(
         self,
         c,
@@ -12344,7 +12309,7 @@ Command Line :
             y = draw_row(y, row, is_header=False)
 
         return y - 6
-    
+
     def draw_summary_card(self, c, x, y, title, value, width=160, height=60, font_name="Helvetica"):
         # 카드 테두리
         c.roundRect(x, y - height, width, height, 8, stroke=1, fill=0)
@@ -12367,9 +12332,9 @@ Command Line :
 
         c.setFont(font_name, 20)
         c.drawString(x + 15, y - 50, f"{risk_level} (Score: {score})")
-    
-        
-    
+
+
+
     def check_page(self, c, y, threshold=120, font_name=None, font_size=10):
         if y < threshold:
             c.showPage()
@@ -12377,8 +12342,8 @@ Command Line :
                 c.setFont(font_name, font_size)
             return 800
         return y
-    
-    
+
+
     def create_detection_graph(self, timeline):
 
         import matplotlib.pyplot as plt
@@ -12416,7 +12381,7 @@ Command Line :
         plt.close()
 
         return path
- 
+
     def create_report_trend_graph(self, detection_timeline, graph_path, font_name="Helvetica"):
         if not detection_timeline:
             return None
@@ -12474,7 +12439,7 @@ Command Line :
 
         fig.tight_layout()
         fig.savefig(graph_path, dpi=160)
-        return graph_path 
+        return graph_path
 
     def is_shared_pc_name(value):
         s = str(value or "").strip()
@@ -12536,7 +12501,7 @@ Command Line :
                     return dept_name, dept_code
 
         return "미분류", ""
- 
+
     def build_security_insight_metrics(self, endpoint_detections, emails, dlp_rows, detection_timeline=None):
         rule_counter = Counter()
         host_counter = Counter()
@@ -12957,7 +12922,7 @@ Command Line :
             "top_dlp_dept": top_dlp_dept,
             "top_blocked_dlp_dept": top_blocked_dlp_dept,
             "dlp_dept_count": len(dlp_dept_rows),
-            
+
             "unclassified_user_names": [name for name, _ in unclassified_user_counter.most_common()],
             "unclassified_user_counts": unclassified_user_counter.most_common(),
             "unclassified_user_count": len(unclassified_user_counter),
@@ -13016,7 +12981,7 @@ Command Line :
             lines.append(f"탐지 발생 호스트 {unique_hosts}개, 연관 파일 {unique_files}종.")
 
 
-            
+
         top_dlp_dept = metrics.get("top_dlp_dept", {})
         top_blocked_dlp_dept = metrics.get("top_blocked_dlp_dept", {})
 
@@ -13045,7 +13010,7 @@ Command Line :
             blocked = top_blocked_dlp_dept.get("blocked", 0)
 
             if blocked > 0:
-                lines.append(f"DLP 차단 건수는 '{dept_name}' 부서가 가장 높으며 총 {blocked}건입니다.")        
+                lines.append(f"DLP 차단 건수는 '{dept_name}' 부서가 가장 높으며 총 {blocked}건입니다.")
 
         if cross_host_count > 0:
             if cross_host_rank:
@@ -13461,7 +13426,7 @@ Command Line :
 
         return lines
 
- 
+
     def build_report_html(
             self,
             start,
@@ -13856,7 +13821,7 @@ Command Line :
             else:
                 self.lbl_mail_result.setText("Status: FAILED")
                 self.lbl_mail_result.setStyleSheet(f"color:{UI_THEME['status_fail_text']}; font-weight:600;")
- 
+
     def make_card(self, title, legacy_title=False):
         frame = QFrame()
         frame.setObjectName("dashboardCard")
@@ -13874,7 +13839,7 @@ Command Line :
             self.add_card_title(layout, title)
 
         return frame, layout
-        
+
     def export_detection_excel(self):
         start_dt = combine_date_time(self.det_export_start_date, self.det_export_start_time)
         end_dt = combine_date_time(self.det_export_end_date, self.det_export_end_time)
@@ -14214,7 +14179,7 @@ Command Line :
 
     def refresh_endpoint_manual(self):
         log.info("Manual Refresh - Endpoint")
-        self.endpoint_data = load_endpoints()
+        self.endpoint_data = load_json(os.path.join(CACHE_DIR, "endpoints.json"))
         reload_all_data()
         self._refresh_endpoint()
         if hasattr(self, "_refresh_dlp"):
@@ -14224,7 +14189,7 @@ Command Line :
 
     def refresh_org_manual(self):
         log.info("Manual Refresh - Organization")
-        self.org_data = load_org()
+        self.org_data = load_json(os.path.join(CACHE_DIR, "user_groups.json"))
         reload_all_data()
         self._refresh_org()
         if hasattr(self, "_refresh_endpoint"):
