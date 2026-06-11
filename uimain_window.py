@@ -585,31 +585,238 @@ def parse_multiline_domains(text: str):
 
     return results
 
-def normalize_report_destination(value):
-    s = str(value or "").strip().lower()
-    if not s or s == "none":
-        return "None"
+DLP_AI_DEST_KW = [
+    "openai", "chatgpt", "oaiusercontent", "claude", "claudeusercontent",
+    "gemini", "copilot", "perplexity", "ppl-ai-file-upload", "midjourney",
+    "magnific", "klingai", "zeta-ai", "aspose.ai", "genspark",
+    "aicreation", "gamma.app", "vizcom", "firefly", "sensei.adobe",
+    "vyro.ai", "chaton.ai", "flowith.io", "linnk.ai", "upscale.media",
+    "miricanvas", "clovanote", "deevid.ai", "nano-banana.ai", "napkin.ai",
+    "picaapi.com", "meshy.ai", "topazlabs", "photoroom",
+    "picsart", "krea.ai", "use.ai", "clova-x.naver.com", "polarishare",
+    "livewiki", "freepik", "chat-orchestrator-prod", "aistudio.google.com", "aigc",
+]
 
-    # URL이면 호스트만 추출
+DLP_CONVERTER_DEST_KW = [
+    "ilovepdf.com", "iloveimg.com", "convertio.me", "cloudconvert.com",
+    "smallpdf", "freeconvert.com", "pdfaid.com", "ezgif.com",
+    "allinpdf.com", "pdf24.org", "pdfguru.com", "thebestpdf.com",
+    "onlinedoctranslator.com", "tinypng.com", "tinyjpg.com", "imagetostl.com",
+    "runconvert.com", "transloadit.com", "pdfhouse.com",
+]
+
+DLP_MESSENGER_DEST_KW = [
+    "slack.com", "slack-edge.com", "chat.google.com", "talk.naver.com",
+    "channel.io", "intercomcdn.com", "intercomcdn.eu", "zendesk.com",
+    "instagram.com", "whatsapp", "skype.com", "chat.linkareer.com",
+]
+
+DLP_CLOUD_DEST_KW = [
+    "dropbox", "onedrive", "sharepoint", "box.com", "notion", "confluence",
+    "wetransfer", "mega", "icloud", "pcloud", "cloudflarestorage.com",
+    "blob.core.windows.net", "storage.googleapis.com", "firebasestorage.googleapis.com",
+    "s3.amazonaws.com", "amazonaws-s3", "s3-accelerate.amazonaws.com",
+    "sandollcloud.com", "mybox.naver.com", "ncloud.com", "hancomdocs.com",
+    "graph.microsoft.com", "officeapps.live.com", "teams.microsoft.com",
+    "my.microsoftpersonalcontent.com", "objects-origin.githubusercontent.com",
+    "supabase.co", "cloudfront.net", "aliyuncs.com", "ktcloud.com",
+]
+
+DLP_DESIGN_DEST_KW = [
+    "figma.com", "canva.com", "miro.com", "lucid.app", "adobe.io",
+    "shutterstock.com", "sandollcloud.com", "bizhows.com", "mangoboard",
+    "freepik", "photoroom", "picsart", "krea.ai", "topazlabs",
+]
+
+DLP_SOCIAL_DEST_KW = [
+    "upload.youtube.com", "upload.x.com", "tiktokcdn", "facebook.com",
+    "threads.com", "pinterest.com", "x.com", "instagram.com",
+    "upload.facebook.com", "vupload-edge.facebook.com", "u.pinimg.com",
+]
+
+DLP_COMMERCE_DEST_KW = [
+    "seller", "vendorcentral.amazon", "sellercentral.amazon", "partner.",
+    "partners.", "lotteon", "cjonstyle", "temu.com", "wconcept",
+    "wadiz", "coupang", "navercorp.com", "shopee", "alibaba",
+    "made-in-china", "baemin", "coupangeats", "29cm", "giftishow",
+    "shopping.naver.com", "ssg", "kurly", "welstorymall", "kcp.co.kr",
+]
+
+DLP_HR_DEST_KW = [
+    "saramin.co.kr", "greetinghr.com", "recruiter.co.kr", "recruit.",
+    "ninehire", "albamon.com", "jobkorea.co.kr", "mokahr.com",
+    "incruit.com", "jobda.im", "careernote.io", "specter.co.kr",
+    "sterlingdirect.com", "ashbyhq",
+]
+
+DLP_MARKETING_DEST_KW = [
+    "gfa.naver.com", "ad-creative.gfa.naver.com", "ads.naver.com",
+    "doubleclick.net", "groobee.io", "dable.io", "stackadapt.com",
+    "tiktok.com", "onaudience.com", "ipredictive.com", "mediamixer.co.kr",
+    "adpnut.com", "adnmore.co.kr", "mtgroup.kr", "doyouad.com",
+    "sauceflex.com", "quantummetric.com", "dataflare.net",
+]
+
+DLP_BUSINESS_DEST_KW = [
+    "opensurvey.io", "bsgglobal.net", "licensingworkspace.com", "hancomdocs.com",
+    "bizhows.com", "pokemonkorea.co.kr", "fss.or.kr", "energy.or.kr",
+    "rnd.or.kr", "worldjob.or.kr", "axa.co.kr", "meritzfire.com",
+    "samsungfire.com", "kbinsure.co.kr", "easypay.co.kr", "ezwel.com",
+    "pay.naver.com", "payoneer.com", "typeform", "atlassian.net",
+    "notability.com", "githubusercontent.com", "captcha.com", "google.com",
+]
+
+
+def _strip_dlp_origin_suffix(value: str) -> str:
+    return re.sub(r"\s*\(\s*origin\s*:\s*[^)]*\)\s*$", "", str(value or ""), flags=re.IGNORECASE).strip()
+
+
+def _extract_report_hostname(value: str):
+    s = _strip_dlp_origin_suffix(value).strip().strip('"\'')
+    if not s:
+        return ""
+
+    if s.startswith("\\"):
+        parts = [p for p in s.split("\\") if p]
+        return parts[0].lower() if parts else "internal-file-server"
+
+    if s.startswith("/") or re.match(r"^[a-z]:[\\/]", s, flags=re.IGNORECASE):
+        return "local-file-path"
+
+    if " " in s:
+        s = s.split()[0]
+
+    s = s.rstrip(".,;)")
+
     try:
         from urllib.parse import urlparse
 
-        if "://" in s:
-            parsed = urlparse(s)
-            if parsed.netloc:
-                s = parsed.netloc.lower()
+        parsed = urlparse(s if "://" in s else f"//{s}")
+        if parsed.hostname:
+            return parsed.hostname.lower().strip("[]")
     except Exception:
         pass
 
-    # host:port 제거
-    if ":" in s:
-        s = s.split(":", 1)[0].strip()
+    if "/" in s:
+        s = s.split("/", 1)[0]
+    if "@" in s:
+        s = s.rsplit("@", 1)[-1]
+    if ":" in s and s.count(":") == 1:
+        s = s.split(":", 1)[0]
 
-    # 대표 도메인 묶음
-    if s.endswith("oaiusercontent.com"):
+    return s.lower().strip("[]")
+
+
+def _collapse_report_hostname(hostname: str) -> str:
+    host = str(hostname or "").strip().lower().strip(".")
+    if not host:
+        return ""
+
+    if host == "local-file-path":
+        return "로컬 경로"
+
+    if host.startswith("www."):
+        host = host[4:]
+
+    if re.fullmatch(r"api\d+(?:-cf)?\.ilovepdf\.com", host) or host.endswith(".ilovepdf.com"):
+        return "ilovepdf.com"
+    if re.fullmatch(r"api\d+\.iloveimg\.com", host) or host.endswith(".iloveimg.com"):
+        return "iloveimg.com"
+    if re.fullmatch(r"s\d+[-a-z]*\.convertio\.me", host) or host.endswith(".convertio.me"):
+        return "convertio.me"
+    if host.endswith(".freeconvert.com"):
+        return "freeconvert.com"
+    if host.endswith(".cloudconvert.com"):
+        return "cloudconvert.com"
+    if host.endswith(".transloadit.com"):
+        return "transloadit.com"
+    if host.startswith("filetools") and host.endswith(".pdf24.org"):
+        return "pdf24.org"
+    if host.endswith(".oaiusercontent.com"):
         return "oaiusercontent.com"
+    if host.endswith(".claudeusercontent.com"):
+        return "claudeusercontent.com"
+    if host.endswith(".cloudflarestorage.com"):
+        return "cloudflarestorage.com"
+    if host.endswith(".blob.core.windows.net"):
+        return "blob.core.windows.net"
+    if host.endswith(".sharepoint.com"):
+        return "sharepoint.com"
+    if host.endswith(".storage.googleapis.com") or host == "storage.googleapis.com":
+        return "storage.googleapis.com"
+    if (
+        host == "s3.amazonaws.com"
+        or host.startswith("s3.") and host.endswith("amazonaws.com")
+        or host.startswith("s3-") and host.endswith("amazonaws.com")
+        or ".s3" in host and host.endswith("amazonaws.com")
+    ):
+        return "amazonaws-s3"
+    if host.endswith(".mail.naver.com"):
+        return "mail.naver.com"
+    if host.endswith(".tiktokcdn.com") or "tiktokcdn" in host:
+        return "tiktokcdn.com"
 
-    return s
+    return host
+
+
+def normalize_report_destination(value):
+    s = str(value or "").strip()
+    if not s or s.lower() == "none":
+        return "None"
+
+    if s.startswith("\\"):
+        return "내부 파일서버"
+    if s.startswith("/") or re.match(r"^[a-z]:[\\/]", s, flags=re.IGNORECASE):
+        return "로컬 경로"
+
+    hostname = _extract_report_hostname(s)
+    collapsed = _collapse_report_hostname(hostname)
+    return collapsed or s.lower()
+
+
+def classify_dlp_destination(target_name="", target_type="", dest_detail=""):
+    target = str(target_name or "").strip().lower()
+    ttype = str(target_type or "").strip().lower()
+    raw_detail = str(dest_detail or "").strip().lower()
+    normalized_detail = normalize_report_destination(dest_detail)
+    normalized_l = str(normalized_detail or "").lower()
+    haystack = " ".join([target, ttype, raw_detail, normalized_l])
+
+    if normalized_detail == "내부 파일서버" or raw_detail.startswith("\\"):
+        return "내부 파일서버"
+    if normalized_detail == "로컬 경로" or raw_detail.startswith("/"):
+        return "로컬/앱 임시파일"
+    if re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", normalized_l):
+        return "IP 직접 접속"
+
+    if any(k in haystack for k in DLP_AI_DEST_KW):
+        return "AI/생성형AI"
+    if any(k in haystack for k in DLP_CONVERTER_DEST_KW):
+        return "문서/PDF/이미지 변환"
+    if ttype == "e-mail" or "mail" in normalized_l or ".mail." in raw_detail:
+        return "메일/대용량 첨부"
+    if target in {"kakaotalk", "nateon messenger", "naver line", "wechat", "viber", "messages", "whatsapp.root.dll"}:
+        return "메신저/고객상담"
+    if any(k in haystack for k in DLP_MESSENGER_DEST_KW):
+        return "메신저/고객상담"
+    if any(k in haystack for k in DLP_SOCIAL_DEST_KW):
+        return "소셜/미디어 업로드"
+    if any(k in haystack for k in DLP_DESIGN_DEST_KW):
+        return "디자인/협업 SaaS"
+    if ttype == "cloud services / file sharing" or target in {"airdrop outgoing", "filezilla", "google drive file stream"}:
+        return "클라우드/오브젝트 스토리지"
+    if any(k in haystack for k in DLP_CLOUD_DEST_KW):
+        return "클라우드/오브젝트 스토리지"
+    if any(k in haystack for k in DLP_HR_DEST_KW):
+        return "채용/HR"
+    if any(k in haystack for k in DLP_MARKETING_DEST_KW):
+        return "광고/마케팅/분석"
+    if any(k in haystack for k in DLP_COMMERCE_DEST_KW):
+        return "쇼핑몰/판매자/파트너 포털"
+    if any(k in haystack for k in DLP_BUSINESS_DEST_KW):
+        return "업무/공공/금융 포털"
+
+    return "웹 브라우저/기타"
 
 def validate_domain_list(domain_list: list):
     invalid_domains = []
@@ -7455,27 +7662,11 @@ class MainWindow(QMainWindow):
             )
 
         def classify_row(row):
-            target = low(get_target_name(row))
-            target_type = low(get_target_type(row))
-            dest_detail = low(get_dest_detail(row))
-
-            if kw_match(dest_detail, AI_KW):
-                return "AI 사이트"
-
-            if (target in MESSENGER_TARGETS) or kw_match(dest_detail, MESSENGER_DEST_KW):
-                return "메신저"
-
-            if target_type == "e-mail" or ("mail" in dest_detail):
-                return "메일"
-
-            if (
-                target_type == "cloud services / file sharing"
-                or target in {"airdrop outgoing", "filezilla", "google drive file stream"}
-                or kw_match(dest_detail, CLOUD_KW)
-            ):
-                return "클라우드/파일공유"
-
-            return "웹 브라우저/기타"
+            return classify_dlp_destination(
+                get_target_name(row),
+                get_target_type(row),
+                get_dest_detail(row),
+            )
 
         def classify_filename_detail(path_text):
             s = low(path_text)
@@ -7529,13 +7720,13 @@ class MainWindow(QMainWindow):
 
             for row in rows:
                 src = norm(get_source_name(row))
-                dest_detail = norm(get_dest_detail(row))
+                dest_detail = normalize_report_destination(get_dest_detail(row))
                 ext = extract_file_ext_for_report(src)
 
                 detail_label = classify_filename_detail(src)
                 detail_counter[detail_label] += 1
 
-                if dest_detail:
+                if dest_detail and dest_detail != "None":
                     dest_counter[dest_detail] += 1
 
                 if ext:
@@ -7700,18 +7891,19 @@ class MainWindow(QMainWindow):
                 dest_detail = str(group_row.get("dest_detail", "") or "")
                 cnt = int(group_row.get("count", 0) or 0)
 
-                if is_ai(dest_detail):
+                category = classify_dlp_destination(target_name, target_type, dest_detail)
+
+                if category == "AI/생성형AI":
                     ai_related = True
-                    classified_dests.append(f"AI 서비스({dest_detail}) {cnt}건({top_share(cnt, total)}%)")
-                elif is_messenger(target_name, dest_detail):
+                elif category == "메신저/고객상담":
                     messenger_related = True
-                    classified_dests.append(f"메신저({dest_detail or target_name}) {cnt}건({top_share(cnt, total)}%)")
-                elif is_mail(target_type, dest_detail):
+                elif category == "메일/대용량 첨부":
                     mail_related = True
-                    classified_dests.append(f"메일({dest_detail or target_name}) {cnt}건({top_share(cnt, total)}%)")
-                elif is_cloud(target_name, target_type, dest_detail):
+                elif category == "클라우드/오브젝트 스토리지":
                     cloud_related = True
-                    classified_dests.append(f"클라우드/파일공유({dest_detail or target_name}) {cnt}건({top_share(cnt, total)}%)")
+
+                if category != "웹 브라우저/기타":
+                    classified_dests.append(f"{category}({dest_detail or target_name}) {cnt}건({top_share(cnt, total)}%)")
 
             if classified_dests:
                 lines.append("- 주요 분류: " + " / ".join(classified_dests[:3]) + " — 민감 데이터 포함 여부 확인 필요.")
@@ -7753,6 +7945,360 @@ class MainWindow(QMainWindow):
                 lines.append("→ 클라우드/파일공유 비중 존재 + 낮은 차단율 → 정책 예외 범위 재검토 권장")
 
         return lines
+
+    def build_dlp_destination_insight_rows(self, dlp_rows):
+        if not dlp_rows:
+            return []
+
+        def get_target_name(row):
+            return row.get("target") or row.get("destination") or ""
+
+        def get_target_type(row):
+            return row.get("targetType") or row.get("target_type") or row.get("destination_type") or ""
+
+        def get_dest_detail(row):
+            return (
+                row.get("destinationDetails")
+                or row.get("destination_detail")
+                or row.get("destination_details")
+                or row.get("destination")
+                or row.get("item_details")
+                or ""
+            )
+
+        def get_source_name(row):
+            return str(
+                row.get("filename", "")
+                or row.get("source", "")
+                or row.get("source_name", "")
+                or row.get("fileName", "")
+                or row.get("item_name", "")
+                or "None"
+            ).strip()
+
+        dept_cache = {}
+
+        def resolve_dept(machine_name):
+            key = str(machine_name or "").strip()
+            if key in dept_cache:
+                return dept_cache[key]
+
+            if not key:
+                dept_cache[key] = "미분류"
+                return dept_cache[key]
+
+            endpoint_user_name, endpoint_user_id, user_type = get_endpoint_user_by_machine_name(key)
+            if user_type == "shared_pc":
+                dept_name = "공용PC"
+            else:
+                dept_name, _ = get_org_info_by_user(endpoint_user_name, endpoint_user_id, key)
+                if not dept_name or dept_name == "미분류":
+                    dept_name = (
+                        get_report_exception_dept(endpoint_user_name)
+                        or get_report_exception_dept(key)
+                        or "미분류"
+                    )
+
+            dept_cache[key] = dept_name or "미분류"
+            return dept_cache[key]
+
+        total_rows = 0
+        category_stats = defaultdict(lambda: {
+            "total": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "destinations": defaultdict(lambda: {
+                "total": 0,
+                "allowed": 0,
+                "blocked": 0,
+                "departments": Counter(),
+                "sources": Counter(),
+                "target_types": Counter(),
+            }),
+        })
+
+        for row in dlp_rows:
+            if not isinstance(row, dict):
+                continue
+
+            raw_dest = get_dest_detail(row)
+            dest_name = normalize_report_destination(raw_dest)
+            if not dest_name or dest_name == "None":
+                continue
+
+            target_name = get_target_name(row)
+            target_type = get_target_type(row)
+            category = classify_dlp_destination(target_name, target_type, raw_dest)
+            blocked = self.is_dlp_blocked_row(row)
+
+            machine_name = str(row.get("machine_name", "") or "").strip()
+            dept_name = resolve_dept(machine_name)
+            source_name = get_source_name(row)
+
+            total_rows += 1
+            cat_stat = category_stats[category]
+            cat_stat["total"] += 1
+            cat_stat["blocked" if blocked else "allowed"] += 1
+
+            dest_stat = cat_stat["destinations"][dest_name]
+            dest_stat["total"] += 1
+            dest_stat["blocked" if blocked else "allowed"] += 1
+
+            if dept_name and dept_name != "None":
+                dest_stat["departments"][dept_name] += 1
+            if source_name and source_name != "None":
+                dest_stat["sources"][source_name] += 1
+            if target_type and target_type != "None":
+                dest_stat["target_types"][str(target_type)] += 1
+
+        category_rows = []
+        for category, stat in sorted(category_stats.items(), key=lambda x: (-x[1]["total"], x[0]))[:5]:
+            cat_total = stat["total"]
+            dest_rows = []
+
+            for dest_name, dest_stat in sorted(
+                stat["destinations"].items(),
+                key=lambda x: (-x[1]["total"], x[0])
+            )[:5]:
+                top_departments = dest_stat["departments"].most_common(3)
+                top_sources = [
+                    (shorten_path_text(name, 34), cnt)
+                    for name, cnt in dest_stat["sources"].most_common(3)
+                ]
+
+                dest_rows.append({
+                    "destination": dest_name,
+                    "total": dest_stat["total"],
+                    "allowed": dest_stat["allowed"],
+                    "blocked": dest_stat["blocked"],
+                    "share": round((dest_stat["total"] / cat_total) * 100, 1) if cat_total else 0.0,
+                    "top_departments": top_departments,
+                    "top_sources": top_sources,
+                    "top_target_types": dest_stat["target_types"].most_common(2),
+                })
+
+            category_rows.append({
+                "category": category,
+                "total": cat_total,
+                "allowed": stat["allowed"],
+                "blocked": stat["blocked"],
+                "share": round((cat_total / total_rows) * 100, 1) if total_rows else 0.0,
+                "top_destinations": dest_rows,
+            })
+
+        return category_rows
+
+    def get_dlp_destination_category_comment(self, category, top_destination):
+        dest = str(top_destination or "주요 목적지")
+        comments = {
+            "AI/생성형AI": f"{dest} 중심의 AI 서비스 사용이 확인됩니다. 업로드 파일에 개인정보·계약·영업자료가 포함됐는지 우선 점검하세요.",
+            "문서/PDF/이미지 변환": f"{dest} 등 외부 변환 서비스 사용이 반복됩니다. 변환 대상 문서의 민감정보 포함 여부 확인이 필요합니다.",
+            "메일/대용량 첨부": f"{dest} 대용량 첨부 사용이 확인됩니다. 정상 업무 여부와 외부 수신자 적정성을 파일명 기준으로 확인하세요.",
+            "클라우드/오브젝트 스토리지": f"{dest} 스토리지 목적지가 확인됩니다. SaaS 임시 버킷 또는 외부 저장소 업로드 가능성을 점검하세요.",
+            "메신저/고객상담": f"{dest} 메신저·고객상담 첨부 목적지가 확인됩니다. 고객응대 자료와 외부 공유 파일을 구분해 검토하세요.",
+            "디자인/협업 SaaS": f"{dest} 디자인·협업 도구 사용이 확인됩니다. 시안·이미지·제안서 등 외부 업로드 파일을 확인하세요.",
+            "소셜/미디어 업로드": f"{dest} 소셜·미디어 업로드 목적지가 확인됩니다. 공개 채널 업로드 여부와 파일 성격을 점검하세요.",
+            "쇼핑몰/판매자/파트너 포털": f"{dest} 판매자·파트너 포털 목적지가 확인됩니다. 업무상 제출 파일인지 확인하고 반복 업로드를 점검하세요.",
+            "채용/HR": f"{dest} 채용·HR 목적지가 확인됩니다. 이력서·증빙자료 등 개인정보 포함 파일 처리 적정성을 확인하세요.",
+            "광고/마케팅/분석": f"{dest} 광고·마케팅·분석 목적지가 확인됩니다. 캠페인 소재나 고객 데이터 업로드 여부를 확인하세요.",
+            "업무/공공/금융 포털": f"{dest} 업무·공공·금융 포털 목적지가 확인됩니다. 정상 제출 업무인지와 첨부파일의 민감도 확인이 필요합니다.",
+            "내부 파일서버": f"{dest} 내부 파일서버 접근이 확인됩니다. 외부 반출보다 내부 공유 경로 사용 맥락을 확인하세요.",
+            "로컬/앱 임시파일": f"{dest} 로컬 또는 앱 임시 경로가 확인됩니다. 실제 전송 대상과 원본 앱을 추가 확인하세요.",
+            "IP 직접 접속": f"{dest} IP 직접 접속 목적지가 확인됩니다. 서비스 식별과 업무 관련성을 우선 확인하세요.",
+        }
+        return comments.get(category, f"{dest} 목적지 사용이 확인됩니다. 반복 발생 부서와 파일명을 기준으로 업무 적정성을 검토하세요.")
+
+    def draw_dlp_destination_insights(self, c, y_pos, category_rows, rf, margin, content_w):
+        from reportlab.pdfbase.pdfmetrics import stringWidth
+
+        def wrap_cell_text(text, max_width, font_size=7, max_lines=2):
+            text = str(text or "").strip()
+            if not text:
+                return [""]
+
+            lines = []
+            for raw_line in text.split("\n"):
+                words = raw_line.split() or [raw_line]
+                current = ""
+                for word in words:
+                    if stringWidth(word, rf, font_size) > max_width:
+                        pieces = []
+                        piece = ""
+                        for ch in word:
+                            if stringWidth(piece + ch, rf, font_size) <= max_width:
+                                piece += ch
+                            else:
+                                if piece:
+                                    pieces.append(piece)
+                                piece = ch
+                        if piece:
+                            pieces.append(piece)
+                    else:
+                        pieces = [word]
+
+                    for piece in pieces:
+                        test = piece if not current else f"{current} {piece}"
+                        if stringWidth(test, rf, font_size) <= max_width:
+                            current = test
+                        else:
+                            if current:
+                                lines.append(current)
+                            current = piece
+                if current:
+                    lines.append(current)
+
+            if max_lines and len(lines) > max_lines:
+                lines = lines[:max_lines]
+                suffix = "..."
+                while lines[-1] and stringWidth(lines[-1] + suffix, rf, font_size) > max_width:
+                    lines[-1] = lines[-1][:-1]
+                lines[-1] = (lines[-1].rstrip() + suffix) if lines[-1] else suffix
+
+            return lines or [""]
+
+        def draw_table(headers, rows, col_widths, y_table, font_size=6.8, line_height=8):
+            header_h = 18
+            table_w = sum(col_widths)
+            y_table = self.check_page(c, y_table, threshold=100, font_name=rf, font_size=font_size)
+
+            c.setFillColorRGB(0.20, 0.35, 0.60)
+            c.rect(margin, y_table - header_h + 4, table_w, header_h, fill=1, stroke=0)
+            c.setFillGray(1)
+            c.setFont(rf, font_size)
+            ox = margin
+            for h, cw in zip(headers, col_widths):
+                c.drawString(ox + 3, y_table - 11, str(h))
+                ox += cw
+            c.setFillColor(colors.black)
+            y_table -= header_h
+
+            for ri, row in enumerate(rows):
+                wrapped_cells = []
+                max_lines = 1
+                for val, cw in zip(row, col_widths):
+                    wrapped = wrap_cell_text(val, cw - 6, font_size=font_size, max_lines=3)
+                    wrapped_cells.append(wrapped)
+                    max_lines = max(max_lines, len(wrapped))
+
+                row_h = max(24, (max_lines * line_height) + 12)
+                y_table = self.check_page(c, y_table, threshold=row_h + 45, font_name=rf, font_size=font_size)
+
+                bg = 0.96 if ri % 2 == 0 else 1.0
+                c.setFillGray(bg)
+                c.rect(margin, y_table - row_h + 4, table_w, row_h, fill=1, stroke=0)
+                c.setFillColor(colors.black)
+                c.setFont(rf, font_size)
+
+                ox = margin
+                for cell_lines, cw in zip(wrapped_cells, col_widths):
+                    ty = y_table - 9
+                    for line in cell_lines:
+                        c.drawString(ox + 3, ty, line)
+                        ty -= line_height
+                    ox += cw
+
+                c.setStrokeGray(0.82)
+                c.line(margin, y_table - row_h + 4, margin + table_w, y_table - row_h + 4)
+                c.setStrokeGray(0)
+                y_table -= row_h
+
+            return y_table - 8
+
+        if not category_rows:
+            c.setFont(rf, 10)
+            c.setFillColor(colors.black)
+            c.drawString(margin + 6, y_pos, "DLP 목적지 데이터가 확인되지 않았습니다.")
+            return y_pos - 18
+
+        top_total = sum(int(row.get("total", 0) or 0) for row in category_rows)
+        c.setFont(rf, 9)
+        c.setFillColor(colors.HexColor("#374151"))
+        c.drawString(margin + 6, y_pos, f"전체 DLP 목적지 중 총건수 상위 5개 분류를 표시합니다. (상위 분류 합계 {top_total:,}건)")
+        y_pos -= 18
+
+        summary_rows = []
+        for idx, row in enumerate(category_rows, 1):
+            top_dest_text = ", ".join([
+                f"{d.get('destination')}({d.get('total')})"
+                for d in row.get("top_destinations", [])[:3]
+            ]) or "-"
+            summary_rows.append([
+                str(idx),
+                row.get("category", "-"),
+                str(row.get("total", 0)),
+                str(row.get("allowed", 0)),
+                str(row.get("blocked", 0)),
+                f"{row.get('share', 0.0)}%",
+                top_dest_text,
+            ])
+
+        y_pos = draw_table(
+            ["순위", "분류", "총", "허용", "차단", "비율", "주요 목적지"],
+            summary_rows,
+            [28, 112, 36, 36, 36, 42, content_w - 290],
+            y_pos,
+            font_size=7.0,
+            line_height=8
+        )
+
+        for row in category_rows:
+            category = row.get("category", "-")
+            total_count = int(row.get("total", 0) or 0)
+            allowed = int(row.get("allowed", 0) or 0)
+            blocked = int(row.get("blocked", 0) or 0)
+            share = row.get("share", 0.0)
+            top_destinations = row.get("top_destinations", [])
+            top_destination = top_destinations[0].get("destination", "-") if top_destinations else "-"
+
+            y_pos = self.check_page(c, y_pos, threshold=150, font_name=rf, font_size=9)
+            c.setFillColor(colors.HexColor("#eef3fb"))
+            c.rect(margin, y_pos - 2, content_w, 19, fill=1, stroke=0)
+            c.setStrokeColor(colors.HexColor("#2f5ea8"))
+            c.line(margin, y_pos + 17, margin + content_w, y_pos + 17)
+            c.line(margin, y_pos - 2, margin + content_w, y_pos - 2)
+            c.setFont(rf, 8.5)
+            c.setFillColor(colors.black)
+            c.drawString(
+                margin + 6,
+                y_pos + 4,
+                f"{category} | 총 {total_count:,}건 / 허용 {allowed:,}건 / 차단 {blocked:,}건 / 전체 {share}%"
+            )
+            y_pos -= 18
+
+            comment = self.get_dlp_destination_category_comment(category, top_destination)
+            c.setFont(rf, 7.4)
+            c.setFillColor(colors.HexColor("#374151"))
+            for line in wrap_cell_text(comment, content_w - 12, font_size=7.4, max_lines=2):
+                c.drawString(margin + 6, y_pos, line)
+                y_pos -= 10
+            y_pos -= 2
+
+            dest_rows = []
+            for dest in top_destinations[:5]:
+                dept_text = "\n".join([f"{name}({cnt})" for name, cnt in dest.get("top_departments", [])]) or "-"
+                source_text = "\n".join([f"{name}({cnt})" for name, cnt in dest.get("top_sources", [])]) or "-"
+                dest_rows.append([
+                    dest.get("destination", "-"),
+                    str(dest.get("total", 0)),
+                    str(dest.get("allowed", 0)),
+                    str(dest.get("blocked", 0)),
+                    f"{dest.get('share', 0.0)}%",
+                    dept_text,
+                    source_text,
+                ])
+
+            y_pos = draw_table(
+                ["목적지", "총", "허용", "차단", "분류내", "주요 부서", "주요 파일"],
+                dest_rows or [["-", "0", "0", "0", "0%", "-", "-"]],
+                [118, 30, 30, 30, 44, 105, content_w - 357],
+                y_pos,
+                font_size=6.7,
+                line_height=8
+            )
+            y_pos -= 8
+
+        c.setFillColor(colors.black)
+        return y_pos
 
     def draw_dlp_dept_insight_blocks(self, c, y_pos, blocks, rf, margin, content_w):
         if not blocks:
@@ -8145,7 +8691,7 @@ class MainWindow(QMainWindow):
                     for col_idx, (val, cw) in enumerate(zip(row, col_widths)):
                         if col_idx == 0:      # 소스
                             wrapped = wrap_cell_text(val, cw - 8, max_lines=5)
-                        elif col_idx == 1:    # 대상유형
+                        elif col_idx == 1:    # 분류/대상유형
                             wrapped = wrap_cell_text(val, cw - 8, max_lines=5)
                         elif col_idx == 2:    # 목적지 세부정보
                             wrapped = wrap_cell_text(val, cw - 8, max_lines=1)
@@ -8910,7 +9456,7 @@ class MainWindow(QMainWindow):
                     y = mini_table_multiline(
                         inner_x,
                         y,
-                        ["소스", "대상유형", "목적지 세부정보", "건수"],
+                        ["소스", "분류/대상유형", "목적지 세부정보", "건수"],
                         dept_rows,
                         detail_col_widths,
                         font_size=6.8,
@@ -8955,6 +9501,11 @@ class MainWindow(QMainWindow):
                 y = section_bar("DLP 부서 분석 인사이트", y)
                 dlp_insight_lines = self.build_dlp_dept_insight_lines(dlp_dept_rank, metrics)
                 y = self.draw_dlp_dept_insight_lines(c, y, dlp_insight_lines, rf, MARGIN, CONTENT_W)
+
+                y = new_page()
+                y = section_bar("DLP 목적지별 인사이트", y)
+                dlp_destination_rows = self.build_dlp_destination_insight_rows(dlp_rows)
+                y = self.draw_dlp_destination_insights(c, y, dlp_destination_rows, rf, MARGIN, CONTENT_W)
 
 
             c.save()
@@ -15035,12 +15586,15 @@ Command Line :
                     for name, cnt in group["target_types"].most_common(5)
                 ]
                 target_text = "\n".join(target_parts) if target_parts else "-"
+                dest_category = classify_dlp_destination("", target_text, dest_name)
+                target_text_with_category = f"{dest_category}\n{target_text}" if target_text != "-" else dest_category
 
                 top_dest_group_rows.append({
                     "dest_detail": dest_name,
                     "count": group["count"],
                     "source_text": source_text,
-                    "target_text": target_text,
+                    "target_text": target_text_with_category,
+                    "category": dest_category,
                 })
 
             dlp_dept_rows.append({
