@@ -8411,7 +8411,7 @@ class MainWindow(QMainWindow):
                 ])
 
             y_pos = draw_table(
-                ["목적지", "총", "허용", "차단", "분류내", "주요 부서", "주요 파일"],
+                ["목적지", "총", "허용", "차단", "비중", "주요 부서", "주요 파일"],
                 dest_rows or [["-", "0", "0", "0", "0%", "-", "-"]],
                 [118, 30, 30, 30, 44, 105, content_w - 357],
                 y_pos,
@@ -8672,9 +8672,27 @@ class MainWindow(QMainWindow):
             CONTENT_W  = PAGE_W - MARGIN * 2   # ≈ 505pt
 
             # ── 공통 헬퍼 ────────────────────────────────────────
-            def new_page():
-                c.showPage()
+            page_state = {"number": 1}
+
+            def draw_page_footer():
+                c.saveState()
+                c.setFont(rf, 7)
+                c.setFillColor(colors.HexColor("#6b7280"))
+                c.drawCentredString(PAGE_W / 2, 24, f"- {page_state['number']} -")
+                c.restoreState()
+
+            def after_show_page():
+                page_state["number"] += 1
                 c.setFont(rf, 10)
+                c.setFillColor(colors.black)
+
+            c._smu_report_draw_footer = draw_page_footer
+            c._smu_report_after_show_page = after_show_page
+
+            def new_page():
+                draw_page_footer()
+                c.showPage()
+                after_show_page()
                 return 810
 
             def section_bar(title, y_pos):
@@ -8889,9 +8907,7 @@ class MainWindow(QMainWindow):
                     row_h = max(26, (max_lines * line_height) + 16)
 
                     if y_pos - row_h < 40:
-                        c.showPage()
-                        PAGE_W, PAGE_H = A4
-                        y_pos = PAGE_H - MARGIN
+                        y_pos = new_page()
 
                         c.setFillColorRGB(0.20, 0.35, 0.60)
                         c.rect(x, y_pos - header_h + 4, sum(col_widths), header_h, fill=1, stroke=0)
@@ -9568,6 +9584,18 @@ class MainWindow(QMainWindow):
                 y = numbered_list(overall_dlp_lines, y)
                 y -= 12
 
+                # 목적지별 인사이트를 DLP 상세 앞쪽에 배치해, 주요 유출 경로를 먼저 확인하도록 구성한다.
+                y = new_page()
+                y = section_bar("DLP 목적지별 인사이트", y)
+                dlp_destination_rows = self.build_dlp_destination_insight_rows(
+                    dlp_rows,
+                    dept_resolver=report_identity_resolver,
+                )
+                perf.mark("dlp destination insights build")
+                y = self.draw_dlp_destination_insights(c, y, dlp_destination_rows, rf, MARGIN, CONTENT_W)
+                perf.mark("dlp destination insights render")
+
+                y = new_page()
                 y = section_bar("DLP 부서별 현황", y)
 
                 dept_rows = []
@@ -9650,42 +9678,48 @@ class MainWindow(QMainWindow):
 
                     y -= 16
 
-                # DLP 상위 부서 상세 종료 후 다음 페이지로 넘김
-                c.showPage()
-                PAGE_W, PAGE_H = A4
-                y = PAGE_H - MARGIN
+                # DLP 상위 부서 상세 종료 후 인사이트/부록 페이지로 넘김
+                y = new_page()
 
-                # showPage() 이후 폰트/색상 재설정
-                c.setFont(rf, 9)
-                c.setFillColor(colors.black)
-
-                if unclassified_user_counts:
-                    y -= 10
-                    y = section_bar("DLP 미분류 사용자", y)
-
-                    preview_lines = []
-                    for name, cnt in unclassified_user_counts[:15]:
-                        preview_lines.append(f"{name} ({cnt}건)")
-
-                    y = numbered_list(preview_lines, y)
-
-                    c.setFont(rf, 9)
-                    c.setFillColor(colors.black)
-
-                    if len(unclassified_user_counts) > 15:
-                        c.setFont(rf, 8)
-                        c.setFillColor(colors.HexColor("#6b7280"))
-                        c.drawString(
-                            MARGIN,
-                            y,
-                            f"외 {len(unclassified_user_counts) - 15}명 추가"
-                        )
-                        y -= 12
-
-                y -= 10
                 y = section_bar("DLP 부서 분석 인사이트", y)
                 dlp_insight_lines = self.build_dlp_dept_insight_lines(dlp_dept_rank, metrics)
                 y = self.draw_dlp_dept_insight_lines(c, y, dlp_insight_lines, rf, MARGIN, CONTENT_W)
+
+                if unclassified_user_counts:
+                    y = self.check_page(c, y - 8, threshold=170, font_name=rf, font_size=8)
+                    y = section_bar("DLP 미분류 사용자", y)
+
+                    compact_rows = []
+                    preview_users = unclassified_user_counts[:16]
+                    for i in range(0, len(preview_users), 2):
+                        left_name, left_cnt = preview_users[i]
+                        left = f"{i + 1}. {left_name} ({left_cnt}건)"
+                        right = ""
+                        if i + 1 < len(preview_users):
+                            right_name, right_cnt = preview_users[i + 1]
+                            right = f"{i + 2}. {right_name} ({right_cnt}건)"
+                        compact_rows.append([left, right])
+
+                    y = mini_table_multiline(
+                        MARGIN,
+                        y,
+                        ["미분류 사용자/호스트", "미분류 사용자/호스트"],
+                        compact_rows,
+                        [CONTENT_W / 2, CONTENT_W / 2],
+                        font_size=7.2,
+                        line_height=9
+                    )
+
+                    c.setFont(rf, 8)
+                    c.setFillColor(colors.HexColor("#6b7280"))
+                    if len(unclassified_user_counts) > len(preview_users):
+                        c.drawString(
+                            MARGIN,
+                            y,
+                            f"외 {len(unclassified_user_counts) - len(preview_users)}명 추가"
+                        )
+                        y -= 12
+                    c.setFillColor(colors.black)
 
                 y = new_page()
                 y = section_bar("DLP 목적지별 인사이트", y)
@@ -9697,7 +9731,7 @@ class MainWindow(QMainWindow):
                 y = self.draw_dlp_destination_insights(c, y, dlp_destination_rows, rf, MARGIN, CONTENT_W)
                 perf.mark("dlp destination insights render")
 
-
+            draw_page_footer()
             c.save()
             perf.mark("pdf save")
             progress("저장 완료")
@@ -15373,7 +15407,13 @@ Command Line :
 
     def check_page(self, c, y, threshold=120, font_name=None, font_size=10):
         if y < threshold:
+            footer = getattr(c, "_smu_report_draw_footer", None)
+            after_show_page = getattr(c, "_smu_report_after_show_page", None)
+            if callable(footer):
+                footer()
             c.showPage()
+            if callable(after_show_page):
+                after_show_page()
             if font_name:
                 c.setFont(font_name, font_size)
             return 800
