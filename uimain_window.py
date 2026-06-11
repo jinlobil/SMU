@@ -585,31 +585,187 @@ def parse_multiline_domains(text: str):
 
     return results
 
-def normalize_report_destination(value):
-    s = str(value or "").strip().lower()
-    if not s or s == "none":
-        return "None"
+DLP_AI_DEST_KW = [
+    "openai", "chatgpt", "oaiusercontent", "claude", "claudeusercontent",
+    "gemini", "copilot", "perplexity", "ppl-ai-file-upload", "midjourney",
+    "magnific", "klingai", "zeta-ai", "aspose.ai", "genspark",
+    "aicreation", "gamma.app", "vizcom", "firefly", "sensei.adobe",
+]
 
-    # URL이면 호스트만 추출
+DLP_CONVERTER_DEST_KW = [
+    "ilovepdf.com", "iloveimg.com", "convertio.me", "cloudconvert.com",
+    "smallpdf", "freeconvert.com", "pdfaid.com", "ezgif.com",
+]
+
+DLP_MESSENGER_DEST_KW = [
+    "slack.com", "chat.google.com", "talk.naver.com", "channel.io",
+    "intercomcdn.com", "intercomcdn.eu", "zendesk.com", "instagram.com",
+]
+
+DLP_CLOUD_DEST_KW = [
+    "dropbox", "onedrive", "sharepoint", "box.com", "notion", "confluence",
+    "wetransfer", "mega", "icloud", "pcloud", "cloudflarestorage.com",
+    "blob.core.windows.net", "storage.googleapis.com", "s3.amazonaws.com",
+    "amazonaws-s3", "s3-accelerate.amazonaws.com", "sandollcloud.com",
+]
+
+DLP_DESIGN_DEST_KW = [
+    "figma.com", "canva.com", "miro.com", "lucid.app", "adobe.io",
+    "shutterstock.com", "sandollcloud.com",
+]
+
+DLP_SOCIAL_DEST_KW = [
+    "upload.youtube.com", "upload.x.com", "tiktokcdn", "facebook.com",
+    "threads.com", "pinterest.com", "x.com",
+]
+
+DLP_COMMERCE_DEST_KW = [
+    "seller", "vendorcentral.amazon", "sellercentral.amazon", "partner.",
+    "partners.", "lotteon", "cjonstyle", "temu.com", "wconcept",
+    "wadiz", "coupang", "navercorp.com",
+]
+
+DLP_HR_DEST_KW = [
+    "saramin.co.kr", "greetinghr.com", "recruiter.co.kr", "recruit.",
+    "ninehire", "albamon.com",
+]
+
+
+def _strip_dlp_origin_suffix(value: str) -> str:
+    return re.sub(r"\s*\(\s*origin\s*:\s*[^)]*\)\s*$", "", str(value or ""), flags=re.IGNORECASE).strip()
+
+
+def _extract_report_hostname(value: str):
+    s = _strip_dlp_origin_suffix(value).strip().strip('"\'')
+    if not s:
+        return ""
+
+    if s.startswith("\\"):
+        parts = [p for p in s.split("\\") if p]
+        return parts[0].lower() if parts else "internal-file-server"
+
+    if s.startswith("/") or re.match(r"^[a-z]:[\\/]", s, flags=re.IGNORECASE):
+        return "local-file-path"
+
+    if " " in s:
+        s = s.split()[0]
+
+    s = s.rstrip(".,;)")
+
     try:
         from urllib.parse import urlparse
 
-        if "://" in s:
-            parsed = urlparse(s)
-            if parsed.netloc:
-                s = parsed.netloc.lower()
+        parsed = urlparse(s if "://" in s else f"//{s}")
+        if parsed.hostname:
+            return parsed.hostname.lower().strip("[]")
     except Exception:
         pass
 
-    # host:port 제거
-    if ":" in s:
-        s = s.split(":", 1)[0].strip()
+    if "/" in s:
+        s = s.split("/", 1)[0]
+    if "@" in s:
+        s = s.rsplit("@", 1)[-1]
+    if ":" in s and s.count(":") == 1:
+        s = s.split(":", 1)[0]
 
-    # 대표 도메인 묶음
-    if s.endswith("oaiusercontent.com"):
+    return s.lower().strip("[]")
+
+
+def _collapse_report_hostname(hostname: str) -> str:
+    host = str(hostname or "").strip().lower().strip(".")
+    if not host:
+        return ""
+
+    if host == "local-file-path":
+        return "로컬 경로"
+
+    if host.startswith("www."):
+        host = host[4:]
+
+    if re.fullmatch(r"api\d+(?:-cf)?\.ilovepdf\.com", host) or host.endswith(".ilovepdf.com"):
+        return "ilovepdf.com"
+    if re.fullmatch(r"api\d+\.iloveimg\.com", host) or host.endswith(".iloveimg.com"):
+        return "iloveimg.com"
+    if re.fullmatch(r"s\d+[-a-z]*\.convertio\.me", host) or host.endswith(".convertio.me"):
+        return "convertio.me"
+    if host.endswith(".freeconvert.com"):
+        return "freeconvert.com"
+    if host.endswith(".cloudconvert.com"):
+        return "cloudconvert.com"
+    if host.endswith(".oaiusercontent.com"):
         return "oaiusercontent.com"
+    if host.endswith(".claudeusercontent.com"):
+        return "claudeusercontent.com"
+    if host.endswith(".cloudflarestorage.com"):
+        return "cloudflarestorage.com"
+    if host.endswith(".blob.core.windows.net"):
+        return "blob.core.windows.net"
+    if host.endswith(".storage.googleapis.com") or host == "storage.googleapis.com":
+        return "storage.googleapis.com"
+    if ".s3" in host and host.endswith("amazonaws.com"):
+        return "amazonaws-s3"
+    if host.endswith(".mail.naver.com"):
+        return "mail.naver.com"
+    if host.endswith(".tiktokcdn.com") or "tiktokcdn" in host:
+        return "tiktokcdn.com"
 
-    return s
+    return host
+
+
+def normalize_report_destination(value):
+    s = str(value or "").strip()
+    if not s or s.lower() == "none":
+        return "None"
+
+    if s.startswith("\\"):
+        return "내부 파일서버"
+    if s.startswith("/") or re.match(r"^[a-z]:[\\/]", s, flags=re.IGNORECASE):
+        return "로컬 경로"
+
+    hostname = _extract_report_hostname(s)
+    collapsed = _collapse_report_hostname(hostname)
+    return collapsed or s.lower()
+
+
+def classify_dlp_destination(target_name="", target_type="", dest_detail=""):
+    target = str(target_name or "").strip().lower()
+    ttype = str(target_type or "").strip().lower()
+    raw_detail = str(dest_detail or "").strip().lower()
+    normalized_detail = normalize_report_destination(dest_detail)
+    normalized_l = str(normalized_detail or "").lower()
+    haystack = " ".join([target, ttype, raw_detail, normalized_l])
+
+    if normalized_detail == "내부 파일서버" or raw_detail.startswith("\\"):
+        return "내부 파일서버"
+    if normalized_detail == "로컬 경로" or raw_detail.startswith("/"):
+        return "로컬/앱 임시파일"
+    if re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", normalized_l):
+        return "IP 직접 접속"
+
+    if any(k in haystack for k in DLP_AI_DEST_KW):
+        return "AI/생성형AI"
+    if any(k in haystack for k in DLP_CONVERTER_DEST_KW):
+        return "문서/PDF/이미지 변환"
+    if ttype == "e-mail" or "mail" in normalized_l or ".mail." in raw_detail:
+        return "메일/대용량 첨부"
+    if target in {"kakaotalk", "nateon messenger", "naver line", "wechat", "viber", "messages", "whatsapp.root.dll"}:
+        return "메신저/고객상담"
+    if any(k in haystack for k in DLP_MESSENGER_DEST_KW):
+        return "메신저/고객상담"
+    if any(k in haystack for k in DLP_SOCIAL_DEST_KW):
+        return "소셜/미디어 업로드"
+    if any(k in haystack for k in DLP_DESIGN_DEST_KW):
+        return "디자인/협업 SaaS"
+    if ttype == "cloud services / file sharing" or target in {"airdrop outgoing", "filezilla", "google drive file stream"}:
+        return "클라우드/오브젝트 스토리지"
+    if any(k in haystack for k in DLP_CLOUD_DEST_KW):
+        return "클라우드/오브젝트 스토리지"
+    if any(k in haystack for k in DLP_HR_DEST_KW):
+        return "채용/HR"
+    if any(k in haystack for k in DLP_COMMERCE_DEST_KW):
+        return "쇼핑몰/판매자/파트너 포털"
+
+    return "웹 브라우저/기타"
 
 def validate_domain_list(domain_list: list):
     invalid_domains = []
@@ -7455,27 +7611,11 @@ class MainWindow(QMainWindow):
             )
 
         def classify_row(row):
-            target = low(get_target_name(row))
-            target_type = low(get_target_type(row))
-            dest_detail = low(get_dest_detail(row))
-
-            if kw_match(dest_detail, AI_KW):
-                return "AI 사이트"
-
-            if (target in MESSENGER_TARGETS) or kw_match(dest_detail, MESSENGER_DEST_KW):
-                return "메신저"
-
-            if target_type == "e-mail" or ("mail" in dest_detail):
-                return "메일"
-
-            if (
-                target_type == "cloud services / file sharing"
-                or target in {"airdrop outgoing", "filezilla", "google drive file stream"}
-                or kw_match(dest_detail, CLOUD_KW)
-            ):
-                return "클라우드/파일공유"
-
-            return "웹 브라우저/기타"
+            return classify_dlp_destination(
+                get_target_name(row),
+                get_target_type(row),
+                get_dest_detail(row),
+            )
 
         def classify_filename_detail(path_text):
             s = low(path_text)
@@ -7529,13 +7669,13 @@ class MainWindow(QMainWindow):
 
             for row in rows:
                 src = norm(get_source_name(row))
-                dest_detail = norm(get_dest_detail(row))
+                dest_detail = normalize_report_destination(get_dest_detail(row))
                 ext = extract_file_ext_for_report(src)
 
                 detail_label = classify_filename_detail(src)
                 detail_counter[detail_label] += 1
 
-                if dest_detail:
+                if dest_detail and dest_detail != "None":
                     dest_counter[dest_detail] += 1
 
                 if ext:
@@ -7700,18 +7840,19 @@ class MainWindow(QMainWindow):
                 dest_detail = str(group_row.get("dest_detail", "") or "")
                 cnt = int(group_row.get("count", 0) or 0)
 
-                if is_ai(dest_detail):
+                category = classify_dlp_destination(target_name, target_type, dest_detail)
+
+                if category == "AI/생성형AI":
                     ai_related = True
-                    classified_dests.append(f"AI 서비스({dest_detail}) {cnt}건({top_share(cnt, total)}%)")
-                elif is_messenger(target_name, dest_detail):
+                elif category == "메신저/고객상담":
                     messenger_related = True
-                    classified_dests.append(f"메신저({dest_detail or target_name}) {cnt}건({top_share(cnt, total)}%)")
-                elif is_mail(target_type, dest_detail):
+                elif category == "메일/대용량 첨부":
                     mail_related = True
-                    classified_dests.append(f"메일({dest_detail or target_name}) {cnt}건({top_share(cnt, total)}%)")
-                elif is_cloud(target_name, target_type, dest_detail):
+                elif category == "클라우드/오브젝트 스토리지":
                     cloud_related = True
-                    classified_dests.append(f"클라우드/파일공유({dest_detail or target_name}) {cnt}건({top_share(cnt, total)}%)")
+
+                if category != "웹 브라우저/기타":
+                    classified_dests.append(f"{category}({dest_detail or target_name}) {cnt}건({top_share(cnt, total)}%)")
 
             if classified_dests:
                 lines.append("- 주요 분류: " + " / ".join(classified_dests[:3]) + " — 민감 데이터 포함 여부 확인 필요.")
@@ -8145,7 +8286,7 @@ class MainWindow(QMainWindow):
                     for col_idx, (val, cw) in enumerate(zip(row, col_widths)):
                         if col_idx == 0:      # 소스
                             wrapped = wrap_cell_text(val, cw - 8, max_lines=5)
-                        elif col_idx == 1:    # 대상유형
+                        elif col_idx == 1:    # 분류/대상유형
                             wrapped = wrap_cell_text(val, cw - 8, max_lines=5)
                         elif col_idx == 2:    # 목적지 세부정보
                             wrapped = wrap_cell_text(val, cw - 8, max_lines=1)
@@ -8910,7 +9051,7 @@ class MainWindow(QMainWindow):
                     y = mini_table_multiline(
                         inner_x,
                         y,
-                        ["소스", "대상유형", "목적지 세부정보", "건수"],
+                        ["소스", "분류/대상유형", "목적지 세부정보", "건수"],
                         dept_rows,
                         detail_col_widths,
                         font_size=6.8,
@@ -15035,12 +15176,15 @@ Command Line :
                     for name, cnt in group["target_types"].most_common(5)
                 ]
                 target_text = "\n".join(target_parts) if target_parts else "-"
+                dest_category = classify_dlp_destination("", target_text, dest_name)
+                target_text_with_category = f"{dest_category}\n{target_text}" if target_text != "-" else dest_category
 
                 top_dest_group_rows.append({
                     "dest_detail": dest_name,
                     "count": group["count"],
                     "source_text": source_text,
-                    "target_text": target_text,
+                    "target_text": target_text_with_category,
+                    "category": dest_category,
                 })
 
             dlp_dept_rows.append({
