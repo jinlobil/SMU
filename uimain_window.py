@@ -9721,6 +9721,15 @@ class MainWindow(QMainWindow):
                         y -= 12
                     c.setFillColor(colors.black)
 
+                y = new_page()
+                y = section_bar("DLP 목적지별 인사이트", y)
+                dlp_destination_rows = self.build_dlp_destination_insight_rows(
+                    dlp_rows,
+                    dept_resolver=report_identity_resolver,
+                )
+                perf.mark("dlp destination insights build")
+                y = self.draw_dlp_destination_insights(c, y, dlp_destination_rows, rf, MARGIN, CONTENT_W)
+                perf.mark("dlp destination insights render")
 
             draw_page_footer()
             c.save()
