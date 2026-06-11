@@ -8173,6 +8173,10 @@ class MainWindow(QMainWindow):
                 key=lambda x: (-x[1]["total"], x[0])
             )[:5]:
                 top_departments = dest_stat["departments"].most_common(3)
+                department_total = sum(dest_stat["departments"].values())
+                top_department_total = sum(cnt for _, cnt in top_departments)
+                department_other_count = max(department_total - top_department_total, 0)
+                department_other_dept_count = max(len(dest_stat["departments"]) - len(top_departments), 0)
                 top_sources = [
                     (shorten_path_text(name, 34), cnt)
                     for name, cnt in dest_stat["sources"].most_common(3)
@@ -8185,6 +8189,8 @@ class MainWindow(QMainWindow):
                     "blocked": dest_stat["blocked"],
                     "share": round((dest_stat["total"] / cat_total) * 100, 1) if cat_total else 0.0,
                     "top_departments": top_departments,
+                    "department_other_count": department_other_count,
+                    "department_other_dept_count": department_other_dept_count,
                     "top_sources": top_sources,
                     "top_target_types": dest_stat["target_types"].most_common(2),
                 })
@@ -8387,7 +8393,12 @@ class MainWindow(QMainWindow):
 
             dest_rows = []
             for dest in top_destinations[:5]:
-                dept_text = "\n".join([f"{name}({cnt})" for name, cnt in dest.get("top_departments", [])]) or "-"
+                dept_lines = [f"{name}({cnt})" for name, cnt in dest.get("top_departments", [])]
+                department_other_count = int(dest.get("department_other_count", 0) or 0)
+                department_other_dept_count = int(dest.get("department_other_dept_count", 0) or 0)
+                if department_other_count > 0:
+                    dept_lines.append(f"외 {department_other_dept_count}개 부서({department_other_count})")
+                dept_text = "\n".join(dept_lines) or "-"
                 source_text = "\n".join([f"{name}({cnt})" for name, cnt in dest.get("top_sources", [])]) or "-"
                 dest_rows.append([
                     dest.get("destination", "-"),
