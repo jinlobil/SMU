@@ -5915,6 +5915,55 @@ class SophosXdrQueryClient:
 # ======================================================
 # Main UI
 # ======================================================
+
+
+class ReportPerfTimer:
+    def __init__(self, name="report"):
+        self.name = name
+        self.started_at = time.perf_counter()
+        self.last_at = self.started_at
+
+    def mark(self, label):
+        now = time.perf_counter()
+        log.info(
+            "[REPORT PERF] %s: %s %.3fs (total %.3fs)",
+            self.name,
+            label,
+            now - self.last_at,
+            now - self.started_at,
+        )
+        self.last_at = now
+
+    def finish(self):
+        now = time.perf_counter()
+        log.info("[REPORT PERF] %s: total %.3fs", self.name, now - self.started_at)
+        self.last_at = now
+
+
+class SecurityReportWorker(QThread):
+    progress = pyqtSignal(str)
+    completed = pyqtSignal(str)
+    failed = pyqtSignal(str)
+
+    def __init__(self, report_builder, start_dt, end_dt, parent=None):
+        super().__init__(parent)
+        self.report_builder = report_builder
+        self.start_dt = start_dt
+        self.end_dt = end_dt
+
+    def run(self):
+        try:
+            pdf_path = self.report_builder(
+                self.start_dt,
+                self.end_dt,
+                progress_cb=self.progress.emit,
+            )
+            self.completed.emit(str(pdf_path or ""))
+        except Exception as e:
+            log.exception("Security report worker failed")
+            self.failed.emit(f"{type(e).__name__}: {e}")
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -7528,6 +7577,60 @@ class MainWindow(QMainWindow):
         event_name = str(row.get("event_id", "")).strip()
         return "차단" in event_name
 
+    def build_report_identity_resolver(self):
+        identity_cache = {}
+
+        def resolve(machine_name):
+            key = str(machine_name or "").strip()
+            cache_key = normalize_name_key(key)
+            if cache_key in identity_cache:
+                return identity_cache[cache_key]
+
+            endpoint_user_name, endpoint_user_id, user_type = get_endpoint_user_by_machine_name(key)
+
+            if user_type == "shared_pc":
+                result = {
+                    "user_name": endpoint_user_name,
+                    "user_id": endpoint_user_id,
+                    "user_type": user_type,
+                    "dept_name": "공용PC",
+                    "dept_code": "",
+                    "is_unclassified": False,
+                    "display_name": endpoint_user_name or key,
+                }
+            else:
+                dept_name, dept_code = get_org_info_by_user(endpoint_user_name, endpoint_user_id, key)
+                is_unclassified = False
+                display_name = str(endpoint_user_name or "").strip()
+
+                if not dept_name or dept_name == "미분류":
+                    manual_dept = get_report_exception_dept(endpoint_user_name)
+                    if not manual_dept:
+                        manual_dept = get_report_exception_dept(key)
+                    if manual_dept:
+                        dept_name = manual_dept
+                        dept_code = ""
+                    else:
+                        dept_name = "미분류"
+                        if not display_name:
+                            display_name = f"[NO_USER] {key}"
+                        is_unclassified = True
+
+                result = {
+                    "user_name": endpoint_user_name,
+                    "user_id": endpoint_user_id,
+                    "user_type": user_type,
+                    "dept_name": dept_name or "미분류",
+                    "dept_code": dept_code or "",
+                    "is_unclassified": is_unclassified,
+                    "display_name": display_name,
+                }
+
+            identity_cache[cache_key] = result
+            return result
+
+        return resolve
+
     def build_dlp_overall_insight_lines(self, dlp_rows):
         if not dlp_rows:
             return ["DLP 이벤트가 확인되지 않았습니다."]
@@ -7946,7 +8049,7 @@ class MainWindow(QMainWindow):
 
         return lines
 
-    def build_dlp_destination_insight_rows(self, dlp_rows):
+    def build_dlp_destination_insight_rows(self, dlp_rows, dept_resolver=None):
         if not dlp_rows:
             return []
 
@@ -7985,6 +8088,15 @@ class MainWindow(QMainWindow):
 
             if not key:
                 dept_cache[key] = "미분류"
+                return dept_cache[key]
+
+            if dept_resolver:
+                resolved = dept_resolver(key)
+                if isinstance(resolved, dict):
+                    dept_name = str(resolved.get("dept_name", "미분류") or "미분류")
+                else:
+                    dept_name = str(resolved or "미분류")
+                dept_cache[key] = dept_name
                 return dept_cache[key]
 
             endpoint_user_name, endpoint_user_id, user_type = get_endpoint_user_by_machine_name(key)
@@ -8372,18 +8484,70 @@ class MainWindow(QMainWindow):
 
 
     def generate_security_report_v2(self):
+        self.start_security_report_worker()
+
+    def start_security_report_worker(self):
+        if getattr(self, "security_report_worker", None) and self.security_report_worker.isRunning():
+            QMessageBox.information(self, "Report", "보고서 생성이 이미 진행 중입니다.")
+            return
+
+        start_dt = combine_date_time(self.report_start_date, self.report_start_time)
+        end_dt = combine_date_time(self.report_end_date, self.report_end_time)
+
+        self.security_report_worker = SecurityReportWorker(self._generate_security_report_v2, start_dt, end_dt, self)
+        self.security_report_worker.progress.connect(self.on_security_report_progress)
+        self.security_report_worker.completed.connect(self.on_security_report_finished)
+        self.security_report_worker.failed.connect(self.on_security_report_failed)
+
+        if hasattr(self, "btn_security_report"):
+            self.btn_security_report.setEnabled(False)
+            self.btn_security_report.setText("Generating Report...")
+        self.statusBar().showMessage("보고서 생성 준비 중...")
+        self.security_report_worker.start()
+
+    def on_security_report_progress(self, message):
+        self.statusBar().showMessage(str(message or "보고서 생성 중..."))
+
+    def on_security_report_finished(self, pdf_path):
+        if hasattr(self, "btn_security_report"):
+            self.btn_security_report.setEnabled(True)
+            self.btn_security_report.setText("Download Security Report (PDF)")
+        self.statusBar().showMessage("보고서 생성 완료", 5000)
+        QMessageBox.information(self, "완료", f"보고서 저장 완료\n{pdf_path}")
         try:
+            os.startfile(pdf_path)
+        except Exception:
+            pass
+
+    def on_security_report_failed(self, error_message):
+        if hasattr(self, "btn_security_report"):
+            self.btn_security_report.setEnabled(True)
+            self.btn_security_report.setText("Download Security Report (PDF)")
+        self.statusBar().showMessage("보고서 생성 실패", 5000)
+        QMessageBox.critical(self, "오류", str(error_message or "보고서 생성 실패"))
+
+    def _generate_security_report_v2(self, start_dt, end_dt, progress_cb=None):
+        perf = ReportPerfTimer("security_report")
+
+        def progress(message):
+            log.info("[REPORT] %s", message)
+            if progress_cb:
+                progress_cb(message)
+
+        try:
+            progress("데이터 로딩 중...")
             os.makedirs(REPORT_DIR, exist_ok=True)
 
-            start_dt   = combine_date_time(self.report_start_date, self.report_start_time)
-            end_dt     = combine_date_time(self.report_end_date,   self.report_end_time)
             start_date = start_dt.strftime("%Y-%m-%d")
-            end_date   = end_dt.strftime("%Y-%m-%d")
+            end_date = end_dt.strftime("%Y-%m-%d")
 
             endpoint_detections = load_endpoint_detections_by_range(start_date, end_date)
             xdr_detections_report = load_xdr_email_detections_by_range(start_date, end_date)
-            emails     = load_emails_by_range(start_date, end_date)
-            dlp_rows   = load_dlp_by_range(start_date, end_date)
+            emails = load_emails_by_range(start_date, end_date)
+            dlp_rows = load_dlp_by_range(start_date, end_date)
+            perf.mark("load data")
+            progress("DLP 분석 중...")
+            report_identity_resolver = self.build_report_identity_resolver()
 
             dlp_total_count = len(dlp_rows)
             dlp_blocked_rows = [r for r in dlp_rows if self.is_dlp_blocked_row(r)]
@@ -8453,7 +8617,16 @@ class MainWindow(QMainWindow):
                 key=lambda x: (-x["total"], x["dept_name"])
             )
 
-            metrics = self.build_security_insight_metrics(endpoint_detections, emails, dlp_rows, detection_timeline)
+            perf.mark("pre-metrics aggregation")
+            metrics = self.build_security_insight_metrics(
+                endpoint_detections,
+                emails,
+                dlp_rows,
+                detection_timeline,
+                report_identity_resolver=report_identity_resolver,
+            )
+            perf.mark("security metrics")
+            progress("PDF 생성 중...")
             dlp_dept_rank        = metrics.get("dlp_dept_rank", [])
             dlp_dept_block_rank  = metrics.get("dlp_dept_block_rank", [])
             unclassified_user_counts = metrics.get("unclassified_user_counts", [])
@@ -8483,6 +8656,7 @@ class MainWindow(QMainWindow):
             c          = canvas.Canvas(pdf_path, pagesize=A4)
             PAGE_W, _  = A4
             rf         = self.setup_report_font()
+            perf.mark("pdf setup")
             MARGIN     = 45
             CONTENT_W  = PAGE_W - MARGIN * 2   # ≈ 505pt
 
@@ -9504,22 +9678,24 @@ class MainWindow(QMainWindow):
 
                 y = new_page()
                 y = section_bar("DLP 목적지별 인사이트", y)
-                dlp_destination_rows = self.build_dlp_destination_insight_rows(dlp_rows)
+                dlp_destination_rows = self.build_dlp_destination_insight_rows(
+                    dlp_rows,
+                    dept_resolver=report_identity_resolver,
+                )
+                perf.mark("dlp destination insights build")
                 y = self.draw_dlp_destination_insights(c, y, dlp_destination_rows, rf, MARGIN, CONTENT_W)
+                perf.mark("dlp destination insights render")
 
 
             c.save()
+            perf.mark("pdf save")
+            progress("저장 완료")
+            perf.finish()
+            return pdf_path
 
-            QMessageBox.information(self, "완료", f"보고서 저장 완료\n{pdf_path}")
-
-            try:
-                os.startfile(pdf_path)
-            except Exception:
-                pass
-
-        except Exception as e:
+        except Exception:
             log.exception("generate_security_report_v2 failed")
-            QMessageBox.critical(self, "오류", f"{type(e).__name__}: {e}")
+            raise
 
     def normalize_logical_tab_name(self, tab_name):
         return self.logical_tab_aliases.get(str(tab_name or ""), str(tab_name or ""))
@@ -14929,7 +15105,8 @@ Command Line :
             self.prepare_form_control(w, height=38)
 
         btn_report = QPushButton("Download Security Report (PDF)")
-        btn_report.clicked.connect(self.generate_security_report_v2)
+        self.btn_security_report = btn_report
+        btn_report.clicked.connect(self.start_security_report_worker)
         btn_report.setStyleSheet(btn_style)
         btn_report.setMinimumHeight(38)
 
@@ -15316,7 +15493,7 @@ Command Line :
         return "", ""
 
 
-    def build_security_insight_metrics(self, endpoint_detections, emails, dlp_rows, detection_timeline=None):
+    def build_security_insight_metrics(self, endpoint_detections, emails, dlp_rows, detection_timeline=None, report_identity_resolver=None):
         rule_counter = Counter()
         host_counter = Counter()
         file_counter = Counter()
@@ -15498,30 +15675,42 @@ Command Line :
                 if machine_name:
                     dlp_host_day_counter[machine_name.lower()].add(day_key)
 
-            endpoint_user_name, endpoint_user_id, user_type = get_endpoint_user_by_machine_name(machine_name)
-
-            if user_type == "shared_pc":
-                dept_name = "공용PC"
-                dept_code = ""
-            else:
-                dept_name, dept_code = get_org_info_by_user(endpoint_user_name, endpoint_user_id, machine_name)
-
-                if not dept_name or dept_name == "미분류":
-                    manual_dept = get_report_exception_dept(endpoint_user_name)
-
-                    if not manual_dept:
-                        manual_dept = get_report_exception_dept(machine_name)
-                    if manual_dept:
-                        dept_name = manual_dept
-                        dept_code = ""
-                    else:
-                        dept_name = "미분류"
-
-                        display_name = str(endpoint_user_name or "").strip()
-                        if not display_name:
-                            display_name = f"[NO_USER] {machine_name}"
-
+            if report_identity_resolver:
+                identity_info = report_identity_resolver(machine_name)
+                endpoint_user_name = str(identity_info.get("user_name", "") or "")
+                endpoint_user_id = str(identity_info.get("user_id", "") or "")
+                user_type = str(identity_info.get("user_type", "") or "")
+                dept_name = str(identity_info.get("dept_name", "미분류") or "미분류")
+                dept_code = str(identity_info.get("dept_code", "") or "")
+                if identity_info.get("is_unclassified"):
+                    display_name = str(identity_info.get("display_name", "") or "").strip()
+                    if display_name:
                         unclassified_user_counter[display_name] += 1
+            else:
+                endpoint_user_name, endpoint_user_id, user_type = get_endpoint_user_by_machine_name(machine_name)
+
+                if user_type == "shared_pc":
+                    dept_name = "공용PC"
+                    dept_code = ""
+                else:
+                    dept_name, dept_code = get_org_info_by_user(endpoint_user_name, endpoint_user_id, machine_name)
+
+                    if not dept_name or dept_name == "미분류":
+                        manual_dept = get_report_exception_dept(endpoint_user_name)
+
+                        if not manual_dept:
+                            manual_dept = get_report_exception_dept(machine_name)
+                        if manual_dept:
+                            dept_name = manual_dept
+                            dept_code = ""
+                        else:
+                            dept_name = "미분류"
+
+                            display_name = str(endpoint_user_name or "").strip()
+                            if not display_name:
+                                display_name = f"[NO_USER] {machine_name}"
+
+                            unclassified_user_counter[display_name] += 1
 
             stat = dept_stats[dept_name]
             stat["total"] += 1
