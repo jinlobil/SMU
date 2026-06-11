@@ -590,44 +590,80 @@ DLP_AI_DEST_KW = [
     "gemini", "copilot", "perplexity", "ppl-ai-file-upload", "midjourney",
     "magnific", "klingai", "zeta-ai", "aspose.ai", "genspark",
     "aicreation", "gamma.app", "vizcom", "firefly", "sensei.adobe",
+    "vyro.ai", "chaton.ai", "flowith.io", "linnk.ai", "upscale.media",
+    "miricanvas", "clovanote", "deevid.ai", "nano-banana.ai", "napkin.ai",
+    "picaapi.com", "meshy.ai", "topazlabs", "photoroom",
+    "picsart", "krea.ai", "use.ai", "clova-x.naver.com", "polarishare",
+    "livewiki", "freepik", "chat-orchestrator-prod", "aistudio.google.com", "aigc",
 ]
 
 DLP_CONVERTER_DEST_KW = [
     "ilovepdf.com", "iloveimg.com", "convertio.me", "cloudconvert.com",
     "smallpdf", "freeconvert.com", "pdfaid.com", "ezgif.com",
+    "allinpdf.com", "pdf24.org", "pdfguru.com", "thebestpdf.com",
+    "onlinedoctranslator.com", "tinypng.com", "tinyjpg.com", "imagetostl.com",
+    "runconvert.com", "transloadit.com", "pdfhouse.com",
 ]
 
 DLP_MESSENGER_DEST_KW = [
-    "slack.com", "chat.google.com", "talk.naver.com", "channel.io",
-    "intercomcdn.com", "intercomcdn.eu", "zendesk.com", "instagram.com",
+    "slack.com", "slack-edge.com", "chat.google.com", "talk.naver.com",
+    "channel.io", "intercomcdn.com", "intercomcdn.eu", "zendesk.com",
+    "instagram.com", "whatsapp", "skype.com", "chat.linkareer.com",
 ]
 
 DLP_CLOUD_DEST_KW = [
     "dropbox", "onedrive", "sharepoint", "box.com", "notion", "confluence",
     "wetransfer", "mega", "icloud", "pcloud", "cloudflarestorage.com",
-    "blob.core.windows.net", "storage.googleapis.com", "s3.amazonaws.com",
-    "amazonaws-s3", "s3-accelerate.amazonaws.com", "sandollcloud.com",
+    "blob.core.windows.net", "storage.googleapis.com", "firebasestorage.googleapis.com",
+    "s3.amazonaws.com", "amazonaws-s3", "s3-accelerate.amazonaws.com",
+    "sandollcloud.com", "mybox.naver.com", "ncloud.com", "hancomdocs.com",
+    "graph.microsoft.com", "officeapps.live.com", "teams.microsoft.com",
+    "my.microsoftpersonalcontent.com", "objects-origin.githubusercontent.com",
+    "supabase.co", "cloudfront.net", "aliyuncs.com", "ktcloud.com",
 ]
 
 DLP_DESIGN_DEST_KW = [
     "figma.com", "canva.com", "miro.com", "lucid.app", "adobe.io",
-    "shutterstock.com", "sandollcloud.com",
+    "shutterstock.com", "sandollcloud.com", "bizhows.com", "mangoboard",
+    "freepik", "photoroom", "picsart", "krea.ai", "topazlabs",
 ]
 
 DLP_SOCIAL_DEST_KW = [
     "upload.youtube.com", "upload.x.com", "tiktokcdn", "facebook.com",
-    "threads.com", "pinterest.com", "x.com",
+    "threads.com", "pinterest.com", "x.com", "instagram.com",
+    "upload.facebook.com", "vupload-edge.facebook.com", "u.pinimg.com",
 ]
 
 DLP_COMMERCE_DEST_KW = [
     "seller", "vendorcentral.amazon", "sellercentral.amazon", "partner.",
     "partners.", "lotteon", "cjonstyle", "temu.com", "wconcept",
-    "wadiz", "coupang", "navercorp.com",
+    "wadiz", "coupang", "navercorp.com", "shopee", "alibaba",
+    "made-in-china", "baemin", "coupangeats", "29cm", "giftishow",
+    "shopping.naver.com", "ssg", "kurly", "welstorymall", "kcp.co.kr",
 ]
 
 DLP_HR_DEST_KW = [
     "saramin.co.kr", "greetinghr.com", "recruiter.co.kr", "recruit.",
-    "ninehire", "albamon.com",
+    "ninehire", "albamon.com", "jobkorea.co.kr", "mokahr.com",
+    "incruit.com", "jobda.im", "careernote.io", "specter.co.kr",
+    "sterlingdirect.com", "ashbyhq",
+]
+
+DLP_MARKETING_DEST_KW = [
+    "gfa.naver.com", "ad-creative.gfa.naver.com", "ads.naver.com",
+    "doubleclick.net", "groobee.io", "dable.io", "stackadapt.com",
+    "tiktok.com", "onaudience.com", "ipredictive.com", "mediamixer.co.kr",
+    "adpnut.com", "adnmore.co.kr", "mtgroup.kr", "doyouad.com",
+    "sauceflex.com", "quantummetric.com", "dataflare.net",
+]
+
+DLP_BUSINESS_DEST_KW = [
+    "opensurvey.io", "bsgglobal.net", "licensingworkspace.com", "hancomdocs.com",
+    "bizhows.com", "pokemonkorea.co.kr", "fss.or.kr", "energy.or.kr",
+    "rnd.or.kr", "worldjob.or.kr", "axa.co.kr", "meritzfire.com",
+    "samsungfire.com", "kbinsure.co.kr", "easypay.co.kr", "ezwel.com",
+    "pay.naver.com", "payoneer.com", "typeform", "atlassian.net",
+    "notability.com", "githubusercontent.com", "captcha.com", "google.com",
 ]
 
 
@@ -692,6 +728,10 @@ def _collapse_report_hostname(hostname: str) -> str:
         return "freeconvert.com"
     if host.endswith(".cloudconvert.com"):
         return "cloudconvert.com"
+    if host.endswith(".transloadit.com"):
+        return "transloadit.com"
+    if host.startswith("filetools") and host.endswith(".pdf24.org"):
+        return "pdf24.org"
     if host.endswith(".oaiusercontent.com"):
         return "oaiusercontent.com"
     if host.endswith(".claudeusercontent.com"):
@@ -700,9 +740,16 @@ def _collapse_report_hostname(hostname: str) -> str:
         return "cloudflarestorage.com"
     if host.endswith(".blob.core.windows.net"):
         return "blob.core.windows.net"
+    if host.endswith(".sharepoint.com"):
+        return "sharepoint.com"
     if host.endswith(".storage.googleapis.com") or host == "storage.googleapis.com":
         return "storage.googleapis.com"
-    if ".s3" in host and host.endswith("amazonaws.com"):
+    if (
+        host == "s3.amazonaws.com"
+        or host.startswith("s3.") and host.endswith("amazonaws.com")
+        or host.startswith("s3-") and host.endswith("amazonaws.com")
+        or ".s3" in host and host.endswith("amazonaws.com")
+    ):
         return "amazonaws-s3"
     if host.endswith(".mail.naver.com"):
         return "mail.naver.com"
@@ -762,8 +809,12 @@ def classify_dlp_destination(target_name="", target_type="", dest_detail=""):
         return "클라우드/오브젝트 스토리지"
     if any(k in haystack for k in DLP_HR_DEST_KW):
         return "채용/HR"
+    if any(k in haystack for k in DLP_MARKETING_DEST_KW):
+        return "광고/마케팅/분석"
     if any(k in haystack for k in DLP_COMMERCE_DEST_KW):
         return "쇼핑몰/판매자/파트너 포털"
+    if any(k in haystack for k in DLP_BUSINESS_DEST_KW):
+        return "업무/공공/금융 포털"
 
     return "웹 브라우저/기타"
 
@@ -8049,6 +8100,8 @@ class MainWindow(QMainWindow):
             "소셜/미디어 업로드": f"{dest} 소셜·미디어 업로드 목적지가 확인됩니다. 공개 채널 업로드 여부와 파일 성격을 점검하세요.",
             "쇼핑몰/판매자/파트너 포털": f"{dest} 판매자·파트너 포털 목적지가 확인됩니다. 업무상 제출 파일인지 확인하고 반복 업로드를 점검하세요.",
             "채용/HR": f"{dest} 채용·HR 목적지가 확인됩니다. 이력서·증빙자료 등 개인정보 포함 파일 처리 적정성을 확인하세요.",
+            "광고/마케팅/분석": f"{dest} 광고·마케팅·분석 목적지가 확인됩니다. 캠페인 소재나 고객 데이터 업로드 여부를 확인하세요.",
+            "업무/공공/금융 포털": f"{dest} 업무·공공·금융 포털 목적지가 확인됩니다. 정상 제출 업무인지와 첨부파일의 민감도 확인이 필요합니다.",
             "내부 파일서버": f"{dest} 내부 파일서버 접근이 확인됩니다. 외부 반출보다 내부 공유 경로 사용 맥락을 확인하세요.",
             "로컬/앱 임시파일": f"{dest} 로컬 또는 앱 임시 경로가 확인됩니다. 실제 전송 대상과 원본 앱을 추가 확인하세요.",
             "IP 직접 접속": f"{dest} IP 직접 접속 목적지가 확인됩니다. 서비스 식별과 업무 관련성을 우선 확인하세요.",
