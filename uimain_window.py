@@ -8322,6 +8322,92 @@ class MainWindow(QMainWindow):
 
             return y_table - 8
 
+        def draw_category_visual(rows, y_chart):
+            if not rows:
+                return y_chart
+
+            chart_h = 152
+            y_chart = self.check_page(c, y_chart, threshold=chart_h + 40, font_name=rf, font_size=8)
+            card_x = margin
+            card_y = y_chart - chart_h + 4
+            card_w = content_w
+            colors_palette = [
+                colors.HexColor("#0b63ff"),
+                colors.HexColor("#16a3a3"),
+                colors.HexColor("#8b5cf6"),
+                colors.HexColor("#f59e0b"),
+                colors.HexColor("#ef4444"),
+            ]
+
+            # 프로그램 UI 톤과 맞춘 밝은 카드 + 부드러운 그림자
+            c.setFillColor(colors.HexColor("#dbeafe"))
+            c.roundRect(card_x + 2.2, card_y - 2.2, card_w, chart_h, 10, fill=1, stroke=0)
+            c.setFillColor(colors.HexColor("#ffffff"))
+            c.roundRect(card_x, card_y, card_w, chart_h, 10, fill=1, stroke=0)
+            c.setStrokeColor(colors.HexColor("#cfe1ff"))
+            c.setLineWidth(0.7)
+            c.roundRect(card_x, card_y, card_w, chart_h, 10, fill=0, stroke=1)
+
+            c.setFont(rf, 8.4)
+            c.setFillColor(colors.HexColor("#005ce6"))
+            c.drawString(card_x + 12, y_chart - 14, "Top 분류 시각화")
+            c.setFont(rf, 7)
+            c.setFillColor(colors.HexColor("#667085"))
+            c.drawRightString(card_x + card_w - 12, y_chart - 14, "총건수 기준 / 허용·차단 포함")
+
+            max_total = max(int(row.get("total", 0) or 0) for row in rows) or 1
+            bar_x = card_x + 14
+            bar_y = y_chart - 36
+            label_w = 86
+            bar_w = 190
+            row_gap = 18
+
+            for idx, row in enumerate(rows[:5]):
+                total = int(row.get("total", 0) or 0)
+                category = str(row.get("category", "-"))
+                y_row = bar_y - idx * row_gap
+                color = colors_palette[idx % len(colors_palette)]
+                share_w = max(4, bar_w * total / max_total)
+
+                c.setFont(rf, 6.8)
+                c.setFillColor(colors.HexColor("#344054"))
+                label = f"{idx + 1}. {category}"
+                while stringWidth(label, rf, 6.8) > label_w and len(label) > 5:
+                    label = label[:-2] + "…"
+                c.drawString(bar_x, y_row, label)
+
+                c.setFillColor(colors.HexColor("#eef4ff"))
+                c.roundRect(bar_x + label_w, y_row - 5, bar_w, 7, 3, fill=1, stroke=0)
+                c.setFillColor(color)
+                c.roundRect(bar_x + label_w, y_row - 5, share_w, 7, 3, fill=1, stroke=0)
+                c.setFillColor(colors.HexColor("#1f2937"))
+                c.setFont(rf, 6.8)
+                c.drawRightString(bar_x + label_w + bar_w + 42, y_row - 1, f"{total:,}건")
+
+            pie_rows = rows[:5]
+            pie_sum = sum(int(row.get("total", 0) or 0) for row in pie_rows) or 1
+            cx = card_x + card_w - 96
+            cy = card_y + 78
+            radius = 42
+            start_angle = 90
+            for idx, row in enumerate(pie_rows):
+                total = int(row.get("total", 0) or 0)
+                extent = 360 * total / pie_sum
+                c.setFillColor(colors_palette[idx % len(colors_palette)])
+                c.wedge(cx - radius, cy - radius, cx + radius, cy + radius, start_angle, extent, fill=1, stroke=0)
+                start_angle += extent
+
+            c.setFillColor(colors.white)
+            c.circle(cx, cy, radius * 0.55, fill=1, stroke=0)
+            c.setFillColor(colors.HexColor("#005ce6"))
+            c.setFont(rf, 10)
+            c.drawCentredString(cx, cy + 3, "TOP 5")
+            c.setFillColor(colors.HexColor("#667085"))
+            c.setFont(rf, 6.8)
+            c.drawCentredString(cx, cy - 9, f"{pie_sum:,}건")
+            c.setFillColor(colors.black)
+            return y_chart - chart_h - 12
+
         if not category_rows:
             c.setFont(rf, 10)
             c.setFillColor(colors.black)
@@ -8333,6 +8419,8 @@ class MainWindow(QMainWindow):
         c.setFillColor(colors.HexColor("#374151"))
         c.drawString(margin + 6, y_pos, f"전체 DLP 목적지 중 총건수 상위 5개 분류를 표시합니다. (상위 분류 합계 {top_total:,}건)")
         y_pos -= 18
+
+        y_pos = draw_category_visual(category_rows, y_pos)
 
         summary_rows = []
         for idx, row in enumerate(category_rows, 1):
@@ -8359,7 +8447,7 @@ class MainWindow(QMainWindow):
             line_height=8
         )
 
-        for row in category_rows:
+        for rank_idx, row in enumerate(category_rows, start=1):
             category = row.get("category", "-")
             total_count = int(row.get("total", 0) or 0)
             allowed = int(row.get("allowed", 0) or 0)
@@ -8368,20 +8456,28 @@ class MainWindow(QMainWindow):
             top_destinations = row.get("top_destinations", [])
             top_destination = top_destinations[0].get("destination", "-") if top_destinations else "-"
 
-            y_pos = self.check_page(c, y_pos, threshold=150, font_name=rf, font_size=9)
-            c.setFillColor(colors.HexColor("#eef3fb"))
-            c.rect(margin, y_pos - 2, content_w, 19, fill=1, stroke=0)
-            c.setStrokeColor(colors.HexColor("#2f5ea8"))
-            c.line(margin, y_pos + 17, margin + content_w, y_pos + 17)
-            c.line(margin, y_pos - 2, margin + content_w, y_pos - 2)
+            y_pos -= 8
+            y_pos = self.check_page(c, y_pos, threshold=178, font_name=rf, font_size=9)
+            c.setFillColor(colors.HexColor("#dbeafe"))
+            c.roundRect(margin + 1.6, y_pos - 22.6, content_w, 25, 8, fill=1, stroke=0)
+            c.setFillColor(colors.HexColor("#eef5ff"))
+            c.roundRect(margin, y_pos - 21, content_w, 25, 8, fill=1, stroke=0)
+            c.setStrokeColor(colors.HexColor("#7eb2ff"))
+            c.setLineWidth(0.6)
+            c.roundRect(margin, y_pos - 21, content_w, 25, 8, fill=0, stroke=1)
+            c.setFillColor(colors.HexColor("#005ce6"))
+            c.roundRect(margin + 8, y_pos - 15, 38, 13, 6, fill=1, stroke=0)
+            c.setFont(rf, 6.8)
+            c.setFillColor(colors.white)
+            c.drawCentredString(margin + 27, y_pos - 11, f"TOP {rank_idx}")
             c.setFont(rf, 8.5)
-            c.setFillColor(colors.black)
+            c.setFillColor(colors.HexColor("#111827"))
             c.drawString(
-                margin + 6,
-                y_pos + 4,
+                margin + 54,
+                y_pos - 11,
                 f"{category} | 총 {total_count:,}건 / 허용 {allowed:,}건 / 차단 {blocked:,}건 / 전체 {share}%"
             )
-            y_pos -= 18
+            y_pos -= 31
 
             comment = self.get_dlp_destination_category_comment(category, top_destination)
             c.setFont(rf, 7.4)
@@ -8418,7 +8514,7 @@ class MainWindow(QMainWindow):
                 font_size=6.7,
                 line_height=8
             )
-            y_pos -= 8
+            y_pos -= 16
 
         c.setFillColor(colors.black)
         return y_pos
@@ -8673,19 +8769,49 @@ class MainWindow(QMainWindow):
 
             # ── 공통 헬퍼 ────────────────────────────────────────
             page_state = {"number": 1}
+            theme = {
+                "page_bg": colors.HexColor("#f8fbff"),
+                "primary": colors.HexColor("#005ce6"),
+                "primary_dark": colors.HexColor("#174ea6"),
+                "border": colors.HexColor("#bfdbfe"),
+                "shadow": colors.HexColor("#d8e8f6"),
+                "text": colors.HexColor("#111827"),
+                "muted": colors.HexColor("#667085"),
+                "card": colors.white,
+            }
+
+            def draw_page_background():
+                c.saveState()
+                c.setFillColor(theme["page_bg"])
+                c.rect(0, 0, PAGE_W, A4[1], fill=1, stroke=0)
+                c.restoreState()
+
+            def draw_soft_card(x, y_top, w, h, radius=10, fill=None, stroke=None, shadow=True):
+                fill = fill or theme["card"]
+                stroke = stroke or theme["border"]
+                if shadow:
+                    c.setFillColor(theme["shadow"])
+                    c.roundRect(x + 2.4, y_top - h - 2.6, w, h, radius, fill=1, stroke=0)
+                c.setFillColor(fill)
+                c.roundRect(x, y_top - h, w, h, radius, fill=1, stroke=0)
+                c.setStrokeColor(stroke)
+                c.setLineWidth(0.65)
+                c.roundRect(x, y_top - h, w, h, radius, fill=0, stroke=1)
 
             def draw_page_footer():
                 c.saveState()
                 c.setFont(rf, 7)
-                c.setFillColor(colors.HexColor("#6b7280"))
+                c.setFillColor(theme["muted"])
                 c.drawCentredString(PAGE_W / 2, 24, f"- {page_state['number']} -")
                 c.restoreState()
 
             def after_show_page():
                 page_state["number"] += 1
+                draw_page_background()
                 c.setFont(rf, 10)
-                c.setFillColor(colors.black)
+                c.setFillColor(theme["text"])
 
+            draw_page_background()
             c._smu_report_draw_footer = draw_page_footer
             c._smu_report_after_show_page = after_show_page
 
@@ -8696,13 +8822,15 @@ class MainWindow(QMainWindow):
                 return 810
 
             def section_bar(title, y_pos):
-                c.setFillColorRGB(0.12, 0.29, 0.55)
-                c.rect(MARGIN, y_pos - 5, CONTENT_W, 22, fill=1, stroke=0)
+                c.setFillColor(colors.HexColor("#dbeafe"))
+                c.roundRect(MARGIN + 1.8, y_pos - 24.2, CONTENT_W, 24, 8, fill=1, stroke=0)
+                c.setFillColor(theme["primary_dark"])
+                c.roundRect(MARGIN, y_pos - 22, CONTENT_W, 24, 8, fill=1, stroke=0)
                 c.setFillGray(1)
                 c.setFont(rf, 11)
-                c.drawString(MARGIN + 6, y_pos, title)
-                c.setFillGray(0)
-                return y_pos - 32
+                c.drawString(MARGIN + 10, y_pos - 14, title)
+                c.setFillColor(theme["text"])
+                return y_pos - 38
 
             def numbered_list(lines, y_pos, indent=MARGIN + 10):
                 c.setFont(rf, 10)
@@ -9039,28 +9167,24 @@ class MainWindow(QMainWindow):
 
                 return y_pos - 6
 
-            def summary_mini_card(x, y_pos, w, h, title, value, sub_text="", accent=(0.93, 0.96, 1.0)):
-                c.setFillColorRGB(*accent)
-                c.roundRect(x, y_pos - h, w, h, 6, fill=1, stroke=0)
+            def summary_mini_card(x, y_pos, w, h, title, value, sub_text="", accent=None):
+                accent = accent or colors.HexColor("#eef5ff")
+                draw_soft_card(x, y_pos, w, h, radius=9, fill=accent, stroke=theme["border"], shadow=True)
 
-                c.setStrokeColorRGB(0.80, 0.87, 0.96)
-                c.roundRect(x, y_pos - h, w, h, 6, fill=0, stroke=1)
-                c.setStrokeGray(0)
-
-                c.setFillColorRGB(0.18, 0.32, 0.56)
+                c.setFillColor(theme["primary_dark"])
                 c.setFont(rf, 8)
-                c.drawString(x + 8, y_pos - 14, str(title))
+                c.drawString(x + 10, y_pos - 15, str(title))
 
-                c.setFillGray(0.10)
+                c.setFillColor(theme["text"])
                 c.setFont(rf, 18)
-                c.drawString(x + 8, y_pos - 35, str(value))
+                c.drawString(x + 10, y_pos - 36, str(value))
 
                 if sub_text:
-                    c.setFillGray(0.38)
+                    c.setFillColor(theme["muted"])
                     c.setFont(rf, 7)
-                    c.drawString(x + 8, y_pos - 48, str(sub_text))
+                    c.drawString(x + 10, y_pos - 49, str(sub_text))
 
-                c.setFillGray(0)
+                c.setFillColor(theme["text"])
 
             # ═══════════════════════════════════════════════════
             # PAGE 1 — 커버
@@ -9068,53 +9192,59 @@ class MainWindow(QMainWindow):
             y = 810
 
             # 제목
-            c.setFont(rf, 24)
+            c.setFont(rf, 25)
+            c.setFillColor(theme["text"])
             c.drawString(MARGIN, y, "보안 분석 보고서")
-            y -= 26
+            c.setFillColor(theme["primary"])
+            c.roundRect(MARGIN, y - 11, 74, 3, 1.5, fill=1, stroke=0)
+            y -= 28
             c.setFont(rf, 9)
-            c.setFillGray(0.45)
+            c.setFillColor(theme["muted"])
             c.drawString(MARGIN, y, f"분석 기간: {start_dt.strftime('%Y-%m-%d %H:%M')} ~ {end_dt.strftime('%Y-%m-%d %H:%M')}")
-            c.setFillGray(0)
-            y -= 22
+            c.setFillColor(theme["text"])
+            y -= 24
 
             # 리스크 카드
             risk_level = risk.get("level", "LOW")
             risk_score = risk.get("score", 0)
-            rc = {"HIGH": (0.78, 0.13, 0.13), "MEDIUM": (0.82, 0.48, 0.0), "LOW": (0.10, 0.52, 0.24)}.get(risk_level, (0.3, 0.3, 0.3))
-            c.setFillColorRGB(*rc)
-            c.roundRect(MARGIN, y - 58, CONTENT_W, 62, 8, fill=1, stroke=0)
+            rc = {
+                "HIGH": colors.HexColor("#dc2626"),
+                "MEDIUM": colors.HexColor("#f59e0b"),
+                "LOW": colors.HexColor("#10b981"),
+            }.get(risk_level, colors.HexColor("#64748b"))
+            draw_soft_card(MARGIN, y, CONTENT_W, 72, radius=12, fill=rc, stroke=rc, shadow=True)
             c.setFillGray(1)
             c.setFont(rf, 10)
-            c.drawString(MARGIN + 12, y - 16, "종합 위험도")
-            c.setFont(rf, 26)
-            c.drawString(MARGIN + 12, y - 48, f"{risk_level}     Score: {risk_score}")
-            c.setFillGray(0)
-            y -= 72
+            c.drawString(MARGIN + 16, y - 18, "종합 위험도")
+            c.setFont(rf, 28)
+            c.drawString(MARGIN + 16, y - 54, str(risk_level))
+            c.setFont(rf, 24)
+            c.drawRightString(MARGIN + CONTENT_W - 18, y - 54, f"Score: {risk_score}")
+            c.setFillColor(theme["text"])
+            y -= 88
 
             # 숫자 카드 3개
             card_data = [
-                ("Endpoint Detection", metrics.get("endpoint_detection_count", 0), (0.12, 0.29, 0.55)),
-                ("Email Events",       metrics.get("email_count", 0),              (0.06, 0.47, 0.42)),
-                ("DLP Events",         metrics.get("dlp_count", 0),                (0.45, 0.22, 0.05)),
+                ("Endpoint Detection", metrics.get("endpoint_detection_count", 0), colors.HexColor("#1d4ed8")),
+                ("Email Events",       metrics.get("email_count", 0),              colors.HexColor("#0f766e")),
+                ("DLP Events",         metrics.get("dlp_count", 0),                colors.HexColor("#92400e")),
             ]
-            cw_card = (CONTENT_W - 10) / 3
+            cw_card = (CONTENT_W - 12) / 3
             for i, (ct, cv, cc) in enumerate(card_data):
-                cx = MARGIN + i * (cw_card + 5)
-                c.setFillColorRGB(*cc)
-                c.roundRect(cx, y - 62, cw_card, 66, 7, fill=1, stroke=0)
+                cx = MARGIN + i * (cw_card + 6)
+                draw_soft_card(cx, y, cw_card, 70, radius=11, fill=cc, stroke=cc, shadow=True)
                 c.setFillGray(1)
-                c.setFont(rf, 8)
-                c.drawString(cx + 8, y - 16, ct)
-                c.setFont(rf, 28)
-                c.drawString(cx + 8, y - 50, str(cv))
-                c.setFillGray(0)
-            y -= 78
+                c.setFont(rf, 8.2)
+                c.drawString(cx + 11, y - 18, ct)
+                c.setFont(rf, 27)
+                c.drawString(cx + 11, y - 53, f"{int(cv):,}" if isinstance(cv, int) else str(cv))
+                c.setFillColor(theme["text"])
+            y -= 84
 
             # 교차 호스트 배너
             cross_hosts = metrics.get("cross_hosts", [])
             if cross_hosts:
-                c.setFillColorRGB(1.0, 0.94, 0.82)
-                c.roundRect(MARGIN, y - 42, CONTENT_W, 46, 6, fill=1, stroke=0)
+                draw_soft_card(MARGIN, y, CONTENT_W, 48, radius=10, fill=colors.HexColor("#fff4d6"), stroke=colors.HexColor("#fde68a"), shadow=True)
                 c.setFillColorRGB(0.65, 0.28, 0.0)
                 c.setFont(rf, 9)
                 c.drawString(MARGIN + 8, y - 14, "⚠  Detection + DLP 동시 발생 호스트")
@@ -9200,8 +9330,7 @@ class MainWindow(QMainWindow):
                 line_h = 10
                 box_h = max(24, len(wrapped_msg) * line_h + 12)
 
-                c.setFillColorRGB(0.96, 0.97, 0.99)
-                c.roundRect(MARGIN, y - box_h + 2, CONTENT_W, box_h, 5, fill=1, stroke=0)
+                draw_soft_card(MARGIN, y + 2, CONTENT_W, box_h, radius=8, fill=colors.HexColor("#f1f6ff"), stroke=theme["border"], shadow=False)
 
                 c.setFillColorRGB(0.28, 0.38, 0.56)
                 c.setFont(rf, 8)
@@ -9721,15 +9850,6 @@ class MainWindow(QMainWindow):
                         y -= 12
                     c.setFillColor(colors.black)
 
-                y = new_page()
-                y = section_bar("DLP 목적지별 인사이트", y)
-                dlp_destination_rows = self.build_dlp_destination_insight_rows(
-                    dlp_rows,
-                    dept_resolver=report_identity_resolver,
-                )
-                perf.mark("dlp destination insights build")
-                y = self.draw_dlp_destination_insights(c, y, dlp_destination_rows, rf, MARGIN, CONTENT_W)
-                perf.mark("dlp destination insights render")
 
             draw_page_footer()
             c.save()
