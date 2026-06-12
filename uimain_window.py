@@ -585,31 +585,238 @@ def parse_multiline_domains(text: str):
 
     return results
 
-def normalize_report_destination(value):
-    s = str(value or "").strip().lower()
-    if not s or s == "none":
-        return "None"
+DLP_AI_DEST_KW = [
+    "openai", "chatgpt", "oaiusercontent", "claude", "claudeusercontent",
+    "gemini", "copilot", "perplexity", "ppl-ai-file-upload", "midjourney",
+    "magnific", "klingai", "zeta-ai", "aspose.ai", "genspark",
+    "aicreation", "gamma.app", "vizcom", "firefly", "sensei.adobe",
+    "vyro.ai", "chaton.ai", "flowith.io", "linnk.ai", "upscale.media",
+    "miricanvas", "clovanote", "deevid.ai", "nano-banana.ai", "napkin.ai",
+    "picaapi.com", "meshy.ai", "topazlabs", "photoroom",
+    "picsart", "krea.ai", "use.ai", "clova-x.naver.com", "polarishare",
+    "livewiki", "freepik", "chat-orchestrator-prod", "aistudio.google.com", "aigc",
+]
 
-    # URL이면 호스트만 추출
+DLP_CONVERTER_DEST_KW = [
+    "ilovepdf.com", "iloveimg.com", "convertio.me", "cloudconvert.com",
+    "smallpdf", "freeconvert.com", "pdfaid.com", "ezgif.com",
+    "allinpdf.com", "pdf24.org", "pdfguru.com", "thebestpdf.com",
+    "onlinedoctranslator.com", "tinypng.com", "tinyjpg.com", "imagetostl.com",
+    "runconvert.com", "transloadit.com", "pdfhouse.com",
+]
+
+DLP_MESSENGER_DEST_KW = [
+    "slack.com", "slack-edge.com", "chat.google.com", "talk.naver.com",
+    "channel.io", "intercomcdn.com", "intercomcdn.eu", "zendesk.com",
+    "instagram.com", "whatsapp", "skype.com", "chat.linkareer.com",
+]
+
+DLP_CLOUD_DEST_KW = [
+    "dropbox", "onedrive", "sharepoint", "box.com", "notion", "confluence",
+    "wetransfer", "mega", "icloud", "pcloud", "cloudflarestorage.com",
+    "blob.core.windows.net", "storage.googleapis.com", "firebasestorage.googleapis.com",
+    "s3.amazonaws.com", "amazonaws-s3", "s3-accelerate.amazonaws.com",
+    "sandollcloud.com", "mybox.naver.com", "ncloud.com", "hancomdocs.com",
+    "graph.microsoft.com", "officeapps.live.com", "teams.microsoft.com",
+    "my.microsoftpersonalcontent.com", "objects-origin.githubusercontent.com",
+    "supabase.co", "cloudfront.net", "aliyuncs.com", "ktcloud.com",
+]
+
+DLP_DESIGN_DEST_KW = [
+    "figma.com", "canva.com", "miro.com", "lucid.app", "adobe.io",
+    "shutterstock.com", "sandollcloud.com", "bizhows.com", "mangoboard",
+    "freepik", "photoroom", "picsart", "krea.ai", "topazlabs",
+]
+
+DLP_SOCIAL_DEST_KW = [
+    "upload.youtube.com", "upload.x.com", "tiktokcdn", "facebook.com",
+    "threads.com", "pinterest.com", "x.com", "instagram.com",
+    "upload.facebook.com", "vupload-edge.facebook.com", "u.pinimg.com",
+]
+
+DLP_COMMERCE_DEST_KW = [
+    "seller", "vendorcentral.amazon", "sellercentral.amazon", "partner.",
+    "partners.", "lotteon", "cjonstyle", "temu.com", "wconcept",
+    "wadiz", "coupang", "navercorp.com", "shopee", "alibaba",
+    "made-in-china", "baemin", "coupangeats", "29cm", "giftishow",
+    "shopping.naver.com", "ssg", "kurly", "welstorymall", "kcp.co.kr",
+]
+
+DLP_HR_DEST_KW = [
+    "saramin.co.kr", "greetinghr.com", "recruiter.co.kr", "recruit.",
+    "ninehire", "albamon.com", "jobkorea.co.kr", "mokahr.com",
+    "incruit.com", "jobda.im", "careernote.io", "specter.co.kr",
+    "sterlingdirect.com", "ashbyhq",
+]
+
+DLP_MARKETING_DEST_KW = [
+    "gfa.naver.com", "ad-creative.gfa.naver.com", "ads.naver.com",
+    "doubleclick.net", "groobee.io", "dable.io", "stackadapt.com",
+    "tiktok.com", "onaudience.com", "ipredictive.com", "mediamixer.co.kr",
+    "adpnut.com", "adnmore.co.kr", "mtgroup.kr", "doyouad.com",
+    "sauceflex.com", "quantummetric.com", "dataflare.net",
+]
+
+DLP_BUSINESS_DEST_KW = [
+    "opensurvey.io", "bsgglobal.net", "licensingworkspace.com", "hancomdocs.com",
+    "bizhows.com", "pokemonkorea.co.kr", "fss.or.kr", "energy.or.kr",
+    "rnd.or.kr", "worldjob.or.kr", "axa.co.kr", "meritzfire.com",
+    "samsungfire.com", "kbinsure.co.kr", "easypay.co.kr", "ezwel.com",
+    "pay.naver.com", "payoneer.com", "typeform", "atlassian.net",
+    "notability.com", "githubusercontent.com", "captcha.com", "google.com",
+]
+
+
+def _strip_dlp_origin_suffix(value: str) -> str:
+    return re.sub(r"\s*\(\s*origin\s*:\s*[^)]*\)\s*$", "", str(value or ""), flags=re.IGNORECASE).strip()
+
+
+def _extract_report_hostname(value: str):
+    s = _strip_dlp_origin_suffix(value).strip().strip('"\'')
+    if not s:
+        return ""
+
+    if s.startswith("\\"):
+        parts = [p for p in s.split("\\") if p]
+        return parts[0].lower() if parts else "internal-file-server"
+
+    if s.startswith("/") or re.match(r"^[a-z]:[\\/]", s, flags=re.IGNORECASE):
+        return "local-file-path"
+
+    if " " in s:
+        s = s.split()[0]
+
+    s = s.rstrip(".,;)")
+
     try:
         from urllib.parse import urlparse
 
-        if "://" in s:
-            parsed = urlparse(s)
-            if parsed.netloc:
-                s = parsed.netloc.lower()
+        parsed = urlparse(s if "://" in s else f"//{s}")
+        if parsed.hostname:
+            return parsed.hostname.lower().strip("[]")
     except Exception:
         pass
 
-    # host:port 제거
-    if ":" in s:
-        s = s.split(":", 1)[0].strip()
+    if "/" in s:
+        s = s.split("/", 1)[0]
+    if "@" in s:
+        s = s.rsplit("@", 1)[-1]
+    if ":" in s and s.count(":") == 1:
+        s = s.split(":", 1)[0]
 
-    # 대표 도메인 묶음
-    if s.endswith("oaiusercontent.com"):
+    return s.lower().strip("[]")
+
+
+def _collapse_report_hostname(hostname: str) -> str:
+    host = str(hostname or "").strip().lower().strip(".")
+    if not host:
+        return ""
+
+    if host == "local-file-path":
+        return "로컬 경로"
+
+    if host.startswith("www."):
+        host = host[4:]
+
+    if re.fullmatch(r"api\d+(?:-cf)?\.ilovepdf\.com", host) or host.endswith(".ilovepdf.com"):
+        return "ilovepdf.com"
+    if re.fullmatch(r"api\d+\.iloveimg\.com", host) or host.endswith(".iloveimg.com"):
+        return "iloveimg.com"
+    if re.fullmatch(r"s\d+[-a-z]*\.convertio\.me", host) or host.endswith(".convertio.me"):
+        return "convertio.me"
+    if host.endswith(".freeconvert.com"):
+        return "freeconvert.com"
+    if host.endswith(".cloudconvert.com"):
+        return "cloudconvert.com"
+    if host.endswith(".transloadit.com"):
+        return "transloadit.com"
+    if host.startswith("filetools") and host.endswith(".pdf24.org"):
+        return "pdf24.org"
+    if host.endswith(".oaiusercontent.com"):
         return "oaiusercontent.com"
+    if host.endswith(".claudeusercontent.com"):
+        return "claudeusercontent.com"
+    if host.endswith(".cloudflarestorage.com"):
+        return "cloudflarestorage.com"
+    if host.endswith(".blob.core.windows.net"):
+        return "blob.core.windows.net"
+    if host.endswith(".sharepoint.com"):
+        return "sharepoint.com"
+    if host.endswith(".storage.googleapis.com") or host == "storage.googleapis.com":
+        return "storage.googleapis.com"
+    if (
+        host == "s3.amazonaws.com"
+        or host.startswith("s3.") and host.endswith("amazonaws.com")
+        or host.startswith("s3-") and host.endswith("amazonaws.com")
+        or ".s3" in host and host.endswith("amazonaws.com")
+    ):
+        return "amazonaws-s3"
+    if host.endswith(".mail.naver.com"):
+        return "mail.naver.com"
+    if host.endswith(".tiktokcdn.com") or "tiktokcdn" in host:
+        return "tiktokcdn.com"
 
-    return s
+    return host
+
+
+def normalize_report_destination(value):
+    s = str(value or "").strip()
+    if not s or s.lower() == "none":
+        return "None"
+
+    if s.startswith("\\"):
+        return "내부 파일서버"
+    if s.startswith("/") or re.match(r"^[a-z]:[\\/]", s, flags=re.IGNORECASE):
+        return "로컬 경로"
+
+    hostname = _extract_report_hostname(s)
+    collapsed = _collapse_report_hostname(hostname)
+    return collapsed or s.lower()
+
+
+def classify_dlp_destination(target_name="", target_type="", dest_detail=""):
+    target = str(target_name or "").strip().lower()
+    ttype = str(target_type or "").strip().lower()
+    raw_detail = str(dest_detail or "").strip().lower()
+    normalized_detail = normalize_report_destination(dest_detail)
+    normalized_l = str(normalized_detail or "").lower()
+    haystack = " ".join([target, ttype, raw_detail, normalized_l])
+
+    if normalized_detail == "내부 파일서버" or raw_detail.startswith("\\"):
+        return "내부 파일서버"
+    if normalized_detail == "로컬 경로" or raw_detail.startswith("/"):
+        return "로컬/앱 임시파일"
+    if re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", normalized_l):
+        return "IP 직접 접속"
+
+    if any(k in haystack for k in DLP_AI_DEST_KW):
+        return "AI/생성형AI"
+    if any(k in haystack for k in DLP_CONVERTER_DEST_KW):
+        return "문서/PDF/이미지 변환"
+    if ttype == "e-mail" or "mail" in normalized_l or ".mail." in raw_detail:
+        return "메일/대용량 첨부"
+    if target in {"kakaotalk", "nateon messenger", "naver line", "wechat", "viber", "messages", "whatsapp.root.dll"}:
+        return "메신저/고객상담"
+    if any(k in haystack for k in DLP_MESSENGER_DEST_KW):
+        return "메신저/고객상담"
+    if any(k in haystack for k in DLP_SOCIAL_DEST_KW):
+        return "소셜/미디어 업로드"
+    if any(k in haystack for k in DLP_DESIGN_DEST_KW):
+        return "디자인/협업 SaaS"
+    if ttype == "cloud services / file sharing" or target in {"airdrop outgoing", "filezilla", "google drive file stream"}:
+        return "클라우드/오브젝트 스토리지"
+    if any(k in haystack for k in DLP_CLOUD_DEST_KW):
+        return "클라우드/오브젝트 스토리지"
+    if any(k in haystack for k in DLP_HR_DEST_KW):
+        return "채용/HR"
+    if any(k in haystack for k in DLP_MARKETING_DEST_KW):
+        return "광고/마케팅/분석"
+    if any(k in haystack for k in DLP_COMMERCE_DEST_KW):
+        return "쇼핑몰/판매자/파트너 포털"
+    if any(k in haystack for k in DLP_BUSINESS_DEST_KW):
+        return "업무/공공/금융 포털"
+
+    return "웹 브라우저/기타"
 
 def validate_domain_list(domain_list: list):
     invalid_domains = []
@@ -5708,6 +5915,55 @@ class SophosXdrQueryClient:
 # ======================================================
 # Main UI
 # ======================================================
+
+
+class ReportPerfTimer:
+    def __init__(self, name="report"):
+        self.name = name
+        self.started_at = time.perf_counter()
+        self.last_at = self.started_at
+
+    def mark(self, label):
+        now = time.perf_counter()
+        log.info(
+            "[REPORT PERF] %s: %s %.3fs (total %.3fs)",
+            self.name,
+            label,
+            now - self.last_at,
+            now - self.started_at,
+        )
+        self.last_at = now
+
+    def finish(self):
+        now = time.perf_counter()
+        log.info("[REPORT PERF] %s: total %.3fs", self.name, now - self.started_at)
+        self.last_at = now
+
+
+class SecurityReportWorker(QThread):
+    progress = pyqtSignal(str)
+    completed = pyqtSignal(str)
+    failed = pyqtSignal(str)
+
+    def __init__(self, report_builder, start_dt, end_dt, parent=None):
+        super().__init__(parent)
+        self.report_builder = report_builder
+        self.start_dt = start_dt
+        self.end_dt = end_dt
+
+    def run(self):
+        try:
+            pdf_path = self.report_builder(
+                self.start_dt,
+                self.end_dt,
+                progress_cb=self.progress.emit,
+            )
+            self.completed.emit(str(pdf_path or ""))
+        except Exception as e:
+            log.exception("Security report worker failed")
+            self.failed.emit(f"{type(e).__name__}: {e}")
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -7321,6 +7577,60 @@ class MainWindow(QMainWindow):
         event_name = str(row.get("event_id", "")).strip()
         return "차단" in event_name
 
+    def build_report_identity_resolver(self):
+        identity_cache = {}
+
+        def resolve(machine_name):
+            key = str(machine_name or "").strip()
+            cache_key = normalize_name_key(key)
+            if cache_key in identity_cache:
+                return identity_cache[cache_key]
+
+            endpoint_user_name, endpoint_user_id, user_type = get_endpoint_user_by_machine_name(key)
+
+            if user_type == "shared_pc":
+                result = {
+                    "user_name": endpoint_user_name,
+                    "user_id": endpoint_user_id,
+                    "user_type": user_type,
+                    "dept_name": "공용PC",
+                    "dept_code": "",
+                    "is_unclassified": False,
+                    "display_name": endpoint_user_name or key,
+                }
+            else:
+                dept_name, dept_code = get_org_info_by_user(endpoint_user_name, endpoint_user_id, key)
+                is_unclassified = False
+                display_name = str(endpoint_user_name or "").strip()
+
+                if not dept_name or dept_name == "미분류":
+                    manual_dept = get_report_exception_dept(endpoint_user_name)
+                    if not manual_dept:
+                        manual_dept = get_report_exception_dept(key)
+                    if manual_dept:
+                        dept_name = manual_dept
+                        dept_code = ""
+                    else:
+                        dept_name = "미분류"
+                        if not display_name:
+                            display_name = f"[NO_USER] {key}"
+                        is_unclassified = True
+
+                result = {
+                    "user_name": endpoint_user_name,
+                    "user_id": endpoint_user_id,
+                    "user_type": user_type,
+                    "dept_name": dept_name or "미분류",
+                    "dept_code": dept_code or "",
+                    "is_unclassified": is_unclassified,
+                    "display_name": display_name,
+                }
+
+            identity_cache[cache_key] = result
+            return result
+
+        return resolve
+
     def build_dlp_overall_insight_lines(self, dlp_rows):
         if not dlp_rows:
             return ["DLP 이벤트가 확인되지 않았습니다."]
@@ -7455,27 +7765,11 @@ class MainWindow(QMainWindow):
             )
 
         def classify_row(row):
-            target = low(get_target_name(row))
-            target_type = low(get_target_type(row))
-            dest_detail = low(get_dest_detail(row))
-
-            if kw_match(dest_detail, AI_KW):
-                return "AI 사이트"
-
-            if (target in MESSENGER_TARGETS) or kw_match(dest_detail, MESSENGER_DEST_KW):
-                return "메신저"
-
-            if target_type == "e-mail" or ("mail" in dest_detail):
-                return "메일"
-
-            if (
-                target_type == "cloud services / file sharing"
-                or target in {"airdrop outgoing", "filezilla", "google drive file stream"}
-                or kw_match(dest_detail, CLOUD_KW)
-            ):
-                return "클라우드/파일공유"
-
-            return "웹 브라우저/기타"
+            return classify_dlp_destination(
+                get_target_name(row),
+                get_target_type(row),
+                get_dest_detail(row),
+            )
 
         def classify_filename_detail(path_text):
             s = low(path_text)
@@ -7529,13 +7823,13 @@ class MainWindow(QMainWindow):
 
             for row in rows:
                 src = norm(get_source_name(row))
-                dest_detail = norm(get_dest_detail(row))
+                dest_detail = normalize_report_destination(get_dest_detail(row))
                 ext = extract_file_ext_for_report(src)
 
                 detail_label = classify_filename_detail(src)
                 detail_counter[detail_label] += 1
 
-                if dest_detail:
+                if dest_detail and dest_detail != "None":
                     dest_counter[dest_detail] += 1
 
                 if ext:
@@ -7700,18 +7994,19 @@ class MainWindow(QMainWindow):
                 dest_detail = str(group_row.get("dest_detail", "") or "")
                 cnt = int(group_row.get("count", 0) or 0)
 
-                if is_ai(dest_detail):
+                category = classify_dlp_destination(target_name, target_type, dest_detail)
+
+                if category == "AI/생성형AI":
                     ai_related = True
-                    classified_dests.append(f"AI 서비스({dest_detail}) {cnt}건({top_share(cnt, total)}%)")
-                elif is_messenger(target_name, dest_detail):
+                elif category == "메신저/고객상담":
                     messenger_related = True
-                    classified_dests.append(f"메신저({dest_detail or target_name}) {cnt}건({top_share(cnt, total)}%)")
-                elif is_mail(target_type, dest_detail):
+                elif category == "메일/대용량 첨부":
                     mail_related = True
-                    classified_dests.append(f"메일({dest_detail or target_name}) {cnt}건({top_share(cnt, total)}%)")
-                elif is_cloud(target_name, target_type, dest_detail):
+                elif category == "클라우드/오브젝트 스토리지":
                     cloud_related = True
-                    classified_dests.append(f"클라우드/파일공유({dest_detail or target_name}) {cnt}건({top_share(cnt, total)}%)")
+
+                if category != "웹 브라우저/기타":
+                    classified_dests.append(f"{category}({dest_detail or target_name}) {cnt}건({top_share(cnt, total)}%)")
 
             if classified_dests:
                 lines.append("- 주요 분류: " + " / ".join(classified_dests[:3]) + " — 민감 데이터 포함 여부 확인 필요.")
@@ -7753,6 +8048,494 @@ class MainWindow(QMainWindow):
                 lines.append("→ 클라우드/파일공유 비중 존재 + 낮은 차단율 → 정책 예외 범위 재검토 권장")
 
         return lines
+
+    def build_dlp_destination_insight_rows(self, dlp_rows, dept_resolver=None):
+        if not dlp_rows:
+            return []
+
+        def get_target_name(row):
+            return row.get("target") or row.get("destination") or ""
+
+        def get_target_type(row):
+            return row.get("targetType") or row.get("target_type") or row.get("destination_type") or ""
+
+        def get_dest_detail(row):
+            return (
+                row.get("destinationDetails")
+                or row.get("destination_detail")
+                or row.get("destination_details")
+                or row.get("destination")
+                or row.get("item_details")
+                or ""
+            )
+
+        def get_source_name(row):
+            return str(
+                row.get("filename", "")
+                or row.get("source", "")
+                or row.get("source_name", "")
+                or row.get("fileName", "")
+                or row.get("item_name", "")
+                or "None"
+            ).strip()
+
+        dept_cache = {}
+
+        def resolve_dept(machine_name):
+            key = str(machine_name or "").strip()
+            if key in dept_cache:
+                return dept_cache[key]
+
+            if not key:
+                dept_cache[key] = "미분류"
+                return dept_cache[key]
+
+            if dept_resolver:
+                resolved = dept_resolver(key)
+                if isinstance(resolved, dict):
+                    dept_name = str(resolved.get("dept_name", "미분류") or "미분류")
+                else:
+                    dept_name = str(resolved or "미분류")
+                dept_cache[key] = dept_name
+                return dept_cache[key]
+
+            endpoint_user_name, endpoint_user_id, user_type = get_endpoint_user_by_machine_name(key)
+            if user_type == "shared_pc":
+                dept_name = "공용PC"
+            else:
+                dept_name, _ = get_org_info_by_user(endpoint_user_name, endpoint_user_id, key)
+                if not dept_name or dept_name == "미분류":
+                    dept_name = (
+                        get_report_exception_dept(endpoint_user_name)
+                        or get_report_exception_dept(key)
+                        or "미분류"
+                    )
+
+            dept_cache[key] = dept_name or "미분류"
+            return dept_cache[key]
+
+        total_rows = 0
+        category_stats = defaultdict(lambda: {
+            "total": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "destinations": defaultdict(lambda: {
+                "total": 0,
+                "allowed": 0,
+                "blocked": 0,
+                "departments": Counter(),
+                "sources": Counter(),
+                "target_types": Counter(),
+            }),
+        })
+
+        for row in dlp_rows:
+            if not isinstance(row, dict):
+                continue
+
+            raw_dest = get_dest_detail(row)
+            dest_name = normalize_report_destination(raw_dest)
+            if not dest_name or dest_name == "None":
+                continue
+
+            target_name = get_target_name(row)
+            target_type = get_target_type(row)
+            category = classify_dlp_destination(target_name, target_type, raw_dest)
+            blocked = self.is_dlp_blocked_row(row)
+
+            machine_name = str(row.get("machine_name", "") or "").strip()
+            dept_name = resolve_dept(machine_name)
+            source_name = get_source_name(row)
+
+            total_rows += 1
+            cat_stat = category_stats[category]
+            cat_stat["total"] += 1
+            cat_stat["blocked" if blocked else "allowed"] += 1
+
+            dest_stat = cat_stat["destinations"][dest_name]
+            dest_stat["total"] += 1
+            dest_stat["blocked" if blocked else "allowed"] += 1
+
+            if dept_name and dept_name != "None":
+                dest_stat["departments"][dept_name] += 1
+            if source_name and source_name != "None":
+                dest_stat["sources"][source_name] += 1
+            if target_type and target_type != "None":
+                dest_stat["target_types"][str(target_type)] += 1
+
+        category_rows = []
+        for category, stat in sorted(category_stats.items(), key=lambda x: (-x[1]["total"], x[0]))[:5]:
+            cat_total = stat["total"]
+            dest_rows = []
+
+            for dest_name, dest_stat in sorted(
+                stat["destinations"].items(),
+                key=lambda x: (-x[1]["total"], x[0])
+            )[:5]:
+                top_departments = dest_stat["departments"].most_common(3)
+                department_total = sum(dest_stat["departments"].values())
+                top_department_total = sum(cnt for _, cnt in top_departments)
+                department_other_count = max(department_total - top_department_total, 0)
+                department_other_dept_count = max(len(dest_stat["departments"]) - len(top_departments), 0)
+                top_sources = [
+                    (shorten_path_text(name, 34), cnt)
+                    for name, cnt in dest_stat["sources"].most_common(3)
+                ]
+
+                dest_rows.append({
+                    "destination": dest_name,
+                    "total": dest_stat["total"],
+                    "allowed": dest_stat["allowed"],
+                    "blocked": dest_stat["blocked"],
+                    "share": round((dest_stat["total"] / cat_total) * 100, 1) if cat_total else 0.0,
+                    "top_departments": top_departments,
+                    "department_other_count": department_other_count,
+                    "department_other_dept_count": department_other_dept_count,
+                    "top_sources": top_sources,
+                    "top_target_types": dest_stat["target_types"].most_common(2),
+                })
+
+            category_rows.append({
+                "category": category,
+                "total": cat_total,
+                "allowed": stat["allowed"],
+                "blocked": stat["blocked"],
+                "share": round((cat_total / total_rows) * 100, 1) if total_rows else 0.0,
+                "top_destinations": dest_rows,
+            })
+
+        return category_rows
+
+    def get_dlp_destination_category_comment(self, category, top_destination):
+        dest = str(top_destination or "주요 목적지")
+        comments = {
+            "AI/생성형AI": f"{dest} 중심의 AI 서비스 사용이 확인됩니다. 업로드 파일에 개인정보·계약·영업자료가 포함됐는지 우선 점검하세요.",
+            "문서/PDF/이미지 변환": f"{dest} 등 외부 변환 서비스 사용이 반복됩니다. 변환 대상 문서의 민감정보 포함 여부 확인이 필요합니다.",
+            "메일/대용량 첨부": f"{dest} 대용량 첨부 사용이 확인됩니다. 정상 업무 여부와 외부 수신자 적정성을 파일명 기준으로 확인하세요.",
+            "클라우드/오브젝트 스토리지": f"{dest} 스토리지 목적지가 확인됩니다. SaaS 임시 버킷 또는 외부 저장소 업로드 가능성을 점검하세요.",
+            "메신저/고객상담": f"{dest} 메신저·고객상담 첨부 목적지가 확인됩니다. 고객응대 자료와 외부 공유 파일을 구분해 검토하세요.",
+            "디자인/협업 SaaS": f"{dest} 디자인·협업 도구 사용이 확인됩니다. 시안·이미지·제안서 등 외부 업로드 파일을 확인하세요.",
+            "소셜/미디어 업로드": f"{dest} 소셜·미디어 업로드 목적지가 확인됩니다. 공개 채널 업로드 여부와 파일 성격을 점검하세요.",
+            "쇼핑몰/판매자/파트너 포털": f"{dest} 판매자·파트너 포털 목적지가 확인됩니다. 업무상 제출 파일인지 확인하고 반복 업로드를 점검하세요.",
+            "채용/HR": f"{dest} 채용·HR 목적지가 확인됩니다. 이력서·증빙자료 등 개인정보 포함 파일 처리 적정성을 확인하세요.",
+            "광고/마케팅/분석": f"{dest} 광고·마케팅·분석 목적지가 확인됩니다. 캠페인 소재나 고객 데이터 업로드 여부를 확인하세요.",
+            "업무/공공/금융 포털": f"{dest} 업무·공공·금융 포털 목적지가 확인됩니다. 정상 제출 업무인지와 첨부파일의 민감도 확인이 필요합니다.",
+            "내부 파일서버": f"{dest} 내부 파일서버 접근이 확인됩니다. 외부 반출보다 내부 공유 경로 사용 맥락을 확인하세요.",
+            "로컬/앱 임시파일": f"{dest} 로컬 또는 앱 임시 경로가 확인됩니다. 실제 전송 대상과 원본 앱을 추가 확인하세요.",
+            "IP 직접 접속": f"{dest} IP 직접 접속 목적지가 확인됩니다. 서비스 식별과 업무 관련성을 우선 확인하세요.",
+        }
+        return comments.get(category, f"{dest} 목적지 사용이 확인됩니다. 반복 발생 부서와 파일명을 기준으로 업무 적정성을 검토하세요.")
+
+    def draw_dlp_destination_insights(self, c, y_pos, category_rows, rf, margin, content_w):
+        from reportlab.pdfbase.pdfmetrics import stringWidth
+
+        def wrap_cell_text(text, max_width, font_size=7, max_lines=2):
+            text = str(text or "").strip()
+            if not text:
+                return [""]
+
+            lines = []
+            for raw_line in text.split("\n"):
+                words = raw_line.split() or [raw_line]
+                current = ""
+                for word in words:
+                    if stringWidth(word, rf, font_size) > max_width:
+                        pieces = []
+                        piece = ""
+                        for ch in word:
+                            if stringWidth(piece + ch, rf, font_size) <= max_width:
+                                piece += ch
+                            else:
+                                if piece:
+                                    pieces.append(piece)
+                                piece = ch
+                        if piece:
+                            pieces.append(piece)
+                    else:
+                        pieces = [word]
+
+                    for piece in pieces:
+                        test = piece if not current else f"{current} {piece}"
+                        if stringWidth(test, rf, font_size) <= max_width:
+                            current = test
+                        else:
+                            if current:
+                                lines.append(current)
+                            current = piece
+                if current:
+                    lines.append(current)
+
+            if max_lines and len(lines) > max_lines:
+                lines = lines[:max_lines]
+                suffix = "..."
+                while lines[-1] and stringWidth(lines[-1] + suffix, rf, font_size) > max_width:
+                    lines[-1] = lines[-1][:-1]
+                lines[-1] = (lines[-1].rstrip() + suffix) if lines[-1] else suffix
+
+            return lines or [""]
+
+        def draw_table(headers, rows, col_widths, y_table, font_size=6.8, line_height=8):
+            header_h = 19
+            table_w = sum(col_widths)
+            y_table = self.check_page(c, y_table, threshold=100, font_name=rf, font_size=font_size)
+            table_top = y_table + 4
+
+            c.setFillColor(colors.HexColor("#dbeafe"))
+            c.roundRect(margin + 1.4, y_table - header_h + 1.8, table_w, header_h, 5, fill=1, stroke=0)
+            c.setFillColor(colors.HexColor("#005ce6"))
+            c.roundRect(margin, y_table - header_h + 4, table_w, header_h, 5, fill=1, stroke=0)
+            c.setFillGray(1)
+            c.setFont(rf, font_size)
+            ox = margin
+            for h, cw in zip(headers, col_widths):
+                c.drawString(ox + 4, y_table - 11, str(h))
+                ox += cw
+            c.setFillColor(colors.black)
+            y_table -= header_h
+
+            for ri, row in enumerate(rows):
+                wrapped_cells = []
+                max_lines = 1
+                for val, cw in zip(row, col_widths):
+                    wrapped = wrap_cell_text(val, cw - 7, font_size=font_size, max_lines=3)
+                    wrapped_cells.append(wrapped)
+                    max_lines = max(max_lines, len(wrapped))
+
+                row_h = max(25, (max_lines * line_height) + 13)
+                y_table = self.check_page(c, y_table, threshold=row_h + 45, font_name=rf, font_size=font_size)
+
+                bg = colors.HexColor("#f8fbff") if ri % 2 == 0 else colors.white
+                c.setFillColor(bg)
+                c.rect(margin, y_table - row_h + 4, table_w, row_h, fill=1, stroke=0)
+                c.setFillColor(colors.HexColor("#111827"))
+                c.setFont(rf, font_size)
+
+                ox = margin
+                for cell_lines, cw in zip(wrapped_cells, col_widths):
+                    ty = y_table - 9
+                    for line in cell_lines:
+                        c.drawString(ox + 4, ty, line)
+                        ty -= line_height
+                    ox += cw
+
+                c.setStrokeColor(colors.HexColor("#d6e4f5"))
+                c.setLineWidth(0.45)
+                c.line(margin, y_table - row_h + 4, margin + table_w, y_table - row_h + 4)
+                y_table -= row_h
+
+            c.setStrokeColor(colors.HexColor("#cfe1ff"))
+            c.setLineWidth(0.65)
+            c.roundRect(margin, y_table + 4, table_w, table_top - (y_table + 4), 5, fill=0, stroke=1)
+            c.setStrokeColor(colors.black)
+            return y_table - 10
+
+        def draw_category_visual(rows, y_chart):
+            if not rows:
+                return y_chart
+
+            chart_h = 152
+            y_chart = self.check_page(c, y_chart, threshold=chart_h + 40, font_name=rf, font_size=8)
+            card_x = margin
+            card_y = y_chart - chart_h + 4
+            card_w = content_w
+            colors_palette = [
+                colors.HexColor("#0b63ff"),
+                colors.HexColor("#16a3a3"),
+                colors.HexColor("#8b5cf6"),
+                colors.HexColor("#f59e0b"),
+                colors.HexColor("#ef4444"),
+            ]
+
+            # 프로그램 UI 톤과 맞춘 밝은 카드 + 부드러운 그림자
+            c.setFillColor(colors.HexColor("#dbeafe"))
+            c.roundRect(card_x + 2.2, card_y - 2.2, card_w, chart_h, 10, fill=1, stroke=0)
+            c.setFillColor(colors.HexColor("#ffffff"))
+            c.roundRect(card_x, card_y, card_w, chart_h, 10, fill=1, stroke=0)
+            c.setStrokeColor(colors.HexColor("#cfe1ff"))
+            c.setLineWidth(0.7)
+            c.roundRect(card_x, card_y, card_w, chart_h, 10, fill=0, stroke=1)
+
+            c.setFont(rf, 8.4)
+            c.setFillColor(colors.HexColor("#005ce6"))
+            c.drawString(card_x + 12, y_chart - 14, "Top 분류 시각화")
+            c.setFont(rf, 7)
+            c.setFillColor(colors.HexColor("#667085"))
+            c.drawRightString(card_x + card_w - 12, y_chart - 14, "총건수 기준 / 허용·차단 포함")
+
+            max_total = max(int(row.get("total", 0) or 0) for row in rows) or 1
+            bar_x = card_x + 14
+            bar_y = y_chart - 36
+            label_w = 86
+            bar_w = 190
+            row_gap = 18
+
+            for idx, row in enumerate(rows[:5]):
+                total = int(row.get("total", 0) or 0)
+                category = str(row.get("category", "-"))
+                y_row = bar_y - idx * row_gap
+                color = colors_palette[idx % len(colors_palette)]
+                share_w = max(4, bar_w * total / max_total)
+
+                c.setFont(rf, 6.8)
+                c.setFillColor(colors.HexColor("#344054"))
+                label = f"{idx + 1}. {category}"
+                while stringWidth(label, rf, 6.8) > label_w and len(label) > 5:
+                    label = label[:-2] + "…"
+                c.drawString(bar_x, y_row, label)
+
+                c.setFillColor(colors.HexColor("#eef4ff"))
+                c.roundRect(bar_x + label_w, y_row - 5, bar_w, 7, 3, fill=1, stroke=0)
+                c.setFillColor(color)
+                c.roundRect(bar_x + label_w, y_row - 5, share_w, 7, 3, fill=1, stroke=0)
+                c.setFillColor(colors.HexColor("#1f2937"))
+                c.setFont(rf, 6.8)
+                c.drawRightString(bar_x + label_w + bar_w + 42, y_row - 1, f"{total:,}건")
+
+            pie_rows = rows[:5]
+            pie_sum = sum(int(row.get("total", 0) or 0) for row in pie_rows) or 1
+            cx = card_x + card_w - 96
+            cy = card_y + 78
+            radius = 42
+            start_angle = 90
+            for idx, row in enumerate(pie_rows):
+                total = int(row.get("total", 0) or 0)
+                extent = 360 * total / pie_sum
+                c.setFillColor(colors_palette[idx % len(colors_palette)])
+                c.wedge(cx - radius, cy - radius, cx + radius, cy + radius, start_angle, extent, fill=1, stroke=0)
+                start_angle += extent
+
+            c.setFillColor(colors.white)
+            c.circle(cx, cy, radius * 0.55, fill=1, stroke=0)
+            c.setFillColor(colors.HexColor("#005ce6"))
+            c.setFont(rf, 10)
+            c.drawCentredString(cx, cy + 3, "TOP 5")
+            c.setFillColor(colors.HexColor("#667085"))
+            c.setFont(rf, 6.8)
+            c.drawCentredString(cx, cy - 9, f"{pie_sum:,}건")
+            c.setFillColor(colors.black)
+            return y_chart - chart_h - 12
+
+        if not category_rows:
+            c.setFont(rf, 10)
+            c.setFillColor(colors.black)
+            c.drawString(margin + 6, y_pos, "DLP 목적지 데이터가 확인되지 않았습니다.")
+            return y_pos - 18
+
+        top_total = sum(int(row.get("total", 0) or 0) for row in category_rows)
+        c.setFont(rf, 9)
+        c.setFillColor(colors.HexColor("#374151"))
+        c.drawString(margin + 6, y_pos, f"전체 DLP 목적지 중 총건수 상위 5개 분류를 표시합니다. (상위 분류 합계 {top_total:,}건)")
+        y_pos -= 18
+
+        y_pos = draw_category_visual(category_rows, y_pos)
+
+        summary_rows = []
+        for idx, row in enumerate(category_rows, 1):
+            top_dest_text = ", ".join([
+                f"{d.get('destination')}({d.get('total')})"
+                for d in row.get("top_destinations", [])[:3]
+            ]) or "-"
+            summary_rows.append([
+                str(idx),
+                row.get("category", "-"),
+                str(row.get("total", 0)),
+                str(row.get("allowed", 0)),
+                str(row.get("blocked", 0)),
+                f"{row.get('share', 0.0)}%",
+                top_dest_text,
+            ])
+
+        y_pos = draw_table(
+            ["순위", "분류", "총", "허용", "차단", "비율", "주요 목적지"],
+            summary_rows,
+            [28, 112, 36, 36, 36, 42, content_w - 290],
+            y_pos,
+            font_size=7.0,
+            line_height=8
+        )
+
+        for rank_idx, row in enumerate(category_rows, start=1):
+            category = row.get("category", "-")
+            total_count = int(row.get("total", 0) or 0)
+            allowed = int(row.get("allowed", 0) or 0)
+            blocked = int(row.get("blocked", 0) or 0)
+            share = row.get("share", 0.0)
+            top_destinations = row.get("top_destinations", [])
+            top_destination = top_destinations[0].get("destination", "-") if top_destinations else "-"
+
+            y_pos -= 34 if rank_idx > 1 else 16
+            y_pos = self.check_page(c, y_pos, threshold=235, font_name=rf, font_size=9)
+            c.setFillColor(colors.HexColor("#dbeafe"))
+            c.roundRect(margin + 2.4, y_pos - 33.4, content_w, 36, 10, fill=1, stroke=0)
+            c.setFillColor(colors.HexColor("#f8fbff"))
+            c.roundRect(margin, y_pos - 31, content_w, 36, 10, fill=1, stroke=0)
+            c.setStrokeColor(colors.HexColor("#93c5fd"))
+            c.setLineWidth(0.8)
+            c.roundRect(margin, y_pos - 31, content_w, 36, 10, fill=0, stroke=1)
+            c.setFillColor(colors.HexColor("#005ce6"))
+            c.roundRect(margin + 10, y_pos - 20, 48, 16, 8, fill=1, stroke=0)
+            c.setFont(rf, 7.2)
+            c.setFillColor(colors.white)
+            c.drawCentredString(margin + 34, y_pos - 15, f"TOP {rank_idx}")
+            c.setFont(rf, 9.2)
+            c.setFillColor(colors.HexColor("#111827"))
+            c.drawString(
+                margin + 68,
+                y_pos - 8,
+                str(category)
+            )
+            c.setFont(rf, 7.2)
+            c.setFillColor(colors.HexColor("#667085"))
+            c.drawString(
+                margin + 68,
+                y_pos - 21,
+                f"총 {total_count:,}건 · 허용 {allowed:,}건 · 차단 {blocked:,}건 · 전체 {share}%"
+            )
+            y_pos -= 43
+
+            comment = self.get_dlp_destination_category_comment(category, top_destination)
+            c.setFont(rf, 7.4)
+            c.setFillColor(colors.HexColor("#374151"))
+            for line in wrap_cell_text(comment, content_w - 12, font_size=7.4, max_lines=2):
+                c.drawString(margin + 6, y_pos, line)
+                y_pos -= 10
+            y_pos -= 2
+
+            dest_rows = []
+            for dest in top_destinations[:5]:
+                dept_lines = [f"{name}({cnt})" for name, cnt in dest.get("top_departments", [])]
+                department_other_count = int(dest.get("department_other_count", 0) or 0)
+                department_other_dept_count = int(dest.get("department_other_dept_count", 0) or 0)
+                if department_other_count > 0:
+                    dept_lines.append(f"외 {department_other_dept_count}개 부서({department_other_count})")
+                dept_text = "\n".join(dept_lines) or "-"
+                source_text = "\n".join([f"{name}({cnt})" for name, cnt in dest.get("top_sources", [])]) or "-"
+                dest_rows.append([
+                    dest.get("destination", "-"),
+                    str(dest.get("total", 0)),
+                    str(dest.get("allowed", 0)),
+                    str(dest.get("blocked", 0)),
+                    f"{dest.get('share', 0.0)}%",
+                    dept_text,
+                    source_text,
+                ])
+
+            y_pos = draw_table(
+                ["목적지", "총", "허용", "차단", "비중", "주요 부서", "주요 파일"],
+                dest_rows or [["-", "0", "0", "0", "0%", "-", "-"]],
+                [118, 30, 30, 30, 44, 105, content_w - 357],
+                y_pos,
+                font_size=6.7,
+                line_height=8
+            )
+            c.setStrokeColor(colors.HexColor("#dbeafe"))
+            c.setLineWidth(1.2)
+            c.line(margin + 8, y_pos + 2, margin + content_w - 8, y_pos + 2)
+            c.setStrokeColor(colors.black)
+            y_pos -= 42
+
+        c.setFillColor(colors.black)
+        return y_pos
 
     def draw_dlp_dept_insight_blocks(self, c, y_pos, blocks, rf, margin, content_w):
         if not blocks:
@@ -7826,18 +8609,70 @@ class MainWindow(QMainWindow):
 
 
     def generate_security_report_v2(self):
+        self.start_security_report_worker()
+
+    def start_security_report_worker(self):
+        if getattr(self, "security_report_worker", None) and self.security_report_worker.isRunning():
+            QMessageBox.information(self, "Report", "보고서 생성이 이미 진행 중입니다.")
+            return
+
+        start_dt = combine_date_time(self.report_start_date, self.report_start_time)
+        end_dt = combine_date_time(self.report_end_date, self.report_end_time)
+
+        self.security_report_worker = SecurityReportWorker(self._generate_security_report_v2, start_dt, end_dt, self)
+        self.security_report_worker.progress.connect(self.on_security_report_progress)
+        self.security_report_worker.completed.connect(self.on_security_report_finished)
+        self.security_report_worker.failed.connect(self.on_security_report_failed)
+
+        if hasattr(self, "btn_security_report"):
+            self.btn_security_report.setEnabled(False)
+            self.btn_security_report.setText("Generating Report...")
+        self.statusBar().showMessage("보고서 생성 준비 중...")
+        self.security_report_worker.start()
+
+    def on_security_report_progress(self, message):
+        self.statusBar().showMessage(str(message or "보고서 생성 중..."))
+
+    def on_security_report_finished(self, pdf_path):
+        if hasattr(self, "btn_security_report"):
+            self.btn_security_report.setEnabled(True)
+            self.btn_security_report.setText("Download Security Report (PDF)")
+        self.statusBar().showMessage("보고서 생성 완료", 5000)
+        QMessageBox.information(self, "완료", f"보고서 저장 완료\n{pdf_path}")
         try:
+            os.startfile(pdf_path)
+        except Exception:
+            pass
+
+    def on_security_report_failed(self, error_message):
+        if hasattr(self, "btn_security_report"):
+            self.btn_security_report.setEnabled(True)
+            self.btn_security_report.setText("Download Security Report (PDF)")
+        self.statusBar().showMessage("보고서 생성 실패", 5000)
+        QMessageBox.critical(self, "오류", str(error_message or "보고서 생성 실패"))
+
+    def _generate_security_report_v2(self, start_dt, end_dt, progress_cb=None):
+        perf = ReportPerfTimer("security_report")
+
+        def progress(message):
+            log.info("[REPORT] %s", message)
+            if progress_cb:
+                progress_cb(message)
+
+        try:
+            progress("데이터 로딩 중...")
             os.makedirs(REPORT_DIR, exist_ok=True)
 
-            start_dt   = combine_date_time(self.report_start_date, self.report_start_time)
-            end_dt     = combine_date_time(self.report_end_date,   self.report_end_time)
             start_date = start_dt.strftime("%Y-%m-%d")
-            end_date   = end_dt.strftime("%Y-%m-%d")
+            end_date = end_dt.strftime("%Y-%m-%d")
 
             endpoint_detections = load_endpoint_detections_by_range(start_date, end_date)
             xdr_detections_report = load_xdr_email_detections_by_range(start_date, end_date)
-            emails     = load_emails_by_range(start_date, end_date)
-            dlp_rows   = load_dlp_by_range(start_date, end_date)
+            emails = load_emails_by_range(start_date, end_date)
+            dlp_rows = load_dlp_by_range(start_date, end_date)
+            perf.mark("load data")
+            progress("DLP 분석 중...")
+            report_identity_resolver = self.build_report_identity_resolver()
 
             dlp_total_count = len(dlp_rows)
             dlp_blocked_rows = [r for r in dlp_rows if self.is_dlp_blocked_row(r)]
@@ -7907,7 +8742,16 @@ class MainWindow(QMainWindow):
                 key=lambda x: (-x["total"], x["dept_name"])
             )
 
-            metrics = self.build_security_insight_metrics(endpoint_detections, emails, dlp_rows, detection_timeline)
+            perf.mark("pre-metrics aggregation")
+            metrics = self.build_security_insight_metrics(
+                endpoint_detections,
+                emails,
+                dlp_rows,
+                detection_timeline,
+                report_identity_resolver=report_identity_resolver,
+            )
+            perf.mark("security metrics")
+            progress("PDF 생성 중...")
             dlp_dept_rank        = metrics.get("dlp_dept_rank", [])
             dlp_dept_block_rank  = metrics.get("dlp_dept_block_rank", [])
             unclassified_user_counts = metrics.get("unclassified_user_counts", [])
@@ -7937,23 +8781,74 @@ class MainWindow(QMainWindow):
             c          = canvas.Canvas(pdf_path, pagesize=A4)
             PAGE_W, _  = A4
             rf         = self.setup_report_font()
+            perf.mark("pdf setup")
             MARGIN     = 45
             CONTENT_W  = PAGE_W - MARGIN * 2   # ≈ 505pt
 
             # ── 공통 헬퍼 ────────────────────────────────────────
-            def new_page():
-                c.showPage()
+            page_state = {"number": 1}
+            theme = {
+                "page_bg": colors.HexColor("#f8fbff"),
+                "primary": colors.HexColor("#005ce6"),
+                "primary_dark": colors.HexColor("#174ea6"),
+                "border": colors.HexColor("#bfdbfe"),
+                "shadow": colors.HexColor("#d8e8f6"),
+                "text": colors.HexColor("#111827"),
+                "muted": colors.HexColor("#667085"),
+                "card": colors.white,
+            }
+
+            def draw_page_background():
+                c.saveState()
+                c.setFillColor(theme["page_bg"])
+                c.rect(0, 0, PAGE_W, A4[1], fill=1, stroke=0)
+                c.restoreState()
+
+            def draw_soft_card(x, y_top, w, h, radius=10, fill=None, stroke=None, shadow=True):
+                fill = fill or theme["card"]
+                stroke = stroke or theme["border"]
+                if shadow:
+                    c.setFillColor(theme["shadow"])
+                    c.roundRect(x + 2.4, y_top - h - 2.6, w, h, radius, fill=1, stroke=0)
+                c.setFillColor(fill)
+                c.roundRect(x, y_top - h, w, h, radius, fill=1, stroke=0)
+                c.setStrokeColor(stroke)
+                c.setLineWidth(0.65)
+                c.roundRect(x, y_top - h, w, h, radius, fill=0, stroke=1)
+
+            def draw_page_footer():
+                c.saveState()
+                c.setFont(rf, 7)
+                c.setFillColor(theme["muted"])
+                c.drawCentredString(PAGE_W / 2, 24, f"- {page_state['number']} -")
+                c.restoreState()
+
+            def after_show_page():
+                page_state["number"] += 1
+                draw_page_background()
                 c.setFont(rf, 10)
+                c.setFillColor(theme["text"])
+
+            draw_page_background()
+            c._smu_report_draw_footer = draw_page_footer
+            c._smu_report_after_show_page = after_show_page
+
+            def new_page():
+                draw_page_footer()
+                c.showPage()
+                after_show_page()
                 return 810
 
             def section_bar(title, y_pos):
-                c.setFillColorRGB(0.12, 0.29, 0.55)
-                c.rect(MARGIN, y_pos - 5, CONTENT_W, 22, fill=1, stroke=0)
+                c.setFillColor(colors.HexColor("#dbeafe"))
+                c.roundRect(MARGIN + 1.8, y_pos - 24.2, CONTENT_W, 24, 8, fill=1, stroke=0)
+                c.setFillColor(theme["primary_dark"])
+                c.roundRect(MARGIN, y_pos - 22, CONTENT_W, 24, 8, fill=1, stroke=0)
                 c.setFillGray(1)
                 c.setFont(rf, 11)
-                c.drawString(MARGIN + 6, y_pos, title)
-                c.setFillGray(0)
-                return y_pos - 32
+                c.drawString(MARGIN + 10, y_pos - 14, title)
+                c.setFillColor(theme["text"])
+                return y_pos - 38
 
             def numbered_list(lines, y_pos, indent=MARGIN + 10):
                 c.setFont(rf, 10)
@@ -8015,43 +8910,51 @@ class MainWindow(QMainWindow):
                 return y_pos
 
             def mini_table(x, y_pos, headers, rows, col_widths, font_size=9):
-                """헤더+행을 직접 그리는 소형 테이블 (페이지 넘김 없음)"""
-                row_h = 18
-                # 헤더
-                c.setFillColorRGB(0.20, 0.35, 0.60)
-                c.rect(x, y_pos - row_h + 4, sum(col_widths), row_h, fill=1, stroke=0)
+                """앱 UI 톤의 헤더+행 소형 테이블 (페이지 넘김 없음)."""
+                from reportlab.pdfbase.pdfmetrics import stringWidth
+
+                row_h = 19
+                total_w = sum(col_widths)
+                table_top = y_pos + 4
+
+                # 헤더: DLP 목적지 인사이트와 동일한 파란 라운드 스타일
+                c.setFillColor(colors.HexColor("#dbeafe"))
+                c.roundRect(x + 1.3, y_pos - row_h + 1.6, total_w, row_h, 5, fill=1, stroke=0)
+                c.setFillColor(theme["primary"])
+                c.roundRect(x, y_pos - row_h + 4, total_w, row_h, 5, fill=1, stroke=0)
                 c.setFillGray(1)
                 c.setFont(rf, font_size)
                 ox = x
                 for h, cw in zip(headers, col_widths):
                     c.drawString(ox + 4, y_pos - 11, str(h))
                     ox += cw
-                c.setFillGray(0)
+                c.setFillColor(theme["text"])
                 y_pos -= row_h
 
                 # 행
                 for ri, row in enumerate(rows):
-                    bg = 0.96 if ri % 2 == 0 else 1.0
-                    c.setFillGray(bg)
-                    c.rect(x, y_pos - row_h + 4, sum(col_widths), row_h, fill=1, stroke=0)
-                    c.setFillGray(0)
+                    bg = colors.HexColor("#f8fbff") if ri % 2 == 0 else colors.white
+                    c.setFillColor(bg)
+                    c.rect(x, y_pos - row_h + 4, total_w, row_h, fill=1, stroke=0)
+                    c.setFillColor(theme["text"])
                     c.setFont(rf, font_size)
                     ox = x
                     for val, cw in zip(row, col_widths):
                         text = str(val)
-                        # 말줄임 처리
-                        from reportlab.pdfbase.pdfmetrics import stringWidth
                         while stringWidth(text, rf, font_size) > cw - 8 and len(text) > 3:
                             text = text[:-2] + "…"
                         c.drawString(ox + 4, y_pos - 11, text)
                         ox += cw
-                    # 하단 구분선
-                    c.setStrokeGray(0.80)
-                    c.line(x, y_pos - row_h + 4, x + sum(col_widths), y_pos - row_h + 4)
-                    c.setStrokeGray(0)
+                    c.setStrokeColor(colors.HexColor("#d6e4f5"))
+                    c.setLineWidth(0.45)
+                    c.line(x, y_pos - row_h + 4, x + total_w, y_pos - row_h + 4)
                     y_pos -= row_h
 
-                return y_pos - 6
+                c.setStrokeColor(colors.HexColor("#cfe1ff"))
+                c.setLineWidth(0.65)
+                c.roundRect(x, y_pos + 4, total_w, table_top - (y_pos + 4), 5, fill=0, stroke=1)
+                c.setStrokeColor(colors.black)
+                return y_pos - 8
 
             def mini_table_multiline(x, y_pos, headers, rows, col_widths, font_size=8, line_height=11):
                 def wrap_cell_text(text, max_width, max_lines=None):
@@ -8126,16 +9029,20 @@ class MainWindow(QMainWindow):
 
                     return lines
 
-                header_h = 18
-                c.setFillColorRGB(0.20, 0.35, 0.60)
-                c.rect(x, y_pos - header_h + 4, sum(col_widths), header_h, fill=1, stroke=0)
+                header_h = 19
+                total_w = sum(col_widths)
+                table_top = y_pos + 4
+                c.setFillColor(colors.HexColor("#dbeafe"))
+                c.roundRect(x + 1.3, y_pos - header_h + 1.6, total_w, header_h, 5, fill=1, stroke=0)
+                c.setFillColor(theme["primary"])
+                c.roundRect(x, y_pos - header_h + 4, total_w, header_h, 5, fill=1, stroke=0)
                 c.setFillGray(1)
                 c.setFont(rf, font_size)
                 ox = x
                 for h, cw in zip(headers, col_widths):
                     c.drawString(ox + 4, y_pos - 11, str(h))
                     ox += cw
-                c.setFillGray(0)
+                c.setFillColor(theme["text"])
                 y_pos -= header_h
 
                 for ri, row in enumerate(rows):
@@ -8145,7 +9052,7 @@ class MainWindow(QMainWindow):
                     for col_idx, (val, cw) in enumerate(zip(row, col_widths)):
                         if col_idx == 0:      # 소스
                             wrapped = wrap_cell_text(val, cw - 8, max_lines=5)
-                        elif col_idx == 1:    # 대상유형
+                        elif col_idx == 1:    # 분류/대상유형
                             wrapped = wrap_cell_text(val, cw - 8, max_lines=5)
                         elif col_idx == 2:    # 목적지 세부정보
                             wrapped = wrap_cell_text(val, cw - 8, max_lines=1)
@@ -8158,12 +9065,13 @@ class MainWindow(QMainWindow):
                     row_h = max(26, (max_lines * line_height) + 16)
 
                     if y_pos - row_h < 40:
-                        c.showPage()
-                        PAGE_W, PAGE_H = A4
-                        y_pos = PAGE_H - MARGIN
+                        y_pos = new_page()
+                        table_top = y_pos + 4
 
-                        c.setFillColorRGB(0.20, 0.35, 0.60)
-                        c.rect(x, y_pos - header_h + 4, sum(col_widths), header_h, fill=1, stroke=0)
+                        c.setFillColor(colors.HexColor("#dbeafe"))
+                        c.roundRect(x + 1.3, y_pos - header_h + 1.6, total_w, header_h, 5, fill=1, stroke=0)
+                        c.setFillColor(theme["primary"])
+                        c.roundRect(x, y_pos - header_h + 4, total_w, header_h, 5, fill=1, stroke=0)
                         c.setFillGray(1)
                         c.setFont(rf, font_size)
 
@@ -8172,13 +9080,13 @@ class MainWindow(QMainWindow):
                             c.drawString(ox + 4, y_pos - 11, str(h))
                             ox += cw
 
-                        c.setFillGray(0)
+                        c.setFillColor(theme["text"])
                         y_pos -= header_h
 
-                    bg = 0.94
-                    c.setFillGray(bg)
-                    c.rect(x, y_pos - row_h + 4, sum(col_widths), row_h, fill=1, stroke=0)
-                    c.setFillGray(0)
+                    bg = colors.HexColor("#f8fbff") if ri % 2 == 0 else colors.white
+                    c.setFillColor(bg)
+                    c.rect(x, y_pos - row_h + 4, total_w, row_h, fill=1, stroke=0)
+                    c.setFillColor(theme["text"])
                     c.setFont(rf, font_size)
 
                     ox = x
@@ -8194,12 +9102,16 @@ class MainWindow(QMainWindow):
 
                         ox += cw
 
-                    c.setStrokeColor(colors.HexColor("#9aa7bd"))
-                    c.setLineWidth(0.9)
-                    c.line(x, y_pos - row_h + 4, x + sum(col_widths), y_pos - row_h + 4)
+                    c.setStrokeColor(colors.HexColor("#d6e4f5"))
+                    c.setLineWidth(0.45)
+                    c.line(x, y_pos - row_h + 4, x + total_w, y_pos - row_h + 4)
                     y_pos -= row_h
 
-                return y_pos - 4
+                c.setStrokeColor(colors.HexColor("#cfe1ff"))
+                c.setLineWidth(0.65)
+                c.roundRect(x, y_pos + 4, total_w, table_top - (y_pos + 4), 5, fill=0, stroke=1)
+                c.setStrokeColor(colors.black)
+                return y_pos - 8
 
 
             def mini_table_fixed(x, y_pos, headers, rows, col_widths, font_size=6.8, row_h=20):
@@ -8292,28 +9204,119 @@ class MainWindow(QMainWindow):
 
                 return y_pos - 6
 
-            def summary_mini_card(x, y_pos, w, h, title, value, sub_text="", accent=(0.93, 0.96, 1.0)):
-                c.setFillColorRGB(*accent)
-                c.roundRect(x, y_pos - h, w, h, 6, fill=1, stroke=0)
+            def draw_distribution_card(title, rows, y_pos, *, label_key="dept_name", value_key="total",
+                                       subtitle="총건수 기준", empty_text="데이터가 확인되지 않았습니다."):
+                from reportlab.pdfbase.pdfmetrics import stringWidth
 
-                c.setStrokeColorRGB(0.80, 0.87, 0.96)
-                c.roundRect(x, y_pos - h, w, h, 6, fill=0, stroke=1)
-                c.setStrokeGray(0)
+                rows = [r for r in (rows or []) if int(r.get(value_key, 0) or 0) > 0][:5]
+                card_h = 150
+                y_pos = self.check_page(c, y_pos, threshold=card_h + 48, font_name=rf, font_size=8)
+                if not rows:
+                    draw_soft_card(MARGIN, y_pos, CONTENT_W, 44, radius=10, fill=theme["card"], stroke=theme["border"], shadow=True)
+                    c.setFont(rf, 8.5)
+                    c.setFillColor(theme["muted"])
+                    c.drawString(MARGIN + 12, y_pos - 24, empty_text)
+                    c.setFillColor(theme["text"])
+                    return y_pos - 58
 
-                c.setFillColorRGB(0.18, 0.32, 0.56)
+                draw_soft_card(MARGIN, y_pos, CONTENT_W, card_h, radius=12, fill=theme["card"], stroke=theme["border"], shadow=True)
+                palette = [
+                    colors.HexColor("#0b63ff"),
+                    colors.HexColor("#16a3a3"),
+                    colors.HexColor("#8b5cf6"),
+                    colors.HexColor("#f59e0b"),
+                    colors.HexColor("#ef4444"),
+                ]
+                c.setFont(rf, 8.5)
+                c.setFillColor(theme["primary"])
+                c.drawString(MARGIN + 14, y_pos - 16, title)
+                c.setFont(rf, 7)
+                c.setFillColor(theme["muted"])
+                c.drawRightString(MARGIN + CONTENT_W - 14, y_pos - 16, subtitle)
+
+                max_total = max(int(row.get(value_key, 0) or 0) for row in rows) or 1
+                total_sum = sum(int(row.get(value_key, 0) or 0) for row in rows) or 1
+                bar_x = MARGIN + 16
+                bar_y = y_pos - 40
+                label_w = 104
+                bar_w = 178
+                row_gap = 18
+
+                for idx, row in enumerate(rows):
+                    value = int(row.get(value_key, 0) or 0)
+                    label = str(row.get(label_key, "-") or "-")
+                    y_row = bar_y - idx * row_gap
+                    color = palette[idx % len(palette)]
+                    display = f"{idx + 1}. {label}"
+                    while stringWidth(display, rf, 6.8) > label_w and len(display) > 5:
+                        display = display[:-2] + "…"
+                    c.setFont(rf, 6.8)
+                    c.setFillColor(colors.HexColor("#344054"))
+                    c.drawString(bar_x, y_row, display)
+                    c.setFillColor(colors.HexColor("#eef4ff"))
+                    c.roundRect(bar_x + label_w, y_row - 5, bar_w, 7, 3, fill=1, stroke=0)
+                    c.setFillColor(color)
+                    c.roundRect(bar_x + label_w, y_row - 5, max(4, bar_w * value / max_total), 7, 3, fill=1, stroke=0)
+                    c.setFillColor(theme["text"])
+                    c.drawRightString(bar_x + label_w + bar_w + 48, y_row - 1, f"{value:,}건")
+
+                cx = MARGIN + CONTENT_W - 92
+                cy = y_pos - 78
+                radius = 41
+                start_angle = 90
+                for idx, row in enumerate(rows):
+                    value = int(row.get(value_key, 0) or 0)
+                    extent = 360 * value / total_sum
+                    c.setFillColor(palette[idx % len(palette)])
+                    c.wedge(cx - radius, cy - radius, cx + radius, cy + radius, start_angle, extent, fill=1, stroke=0)
+                    start_angle += extent
+                c.setFillColor(theme["card"])
+                c.circle(cx, cy, radius * 0.55, fill=1, stroke=0)
+                c.setFillColor(theme["primary"])
+                c.setFont(rf, 9.5)
+                c.drawCentredString(cx, cy + 3, "TOP 5")
+                c.setFillColor(theme["muted"])
+                c.setFont(rf, 6.8)
+                c.drawCentredString(cx, cy - 9, f"{total_sum:,}건")
+                c.setFillColor(theme["text"])
+                return y_pos - card_h - 18
+
+            def draw_rank_header(rank, title, meta, y_pos, *, accent=None):
+                y_pos = self.check_page(c, y_pos, threshold=76, font_name=rf, font_size=8)
+                accent = accent or theme["primary"]
+                draw_soft_card(MARGIN, y_pos, CONTENT_W, 38, radius=11, fill=colors.HexColor("#f8fbff"), stroke=colors.HexColor("#93c5fd"), shadow=True)
+                c.setFillColor(accent)
+                c.roundRect(MARGIN + 10, y_pos - 24, 52, 17, 8.5, fill=1, stroke=0)
+                c.setFillColor(colors.white)
+                c.setFont(rf, 7.2)
+                c.drawCentredString(MARGIN + 36, y_pos - 18.5, f"TOP {rank}")
+                c.setFillColor(theme["text"])
+                c.setFont(rf, 9.2)
+                c.drawString(MARGIN + 72, y_pos - 12, str(title))
+                c.setFillColor(theme["muted"])
+                c.setFont(rf, 7.2)
+                c.drawString(MARGIN + 72, y_pos - 26, str(meta))
+                c.setFillColor(theme["text"])
+                return y_pos - 48
+
+            def summary_mini_card(x, y_pos, w, h, title, value, sub_text="", accent=None):
+                accent = accent or colors.HexColor("#eef5ff")
+                draw_soft_card(x, y_pos, w, h, radius=9, fill=accent, stroke=theme["border"], shadow=True)
+
+                c.setFillColor(theme["primary_dark"])
                 c.setFont(rf, 8)
-                c.drawString(x + 8, y_pos - 14, str(title))
+                c.drawString(x + 10, y_pos - 15, str(title))
 
-                c.setFillGray(0.10)
+                c.setFillColor(theme["text"])
                 c.setFont(rf, 18)
-                c.drawString(x + 8, y_pos - 35, str(value))
+                c.drawString(x + 10, y_pos - 36, str(value))
 
                 if sub_text:
-                    c.setFillGray(0.38)
+                    c.setFillColor(theme["muted"])
                     c.setFont(rf, 7)
-                    c.drawString(x + 8, y_pos - 48, str(sub_text))
+                    c.drawString(x + 10, y_pos - 49, str(sub_text))
 
-                c.setFillGray(0)
+                c.setFillColor(theme["text"])
 
             # ═══════════════════════════════════════════════════
             # PAGE 1 — 커버
@@ -8321,53 +9324,59 @@ class MainWindow(QMainWindow):
             y = 810
 
             # 제목
-            c.setFont(rf, 24)
+            c.setFont(rf, 25)
+            c.setFillColor(theme["text"])
             c.drawString(MARGIN, y, "보안 분석 보고서")
-            y -= 26
+            c.setFillColor(theme["primary"])
+            c.roundRect(MARGIN, y - 11, 74, 3, 1.5, fill=1, stroke=0)
+            y -= 28
             c.setFont(rf, 9)
-            c.setFillGray(0.45)
+            c.setFillColor(theme["muted"])
             c.drawString(MARGIN, y, f"분석 기간: {start_dt.strftime('%Y-%m-%d %H:%M')} ~ {end_dt.strftime('%Y-%m-%d %H:%M')}")
-            c.setFillGray(0)
-            y -= 22
+            c.setFillColor(theme["text"])
+            y -= 24
 
             # 리스크 카드
             risk_level = risk.get("level", "LOW")
             risk_score = risk.get("score", 0)
-            rc = {"HIGH": (0.78, 0.13, 0.13), "MEDIUM": (0.82, 0.48, 0.0), "LOW": (0.10, 0.52, 0.24)}.get(risk_level, (0.3, 0.3, 0.3))
-            c.setFillColorRGB(*rc)
-            c.roundRect(MARGIN, y - 58, CONTENT_W, 62, 8, fill=1, stroke=0)
+            rc = {
+                "HIGH": colors.HexColor("#dc2626"),
+                "MEDIUM": colors.HexColor("#f59e0b"),
+                "LOW": colors.HexColor("#10b981"),
+            }.get(risk_level, colors.HexColor("#64748b"))
+            draw_soft_card(MARGIN, y, CONTENT_W, 72, radius=12, fill=rc, stroke=rc, shadow=True)
             c.setFillGray(1)
             c.setFont(rf, 10)
-            c.drawString(MARGIN + 12, y - 16, "종합 위험도")
-            c.setFont(rf, 26)
-            c.drawString(MARGIN + 12, y - 48, f"{risk_level}     Score: {risk_score}")
-            c.setFillGray(0)
-            y -= 72
+            c.drawString(MARGIN + 16, y - 18, "종합 위험도")
+            c.setFont(rf, 28)
+            c.drawString(MARGIN + 16, y - 54, str(risk_level))
+            c.setFont(rf, 24)
+            c.drawRightString(MARGIN + CONTENT_W - 18, y - 54, f"Score: {risk_score}")
+            c.setFillColor(theme["text"])
+            y -= 88
 
             # 숫자 카드 3개
             card_data = [
-                ("Endpoint Detection", metrics.get("endpoint_detection_count", 0), (0.12, 0.29, 0.55)),
-                ("Email Events",       metrics.get("email_count", 0),              (0.06, 0.47, 0.42)),
-                ("DLP Events",         metrics.get("dlp_count", 0),                (0.45, 0.22, 0.05)),
+                ("Endpoint Detection", metrics.get("endpoint_detection_count", 0), colors.HexColor("#1d4ed8")),
+                ("Email Events",       metrics.get("email_count", 0),              colors.HexColor("#0f766e")),
+                ("DLP Events",         metrics.get("dlp_count", 0),                colors.HexColor("#92400e")),
             ]
-            cw_card = (CONTENT_W - 10) / 3
+            cw_card = (CONTENT_W - 12) / 3
             for i, (ct, cv, cc) in enumerate(card_data):
-                cx = MARGIN + i * (cw_card + 5)
-                c.setFillColorRGB(*cc)
-                c.roundRect(cx, y - 62, cw_card, 66, 7, fill=1, stroke=0)
+                cx = MARGIN + i * (cw_card + 6)
+                draw_soft_card(cx, y, cw_card, 70, radius=11, fill=cc, stroke=cc, shadow=True)
                 c.setFillGray(1)
-                c.setFont(rf, 8)
-                c.drawString(cx + 8, y - 16, ct)
-                c.setFont(rf, 28)
-                c.drawString(cx + 8, y - 50, str(cv))
-                c.setFillGray(0)
-            y -= 78
+                c.setFont(rf, 8.2)
+                c.drawString(cx + 11, y - 18, ct)
+                c.setFont(rf, 27)
+                c.drawString(cx + 11, y - 53, f"{int(cv):,}" if isinstance(cv, int) else str(cv))
+                c.setFillColor(theme["text"])
+            y -= 84
 
             # 교차 호스트 배너
             cross_hosts = metrics.get("cross_hosts", [])
             if cross_hosts:
-                c.setFillColorRGB(1.0, 0.94, 0.82)
-                c.roundRect(MARGIN, y - 42, CONTENT_W, 46, 6, fill=1, stroke=0)
+                draw_soft_card(MARGIN, y, CONTENT_W, 48, radius=10, fill=colors.HexColor("#fff4d6"), stroke=colors.HexColor("#fde68a"), shadow=True)
                 c.setFillColorRGB(0.65, 0.28, 0.0)
                 c.setFont(rf, 9)
                 c.drawString(MARGIN + 8, y - 14, "⚠  Detection + DLP 동시 발생 호스트")
@@ -8453,8 +9462,7 @@ class MainWindow(QMainWindow):
                 line_h = 10
                 box_h = max(24, len(wrapped_msg) * line_h + 12)
 
-                c.setFillColorRGB(0.96, 0.97, 0.99)
-                c.roundRect(MARGIN, y - box_h + 2, CONTENT_W, box_h, 5, fill=1, stroke=0)
+                draw_soft_card(MARGIN, y + 2, CONTENT_W, box_h, radius=8, fill=colors.HexColor("#f1f6ff"), stroke=theme["border"], shadow=False)
 
                 c.setFillColorRGB(0.28, 0.38, 0.56)
                 c.setFont(rf, 8)
@@ -8624,7 +9632,13 @@ class MainWindow(QMainWindow):
                     f"Endpoint Detection 총 {total_det_cnt:,}건  /  탐지 호스트 {unique_hosts}개  "
                     f"/  탐지 룰 {unique_rules}종  /  연관 파일 {unique_files}종"
                 )
-                y -= 22
+                y -= 18
+                y = draw_distribution_card(
+                    "Detection 부서 Top 5 시각화",
+                    det_dept_rank,
+                    y,
+                    subtitle="탐지건수 기준 / 상위 부서 합계",
+                )
 
                 # Detection 부서별 현황 테이블
                 y = section_bar("Detection 부서별 현황", y)
@@ -8660,20 +9674,12 @@ class MainWindow(QMainWindow):
 
                     y = self.check_page(c, y, threshold=160, font_name=rf, font_size=8)
 
-                    # 부서 헤더 바
-                    c.setFillColor(colors.HexColor("#eef3fb"))
-                    c.rect(MARGIN, y - 2, CONTENT_W, 18, fill=1, stroke=0)
-                    c.setStrokeColor(colors.HexColor("#2f5ea8"))
-                    c.setLineWidth(0.8)
-                    c.line(MARGIN, y + 16, MARGIN + CONTENT_W, y + 16)
-                    c.line(MARGIN, y - 2,  MARGIN + CONTENT_W, y - 2)
-                    c.setFont(rf, 8.4)
-                    c.setFillColor(colors.black)
-                    c.drawString(
-                        MARGIN + 6, y + 3,
-                        f"{di}. {dept_name}  (탐지 {total}건 / 호스트 {host_count}개 / 사용자 {user_count}명)"
+                    y = draw_rank_header(
+                        di,
+                        dept_name,
+                        f"탐지 {total:,}건 · 호스트 {host_count:,}개 · 사용자 {user_count:,}명",
+                        y,
                     )
-                    y -= 8
 
                     # Top Rules 미니 테이블
                     rule_rows = [
@@ -8711,7 +9717,11 @@ class MainWindow(QMainWindow):
                         c.drawString(MARGIN + 6, y, preview_text)
                         y -= 14
 
-                    y -= 10
+                    c.setStrokeColor(colors.HexColor("#dbeafe"))
+                    c.setLineWidth(1.0)
+                    c.line(MARGIN + 8, y + 2, MARGIN + CONTENT_W - 8, y + 2)
+                    c.setStrokeColor(colors.black)
+                    y -= 24
 
             # ═══════════════════════════════════════════════════
             # PAGE XDR — Email - XDR 부서별 분석
@@ -8726,7 +9736,13 @@ class MainWindow(QMainWindow):
                     MARGIN + 6, y,
                     f"Email - XDR 총 {total_xdr_cnt:,}건  /  부서 {len(xdr_dept_rank)}개"
                 )
-                y -= 22
+                y -= 18
+                y = draw_distribution_card(
+                    "Email - XDR 부서 Top 5 시각화",
+                    xdr_dept_rank,
+                    y,
+                    subtitle="탐지건수 기준 / 상위 부서 합계",
+                )
 
                 y = section_bar("Email - XDR 부서별 현황", y)
 
@@ -8761,19 +9777,12 @@ class MainWindow(QMainWindow):
 
                     y = self.check_page(c, y, threshold=200, font_name=rf, font_size=8)
 
-                    c.setFillColor(colors.HexColor("#eef3fb"))
-                    c.rect(MARGIN, y - 2, CONTENT_W, 18, fill=1, stroke=0)
-                    c.setStrokeColor(colors.HexColor("#2f5ea8"))
-                    c.setLineWidth(0.8)
-                    c.line(MARGIN, y + 16, MARGIN + CONTENT_W, y + 16)
-                    c.line(MARGIN, y - 2,  MARGIN + CONTENT_W, y - 2)
-                    c.setFont(rf, 8.4)
-                    c.setFillColor(colors.black)
-                    c.drawString(
-                        MARGIN + 6, y + 3,
-                        f"{xi}. {dept_name}  (탐지 {total}건 / 메일박스 {mailbox_count}개 / 사용자 {user_count}명)"
+                    y = draw_rank_header(
+                        xi,
+                        dept_name,
+                        f"탐지 {total:,}건 · 메일박스 {mailbox_count:,}개 · 사용자 {user_count:,}명",
+                        y,
                     )
-                    y -= 8
 
                     # Top Rules
                     rule_rows = [
@@ -8812,7 +9821,11 @@ class MainWindow(QMainWindow):
                         c.drawString(MARGIN + 6, y, "주요 메일박스: " + ", ".join(mb_preview))
                         y -= 14
 
-                    y -= 10
+                    c.setStrokeColor(colors.HexColor("#dbeafe"))
+                    c.setLineWidth(1.0)
+                    c.line(MARGIN + 8, y + 2, MARGIN + CONTENT_W - 8, y + 2)
+                    c.setStrokeColor(colors.black)
+                    y -= 24
 
             # ═══════════════════════════════════════════════════
             # PAGE 4 — DLP 부서 분석
@@ -8837,7 +9850,29 @@ class MainWindow(QMainWindow):
                 y = numbered_list(overall_dlp_lines, y)
                 y -= 12
 
+                # 목적지별 인사이트를 DLP 상세 앞쪽에 배치해, 주요 유출 경로를 먼저 확인하도록 구성한다.
+                y = new_page()
+                y = section_bar("DLP 목적지별 인사이트", y)
+                dlp_destination_rows = self.build_dlp_destination_insight_rows(
+                    dlp_rows,
+                    dept_resolver=report_identity_resolver,
+                )
+                perf.mark("dlp destination insights build")
+                y = self.draw_dlp_destination_insights(c, y, dlp_destination_rows, rf, MARGIN, CONTENT_W)
+                perf.mark("dlp destination insights render")
+
+                y = new_page()
                 y = section_bar("DLP 부서별 현황", y)
+                c.setFont(rf, 9)
+                c.setFillColor(colors.HexColor("#374151"))
+                c.drawString(MARGIN + 6, y, "DLP 이벤트가 집중된 상위 부서를 시각화하고, 허용/차단 및 사용자·PC 분포를 함께 확인합니다.")
+                y -= 18
+                y = draw_distribution_card(
+                    "DLP 부서 Top 5 시각화",
+                    dlp_dept_rank,
+                    y,
+                    subtitle="총건수 기준 / 허용·차단 포함",
+                )
 
                 dept_rows = []
                 for item in dlp_dept_rank[:5]:
@@ -8877,23 +9912,13 @@ class MainWindow(QMainWindow):
 
                     y = self.check_page(c, y, threshold=150, font_name=rf, font_size=8)
 
-                    c.setFillColor(colors.HexColor("#eef3fb"))
-                    c.rect(MARGIN, y - 2, CONTENT_W, 18, fill=1, stroke=0)
-
-                    c.setStrokeColor(colors.HexColor("#2f5ea8"))
-                    c.setLineWidth(0.8)
-                    c.line(MARGIN, y + 16, MARGIN + CONTENT_W, y + 16)
-                    c.line(MARGIN, y - 2, MARGIN + CONTENT_W, y - 2)
-
-                    c.setFont(rf, 8.4)
-                    c.setFillColor(colors.black)
                     allowed = max(total - blocked, 0)
-                    title_text = (
-                        f"{dept_idx}. {dept_name} "
-                        f"(총 {total}건 / 차단 {blocked}건 / 차단율 {block_ratio}% / 상세목록 허용 {allowed}건 기준)"
-)
-                    c.drawString(MARGIN + 6, y + 3, title_text)
-                    y -= 6
+                    y = draw_rank_header(
+                        dept_idx,
+                        dept_name,
+                        f"총 {total:,}건 · 허용 {allowed:,}건 · 차단 {blocked:,}건 · 차단율 {block_ratio}% · 상세목록 허용 기준",
+                        y,
+                    )
 
                     dept_rows = []
                     if not top_dest_group_rows:
@@ -8910,65 +9935,73 @@ class MainWindow(QMainWindow):
                     y = mini_table_multiline(
                         inner_x,
                         y,
-                        ["소스", "대상유형", "목적지 세부정보", "건수"],
+                        ["소스", "분류/대상유형", "목적지 세부정보", "건수"],
                         dept_rows,
                         detail_col_widths,
                         font_size=6.8,
                         line_height=8
                     )
 
-                    y -= 16
+                    c.setStrokeColor(colors.HexColor("#dbeafe"))
+                    c.setLineWidth(1.0)
+                    c.line(MARGIN + 8, y + 2, MARGIN + CONTENT_W - 8, y + 2)
+                    c.setStrokeColor(colors.black)
+                    y -= 26
 
-                # DLP 상위 부서 상세 종료 후 다음 페이지로 넘김
-                c.showPage()
-                PAGE_W, PAGE_H = A4
-                y = PAGE_H - MARGIN
+                # DLP 상위 부서 상세 종료 후 인사이트/부록 페이지로 넘김
+                y = new_page()
 
-                # showPage() 이후 폰트/색상 재설정
-                c.setFont(rf, 9)
-                c.setFillColor(colors.black)
-
-                if unclassified_user_counts:
-                    y -= 10
-                    y = section_bar("DLP 미분류 사용자", y)
-
-                    preview_lines = []
-                    for name, cnt in unclassified_user_counts[:15]:
-                        preview_lines.append(f"{name} ({cnt}건)")
-
-                    y = numbered_list(preview_lines, y)
-
-                    c.setFont(rf, 9)
-                    c.setFillColor(colors.black)
-
-                    if len(unclassified_user_counts) > 15:
-                        c.setFont(rf, 8)
-                        c.setFillColor(colors.HexColor("#6b7280"))
-                        c.drawString(
-                            MARGIN,
-                            y,
-                            f"외 {len(unclassified_user_counts) - 15}명 추가"
-                        )
-                        y -= 12
-
-                y -= 10
                 y = section_bar("DLP 부서 분석 인사이트", y)
                 dlp_insight_lines = self.build_dlp_dept_insight_lines(dlp_dept_rank, metrics)
                 y = self.draw_dlp_dept_insight_lines(c, y, dlp_insight_lines, rf, MARGIN, CONTENT_W)
 
+                if unclassified_user_counts:
+                    y = self.check_page(c, y - 8, threshold=170, font_name=rf, font_size=8)
+                    y = section_bar("DLP 미분류 사용자", y)
 
+                    compact_rows = []
+                    preview_users = unclassified_user_counts[:16]
+                    for i in range(0, len(preview_users), 2):
+                        left_name, left_cnt = preview_users[i]
+                        left = f"{i + 1}. {left_name} ({left_cnt}건)"
+                        right = ""
+                        if i + 1 < len(preview_users):
+                            right_name, right_cnt = preview_users[i + 1]
+                            right = f"{i + 2}. {right_name} ({right_cnt}건)"
+                        compact_rows.append([left, right])
+
+                    y = mini_table_multiline(
+                        MARGIN,
+                        y,
+                        ["미분류 사용자/호스트", "미분류 사용자/호스트"],
+                        compact_rows,
+                        [CONTENT_W / 2, CONTENT_W / 2],
+                        font_size=7.2,
+                        line_height=9
+                    )
+
+                    c.setFont(rf, 8)
+                    c.setFillColor(colors.HexColor("#6b7280"))
+                    if len(unclassified_user_counts) > len(preview_users):
+                        c.drawString(
+                            MARGIN,
+                            y,
+                            f"외 {len(unclassified_user_counts) - len(preview_users)}명 추가"
+                        )
+                        y -= 12
+                    c.setFillColor(colors.black)
+
+
+            draw_page_footer()
             c.save()
+            perf.mark("pdf save")
+            progress("저장 완료")
+            perf.finish()
+            return pdf_path
 
-            QMessageBox.information(self, "완료", f"보고서 저장 완료\n{pdf_path}")
-
-            try:
-                os.startfile(pdf_path)
-            except Exception:
-                pass
-
-        except Exception as e:
+        except Exception:
             log.exception("generate_security_report_v2 failed")
-            QMessageBox.critical(self, "오류", f"{type(e).__name__}: {e}")
+            raise
 
     def normalize_logical_tab_name(self, tab_name):
         return self.logical_tab_aliases.get(str(tab_name or ""), str(tab_name or ""))
@@ -14378,7 +15411,8 @@ Command Line :
             self.prepare_form_control(w, height=38)
 
         btn_report = QPushButton("Download Security Report (PDF)")
-        btn_report.clicked.connect(self.generate_security_report_v2)
+        self.btn_security_report = btn_report
+        btn_report.clicked.connect(self.start_security_report_worker)
         btn_report.setStyleSheet(btn_style)
         btn_report.setMinimumHeight(38)
 
@@ -14634,7 +15668,13 @@ Command Line :
 
     def check_page(self, c, y, threshold=120, font_name=None, font_size=10):
         if y < threshold:
+            footer = getattr(c, "_smu_report_draw_footer", None)
+            after_show_page = getattr(c, "_smu_report_after_show_page", None)
+            if callable(footer):
+                footer()
             c.showPage()
+            if callable(after_show_page):
+                after_show_page()
             if font_name:
                 c.setFont(font_name, font_size)
             return 800
@@ -14765,7 +15805,7 @@ Command Line :
         return "", ""
 
 
-    def build_security_insight_metrics(self, endpoint_detections, emails, dlp_rows, detection_timeline=None):
+    def build_security_insight_metrics(self, endpoint_detections, emails, dlp_rows, detection_timeline=None, report_identity_resolver=None):
         rule_counter = Counter()
         host_counter = Counter()
         file_counter = Counter()
@@ -14947,30 +15987,42 @@ Command Line :
                 if machine_name:
                     dlp_host_day_counter[machine_name.lower()].add(day_key)
 
-            endpoint_user_name, endpoint_user_id, user_type = get_endpoint_user_by_machine_name(machine_name)
-
-            if user_type == "shared_pc":
-                dept_name = "공용PC"
-                dept_code = ""
-            else:
-                dept_name, dept_code = get_org_info_by_user(endpoint_user_name, endpoint_user_id, machine_name)
-
-                if not dept_name or dept_name == "미분류":
-                    manual_dept = get_report_exception_dept(endpoint_user_name)
-
-                    if not manual_dept:
-                        manual_dept = get_report_exception_dept(machine_name)
-                    if manual_dept:
-                        dept_name = manual_dept
-                        dept_code = ""
-                    else:
-                        dept_name = "미분류"
-
-                        display_name = str(endpoint_user_name or "").strip()
-                        if not display_name:
-                            display_name = f"[NO_USER] {machine_name}"
-
+            if report_identity_resolver:
+                identity_info = report_identity_resolver(machine_name)
+                endpoint_user_name = str(identity_info.get("user_name", "") or "")
+                endpoint_user_id = str(identity_info.get("user_id", "") or "")
+                user_type = str(identity_info.get("user_type", "") or "")
+                dept_name = str(identity_info.get("dept_name", "미분류") or "미분류")
+                dept_code = str(identity_info.get("dept_code", "") or "")
+                if identity_info.get("is_unclassified"):
+                    display_name = str(identity_info.get("display_name", "") or "").strip()
+                    if display_name:
                         unclassified_user_counter[display_name] += 1
+            else:
+                endpoint_user_name, endpoint_user_id, user_type = get_endpoint_user_by_machine_name(machine_name)
+
+                if user_type == "shared_pc":
+                    dept_name = "공용PC"
+                    dept_code = ""
+                else:
+                    dept_name, dept_code = get_org_info_by_user(endpoint_user_name, endpoint_user_id, machine_name)
+
+                    if not dept_name or dept_name == "미분류":
+                        manual_dept = get_report_exception_dept(endpoint_user_name)
+
+                        if not manual_dept:
+                            manual_dept = get_report_exception_dept(machine_name)
+                        if manual_dept:
+                            dept_name = manual_dept
+                            dept_code = ""
+                        else:
+                            dept_name = "미분류"
+
+                            display_name = str(endpoint_user_name or "").strip()
+                            if not display_name:
+                                display_name = f"[NO_USER] {machine_name}"
+
+                            unclassified_user_counter[display_name] += 1
 
             stat = dept_stats[dept_name]
             stat["total"] += 1
@@ -15035,12 +16087,15 @@ Command Line :
                     for name, cnt in group["target_types"].most_common(5)
                 ]
                 target_text = "\n".join(target_parts) if target_parts else "-"
+                dest_category = classify_dlp_destination("", target_text, dest_name)
+                target_text_with_category = f"{dest_category}\n{target_text}" if target_text != "-" else dest_category
 
                 top_dest_group_rows.append({
                     "dest_detail": dest_name,
                     "count": group["count"],
                     "source_text": source_text,
-                    "target_text": target_text,
+                    "target_text": target_text_with_category,
+                    "category": dest_category,
                 })
 
             dlp_dept_rows.append({
