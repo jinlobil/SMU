@@ -9592,22 +9592,37 @@ class MainWindow(QMainWindow):
                 # 박스 높이 + 아래 여백 확보
                 y -= (box_h + 10)
 
-            # 관리자 요약
+            # 관리자 요약 — 핵심 항목만 카드형으로 요약
             y = section_bar("관리자 요약", y)
-            c.setFont(rf, 10)
 
-            summary_lines = []
-            for part in re.split(r'(?<=\.)\s+', str(manager_summary or "").strip()):
-                part = part.strip()
-                if part:
-                    summary_lines.append(part)
+            manager_highlights = [
+                f"총 이벤트: Detection {metrics.get('endpoint_detection_count', 0):,}건 / Email {metrics.get('email_count', 0):,}건 / DLP {metrics.get('dlp_count', 0):,}건",
+            ]
+            if metrics.get("top_host"):
+                manager_highlights.append(
+                    f"최다 탐지 호스트: {metrics.get('top_host')} ({metrics.get('top_host_count', 0):,}건)"
+                )
+            if metrics.get("top_rule"):
+                manager_highlights.append(
+                    f"주요 탐지 룰: {metrics.get('top_rule')} ({metrics.get('top_rule_count', 0):,}건)"
+                )
+            top_dlp_dept = metrics.get("top_dlp_dept", {}) or {}
+            if top_dlp_dept:
+                manager_highlights.append(
+                    f"DLP 최다 부서: {top_dlp_dept.get('dept_name', '미분류')} ({top_dlp_dept.get('total', 0):,}건)"
+                )
+            if cross_host_count > 0:
+                manager_highlights.append(
+                    f"Detection + DLP 교차 호스트 {cross_host_count:,}개 — 우선 점검 대상"
+                )
+            if triple_overlap_count > 0:
+                manager_highlights.append(
+                    f"Detection·Email·DLP 3종 동시 발생일 {triple_overlap_count:,}일 확인"
+                )
 
-            y = self.draw_multiline_text(
-                c, MARGIN + 6, y, summary_lines,
-                line_height=18, max_width=CONTENT_W - 10,
-                font_name=rf, font_size=10
-            )
-            y -= 6
+            # 과도한 문장형 설명 대신 한눈에 보는 결론 5개만 표시한다.
+            y = draw_numbered_card_list(manager_highlights[:5], y, accent=theme["primary"], font_size=7.8)
+            y -= 4
 
             # ═══════════════════════════════════════════════════
             # PAGE 2 — 그래프 (전체 너비) + 3개 테이블 나란히
@@ -9694,7 +9709,7 @@ class MainWindow(QMainWindow):
                 c.setFillColor(theme["text"])
                 y -= 14
                 y = draw_numbered_card_list(risk_factors, y, accent=colors.HexColor("#f59e0b"), font_size=7.8)
-                y -= 2
+                y -= 16
 
             # 점수 산정 기준
             if score_breakdown:
@@ -9723,20 +9738,20 @@ class MainWindow(QMainWindow):
                 )
                 y -= 8
 
-            # 주요 인사이트
-            y = self.check_page(c, y, threshold=130, font_name=rf, font_size=8)
+            # 주요 인사이트는 별도 페이지에서 시작해 섹션 경계를 명확히 한다.
+            y = new_page()
             y = section_bar("주요 인사이트", y)
             y = draw_numbered_card_list(insight_lines, y, accent=theme["primary"], font_size=7.8)
-            y -= 8
 
-            # 권장 조치
-            y = self.check_page(c, y, threshold=130, font_name=rf, font_size=8)
+            # 권장 조치도 별도 페이지에서 시작한다.
+            y = new_page()
             y = section_bar("권장 조치", y)
             y = draw_numbered_card_list(action_items, y, accent=colors.HexColor("#16a3a3"), font_size=7.8)
 
             # ═══════════════════════════════════════════════════
             # PAGE Detection — Detection 부서별 분석
             # ═══════════════════════════════════════════════════
+            # Detection 전체 현황은 권장 조치 다음 새 페이지에서 시작한다.
             if det_dept_rank:
                 y = new_page()
 
