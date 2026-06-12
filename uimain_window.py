@@ -8463,8 +8463,8 @@ class MainWindow(QMainWindow):
             top_destinations = row.get("top_destinations", [])
             top_destination = top_destinations[0].get("destination", "-") if top_destinations else "-"
 
-            y_pos -= 34 if rank_idx > 1 else 16
-            y_pos = self.check_page(c, y_pos, threshold=235, font_name=rf, font_size=9)
+            y_pos -= 20 if rank_idx > 1 else 10
+            y_pos = self.check_page(c, y_pos, threshold=210, font_name=rf, font_size=9)
             c.setFillColor(colors.HexColor("#dbeafe"))
             c.roundRect(margin + 2.4, y_pos - 33.4, content_w, 36, 10, fill=1, stroke=0)
             c.setFillColor(colors.HexColor("#f8fbff"))
@@ -8532,7 +8532,7 @@ class MainWindow(QMainWindow):
             c.setLineWidth(1.2)
             c.line(margin + 8, y_pos + 2, margin + content_w - 8, y_pos + 2)
             c.setStrokeColor(colors.black)
-            y_pos -= 42
+            y_pos -= 34
 
         c.setFillColor(colors.black)
         return y_pos
@@ -9299,6 +9299,121 @@ class MainWindow(QMainWindow):
                 c.setFillColor(theme["text"])
                 return y_pos - 48
 
+            def wrap_report_text(text, max_width, font_size=8, font_name=None):
+                from reportlab.pdfbase.pdfmetrics import stringWidth
+
+                font_name = font_name or rf
+                text = str(text or "").strip()
+                if not text:
+                    return [""]
+                lines = []
+                for raw_line in text.split("\n"):
+                    words = raw_line.split() or [raw_line]
+                    current = ""
+                    for word in words:
+                        pieces = [word]
+                        if stringWidth(word, font_name, font_size) > max_width:
+                            pieces = []
+                            piece = ""
+                            for ch in word:
+                                if stringWidth(piece + ch, font_name, font_size) <= max_width:
+                                    piece += ch
+                                else:
+                                    if piece:
+                                        pieces.append(piece)
+                                    piece = ch
+                            if piece:
+                                pieces.append(piece)
+                        for piece in pieces:
+                            test = piece if not current else f"{current} {piece}"
+                            if stringWidth(test, font_name, font_size) <= max_width:
+                                current = test
+                            else:
+                                if current:
+                                    lines.append(current)
+                                current = piece
+                    if current:
+                        lines.append(current)
+                return lines or [""]
+
+            def draw_numbered_card_list(items, y_pos, *, accent=None, chip_prefix="", font_size=8.1):
+                accent = accent or theme["primary"]
+                for idx, item in enumerate(items or [], start=1):
+                    if isinstance(item, (list, tuple)):
+                        header = str(item[0] if item else "")
+                        details = [str(x) for x in item[1:] if str(x or "").strip()]
+                    else:
+                        header = str(item or "")
+                        details = []
+                    if chip_prefix:
+                        header = re.sub(r"^\d+\.\s*", "", header).strip()
+
+                    chip_w = 46 if chip_prefix else 28
+                    header_lines = wrap_report_text(header, CONTENT_W - chip_w - 56, font_size=font_size)
+                    detail_lines = []
+                    for detail in details:
+                        bullet = detail if detail.lstrip().startswith(("-", "→")) else f"- {detail}"
+                        detail_lines.extend(wrap_report_text(bullet, CONTENT_W - 42, font_size=7.2))
+
+                    card_h = max(34, 18 + len(header_lines) * 10 + len(detail_lines) * 9 + (4 if detail_lines else 0))
+                    y_pos = self.check_page(c, y_pos, threshold=card_h + 54, font_name=rf, font_size=font_size)
+                    draw_soft_card(MARGIN, y_pos, CONTENT_W, card_h, radius=10, fill=theme["card"], stroke=theme["border"], shadow=True)
+
+                    chip_text = f"{chip_prefix}{idx}" if chip_prefix else str(idx)
+                    c.setFillColor(accent)
+                    c.roundRect(MARGIN + 10, y_pos - 24, chip_w, 16, 8, fill=1, stroke=0)
+                    c.setFillColor(colors.white)
+                    c.setFont(rf, 7)
+                    c.drawCentredString(MARGIN + 10 + chip_w / 2, y_pos - 18.5, chip_text)
+
+                    text_x = MARGIN + chip_w + 20
+                    text_y = y_pos - 14
+                    c.setFillColor(theme["text"])
+                    c.setFont(rf, font_size)
+                    for line in header_lines:
+                        c.drawString(text_x, text_y, line)
+                        text_y -= 10
+
+                    if detail_lines:
+                        text_y -= 2
+                        c.setFillColor(theme["muted"])
+                        c.setFont(rf, 7.2)
+                        for line in detail_lines:
+                            c.drawString(MARGIN + 18, text_y, line)
+                            text_y -= 9
+
+                    c.setFillColor(theme["text"])
+                    y_pos -= card_h + 9
+                return y_pos
+
+            def draw_insight_block_cards(blocks, y_pos, *, accent=None):
+                return draw_numbered_card_list(blocks, y_pos, accent=accent or theme["primary"], chip_prefix="TOP ", font_size=8.1)
+
+            def draw_risk_score_card(y_pos):
+                card_h = 74
+                y_pos = self.check_page(c, y_pos, threshold=card_h + 50, font_name=rf, font_size=8)
+                draw_soft_card(MARGIN, y_pos, CONTENT_W, card_h, radius=13, fill=theme["card"], stroke=theme["border"], shadow=True)
+                c.setFillColor(theme["primary"])
+                c.roundRect(MARGIN + 14, y_pos - 28, 58, 18, 9, fill=1, stroke=0)
+                c.setFillColor(colors.white)
+                c.setFont(rf, 8)
+                c.drawCentredString(MARGIN + 43, y_pos - 22, str(risk_level))
+
+                c.setFillColor(theme["text"])
+                c.setFont(rf, 18)
+                c.drawString(MARGIN + 86, y_pos - 24, f"{risk_score}점")
+                c.setFont(rf, 8)
+                c.setFillColor(theme["muted"])
+                c.drawString(MARGIN + 86, y_pos - 40, f"선택 기간 {selected_days}일 기준 종합 위험도")
+
+                summary = (risk.get("factors", []) or ["주요 위험 요인을 기준으로 산정되었습니다."])[0]
+                summary_lines = wrap_report_text(summary, CONTENT_W - 236, font_size=7.6)[:2]
+                c.setFont(rf, 7.6)
+                for idx, line in enumerate(summary_lines):
+                    c.drawRightString(MARGIN + CONTENT_W - 16, y_pos - 22 - idx * 12, line)
+                c.setFillColor(theme["text"])
+                return y_pos - card_h - 18
+
             def summary_mini_card(x, y_pos, w, h, title, value, sub_text="", accent=None):
                 accent = accent or colors.HexColor("#eef5ff")
                 draw_soft_card(x, y_pos, w, h, radius=9, fill=accent, stroke=theme["border"], shadow=True)
@@ -9569,50 +9684,55 @@ class MainWindow(QMainWindow):
 
             # 위험도 평가
             y = section_bar("위험도 평가", y)
-            c.setFont(rf, 10)
-            c.drawString(MARGIN + 6, y, f"종합 점수: {risk_score}점     수준: {risk_level}")
-            y -= 18
-            y = numbered_list(risk.get("factors", []), y)
-            y -= 8
+            y = draw_risk_score_card(y)
+
+            risk_factors = risk.get("factors", [])
+            if risk_factors:
+                c.setFont(rf, 9)
+                c.setFillColor(theme["primary_dark"])
+                c.drawString(MARGIN + 6, y, "핵심 위험 요인")
+                c.setFillColor(theme["text"])
+                y -= 14
+                y = draw_numbered_card_list(risk_factors, y, accent=colors.HexColor("#f59e0b"), font_size=7.8)
+                y -= 2
 
             # 점수 산정 기준
             if score_breakdown:
-                y = self.check_page(c, y, threshold=100, font_name=rf, font_size=10)
-                c.setFont(rf, 10)
-                c.setFillColorRGB(0.18, 0.32, 0.56)
+                y = self.check_page(c, y, threshold=145, font_name=rf, font_size=8)
+                c.setFont(rf, 9)
+                c.setFillColor(theme["primary_dark"])
                 c.drawString(MARGIN + 6, y, f"점수 산정 기준 (선택 기간 {selected_days}일 기준)")
-                c.setFillGray(0)
-                y -= 16
+                c.setFillColor(theme["text"])
+                y -= 12
 
-                score_lines = []
+                score_rows = []
                 for item in score_breakdown:
                     label = str(item.get("label", ""))
                     item_score = item.get("score", 0)
                     detail = str(item.get("detail", ""))
-                    score_lines.append(f"{label}: +{item_score}점 ({detail})")
+                    score_rows.append([label, f"+{item_score}", detail])
 
-                y = self.draw_multiline_text(
-                    c,
-                    MARGIN + 14,
+                y = mini_table_multiline(
+                    MARGIN,
                     y,
-                    score_lines,
-                    line_height=14,
-                    max_width=CONTENT_W - 20,
-                    font_name=rf,
-                    font_size=9
+                    ["평가 항목", "점수", "근거"],
+                    score_rows,
+                    [118, 42, CONTENT_W - 160],
+                    font_size=7.0,
+                    line_height=8
                 )
-                y -= 10
+                y -= 8
 
             # 주요 인사이트
-            y = self.check_page(c, y, threshold=100, font_name=rf, font_size=10)
+            y = self.check_page(c, y, threshold=130, font_name=rf, font_size=8)
             y = section_bar("주요 인사이트", y)
-            y = numbered_list(insight_lines, y)
-            y -= 12
+            y = draw_numbered_card_list(insight_lines, y, accent=theme["primary"], font_size=7.8)
+            y -= 8
 
             # 권장 조치
-            y = self.check_page(c, y, threshold=100, font_name=rf, font_size=10)
+            y = self.check_page(c, y, threshold=130, font_name=rf, font_size=8)
             y = section_bar("권장 조치", y)
-            y = numbered_list(action_items, y)
+            y = draw_numbered_card_list(action_items, y, accent=colors.HexColor("#16a3a3"), font_size=7.8)
 
             # ═══════════════════════════════════════════════════
             # PAGE Detection — Detection 부서별 분석
@@ -9847,8 +9967,8 @@ class MainWindow(QMainWindow):
                 y -= 18
 
                 overall_dlp_lines = self.build_dlp_overall_insight_lines(dlp_allowed_rows)
-                y = numbered_list(overall_dlp_lines, y)
-                y -= 12
+                y = draw_insight_block_cards(overall_dlp_lines, y, accent=theme["primary"])
+                y -= 8
 
                 # 목적지별 인사이트를 DLP 상세 앞쪽에 배치해, 주요 유출 경로를 먼저 확인하도록 구성한다.
                 y = new_page()
@@ -9953,7 +10073,7 @@ class MainWindow(QMainWindow):
 
                 y = section_bar("DLP 부서 분석 인사이트", y)
                 dlp_insight_lines = self.build_dlp_dept_insight_lines(dlp_dept_rank, metrics)
-                y = self.draw_dlp_dept_insight_lines(c, y, dlp_insight_lines, rf, MARGIN, CONTENT_W)
+                y = draw_insight_block_cards(dlp_insight_lines, y, accent=theme["primary"])
 
                 if unclassified_user_counts:
                     y = self.check_page(c, y - 8, threshold=170, font_name=rf, font_size=8)
