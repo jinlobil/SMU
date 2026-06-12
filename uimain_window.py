@@ -8463,8 +8463,8 @@ class MainWindow(QMainWindow):
             top_destinations = row.get("top_destinations", [])
             top_destination = top_destinations[0].get("destination", "-") if top_destinations else "-"
 
-            y_pos -= 20 if rank_idx > 1 else 10
-            y_pos = self.check_page(c, y_pos, threshold=210, font_name=rf, font_size=9)
+            y_pos -= 34 if rank_idx > 1 else 16
+            y_pos = self.check_page(c, y_pos, threshold=235, font_name=rf, font_size=9)
             c.setFillColor(colors.HexColor("#dbeafe"))
             c.roundRect(margin + 2.4, y_pos - 33.4, content_w, 36, 10, fill=1, stroke=0)
             c.setFillColor(colors.HexColor("#f8fbff"))
@@ -8532,7 +8532,7 @@ class MainWindow(QMainWindow):
             c.setLineWidth(1.2)
             c.line(margin + 8, y_pos + 2, margin + content_w - 8, y_pos + 2)
             c.setStrokeColor(colors.black)
-            y_pos -= 34
+            y_pos -= 42
 
         c.setFillColor(colors.black)
         return y_pos
@@ -8910,43 +8910,51 @@ class MainWindow(QMainWindow):
                 return y_pos
 
             def mini_table(x, y_pos, headers, rows, col_widths, font_size=9):
-                """헤더+행을 직접 그리는 소형 테이블 (페이지 넘김 없음)"""
-                row_h = 18
-                # 헤더
-                c.setFillColorRGB(0.20, 0.35, 0.60)
-                c.rect(x, y_pos - row_h + 4, sum(col_widths), row_h, fill=1, stroke=0)
+                """앱 UI 톤의 헤더+행 소형 테이블 (페이지 넘김 없음)."""
+                from reportlab.pdfbase.pdfmetrics import stringWidth
+
+                row_h = 19
+                total_w = sum(col_widths)
+                table_top = y_pos + 4
+
+                # 헤더: DLP 목적지 인사이트와 동일한 파란 라운드 스타일
+                c.setFillColor(colors.HexColor("#dbeafe"))
+                c.roundRect(x + 1.3, y_pos - row_h + 1.6, total_w, row_h, 5, fill=1, stroke=0)
+                c.setFillColor(theme["primary"])
+                c.roundRect(x, y_pos - row_h + 4, total_w, row_h, 5, fill=1, stroke=0)
                 c.setFillGray(1)
                 c.setFont(rf, font_size)
                 ox = x
                 for h, cw in zip(headers, col_widths):
                     c.drawString(ox + 4, y_pos - 11, str(h))
                     ox += cw
-                c.setFillGray(0)
+                c.setFillColor(theme["text"])
                 y_pos -= row_h
 
                 # 행
                 for ri, row in enumerate(rows):
-                    bg = 0.96 if ri % 2 == 0 else 1.0
-                    c.setFillGray(bg)
-                    c.rect(x, y_pos - row_h + 4, sum(col_widths), row_h, fill=1, stroke=0)
-                    c.setFillGray(0)
+                    bg = colors.HexColor("#f8fbff") if ri % 2 == 0 else colors.white
+                    c.setFillColor(bg)
+                    c.rect(x, y_pos - row_h + 4, total_w, row_h, fill=1, stroke=0)
+                    c.setFillColor(theme["text"])
                     c.setFont(rf, font_size)
                     ox = x
                     for val, cw in zip(row, col_widths):
                         text = str(val)
-                        # 말줄임 처리
-                        from reportlab.pdfbase.pdfmetrics import stringWidth
                         while stringWidth(text, rf, font_size) > cw - 8 and len(text) > 3:
                             text = text[:-2] + "…"
                         c.drawString(ox + 4, y_pos - 11, text)
                         ox += cw
-                    # 하단 구분선
-                    c.setStrokeGray(0.80)
-                    c.line(x, y_pos - row_h + 4, x + sum(col_widths), y_pos - row_h + 4)
-                    c.setStrokeGray(0)
+                    c.setStrokeColor(colors.HexColor("#d6e4f5"))
+                    c.setLineWidth(0.45)
+                    c.line(x, y_pos - row_h + 4, x + total_w, y_pos - row_h + 4)
                     y_pos -= row_h
 
-                return y_pos - 6
+                c.setStrokeColor(colors.HexColor("#cfe1ff"))
+                c.setLineWidth(0.65)
+                c.roundRect(x, y_pos + 4, total_w, table_top - (y_pos + 4), 5, fill=0, stroke=1)
+                c.setStrokeColor(colors.black)
+                return y_pos - 8
 
             def mini_table_multiline(x, y_pos, headers, rows, col_widths, font_size=8, line_height=11):
                 def wrap_cell_text(text, max_width, max_lines=None):
@@ -9021,16 +9029,20 @@ class MainWindow(QMainWindow):
 
                     return lines
 
-                header_h = 18
-                c.setFillColorRGB(0.20, 0.35, 0.60)
-                c.rect(x, y_pos - header_h + 4, sum(col_widths), header_h, fill=1, stroke=0)
+                header_h = 19
+                total_w = sum(col_widths)
+                table_top = y_pos + 4
+                c.setFillColor(colors.HexColor("#dbeafe"))
+                c.roundRect(x + 1.3, y_pos - header_h + 1.6, total_w, header_h, 5, fill=1, stroke=0)
+                c.setFillColor(theme["primary"])
+                c.roundRect(x, y_pos - header_h + 4, total_w, header_h, 5, fill=1, stroke=0)
                 c.setFillGray(1)
                 c.setFont(rf, font_size)
                 ox = x
                 for h, cw in zip(headers, col_widths):
                     c.drawString(ox + 4, y_pos - 11, str(h))
                     ox += cw
-                c.setFillGray(0)
+                c.setFillColor(theme["text"])
                 y_pos -= header_h
 
                 for ri, row in enumerate(rows):
@@ -9054,9 +9066,12 @@ class MainWindow(QMainWindow):
 
                     if y_pos - row_h < 40:
                         y_pos = new_page()
+                        table_top = y_pos + 4
 
-                        c.setFillColorRGB(0.20, 0.35, 0.60)
-                        c.rect(x, y_pos - header_h + 4, sum(col_widths), header_h, fill=1, stroke=0)
+                        c.setFillColor(colors.HexColor("#dbeafe"))
+                        c.roundRect(x + 1.3, y_pos - header_h + 1.6, total_w, header_h, 5, fill=1, stroke=0)
+                        c.setFillColor(theme["primary"])
+                        c.roundRect(x, y_pos - header_h + 4, total_w, header_h, 5, fill=1, stroke=0)
                         c.setFillGray(1)
                         c.setFont(rf, font_size)
 
@@ -9065,13 +9080,13 @@ class MainWindow(QMainWindow):
                             c.drawString(ox + 4, y_pos - 11, str(h))
                             ox += cw
 
-                        c.setFillGray(0)
+                        c.setFillColor(theme["text"])
                         y_pos -= header_h
 
-                    bg = 0.94
-                    c.setFillGray(bg)
-                    c.rect(x, y_pos - row_h + 4, sum(col_widths), row_h, fill=1, stroke=0)
-                    c.setFillGray(0)
+                    bg = colors.HexColor("#f8fbff") if ri % 2 == 0 else colors.white
+                    c.setFillColor(bg)
+                    c.rect(x, y_pos - row_h + 4, total_w, row_h, fill=1, stroke=0)
+                    c.setFillColor(theme["text"])
                     c.setFont(rf, font_size)
 
                     ox = x
@@ -9087,12 +9102,16 @@ class MainWindow(QMainWindow):
 
                         ox += cw
 
-                    c.setStrokeColor(colors.HexColor("#9aa7bd"))
-                    c.setLineWidth(0.9)
-                    c.line(x, y_pos - row_h + 4, x + sum(col_widths), y_pos - row_h + 4)
+                    c.setStrokeColor(colors.HexColor("#d6e4f5"))
+                    c.setLineWidth(0.45)
+                    c.line(x, y_pos - row_h + 4, x + total_w, y_pos - row_h + 4)
                     y_pos -= row_h
 
-                return y_pos - 4
+                c.setStrokeColor(colors.HexColor("#cfe1ff"))
+                c.setLineWidth(0.65)
+                c.roundRect(x, y_pos + 4, total_w, table_top - (y_pos + 4), 5, fill=0, stroke=1)
+                c.setStrokeColor(colors.black)
+                return y_pos - 8
 
 
             def mini_table_fixed(x, y_pos, headers, rows, col_widths, font_size=6.8, row_h=20):
@@ -9184,6 +9203,101 @@ class MainWindow(QMainWindow):
                     y_pos -= row_h
 
                 return y_pos - 6
+
+            def draw_distribution_card(title, rows, y_pos, *, label_key="dept_name", value_key="total",
+                                       subtitle="총건수 기준", empty_text="데이터가 확인되지 않았습니다."):
+                from reportlab.pdfbase.pdfmetrics import stringWidth
+
+                rows = [r for r in (rows or []) if int(r.get(value_key, 0) or 0) > 0][:5]
+                card_h = 150
+                y_pos = self.check_page(c, y_pos, threshold=card_h + 48, font_name=rf, font_size=8)
+                if not rows:
+                    draw_soft_card(MARGIN, y_pos, CONTENT_W, 44, radius=10, fill=theme["card"], stroke=theme["border"], shadow=True)
+                    c.setFont(rf, 8.5)
+                    c.setFillColor(theme["muted"])
+                    c.drawString(MARGIN + 12, y_pos - 24, empty_text)
+                    c.setFillColor(theme["text"])
+                    return y_pos - 58
+
+                draw_soft_card(MARGIN, y_pos, CONTENT_W, card_h, radius=12, fill=theme["card"], stroke=theme["border"], shadow=True)
+                palette = [
+                    colors.HexColor("#0b63ff"),
+                    colors.HexColor("#16a3a3"),
+                    colors.HexColor("#8b5cf6"),
+                    colors.HexColor("#f59e0b"),
+                    colors.HexColor("#ef4444"),
+                ]
+                c.setFont(rf, 8.5)
+                c.setFillColor(theme["primary"])
+                c.drawString(MARGIN + 14, y_pos - 16, title)
+                c.setFont(rf, 7)
+                c.setFillColor(theme["muted"])
+                c.drawRightString(MARGIN + CONTENT_W - 14, y_pos - 16, subtitle)
+
+                max_total = max(int(row.get(value_key, 0) or 0) for row in rows) or 1
+                total_sum = sum(int(row.get(value_key, 0) or 0) for row in rows) or 1
+                bar_x = MARGIN + 16
+                bar_y = y_pos - 40
+                label_w = 104
+                bar_w = 178
+                row_gap = 18
+
+                for idx, row in enumerate(rows):
+                    value = int(row.get(value_key, 0) or 0)
+                    label = str(row.get(label_key, "-") or "-")
+                    y_row = bar_y - idx * row_gap
+                    color = palette[idx % len(palette)]
+                    display = f"{idx + 1}. {label}"
+                    while stringWidth(display, rf, 6.8) > label_w and len(display) > 5:
+                        display = display[:-2] + "…"
+                    c.setFont(rf, 6.8)
+                    c.setFillColor(colors.HexColor("#344054"))
+                    c.drawString(bar_x, y_row, display)
+                    c.setFillColor(colors.HexColor("#eef4ff"))
+                    c.roundRect(bar_x + label_w, y_row - 5, bar_w, 7, 3, fill=1, stroke=0)
+                    c.setFillColor(color)
+                    c.roundRect(bar_x + label_w, y_row - 5, max(4, bar_w * value / max_total), 7, 3, fill=1, stroke=0)
+                    c.setFillColor(theme["text"])
+                    c.drawRightString(bar_x + label_w + bar_w + 48, y_row - 1, f"{value:,}건")
+
+                cx = MARGIN + CONTENT_W - 92
+                cy = y_pos - 78
+                radius = 41
+                start_angle = 90
+                for idx, row in enumerate(rows):
+                    value = int(row.get(value_key, 0) or 0)
+                    extent = 360 * value / total_sum
+                    c.setFillColor(palette[idx % len(palette)])
+                    c.wedge(cx - radius, cy - radius, cx + radius, cy + radius, start_angle, extent, fill=1, stroke=0)
+                    start_angle += extent
+                c.setFillColor(theme["card"])
+                c.circle(cx, cy, radius * 0.55, fill=1, stroke=0)
+                c.setFillColor(theme["primary"])
+                c.setFont(rf, 9.5)
+                c.drawCentredString(cx, cy + 3, "TOP 5")
+                c.setFillColor(theme["muted"])
+                c.setFont(rf, 6.8)
+                c.drawCentredString(cx, cy - 9, f"{total_sum:,}건")
+                c.setFillColor(theme["text"])
+                return y_pos - card_h - 18
+
+            def draw_rank_header(rank, title, meta, y_pos, *, accent=None):
+                y_pos = self.check_page(c, y_pos, threshold=76, font_name=rf, font_size=8)
+                accent = accent or theme["primary"]
+                draw_soft_card(MARGIN, y_pos, CONTENT_W, 38, radius=11, fill=colors.HexColor("#f8fbff"), stroke=colors.HexColor("#93c5fd"), shadow=True)
+                c.setFillColor(accent)
+                c.roundRect(MARGIN + 10, y_pos - 24, 52, 17, 8.5, fill=1, stroke=0)
+                c.setFillColor(colors.white)
+                c.setFont(rf, 7.2)
+                c.drawCentredString(MARGIN + 36, y_pos - 18.5, f"TOP {rank}")
+                c.setFillColor(theme["text"])
+                c.setFont(rf, 9.2)
+                c.drawString(MARGIN + 72, y_pos - 12, str(title))
+                c.setFillColor(theme["muted"])
+                c.setFont(rf, 7.2)
+                c.drawString(MARGIN + 72, y_pos - 26, str(meta))
+                c.setFillColor(theme["text"])
+                return y_pos - 48
 
             def summary_mini_card(x, y_pos, w, h, title, value, sub_text="", accent=None):
                 accent = accent or colors.HexColor("#eef5ff")
@@ -9518,7 +9632,13 @@ class MainWindow(QMainWindow):
                     f"Endpoint Detection 총 {total_det_cnt:,}건  /  탐지 호스트 {unique_hosts}개  "
                     f"/  탐지 룰 {unique_rules}종  /  연관 파일 {unique_files}종"
                 )
-                y -= 22
+                y -= 18
+                y = draw_distribution_card(
+                    "Detection 부서 Top 5 시각화",
+                    det_dept_rank,
+                    y,
+                    subtitle="탐지건수 기준 / 상위 부서 합계",
+                )
 
                 # Detection 부서별 현황 테이블
                 y = section_bar("Detection 부서별 현황", y)
@@ -9554,20 +9674,12 @@ class MainWindow(QMainWindow):
 
                     y = self.check_page(c, y, threshold=160, font_name=rf, font_size=8)
 
-                    # 부서 헤더 바
-                    c.setFillColor(colors.HexColor("#eef3fb"))
-                    c.rect(MARGIN, y - 2, CONTENT_W, 18, fill=1, stroke=0)
-                    c.setStrokeColor(colors.HexColor("#2f5ea8"))
-                    c.setLineWidth(0.8)
-                    c.line(MARGIN, y + 16, MARGIN + CONTENT_W, y + 16)
-                    c.line(MARGIN, y - 2,  MARGIN + CONTENT_W, y - 2)
-                    c.setFont(rf, 8.4)
-                    c.setFillColor(colors.black)
-                    c.drawString(
-                        MARGIN + 6, y + 3,
-                        f"{di}. {dept_name}  (탐지 {total}건 / 호스트 {host_count}개 / 사용자 {user_count}명)"
+                    y = draw_rank_header(
+                        di,
+                        dept_name,
+                        f"탐지 {total:,}건 · 호스트 {host_count:,}개 · 사용자 {user_count:,}명",
+                        y,
                     )
-                    y -= 8
 
                     # Top Rules 미니 테이블
                     rule_rows = [
@@ -9605,7 +9717,11 @@ class MainWindow(QMainWindow):
                         c.drawString(MARGIN + 6, y, preview_text)
                         y -= 14
 
-                    y -= 10
+                    c.setStrokeColor(colors.HexColor("#dbeafe"))
+                    c.setLineWidth(1.0)
+                    c.line(MARGIN + 8, y + 2, MARGIN + CONTENT_W - 8, y + 2)
+                    c.setStrokeColor(colors.black)
+                    y -= 24
 
             # ═══════════════════════════════════════════════════
             # PAGE XDR — Email - XDR 부서별 분석
@@ -9620,7 +9736,13 @@ class MainWindow(QMainWindow):
                     MARGIN + 6, y,
                     f"Email - XDR 총 {total_xdr_cnt:,}건  /  부서 {len(xdr_dept_rank)}개"
                 )
-                y -= 22
+                y -= 18
+                y = draw_distribution_card(
+                    "Email - XDR 부서 Top 5 시각화",
+                    xdr_dept_rank,
+                    y,
+                    subtitle="탐지건수 기준 / 상위 부서 합계",
+                )
 
                 y = section_bar("Email - XDR 부서별 현황", y)
 
@@ -9655,19 +9777,12 @@ class MainWindow(QMainWindow):
 
                     y = self.check_page(c, y, threshold=200, font_name=rf, font_size=8)
 
-                    c.setFillColor(colors.HexColor("#eef3fb"))
-                    c.rect(MARGIN, y - 2, CONTENT_W, 18, fill=1, stroke=0)
-                    c.setStrokeColor(colors.HexColor("#2f5ea8"))
-                    c.setLineWidth(0.8)
-                    c.line(MARGIN, y + 16, MARGIN + CONTENT_W, y + 16)
-                    c.line(MARGIN, y - 2,  MARGIN + CONTENT_W, y - 2)
-                    c.setFont(rf, 8.4)
-                    c.setFillColor(colors.black)
-                    c.drawString(
-                        MARGIN + 6, y + 3,
-                        f"{xi}. {dept_name}  (탐지 {total}건 / 메일박스 {mailbox_count}개 / 사용자 {user_count}명)"
+                    y = draw_rank_header(
+                        xi,
+                        dept_name,
+                        f"탐지 {total:,}건 · 메일박스 {mailbox_count:,}개 · 사용자 {user_count:,}명",
+                        y,
                     )
-                    y -= 8
 
                     # Top Rules
                     rule_rows = [
@@ -9706,7 +9821,11 @@ class MainWindow(QMainWindow):
                         c.drawString(MARGIN + 6, y, "주요 메일박스: " + ", ".join(mb_preview))
                         y -= 14
 
-                    y -= 10
+                    c.setStrokeColor(colors.HexColor("#dbeafe"))
+                    c.setLineWidth(1.0)
+                    c.line(MARGIN + 8, y + 2, MARGIN + CONTENT_W - 8, y + 2)
+                    c.setStrokeColor(colors.black)
+                    y -= 24
 
             # ═══════════════════════════════════════════════════
             # PAGE 4 — DLP 부서 분석
@@ -9744,6 +9863,16 @@ class MainWindow(QMainWindow):
 
                 y = new_page()
                 y = section_bar("DLP 부서별 현황", y)
+                c.setFont(rf, 9)
+                c.setFillColor(colors.HexColor("#374151"))
+                c.drawString(MARGIN + 6, y, "DLP 이벤트가 집중된 상위 부서를 시각화하고, 허용/차단 및 사용자·PC 분포를 함께 확인합니다.")
+                y -= 18
+                y = draw_distribution_card(
+                    "DLP 부서 Top 5 시각화",
+                    dlp_dept_rank,
+                    y,
+                    subtitle="총건수 기준 / 허용·차단 포함",
+                )
 
                 dept_rows = []
                 for item in dlp_dept_rank[:5]:
@@ -9783,23 +9912,13 @@ class MainWindow(QMainWindow):
 
                     y = self.check_page(c, y, threshold=150, font_name=rf, font_size=8)
 
-                    c.setFillColor(colors.HexColor("#eef3fb"))
-                    c.rect(MARGIN, y - 2, CONTENT_W, 18, fill=1, stroke=0)
-
-                    c.setStrokeColor(colors.HexColor("#2f5ea8"))
-                    c.setLineWidth(0.8)
-                    c.line(MARGIN, y + 16, MARGIN + CONTENT_W, y + 16)
-                    c.line(MARGIN, y - 2, MARGIN + CONTENT_W, y - 2)
-
-                    c.setFont(rf, 8.4)
-                    c.setFillColor(colors.black)
                     allowed = max(total - blocked, 0)
-                    title_text = (
-                        f"{dept_idx}. {dept_name} "
-                        f"(총 {total}건 / 차단 {blocked}건 / 차단율 {block_ratio}% / 상세목록 허용 {allowed}건 기준)"
-)
-                    c.drawString(MARGIN + 6, y + 3, title_text)
-                    y -= 6
+                    y = draw_rank_header(
+                        dept_idx,
+                        dept_name,
+                        f"총 {total:,}건 · 허용 {allowed:,}건 · 차단 {blocked:,}건 · 차단율 {block_ratio}% · 상세목록 허용 기준",
+                        y,
+                    )
 
                     dept_rows = []
                     if not top_dest_group_rows:
@@ -9823,7 +9942,11 @@ class MainWindow(QMainWindow):
                         line_height=8
                     )
 
-                    y -= 16
+                    c.setStrokeColor(colors.HexColor("#dbeafe"))
+                    c.setLineWidth(1.0)
+                    c.line(MARGIN + 8, y + 2, MARGIN + CONTENT_W - 8, y + 2)
+                    c.setStrokeColor(colors.black)
+                    y -= 26
 
                 # DLP 상위 부서 상세 종료 후 인사이트/부록 페이지로 넘김
                 y = new_page()
