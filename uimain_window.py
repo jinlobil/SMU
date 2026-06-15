@@ -930,6 +930,13 @@ APP_CACHE_SOURCES = {
     "detections": {"dir": DETECTIONS_DAY_DIR, "ext": ".json", "format": "json"},
     "emails": {"dir": EMAILS_DAY_DIR, "ext": ".json", "format": "json"},
     "dlp": {"dir": DLP_DAY_DIR, "ext": ".jsonl", "format": "jsonl"},
+    "mailscreen": {
+        "dir": MAILSCREEN_DAY_DIR,
+        "ext": ".json",
+        "format": "mailscreen",
+        "filename_template": "mailscreen_mail_{date}.json",
+        "date_regex": r"mailscreen_mail_(\d{4}-\d{2}-\d{2})\.json$",
+    },
 }
 
 APP_CACHE_SINGLE_FILES = {
@@ -1043,12 +1050,41 @@ def init_app_cache_db(conn):
     conn.execute("CREATE INDEX IF NOT EXISTS idx_dlp_events_date ON dlp_events(event_date_kst)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_dlp_events_machine ON dlp_events(machine_name)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_dlp_events_file ON dlp_events(source_file)")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS mailscreen_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_file TEXT NOT NULL,
+            row_index INTEGER NOT NULL,
+            cache_date TEXT,
+            event_time TEXT,
+            event_date_kst TEXT,
+            seq TEXT,
+            sender TEXT,
+            sender_user_id TEXT,
+            sender_detail TEXT,
+            dept TEXT,
+            receiver TEXT,
+            subject TEXT,
+            send_result TEXT,
+            mail_process TEXT,
+            policy TEXT,
+            raw_json TEXT NOT NULL,
+            UNIQUE(source_file, row_index)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_mailscreen_events_date ON mailscreen_events(event_date_kst)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_mailscreen_events_sender_user_id ON mailscreen_events(sender_user_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_mailscreen_events_sender ON mailscreen_events(sender)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_mailscreen_events_file ON mailscreen_events(source_file)")
 
 
 def load_cache_file_rows(path, file_format):
     if file_format == "jsonl":
         return load_jsonl(path)
     data = load_json(path)
+    if file_format == "mailscreen" and isinstance(data, dict):
+        items = data.get("items", [])
+        return items if isinstance(items, list) else []
     return data if isinstance(data, list) else []
 
 
@@ -1152,6 +1188,113 @@ def dlp_index_values(row, source, path, idx, cache_date, raw_json):
     )
 
 
+MAILSCREEN_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
+MAILSCREEN_BLANK_VALUES = {"", "none", "null", "nan", "미분류", "&nbsp;"}
+
+
+def mailscreen_identity_text(value):
+    text = html.unescape(str(value or "")).strip()
+    text = re.sub(r"\s+", " ", text)
+    return "" if text.lower() in MAILSCREEN_BLANK_VALUES else text
+
+
+def mailscreen_extract_email(*values):
+    for value in values:
+        text = mailscreen_identity_text(value)
+        if not text:
+            continue
+        m = MAILSCREEN_EMAIL_RE.search(text)
+        if m:
+            return m.group(0).strip()
+    return ""
+
+
+def resolve_mailscreen_sender_identity(row):
+    if not isinstance(row, dict):
+        return {
+            "email": "",
+            "user_id": "None",
+            "user_name": "None",
+            "dept_name": "미분류",
+            "dept_code": "",
+        }
+
+    sender = mailscreen_identity_text(row.get("sender"))
+    sender_detail = mailscreen_identity_text(row.get("sender_detail"))
+    dept = mailscreen_identity_text(row.get("dept"))
+    email_addr_text = mailscreen_extract_email(sender, sender_detail)
+    local_user_id = email_addr_text.split("@", 1)[0].strip() if email_addr_text else ""
+    display_sender = "" if "@" in sender else sender
+
+    identity = {}
+    if email_addr_text:
+        identity = resolve_identity_by_mailbox(email_addr_text)
+
+    directory_info = get_directory_user_info(email_addr_text, local_user_id, display_sender)
+
+    user_id = str(identity.get("user_id", "") or "").strip()
+    if user_id in {"", "None"}:
+        user_id = str(directory_info.get("user_id", "") or "").strip() or local_user_id
+    if not user_id:
+        user_id = "None"
+
+    user_name = str(identity.get("user_name", "") or "").strip()
+    if user_name in {"", "None"}:
+        user_name = str(directory_info.get("name", "") or "").strip() or display_sender
+    if not user_name and sender and "@" in sender:
+        user_name = local_user_id
+    if not user_name:
+        user_name = "None"
+
+    dept_name = dept
+    dept_code = ""
+    if not dept_name:
+        dept_name = str(identity.get("dept_name", "") or "").strip()
+        dept_code = str(identity.get("dept_code", "") or "").strip()
+    if (not dept_name or dept_name == "미분류") and directory_info:
+        dept_name = str(directory_info.get("dept_name", "") or "").strip() or dept_name
+        dept_code = str(directory_info.get("dept_code", "") or "").strip() or dept_code
+    if (not dept_name or dept_name == "미분류") and (display_sender or local_user_id):
+        org_dept, org_code = get_org_info_by_user(display_sender or user_name, local_user_id)
+        dept_name = org_dept or dept_name
+        dept_code = org_code or dept_code
+    if not dept_name:
+        dept_name = "미분류"
+
+    return {
+        "email": email_addr_text,
+        "user_id": user_id,
+        "user_name": user_name,
+        "dept_name": dept_name,
+        "dept_code": dept_code,
+    }
+
+
+def mailscreen_index_values(row, source, path, idx, cache_date, raw_json):
+    event_time = str(row.get("date", "") or "") if isinstance(row, dict) else ""
+    event_dt = timeline_parse_dt(event_time)
+    event_date = dt_to_kst_date_text(event_dt, cache_date)
+    identity = resolve_mailscreen_sender_identity(row)
+    return (
+        path,
+        idx,
+        cache_date,
+        event_time,
+        event_date,
+        str(row.get("seq", "") or "") if isinstance(row, dict) else "",
+        mailscreen_identity_text(row.get("sender")) if isinstance(row, dict) else "",
+        identity.get("user_id", "None"),
+        mailscreen_identity_text(row.get("sender_detail")) if isinstance(row, dict) else "",
+        identity.get("dept_name", "미분류"),
+        mailscreen_identity_text(row.get("receiver")) if isinstance(row, dict) else "",
+        str(row.get("subject", "") or "") if isinstance(row, dict) else "",
+        str(row.get("send_result", "") or "") if isinstance(row, dict) else "",
+        str(row.get("mail_process", "") or "") if isinstance(row, dict) else "",
+        str(row.get("policy", "") or "") if isinstance(row, dict) else "",
+        raw_json,
+    )
+
+
 APP_CACHE_INDEX_INSERTS = {
     "detections": (
         "DELETE FROM detection_events WHERE source_file = ?",
@@ -1179,6 +1322,15 @@ APP_CACHE_INDEX_INSERTS = {
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         dlp_index_values,
+    ),
+    "mailscreen": (
+        "DELETE FROM mailscreen_events WHERE source_file = ?",
+        """
+        INSERT OR REPLACE INTO mailscreen_events
+            (source_file, row_index, cache_date, event_time, event_date_kst, seq, sender, sender_user_id, sender_detail, dept, receiver, subject, send_result, mail_process, policy, raw_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        mailscreen_index_values,
     ),
 }
 
@@ -1256,6 +1408,7 @@ def app_cache_index_current(conn, source, path):
         "detections": "detection_events",
         "emails": "email_events",
         "dlp": "dlp_events",
+        "mailscreen": "mailscreen_events",
     }
     table = table_map.get(source)
     if not table:
@@ -1271,7 +1424,8 @@ def sync_app_cache_range(source, start_date, end_date, progress_cb=None):
     stats = {"indexed": 0, "skipped": 0, "rows": 0, "files": 0, "source": source}
     with app_cache_connect() as conn:
         for cache_date in iter_date_strings(start_date, end_date):
-            path = os.path.join(cfg["dir"], f"{cache_date}{cfg['ext']}")
+            filename = cfg.get("filename_template", "{date}{ext}").format(date=cache_date, ext=cfg["ext"])
+            path = os.path.join(cfg["dir"], filename)
             if not os.path.exists(path):
                 continue
             stats["files"] += 1
@@ -1292,6 +1446,10 @@ def sync_app_cache_all(progress_cb=None):
         for source, cfg in APP_CACHE_SOURCES.items():
             for path in iter_json_files(cfg["dir"], cfg["ext"]):
                 cache_date = os.path.splitext(os.path.basename(path))[0]
+                date_regex = cfg.get("date_regex")
+                if date_regex:
+                    m = re.search(date_regex, os.path.basename(path))
+                    cache_date = m.group(1) if m else cache_date
                 totals["data_files"] += 1
                 if app_cache_index_current(conn, source, path):
                     totals["data_skipped"] += 1
@@ -1323,6 +1481,7 @@ def sync_app_cache_all(progress_cb=None):
                 conn.execute("DELETE FROM detection_events WHERE source_file = ?", (path,))
                 conn.execute("DELETE FROM email_events WHERE source_file = ?", (path,))
                 conn.execute("DELETE FROM dlp_events WHERE source_file = ?", (path,))
+                conn.execute("DELETE FROM mailscreen_events WHERE source_file = ?", (path,))
                 conn.execute("DELETE FROM app_cache_files WHERE path = ?", (path,))
                 removed += 1
         totals["data_removed"] = removed
@@ -1482,6 +1641,14 @@ def load_dlp_by_range_json(start_date: str, end_date: str):
 
 
 def load_mailscreen_by_range(start_date: str, end_date: str):
+    try:
+        sync_app_cache_range("mailscreen", start_date, end_date)
+        rows = load_indexed_raw_rows("mailscreen_events", start_date, end_date)
+        log.info(f"Loaded MailScreen from SQLite index {start_date} ~ {end_date} : {len(rows)}")
+        return rows
+    except Exception as e:
+        log.warning(f"SQLite MailScreen index load failed, fallback to JSON: {e}")
+
     results = []
 
     current = datetime.strptime(start_date, "%Y-%m-%d")
@@ -3086,6 +3253,60 @@ def normalize_timeline_email(m, ctx):
     )]
 
 
+def normalize_timeline_mailscreen(row, ctx):
+    if not isinstance(row, dict):
+        return None
+
+    event_time = str(row.get("date", "") or "").strip()
+    if not event_time:
+        return None
+
+    identity = resolve_mailscreen_sender_identity(row)
+    sender = mailscreen_identity_text(row.get("sender"))
+    sender_detail = mailscreen_identity_text(row.get("sender_detail"))
+    receiver = mailscreen_identity_text(row.get("receiver"))
+    receiver_detail = mailscreen_identity_text(row.get("receiver_detail"))
+    subject = str(row.get("subject", "") or "None")
+    mail_process = str(row.get("mail_process", "") or "None")
+    send_result = str(row.get("send_result", "") or "None")
+    send_detail = str(row.get("send_detail", "") or "None")
+    policy = str(row.get("policy", "") or "None")
+    source_email = identity.get("email") or mailscreen_extract_email(sender, sender_detail)
+    asset = source_email or sender_detail or sender or identity.get("user_id", "None")
+    event_name = f"{mail_process}/{send_result}" if mail_process != "None" and send_result != "None" else (send_result or mail_process)
+    direction = f"{asset} → {receiver_detail or receiver or 'None'}"
+    peer = receiver_detail or receiver or "None"
+    match_values = [
+        sender,
+        sender_detail,
+        source_email,
+        identity.get("user_name"),
+        identity.get("user_id"),
+        identity.get("dept_name"),
+        receiver,
+        receiver_detail,
+        subject,
+        policy,
+    ]
+
+    event = make_timeline_event(
+        event_time,
+        "Outbound Mail",
+        identity.get("user_name", "None"),
+        identity.get("user_id", "None"),
+        identity.get("dept_name", "미분류"),
+        asset,
+        event_name,
+        direction,
+        peer,
+        subject,
+        policy if policy != "None" else send_detail,
+        row,
+        match_values,
+    )
+    return event if ctx is None or timeline_event_matches(event, ctx) else None
+
+
 def normalize_timeline_dlp(row, ctx):
     if not isinstance(row, dict):
         return None
@@ -3318,6 +3539,8 @@ def load_timeline_raw_event(cache_file, row_index):
 
         with open(cache_file, "r", encoding="utf-8") as f:
             rows = json.load(f)
+        if isinstance(rows, dict) and isinstance(rows.get("items"), list):
+            rows = rows.get("items", [])
         if isinstance(rows, list) and 0 <= row_index < len(rows):
             return rows[row_index]
     except Exception as e:
@@ -3334,7 +3557,7 @@ def query_timeline_index(keyword, sources=None):
     if not tokens:
         return [], {"message": "검색 token 없음", "events": 0, "groups": 0, "files": 0, "index": True}
 
-    sources = sorted(set(sources or ["Detection", "XDR", "Email", "File"]))
+    sources = sorted(set(sources or ["Detection", "XDR", "Email", "Outbound Mail", "File"]))
     token_placeholders = ",".join(["?"] * len(tokens))
     source_clause = ""
     params = list(tokens)
@@ -3408,6 +3631,23 @@ def index_timeline_cache_file(conn, cache_file, logical_source):
                 tokens_count += insert_timeline_index_event(conn, event, cache_file, idx)
                 events_count += 1
 
+    elif logical_source == "mailscreen":
+        try:
+            with open(cache_file, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+            rows = payload.get("items", []) if isinstance(payload, dict) else []
+        except Exception as e:
+            log.warning(f"Timeline index failed to load {cache_file}: {e}")
+            rows = []
+        if not isinstance(rows, list):
+            rows = []
+        rows_count = len(rows)
+        for idx, row in enumerate(rows):
+            event = normalize_timeline_mailscreen(row, None)
+            if event:
+                tokens_count += insert_timeline_index_event(conn, event, cache_file, idx)
+                events_count += 1
+
     elif logical_source == "dlp":
         rows = load_jsonl(cache_file)
         rows_count = len(rows)
@@ -3438,6 +3678,7 @@ def rebuild_timeline_index(progress_cb=None, force=False):
     file_specs = []
     file_specs += [(path, "detections") for path in iter_json_files(DETECTIONS_DAY_DIR, ".json")]
     file_specs += [(path, "emails") for path in iter_json_files(EMAILS_DAY_DIR, ".json")]
+    file_specs += [(path, "mailscreen") for path in iter_json_files(MAILSCREEN_DAY_DIR, ".json")]
     file_specs += [(path, "dlp") for path in iter_json_files(DLP_DAY_DIR, ".jsonl")]
     current_paths = {path for path, _ in file_specs}
 
@@ -3531,7 +3772,7 @@ class TimelineSearchWorker(QThread):
     def __init__(self, keyword, sources=None):
         super().__init__()
         self.keyword = str(keyword or "").strip()
-        self.sources = set(sources or ["Detection", "XDR", "Email", "File"])
+        self.sources = set(sources or ["Detection", "XDR", "Email", "Outbound Mail", "File"])
 
     def run(self):
         try:
@@ -3586,6 +3827,25 @@ class TimelineSearchWorker(QThread):
                         continue
                     for row in rows:
                         events.extend(normalize_timeline_email(row, ctx))
+
+            if "Outbound Mail" in self.sources:
+                paths = iter_json_files(MAILSCREEN_DAY_DIR, ".json")
+                for idx, path in enumerate(paths, start=1):
+                    self.progress.emit(f"Outbound Mail 캐시 검색중 {idx}/{len(paths)}")
+                    files_scanned += 1
+                    try:
+                        with open(path, "r", encoding="utf-8") as f:
+                            payload = json.load(f)
+                        rows = payload.get("items", []) if isinstance(payload, dict) else []
+                    except Exception as e:
+                        log.warning(f"Timeline failed to load {path}: {e}")
+                        continue
+                    if not isinstance(rows, list):
+                        continue
+                    for row in rows:
+                        event = normalize_timeline_mailscreen(row, ctx)
+                        if event:
+                            events.append(event)
 
             if "File" in self.sources:
                 paths = iter_json_files(DLP_DAY_DIR, ".jsonl")
@@ -14889,8 +15149,16 @@ Command Line :
         self.timeline_chk_detection = QCheckBox("탐지")
         self.timeline_chk_xdr = QCheckBox("XDR")
         self.timeline_chk_email = QCheckBox("이메일")
+        self.timeline_chk_outbound_mail = QCheckBox("아웃바운드")
         self.timeline_chk_file = QCheckBox("파일")
-        for chk in [self.timeline_chk_detection, self.timeline_chk_xdr, self.timeline_chk_email, self.timeline_chk_file]:
+        timeline_source_checks = [
+            self.timeline_chk_detection,
+            self.timeline_chk_xdr,
+            self.timeline_chk_email,
+            self.timeline_chk_outbound_mail,
+            self.timeline_chk_file,
+        ]
+        for chk in timeline_source_checks:
             chk.setChecked(True)
             chk.setMinimumHeight(32)
             chk.setMinimumWidth(78)
@@ -14919,6 +15187,7 @@ Command Line :
         top.addWidget(self.timeline_chk_detection)
         top.addWidget(self.timeline_chk_xdr)
         top.addWidget(self.timeline_chk_email)
+        top.addWidget(self.timeline_chk_outbound_mail)
         top.addWidget(self.timeline_chk_file)
         top.addWidget(self.timeline_btn_search)
 
@@ -15036,6 +15305,7 @@ Command Line :
                 "Detection": "#ef4444",
                 "XDR": "#7c3aed",
                 "Email": "#0ea5e9",
+                "Outbound Mail": "#8b5cf6",
                 "File": "#f59e0b",
             }.get(str(source), UI_THEME["accent"])
 
@@ -15182,6 +15452,8 @@ Command Line :
                 sources.append("XDR")
             if self.timeline_chk_email.isChecked():
                 sources.append("Email")
+            if self.timeline_chk_outbound_mail.isChecked():
+                sources.append("Outbound Mail")
             if self.timeline_chk_file.isChecked():
                 sources.append("File")
             return sources
@@ -15189,7 +15461,7 @@ Command Line :
         def set_search_enabled(enabled):
             self.timeline_btn_search.setEnabled(enabled)
             self.timeline_user_input.setEnabled(enabled)
-            for chk in [self.timeline_chk_detection, self.timeline_chk_xdr, self.timeline_chk_email, self.timeline_chk_file]:
+            for chk in timeline_source_checks:
                 chk.setEnabled(enabled)
 
         def start_search():
