@@ -1481,6 +1481,30 @@ def load_dlp_by_range_json(start_date: str, end_date: str):
     return results
 
 
+def load_mailscreen_by_range(start_date: str, end_date: str):
+    results = []
+
+    current = datetime.strptime(start_date, "%Y-%m-%d")
+    end = datetime.strptime(end_date, "%Y-%m-%d")
+
+    while current <= end:
+        date_str = current.strftime("%Y-%m-%d")
+        file_path = os.path.join(MAILSCREEN_DAY_DIR, f"mailscreen_mail_{date_str}.json")
+        if os.path.exists(file_path):
+            try:
+                payload = load_json(file_path)
+                if isinstance(payload, dict):
+                    items = payload.get("items", [])
+                    if isinstance(items, list):
+                        results.extend([item for item in items if isinstance(item, dict)])
+            except Exception as e:
+                log.warning(f"Failed to load {file_path}: {e}")
+        current += timedelta(days=1)
+
+    log.info(f"Loaded MailScreen from {start_date} ~ {end_date} : {len(results)}")
+    return results
+
+
 # ======================================================
 # Core utilities / DLP display helpers
 # - Small formatting helpers shared by File tab, Timeline, export, and report.
@@ -6386,6 +6410,7 @@ class MainWindow(QMainWindow):
         self.email_range = ""
         self.xdr_range = ""
         self.dlp_range = ""
+        self.mailscreen_range = ""
 
 
         # 🔥 탭별 데이터 저장소
@@ -6402,6 +6427,7 @@ class MainWindow(QMainWindow):
         self.email_emails = []
         self.xdr_detections = []
         self.dlp_rows = []
+        self.mailscreen_rows = []
 
         self.trend_colors = self.trend_colors_from_config(self.color_config)
 
@@ -6480,6 +6506,7 @@ class MainWindow(QMainWindow):
         self.logical_tab_aliases = {
             "Detection": "Detection - XDR",
             "Detection XDR": "Email - XDR",
+            "Inbound Mail": "Email",
             "Response": "Firewall",
         }
         self.group_subtab_bars = {}
@@ -6534,7 +6561,8 @@ class MainWindow(QMainWindow):
         self.detection_tabs = add_group_tab("Detection", [
             ("Detection - XDR", "Detection - XDR", self.tab_detection_xdr()),
             ("Email - XDR", "Email - XDR", self.tab_email_xdr()),
-            ("Email", "Email", self.tab_email()),
+            ("Email", "Inbound Mail", self.tab_email()),
+            ("Outbound Mail", "Outbound Mail", self.tab_outbound_mail()),
             ("File", "File", self.tab_dlp_file()),
         ])
         self.response_tabs = add_group_tab("Response", [
@@ -10719,6 +10747,12 @@ class MainWindow(QMainWindow):
             self.email_range = f"{start_date} ~ {end_date}"
             self._refresh_email()
 
+        elif current_tab == "Outbound Mail":
+            self.mailscreen_rows = load_mailscreen_by_range(start_date, end_date)
+            self.mailscreen_range = f"{start_date} ~ {end_date}"
+            if hasattr(self, "_refresh_outbound_mail"):
+                self._refresh_outbound_mail()
+
         elif current_tab == "File":
             self.dlp_rows = load_dlp_by_range(start_date, end_date)
             self.dlp_range = f"{start_date} ~ {end_date}"
@@ -10749,6 +10783,9 @@ class MainWindow(QMainWindow):
 
         elif tab_name == "Email":
             text = self.email_range
+
+        elif tab_name == "Outbound Mail":
+            text = self.mailscreen_range
 
         elif tab_name == "File":
             text = self.dlp_range
@@ -11691,6 +11728,7 @@ Command Line :
         self.refresh_tab_table("Detection - XDR")
         self.refresh_tab_table("Email - XDR")
         self.refresh_tab_table("Email")
+        self.refresh_tab_table("Outbound Mail")
         self.refresh_tab_table("File")
         self.refresh_tab_table("Endpoint")
         self.refresh_tab_table("Organization")
@@ -11708,6 +11746,8 @@ Command Line :
             self._refresh_detection_xdr()
         elif tab_name == "Email" and hasattr(self, "_refresh_email"):
             self._refresh_email()
+        elif tab_name == "Outbound Mail" and hasattr(self, "_refresh_outbound_mail"):
+            self._refresh_outbound_mail()
         elif tab_name == "Endpoint" and hasattr(self, "_refresh_endpoint"):
             self._refresh_endpoint()
         elif tab_name == "Organization" and hasattr(self, "_refresh_org"):
@@ -13543,7 +13583,206 @@ Command Line :
         return root
 
     # ==================================================
+    # Outbound Mail Tab (MailScreen)
+    # ==================================================
+    def tab_outbound_mail(self):
+        root = QWidget()
+        layout = QVBoxLayout(root)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
+
+        search_wrapper = QWidget()
+        search_wrapper.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        search_v = QVBoxLayout(search_wrapper)
+        search_v.setContentsMargins(0, 0, 0, 4)
+        search_v.setSpacing(6)
+
+        self.outbound_search_container = QVBoxLayout()
+        self.outbound_search_container.setContentsMargins(0, 0, 0, 0)
+        self.outbound_search_container.setSpacing(6)
+        search_v.addLayout(self.outbound_search_container)
+
+        table = QTableWidget()
+        headers = ["날짜", "메일 처리", "전송 결과", "제목", "발신자", "소속", "수신자", "크기", "적용 정책", "첨부"]
+        table.setColumnCount(len(headers))
+        table.setHorizontalHeaderLabels(headers)
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        table.setSortingEnabled(True)
+
+        self.enable_context_menu(table, {})
+
+        def match_text(value, keyword, mode):
+            text = str(value or "").lower()
+            if mode == "제외":
+                return keyword not in text
+            return keyword in text
+
+        def refresh():
+            header = table.horizontalHeader()
+            sort_column = header.sortIndicatorSection()
+            sort_order = header.sortIndicatorOrder()
+
+            table.setSortingEnabled(False)
+            table.clearContents()
+            table.setRowCount(0)
+
+            search_conditions = []
+            for i in range(self.outbound_search_container.count()):
+                item = self.outbound_search_container.itemAt(i)
+                row = item.widget() if item else None
+                if not row:
+                    continue
+                row_layout = row.layout()
+                if not row_layout or row_layout.count() < 3:
+                    continue
+                combo = row_layout.itemAt(0).widget()
+                mode_combo = row_layout.itemAt(1).widget()
+                edit = row_layout.itemAt(2).widget()
+                if not combo or not mode_combo or not edit:
+                    continue
+                keyword = edit.text().strip().lower()
+                if keyword:
+                    search_conditions.append((combo.currentText(), mode_combo.currentText(), keyword))
+
+            start_date = self.start_date_edit.date().toString("yyyy-MM-dd")
+            end_date = self.end_date_edit.date().toString("yyyy-MM-dd")
+
+            for row_data in self.mailscreen_rows or []:
+                if not isinstance(row_data, dict):
+                    continue
+
+                event_date = str(row_data.get("date", ""))[:10]
+                if event_date and (event_date < start_date or event_date > end_date):
+                    continue
+
+                raw_str = json.dumps(row_data, ensure_ascii=False).lower()
+                values = {
+                    "날짜": str(row_data.get("date", "")),
+                    "메일 처리": str(row_data.get("mail_process", "")),
+                    "전송 결과": str(row_data.get("send_result", "")),
+                    "제목": str(row_data.get("subject", "")),
+                    "발신자": str(row_data.get("sender", "")),
+                    "발신자 상세": str(row_data.get("sender_detail", "")),
+                    "소속": str(row_data.get("dept", "")),
+                    "수신자": str(row_data.get("receiver", "")),
+                    "수신자 상세": str(row_data.get("receiver_detail", "")),
+                    "크기": str(row_data.get("size", "")),
+                    "적용 정책": str(row_data.get("policy", "")),
+                    "첨부": str(row_data.get("attach", "")),
+                    "RawData": raw_str,
+                }
+
+                matched = True
+                for field, mode, keyword in search_conditions:
+                    haystack = " ".join(str(v) for v in values.values()) if field == "ALL" else values.get(field, "")
+                    if not match_text(haystack, keyword, mode):
+                        matched = False
+                        break
+                if not matched:
+                    continue
+
+                r = table.rowCount()
+                table.insertRow(r)
+
+                first_item = QTableWidgetItem(values["날짜"] or "None")
+                first_item.setData(Qt.UserRole, row_data)
+                table.setItem(r, 0, first_item)
+                table.setItem(r, 1, QTableWidgetItem(values["메일 처리"] or "None"))
+                table.setItem(r, 2, QTableWidgetItem(values["전송 결과"] or "None"))
+                table.setItem(r, 3, QTableWidgetItem(values["제목"] or "None"))
+                table.setItem(r, 4, QTableWidgetItem(values["발신자"] or "None"))
+                table.setItem(r, 5, QTableWidgetItem(values["소속"] or "None"))
+                table.setItem(r, 6, QTableWidgetItem(values["수신자"] or "None"))
+                table.setItem(r, 7, QTableWidgetItem(values["크기"] or "None"))
+                table.setItem(r, 8, QTableWidgetItem(values["적용 정책"] or "None"))
+                table.setItem(r, 9, QTableWidgetItem(values["첨부"] or ""))
+
+                if "실패" in values["전송 결과"]:
+                    for col in range(table.columnCount()):
+                        item = table.item(r, col)
+                        if item:
+                            item.setForeground(QColor(UI_THEME["danger_text"]))
+
+            table.setSortingEnabled(True)
+            if sort_column >= 0:
+                table.sortItems(sort_column, sort_order)
+
+        FIELD_W = SEARCH_FIELD_W
+        BTN_W = SEARCH_BTN_W
+        ROW_H = SEARCH_ROW_H
+
+        def add_search_row(default_field="ALL", default_mode="포함", removable=True, first=False):
+            row = QWidget()
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            row_layout.setSpacing(6)
+
+            combo = QComboBox()
+            combo.addItems([
+                "ALL", "날짜", "메일 처리", "전송 결과", "제목", "발신자", "발신자 상세",
+                "소속", "수신자", "수신자 상세", "크기", "적용 정책", "첨부", "RawData"
+            ])
+            combo.setCurrentText(default_field)
+            combo.setFixedWidth(FIELD_W)
+            combo.setFixedHeight(ROW_H)
+
+            mode_combo = QComboBox()
+            mode_combo.addItems(["포함", "제외"])
+            mode_combo.setCurrentText(default_mode)
+            mode_combo.setFixedWidth(SEARCH_MODE_W)
+            mode_combo.setFixedHeight(ROW_H)
+
+            default_font = QApplication.font()
+            combo.setFont(default_font)
+            combo.view().setFont(default_font)
+            mode_combo.setFont(default_font)
+            mode_combo.view().setFont(default_font)
+
+            edit = QLineEdit()
+            edit.setPlaceholderText("Search...")
+            edit.setFixedHeight(ROW_H)
+            edit.setFont(default_font)
+            edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+            row_layout.addWidget(combo, 0)
+            row_layout.addWidget(mode_combo, 0)
+            row_layout.addWidget(edit, 1)
+
+            if first:
+                btn = QPushButton("+")
+                btn.setFixedSize(BTN_W, ROW_H)
+                btn.clicked.connect(lambda: add_search_row(removable=True, first=False))
+                row_layout.addWidget(btn, 0)
+            elif removable:
+                btn = QPushButton("-")
+                btn.setFixedSize(BTN_W, ROW_H)
+
+                def remove_row():
+                    row.deleteLater()
+                    refresh()
+
+                btn.clicked.connect(remove_row)
+                row_layout.addWidget(btn, 0)
+
+            edit.returnPressed.connect(refresh)
+            combo.currentIndexChanged.connect(refresh)
+            mode_combo.currentIndexChanged.connect(refresh)
+
+            self.outbound_search_container.addWidget(row)
+
+        add_search_row(default_field="ALL", default_mode="포함", removable=False, first=True)
+
+        layout.addWidget(search_wrapper, 0)
+        layout.addWidget(table, 1)
+
+        self._refresh_outbound_mail = refresh
+        refresh()
+
+        return root
+
+    # ==================================================
     # Endpoint Tab
+
     # ==================================================
     def tab_endpoint(self):
         root = QWidget()
