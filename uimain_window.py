@@ -9401,7 +9401,7 @@ class MainWindow(QMainWindow):
 
                 c.setFillColor(theme["text"])
                 c.setFont(rf, 18)
-                c.drawString(MARGIN + 86, y_pos - 24, f"{risk_score}점")
+                c.drawString(MARGIN + 86, y_pos - 24, f"{risk_score}/100점")
                 c.setFont(rf, 8)
                 c.setFillColor(theme["muted"])
                 c.drawString(MARGIN + 86, y_pos - 40, f"선택 기간 {selected_days}일 기준 종합 위험도")
@@ -9455,6 +9455,7 @@ class MainWindow(QMainWindow):
             risk_level = risk.get("level", "LOW")
             risk_score = risk.get("score", 0)
             rc = {
+                "CRITICAL": colors.HexColor("#991b1b"),
                 "HIGH": colors.HexColor("#dc2626"),
                 "MEDIUM": colors.HexColor("#f59e0b"),
                 "LOW": colors.HexColor("#10b981"),
@@ -9466,7 +9467,7 @@ class MainWindow(QMainWindow):
             c.setFont(rf, 28)
             c.drawString(MARGIN + 16, y - 54, str(risk_level))
             c.setFont(rf, 24)
-            c.drawRightString(MARGIN + CONTENT_W - 18, y - 54, f"Score: {risk_score}")
+            c.drawRightString(MARGIN + CONTENT_W - 18, y - 54, f"Score: {risk_score}/100")
             c.setFillColor(theme["text"])
             y -= 88
 
@@ -9724,13 +9725,17 @@ class MainWindow(QMainWindow):
                 for item in score_breakdown:
                     label = str(item.get("label", ""))
                     item_score = item.get("score", 0)
+                    max_score = item.get("max_score", "")
+                    score_display = str(item.get("score_display", "") or (f"{item_score}/{max_score}" if max_score else f"+{item_score}"))
                     detail = str(item.get("detail", ""))
-                    score_rows.append([label, f"+{item_score}", detail])
+                    interpretation = str(item.get("interpretation", "") or "")
+                    detail_text = f"{detail}\n→ {interpretation}" if interpretation else detail
+                    score_rows.append([label, score_display, detail_text])
 
                 y = mini_table_multiline(
                     MARGIN,
                     y,
-                    ["평가 항목", "점수", "근거"],
+                    ["평가 영역", "점수", "근거 및 해석"],
                     score_rows,
                     [118, 42, CONTENT_W - 160],
                     font_size=7.0,
@@ -15797,7 +15802,7 @@ Command Line :
         c.drawString(x + 15, y - 22, "Overall Risk Level")
 
         c.setFont(font_name, 20)
-        c.drawString(x + 15, y - 50, f"{risk_level} (Score: {score})")
+        c.drawString(x + 15, y - 50, f"{risk_level} (Score: {score}/100)")
 
 
 
@@ -16062,6 +16067,7 @@ Command Line :
 
         dlp_host_set = set()
         dlp_date_set = defaultdict(int)
+        dlp_category_counter = Counter()
 
         dept_stats = defaultdict(lambda: {
             "total": 0,
@@ -16111,6 +16117,9 @@ Command Line :
             ).strip()
 
             dest_detail = normalize_report_destination(dest_detail)
+            dest_category = classify_dlp_destination("", target_type, dest_detail)
+            if dest_category:
+                dlp_category_counter[dest_category] += 1
 
             if machine_name:
                 dlp_host_set.add(machine_name.lower())
@@ -16254,6 +16263,31 @@ Command Line :
 
         top_dlp_dept = dlp_dept_rank[0] if dlp_dept_rank else {}
         top_blocked_dlp_dept = dlp_dept_block_rank[0] if dlp_dept_block_rank else {}
+        dlp_total_for_ratio = len(dlp_rows)
+        dlp_blocked_count = sum(row.get("blocked", 0) for row in dlp_dept_rows)
+        dlp_allowed_count = sum(row.get("allowed", 0) for row in dlp_dept_rows)
+        dlp_blocked_ratio = round((dlp_blocked_count / dlp_total_for_ratio) * 100, 1) if dlp_total_for_ratio else 0.0
+        dlp_allowed_ratio = round((dlp_allowed_count / dlp_total_for_ratio) * 100, 1) if dlp_total_for_ratio else 0.0
+        dlp_top_dept_ratio = round((top_dlp_dept.get("total", 0) / dlp_total_for_ratio) * 100, 1) if dlp_total_for_ratio and top_dlp_dept else 0.0
+        dlp_sensitive_categories = {
+            "AI/생성형AI",
+            "클라우드/오브젝트 스토리지",
+            "메일/대용량 첨부",
+            "메신저/고객상담",
+            "소셜/미디어 업로드",
+            "문서/PDF/이미지 변환",
+            "디자인/협업 SaaS",
+        }
+        dlp_sensitive_category_count = sum(
+            cnt for category, cnt in dlp_category_counter.items()
+            if category in dlp_sensitive_categories
+        )
+        dlp_sensitive_category_ratio = round((dlp_sensitive_category_count / dlp_total_for_ratio) * 100, 1) if dlp_total_for_ratio else 0.0
+        dlp_top_sensitive_categories = [
+            (category, cnt)
+            for category, cnt in dlp_category_counter.most_common()
+            if category in dlp_sensitive_categories
+        ][:5]
 
         detection_host_set = set([h.lower() for h in host_counter.keys() if h])
         cross_hosts = sorted(list(detection_host_set.intersection(dlp_host_set)))
@@ -16363,6 +16397,15 @@ Command Line :
             "top_dlp_dept": top_dlp_dept,
             "top_blocked_dlp_dept": top_blocked_dlp_dept,
             "dlp_dept_count": len(dlp_dept_rows),
+            "dlp_allowed_count": dlp_allowed_count,
+            "dlp_blocked_count": dlp_blocked_count,
+            "dlp_allowed_ratio": dlp_allowed_ratio,
+            "dlp_blocked_ratio": dlp_blocked_ratio,
+            "dlp_top_dept_ratio": dlp_top_dept_ratio,
+            "dlp_category_counts": dlp_category_counter.most_common(),
+            "dlp_sensitive_category_count": dlp_sensitive_category_count,
+            "dlp_sensitive_category_ratio": dlp_sensitive_category_ratio,
+            "dlp_top_sensitive_categories": dlp_top_sensitive_categories,
 
             "unclassified_user_names": [name for name, _ in unclassified_user_counter.most_common()],
             "unclassified_user_counts": unclassified_user_counter.most_common(),
@@ -16526,127 +16569,184 @@ Command Line :
 
 
     def build_security_risk_assessment(self, metrics, selected_days=1):
-        score = 0
+        """Build a weighted, explainable 100-point report risk score.
+
+        The score intentionally separates event volume from spread, DLP exposure,
+        cross-signal correlation, and attribution quality so the PDF can explain
+        not only "how many events" occurred but also why the selected period is
+        considered risky.
+        """
         factors = []
         score_breakdown = []
-
         selected_days = max(int(selected_days or 1), 1)
 
         endpoint_count = metrics.get("endpoint_detection_count", 0)
-        unique_host_count = metrics.get("unique_host_count", 0)
+        email_count = metrics.get("email_count", 0)
         high_risk_email_count = metrics.get("high_risk_email_count", 0)
         dlp_count = metrics.get("dlp_count", 0)
+
+        unique_host_count = metrics.get("unique_host_count", 0)
         top_rule_count = metrics.get("top_rule_count", 0)
-        cross_hosts = metrics.get("cross_hosts", [])
+        top_host_count = metrics.get("top_host_count", 0)
+        cross_host_count = metrics.get("cross_host_count", 0)
+        cross_host_ratio = metrics.get("cross_host_ratio", 0.0)
+        triple_overlap_count = metrics.get("triple_overlap_count", 0)
+        repeated_cross_host_count = metrics.get("repeated_cross_host_count", 0)
+        unclassified_user_count = metrics.get("unclassified_user_count", 0)
+
+        dlp_allowed_ratio = metrics.get("dlp_allowed_ratio", 0.0)
+        dlp_sensitive_category_count = metrics.get("dlp_sensitive_category_count", 0)
+        dlp_sensitive_category_ratio = metrics.get("dlp_sensitive_category_ratio", 0.0)
+        dlp_top_dept_ratio = metrics.get("dlp_top_dept_ratio", 0.0)
+        dlp_top_sensitive_categories = metrics.get("dlp_top_sensitive_categories", []) or []
 
         avg_endpoint_per_day = round(endpoint_count / selected_days, 1)
+        avg_email_per_day = round(email_count / selected_days, 1)
         avg_high_risk_email_per_day = round(high_risk_email_count / selected_days, 1)
         avg_dlp_per_day = round(dlp_count / selected_days, 1)
+        top_host_ratio = round((top_host_count / endpoint_count) * 100, 1) if endpoint_count else 0.0
+        high_risk_email_ratio = round((high_risk_email_count / email_count) * 100, 1) if email_count else 0.0
 
+        def band(value, rules):
+            for threshold, points in rules:
+                if value >= threshold:
+                    return points
+            return 0
+
+        def add_breakdown(label, score, max_score, detail, interpretation):
+            if score <= 0:
+                return
+            score_breakdown.append({
+                "label": label,
+                "score": score,
+                "max_score": max_score,
+                "score_display": f"{score}/{max_score}",
+                "detail": detail,
+                "interpretation": interpretation,
+            })
+            factors.append(f"{label} {score}/{max_score} — {interpretation}")
+
+        # 1) Endpoint 위협 활동: 단말 탐지의 양, 확산 범위, 반복 룰, 특정 호스트 집중도를 함께 본다. (25점)
         endpoint_score = 0
-        endpoint_desc = ""
-        if avg_endpoint_per_day >= 30:
-            endpoint_score = 25
-            endpoint_desc = "Endpoint 일평균 탐지 건수가 높은 수준입니다."
-        elif avg_endpoint_per_day >= 10:
-            endpoint_score = 15
-            endpoint_desc = "Endpoint 일평균 탐지가 다수 발생하였습니다."
-        elif avg_endpoint_per_day >= 1:
-            endpoint_score = 5
-            endpoint_desc = "Endpoint 탐지가 확인되었습니다."
+        endpoint_score += band(avg_endpoint_per_day, [(30, 10), (10, 6), (1, 3)])
+        endpoint_score += band(unique_host_count, [(20, 7), (10, 5), (3, 3), (1, 1)])
+        endpoint_score += band(top_rule_count, [(100, 5), (50, 4), (10, 2), (3, 1)])
+        endpoint_score += band(top_host_ratio, [(50, 3), (30, 2), (15, 1)])
+        endpoint_score = min(endpoint_score, 25)
+        endpoint_interpretation = (
+            "탐지량·호스트 확산·반복 룰이 함께 높아 단말 우선 분석이 필요합니다."
+            if endpoint_score >= 18 else
+            "반복 또는 확산 징후가 있어 상위 호스트/룰 중심 확인이 필요합니다."
+            if endpoint_score >= 9 else
+            "단말 탐지는 제한적이나 발생 내역은 추적 대상입니다."
+        )
+        add_breakdown(
+            "Endpoint 위협 활동",
+            endpoint_score,
+            25,
+            f"총 {endpoint_count:,}건 / {selected_days}일 = 일평균 {avg_endpoint_per_day:,}건, "
+            f"탐지 호스트 {unique_host_count:,}개, 최다 룰 {top_rule_count:,}건, 최다 호스트 집중도 {top_host_ratio}%",
+            endpoint_interpretation,
+        )
 
-        if endpoint_score > 0:
-            score += endpoint_score
-            factors.append(endpoint_desc)
-            score_breakdown.append({
-                "label": "Endpoint 일평균 탐지",
-                "score": endpoint_score,
-                "value": avg_endpoint_per_day,
-                "detail": f"총 {endpoint_count}건 / {selected_days}일 = 일평균 {avg_endpoint_per_day}건"
-            })
-
-        host_score = 0
-        host_desc = ""
-        if unique_host_count >= 10:
-            host_score = 20
-            host_desc = "다수 호스트에 걸쳐 탐지가 분산 발생하였습니다."
-        elif unique_host_count >= 5:
-            host_score = 10
-            host_desc = "여러 호스트에서 탐지가 확인되었습니다."
-
-        if host_score > 0:
-            score += host_score
-            factors.append(host_desc)
-            score_breakdown.append({
-                "label": "탐지 호스트 수",
-                "score": host_score,
-                "value": unique_host_count,
-                "detail": f"{unique_host_count}개"
-            })
-
+        # 2) Email 유입 위험: 고위험 메일의 절대량과 메일 이벤트 내 비중을 함께 본다. (20점)
         email_score = 0
-        email_desc = ""
-        if avg_high_risk_email_per_day >= 10:
-            email_score = 25
-            email_desc = "고위험 이메일 일평균 발생량이 높은 수준입니다."
-        elif avg_high_risk_email_per_day >= 3:
-            email_score = 12
-            email_desc = "악성 또는 의심 이메일 이벤트가 지속적으로 확인되었습니다."
+        email_score += band(avg_high_risk_email_per_day, [(30, 10), (10, 7), (3, 4), (1, 2)])
+        email_score += band(avg_email_per_day, [(300, 4), (100, 3), (30, 2), (1, 1)])
+        email_score += band(high_risk_email_ratio, [(50, 4), (20, 3), (10, 2), (1, 1)])
+        if email_count > 0 and endpoint_count > 0:
+            email_score += 2
+        email_score = min(email_score, 20)
+        email_interpretation = (
+            "고위험 메일 유입량과 비중이 높아 유입 후 단말 행위 연계 점검이 필요합니다."
+            if email_score >= 14 else
+            "의심 메일이 지속 확인되어 발신자·URL·첨부파일 기준 샘플링이 필요합니다."
+            if email_score >= 7 else
+            "메일 유입 위험은 낮지만 Endpoint 이벤트와 같은 기간 존재 여부를 유지 관찰합니다."
+        )
+        add_breakdown(
+            "Email 유입 위험",
+            email_score,
+            20,
+            f"Email 총 {email_count:,}건 / 일평균 {avg_email_per_day:,}건, "
+            f"고위험 {high_risk_email_count:,}건 / 일평균 {avg_high_risk_email_per_day:,}건, 고위험 비중 {high_risk_email_ratio}%",
+            email_interpretation,
+        )
 
-        if email_score > 0:
-            score += email_score
-            factors.append(email_desc)
-            score_breakdown.append({
-                "label": "고위험 이메일 일평균",
-                "score": email_score,
-                "value": avg_high_risk_email_per_day,
-                "detail": f"총 {high_risk_email_count}건 / {selected_days}일 = 일평균 {avg_high_risk_email_per_day}건"
-            })
-
+        # 3) DLP 반출 노출: DLP 발생량, 허용 비중, 민감 목적지 분류, 부서 집중도를 함께 본다. (30점)
         dlp_score = 0
-        dlp_desc = ""
-        if avg_dlp_per_day >= 500:
-            dlp_score = 20
-            dlp_desc = "파일 반출 관련 이벤트의 일평균 발생량이 높은 수준입니다."
-        elif avg_dlp_per_day >= 100:
-            dlp_score = 8
-            dlp_desc = "파일 반출 관련 이벤트가 지속적으로 확인되었습니다."
+        dlp_score += band(avg_dlp_per_day, [(1000, 8), (500, 6), (100, 4), (1, 2)])
+        dlp_score += band(dlp_allowed_ratio, [(95, 7), (80, 5), (50, 3), (1, 1)]) if dlp_count else 0
+        dlp_score += band(dlp_sensitive_category_ratio, [(50, 8), (25, 6), (10, 4), (1, 2)])
+        dlp_score += band(dlp_top_dept_ratio, [(50, 5), (30, 3), (15, 2)])
+        dlp_score += band(unclassified_user_count, [(30, 2), (10, 1)])
+        dlp_score = min(dlp_score, 30)
+        sensitive_preview = ", ".join([f"{name} {cnt:,}건" for name, cnt in dlp_top_sensitive_categories[:3]]) or "민감 목적지 분류 없음"
+        dlp_interpretation = (
+            "허용 반출과 민감 목적지 사용이 함께 높아 파일 샘플링 및 정책 예외 검토가 필요합니다."
+            if dlp_score >= 21 else
+            "반출 이벤트가 지속 확인되어 상위 부서·목적지·파일명 기준 점검이 필요합니다."
+            if dlp_score >= 10 else
+            "DLP 노출은 제한적이나 허용 이벤트는 목적지 기준으로 추적합니다."
+        )
+        add_breakdown(
+            "DLP 반출 노출",
+            dlp_score,
+            30,
+            f"총 {dlp_count:,}건 / 일평균 {avg_dlp_per_day:,}건, 허용 비중 {dlp_allowed_ratio}%, "
+            f"민감 목적지 {dlp_sensitive_category_count:,}건({dlp_sensitive_category_ratio}%), 상위 부서 집중도 {dlp_top_dept_ratio}% / {sensitive_preview}",
+            dlp_interpretation,
+        )
 
-        if dlp_score > 0:
-            score += dlp_score
-            factors.append(dlp_desc)
-            score_breakdown.append({
-                "label": "DLP 일평균 이벤트",
-                "score": dlp_score,
-                "value": avg_dlp_per_day,
-                "detail": f"총 {dlp_count}건 / {selected_days}일 = 일평균 {avg_dlp_per_day}건"
-            })
+        # 4) 상관/연계 위험: Detection과 DLP, Email이 같은 호스트/날짜에서 겹치는지를 본다. (20점)
+        correlation_score = 0
+        correlation_score += band(cross_host_count, [(20, 8), (10, 6), (5, 4), (1, 2)])
+        correlation_score += band(cross_host_ratio, [(50, 5), (30, 3), (10, 1)])
+        correlation_score += band(triple_overlap_count, [(5, 4), (2, 3), (1, 2)])
+        correlation_score += band(repeated_cross_host_count, [(10, 3), (1, 2)])
+        correlation_score = min(correlation_score, 20)
+        correlation_interpretation = (
+            "탐지·메일·DLP가 같은 기간/호스트에서 겹쳐 유입부터 반출까지의 연계 가능성을 우선 확인해야 합니다."
+            if correlation_score >= 14 else
+            "교차 호스트 또는 동시 발생일이 확인되어 시계열 상관분석이 필요합니다."
+            if correlation_score >= 6 else
+            "상관 징후는 제한적이나 교차 호스트는 추적 목록에 유지합니다."
+        )
+        add_breakdown(
+            "상관/연계 위험",
+            correlation_score,
+            20,
+            f"Detection+DLP 교차 호스트 {cross_host_count:,}개({cross_host_ratio}%), "
+            f"3종 동시 발생일 {triple_overlap_count:,}일, 반복 교차 호스트 {repeated_cross_host_count:,}개",
+            correlation_interpretation,
+        )
 
-        rule_score = 0
-        if top_rule_count >= 10:
-            rule_score = 10
-            score += rule_score
-            factors.append("동일 탐지 룰의 반복 발생 빈도가 높습니다.")
-            score_breakdown.append({
-                "label": "반복 탐지 룰",
-                "score": rule_score,
-                "value": top_rule_count,
-                "detail": f"최다 룰 {top_rule_count}건"
-            })
+        # 5) 식별/운영 품질: 미분류 사용자가 많을수록 실제 조치 지연 위험이 커진다. (5점)
+        quality_score = min(band(unclassified_user_count, [(30, 5), (10, 3), (1, 1)]), 5)
+        quality_interpretation = (
+            "미분류 사용자가 많아 부서 책임자 지정과 후속 조치가 지연될 수 있습니다."
+            if quality_score >= 3 else
+            "일부 미분류 사용자가 있어 조직 매핑 보완이 필요합니다."
+            if quality_score > 0 else
+            "사용자/부서 식별 품질은 위험도에 큰 영향을 주지 않습니다."
+        )
+        add_breakdown(
+            "식별/운영 품질",
+            quality_score,
+            5,
+            f"DLP 미분류 사용자 {unclassified_user_count:,}명",
+            quality_interpretation,
+        )
 
-        cross_score = 0
-        if cross_hosts:
-            cross_score = 15
-            score += cross_score
-            factors.append(f"Detection + DLP 동시 발생 호스트 {len(cross_hosts)}개 — 내부 유출 행위 가능성 검토 필요합니다.")
-            score_breakdown.append({
-                "label": "교차 호스트",
-                "score": cross_score,
-                "value": len(cross_hosts),
-                "detail": f"{len(cross_hosts)}개"
-            })
-
-        level = "HIGH" if score >= 60 else "MEDIUM" if score >= 30 else "LOW"
+        score = min(sum(item.get("score", 0) for item in score_breakdown), 100)
+        if score >= 80:
+            level = "CRITICAL"
+        elif score >= 60:
+            level = "HIGH"
+        elif score >= 30:
+            level = "MEDIUM"
+        else:
+            level = "LOW"
 
         if not factors:
             factors.append("전반적으로 특이 위험 요소는 제한적입니다.")
@@ -16654,6 +16754,7 @@ Command Line :
         return {
             "level": level,
             "score": score,
+            "max_score": 100,
             "factors": factors,
             "score_breakdown": score_breakdown,
             "selected_days": selected_days,
@@ -16668,7 +16769,10 @@ Command Line :
 
         level = str(risk.get("level", "LOW"))
 
-        if level == "HIGH":
+        if level == "CRITICAL":
+            lines.append("복수 보안 신호가 강하게 중첩되어 즉시 대응이 필요한 치명 위험 수준입니다.")
+            lines.append("교차 호스트, DLP 허용 반출, 고위험 메일 유입을 우선순위로 당일 점검해야 합니다.")
+        elif level == "HIGH":
             lines.append("다수의 보안 이벤트가 동시다발적으로 확인되어 우선 대응이 필요한 수준입니다.")
             lines.append("반복 탐지 및 고위험 이벤트를 중심으로 즉시 상세 분석이 필요합니다.")
         elif level == "MEDIUM":
@@ -16745,7 +16849,7 @@ Command Line :
                     actions.append(
                         f"DLP 차단 상위 부서('{dept_name}')에 대해 주요 파일, 업로드 대상, 사용자 반복 여부를 우선 점검합니다."
                     )
-        if str(risk.get("level", "LOW")) == "HIGH":
+        if str(risk.get("level", "LOW")) in {"CRITICAL", "HIGH"}:
             actions.append("고위험 구간 — 반복 이벤트 우선 상세 분석 및 선제 대응을 수행합니다.")
 
         return actions
@@ -16802,7 +16906,7 @@ Command Line :
         if email_count > 0 and endpoint_count > 0:
             parts.append("메일 이벤트와 Endpoint 탐지가 같은 기간 내 함께 존재하여 유입 후 행위 연계 가능성을 점검 대상으로 포함합니다.")
 
-        level_text = {"HIGH": "고위험", "MEDIUM": "중위험", "LOW": "저위험"}.get(level, "저위험")
+        level_text = {"CRITICAL": "치명 위험", "HIGH": "고위험", "MEDIUM": "중위험", "LOW": "저위험"}.get(level, "저위험")
         parts.append(f"종합 판단: {level_text} 수준.")
 
         return " ".join(parts)
@@ -16855,7 +16959,9 @@ Command Line :
             )
 
         level = str(risk.get("level", "LOW"))
-        if level == "HIGH":
+        if level == "CRITICAL":
+            lines.append("전체적으로는 교차 신호와 반출 노출이 높은 치명 위험 구간으로 즉시 대응 대상입니다.")
+        elif level == "HIGH":
             lines.append("전체적으로는 이벤트 집중도와 반복성이 높아 우선 분석 대상 구간으로 판단됩니다.")
         elif level == "MEDIUM":
             lines.append("전체적으로는 반복 이벤트 중심의 모니터링이 필요한 수준으로 판단됩니다.")
