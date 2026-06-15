@@ -4082,6 +4082,27 @@ def mailscreen_parse_total_count(html_text):
     return int(match.group(1).replace(",", ""))
 
 
+def mailscreen_response_preview(html_text, limit=500):
+    text = mailscreen_clean_text(str(html_text or ""))
+    return text[:limit]
+
+
+def mailscreen_has_main_list(html_text):
+    soup = BeautifulSoup(str(html_text or ""), "html.parser")
+    return soup.select_one("#main_list") is not None
+
+
+def mailscreen_save_debug_html(html_text, date_str, page, reason):
+    safe_reason = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(reason or "debug"))[:40]
+    path = os.path.join(
+        LOG_DIR,
+        f"mailscreen_{date_str}_page{page}_{safe_reason}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
+    )
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(str(html_text or ""))
+    return path
+
+
 def mailscreen_extract_login_tokens(html_text):
     soup = BeautifulSoup(html_text, "html.parser")
 
@@ -4114,39 +4135,40 @@ def mailscreen_extract_login_tokens(html_text):
 
 def mailscreen_parse_rows(html_text):
     soup = BeautifulSoup(html_text, "html.parser")
-    table = soup.select_one("#main_list")
-    if table is None:
+    tables = soup.select("#main_list")
+    if not tables:
         raise RuntimeError("MailScreen #main_list table not found")
 
     rows = []
-    for tr in table.select("tr")[1:]:
-        cells = tr.find_all("td")
-        if len(cells) < 13:
-            continue
-        checkbox = cells[0].find("input", attrs={"name": "chk[]"}) or cells[0].find("input", attrs={"type": "checkbox"})
-        seq = mailscreen_clean_text(checkbox.get("value", "")) if checkbox else ""
-        if not seq:
-            continue
+    for table in tables:
+        for tr in table.select("tr")[1:]:
+            cells = tr.find_all("td")
+            if len(cells) < 13:
+                continue
+            checkbox = cells[0].find("input", attrs={"name": "chk[]"}) or cells[0].find("input", attrs={"type": "checkbox"})
+            seq = mailscreen_clean_text(checkbox.get("value", "")) if checkbox else ""
+            if not seq:
+                continue
 
-        values = [mailscreen_cell_value(cell) for cell in cells]
-        row = {name: "" for name in MAILSCREEN_FIELD_NAMES}
-        row["seq"] = seq
-        row["date"] = values[1][1] or values[1][0]
-        row["mail_process"] = values[2][1] or values[2][0]
-        row["send_result"] = values[3][0]
-        row["send_detail"] = values[3][1]
-        row["attach"] = values[4][1] or values[4][0]
-        row["subject"] = values[5][1] or values[5][0]
-        row["sender"] = values[6][0]
-        row["sender_detail"] = values[6][1]
-        row["dept"] = values[7][1] or values[7][0]
-        row["receiver"] = values[8][0]
-        row["receiver_detail"] = values[8][1]
-        row["size"] = values[9][1] or values[9][0]
-        row["policy"] = values[10][1] or values[10][0]
-        row["process_date"] = values[11][1] or values[11][0]
-        row["approver"] = values[12][1] or values[12][0]
-        rows.append(row)
+            values = [mailscreen_cell_value(cell) for cell in cells]
+            row = {name: "" for name in MAILSCREEN_FIELD_NAMES}
+            row["seq"] = seq
+            row["date"] = values[1][1] or values[1][0]
+            row["mail_process"] = values[2][1] or values[2][0]
+            row["send_result"] = values[3][0]
+            row["send_detail"] = values[3][1]
+            row["attach"] = values[4][1] or values[4][0]
+            row["subject"] = values[5][1] or values[5][0]
+            row["sender"] = values[6][0]
+            row["sender_detail"] = values[6][1]
+            row["dept"] = values[7][1] or values[7][0]
+            row["receiver"] = values[8][0]
+            row["receiver_detail"] = values[8][1]
+            row["size"] = values[9][1] or values[9][0]
+            row["policy"] = values[10][1] or values[10][0]
+            row["process_date"] = values[11][1] or values[11][0]
+            row["approver"] = values[12][1] or values[12][0]
+            rows.append(row)
     return rows
 
 
@@ -4187,12 +4209,75 @@ class MailScreenClient:
             except Exception:
                 pass
 
+    def _headers(self, referer_path="/", content_type="application/x-www-form-urlencoded"):
+        headers = {
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
+            "Referer": f"{self.base_url}{referer_path}",
+            "Origin": self.base_url,
+        }
+        if content_type:
+            headers["Content-Type"] = content_type
+        return headers
+
+    def _response_text(self, response):
+        if not response.encoding:
+            response.encoding = response.apparent_encoding or "utf-8"
+        return response.text
+
+    def load_index_page(self):
+        r = self.session.get(
+            f"{self.base_url}/index.php",
+            headers=self._headers("/member/login_ok.php", content_type=""),
+            timeout=self.timeout,
+            verify=self.verify_ssl,
+        )
+        r.raise_for_status()
+        log.info(
+            "MailScreen index.php status=%s final_url=%s body_len=%s",
+            r.status_code,
+            getattr(r, "url", ""),
+            len(self._response_text(r)),
+        )
+
+    def load_top_page(self):
+        r = self.session.get(
+            f"{self.base_url}/top.php",
+            headers=self._headers("/index.php", content_type=""),
+            timeout=self.timeout,
+            verify=self.verify_ssl,
+        )
+        r.raise_for_status()
+        log.info(
+            "MailScreen top.php status=%s final_url=%s body_len=%s",
+            r.status_code,
+            getattr(r, "url", ""),
+            len(self._response_text(r)),
+        )
+
+    def warmup_mail_page(self):
+        r = self.session.get(
+            f"{self.base_url}/mail/mail.php",
+            headers=self._headers("/top.php", content_type=""),
+            timeout=self.timeout,
+            verify=self.verify_ssl,
+        )
+        r.raise_for_status()
+        log.info(
+            "MailScreen warmup mail.php status=%s final_url=%s body_len=%s",
+            r.status_code,
+            getattr(r, "url", ""),
+            len(self._response_text(r)),
+        )
+
     def login(self):
         login_url = f"{self.base_url}/member/login.php"
         login_ok_url = f"{self.base_url}/member/login_ok.php"
-        r = self.session.get(login_url, timeout=self.timeout, verify=self.verify_ssl)
+        r = self.session.get(login_url, headers=self._headers("/member/logout.php", content_type=""), timeout=self.timeout, verify=self.verify_ssl)
         r.raise_for_status()
-        tokens = mailscreen_extract_login_tokens(r.text)
+        tokens = mailscreen_extract_login_tokens(self._response_text(r))
 
         payload = {
             "targeturl": "",
@@ -4202,7 +4287,13 @@ class MailScreenClient:
             "login_email": mailscreen_rsa_encrypt_hex(self.username, tokens["rsa_key1"], tokens["rsa_key2"]),
             "login_pwd": mailscreen_rsa_encrypt_hex(self.password, tokens["rsa_key1"], tokens["rsa_key2"]),
         }
-        r = self.session.post(login_ok_url, data=payload, timeout=self.timeout, verify=self.verify_ssl)
+        r = self.session.post(
+            login_ok_url,
+            data=payload,
+            headers=self._headers("/member/login.php"),
+            timeout=self.timeout,
+            verify=self.verify_ssl,
+        )
         r.raise_for_status()
         if "SID" not in self.session.cookies:
             raise RuntimeError("MailScreen login failed: SID cookie not issued")
@@ -4228,11 +4319,29 @@ class MailScreenClient:
         r = self.session.post(
             f"{self.base_url}/mail/mail.php",
             data=self.build_mail_payload(date_str, page),
+            headers=self._headers("/mail/mail.php"),
             timeout=self.timeout,
             verify=self.verify_ssl,
         )
         r.raise_for_status()
-        return r.text
+        text = self._response_text(r)
+        log.info(
+            "MailScreen mail.php status=%s final_url=%s content_type=%s body_len=%s page=%s",
+            r.status_code,
+            getattr(r, "url", ""),
+            r.headers.get("Content-Type", ""),
+            len(text),
+            page,
+        )
+        if not mailscreen_has_main_list(text):
+            debug_path = mailscreen_save_debug_html(text, date_str, page, "main_list_missing")
+            preview = mailscreen_response_preview(text)
+            log.error("MailScreen #main_list missing page=%s debug_html=%s preview=%s", page, debug_path, preview)
+            raise RuntimeError(
+                "MailScreen #main_list table not found. "
+                f"Saved response HTML for diagnosis: {debug_path}. Preview: {preview}"
+            )
+        return text
 
     def collect_mail_day(self, date_str):
         first_html = self.fetch_mail_page(date_str, 1)
@@ -4263,6 +4372,9 @@ class MailScreenClient:
     def refresh_mail_day(self, date_str):
         log.info(f"Refreshing MailScreen mail history ({date_str})")
         self.login()
+        self.load_index_page()
+        self.load_top_page()
+        self.warmup_mail_page()
         items = self.collect_mail_day(date_str)
         payload = {
             "source": "mailscreen",
