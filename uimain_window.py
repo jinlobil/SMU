@@ -255,6 +255,7 @@ DEFAULT_COLOR_CONFIG = {
     "Threat_trend_Detection": "#0863e2",
     "Threat_trend_Detection_XDR": "#EAF3FF",
     "Threat_trend_Email": "#14b8a6",
+    "Threat_trend_Outbound_Mail": "#ec4899",
     "Threat_trend_File": "#f59e0b",
 }
 
@@ -273,6 +274,7 @@ COLOR_ENV_ALIAS = {
     "Threat_trend_Detection": ["Threat_trand_Detection"],
     "Threat_trend_Detection_XDR": ["Threat_trand_Detection_XDR"],
     "Threat_trend_Email": ["Threat_trand_Email"],
+    "Threat_trend_Outbound_Mail": ["Threat_trand_Outbound_Mail"],
     "Threat_trend_File": ["Threat_trand_File"],
 }
 
@@ -354,7 +356,8 @@ COLOR_DIALOG_GROUPS = [
     ("그래프", [
         ("Threat Trend - Detection - XDR", "Threat_trend_Detection"),
         ("Threat Trend - Email - XDR", "Threat_trend_Detection_XDR"),
-        ("Threat Trend - Email", "Threat_trend_Email"),
+        ("Threat Trend - Inbound Mail", "Threat_trend_Email"),
+        ("Threat Trend - Outbound Mail", "Threat_trend_Outbound_Mail"),
         ("Threat Trend - File", "Threat_trend_File"),
     ]),
 ]
@@ -385,7 +388,8 @@ COLOR_SETTING_TOOLTIPS = {
     "Table_Header_Text": "테이블 헤더 라벨의 글씨 색입니다.",
     "Threat_trend_Detection": "Threat Trend 그래프의 Detection - XDR 선/막대 색입니다.",
     "Threat_trend_Detection_XDR": "Threat Trend 그래프의 Email - XDR 선/막대 색입니다.",
-    "Threat_trend_Email": "Threat Trend 그래프의 Email 선/막대 색입니다.",
+    "Threat_trend_Email": "Threat Trend 그래프의 Inbound Mail 선/막대 색입니다.",
+    "Threat_trend_Outbound_Mail": "Threat Trend 그래프의 Outbound Mail 선/막대 색입니다.",
     "Threat_trend_File": "Threat Trend 그래프의 File 선/막대 색입니다.",
 }
 
@@ -6682,6 +6686,7 @@ class MainWindow(QMainWindow):
         self.dashboard_compare_xdr_detections = []
         self.dashboard_compare_emails = []
         self.dashboard_compare_dlp = []
+        self.dashboard_compare_mailscreen = []
 
         self.detection_detections = []
         self.email_emails = []
@@ -6690,6 +6695,13 @@ class MainWindow(QMainWindow):
         self.mailscreen_rows = []
 
         self.trend_colors = self.trend_colors_from_config(self.color_config)
+        self.trend_visibility = {
+            "Detection - XDR": True,
+            "Email - XDR": True,
+            "Inbound Mail": True,
+            "Outbound Mail": True,
+            "File": True,
+        }
 
         self.setWindowTitle("Sophos Monitoring UI")
         self.resize(1500, 850)
@@ -6862,6 +6874,7 @@ class MainWindow(QMainWindow):
             "Detection - XDR": normalize_hex_color(config.get("Threat_trend_Detection"), DEFAULT_COLOR_CONFIG["Threat_trend_Detection"]),
             "Email - XDR": normalize_hex_color(config.get("Threat_trend_Detection_XDR"), DEFAULT_COLOR_CONFIG["Threat_trend_Detection_XDR"]),
             "Email": normalize_hex_color(config.get("Threat_trend_Email"), DEFAULT_COLOR_CONFIG["Threat_trend_Email"]),
+            "Outbound Mail": normalize_hex_color(config.get("Threat_trend_Outbound_Mail"), DEFAULT_COLOR_CONFIG["Threat_trend_Outbound_Mail"]),
             "File": normalize_hex_color(config.get("Threat_trend_File"), DEFAULT_COLOR_CONFIG["Threat_trend_File"]),
         }
 
@@ -7734,7 +7747,8 @@ class MainWindow(QMainWindow):
         graph_keys = [
             ("D", "Threat_trend_Detection"),
             ("X", "Threat_trend_Detection_XDR"),
-            ("E", "Threat_trend_Email"),
+            ("I", "Threat_trend_Email"),
+            ("O", "Threat_trend_Outbound_Mail"),
             ("F", "Threat_trend_File"),
         ]
         graph_swatches = []
@@ -10972,7 +10986,9 @@ class MainWindow(QMainWindow):
 
             self.dashboard_emails = load_emails_by_range(start_date, end_date)
             self.dlp_rows = load_dlp_by_range(start_date, end_date)
+            self.mailscreen_rows = load_mailscreen_by_range(start_date, end_date)
             self.dlp_range = f"{start_date} ~ {end_date}"
+            self.mailscreen_range = f"{start_date} ~ {end_date}"
 
             # =========================
             # 비교용 추가 범위 로드
@@ -10982,6 +10998,7 @@ class MainWindow(QMainWindow):
             compare_start_dt = end_dt - relativedelta(months=1)
             compare_start = compare_start_dt.strftime("%Y-%m-%d")
             self.dashboard_compare_dlp = load_dlp_by_range(compare_start, end_date)
+            self.dashboard_compare_mailscreen = load_mailscreen_by_range(compare_start, end_date)
 
             self.dashboard_compare_detections = load_endpoint_detections_by_range(compare_start, end_date)
             self.dashboard_compare_xdr_detections = load_xdr_email_detections_by_range(compare_start, end_date)
@@ -12074,12 +12091,31 @@ Command Line :
         # 그래프
         self.figure = Figure(figsize=(10, 4), facecolor="#ffffff")
         self.canvas = FigureCanvas(self.figure)
-        container.addWidget(self.canvas, 4)
+        graph_left = QVBoxLayout()
+        graph_left.setContentsMargins(0, 0, 0, 0)
+        graph_left.setSpacing(6)
+
+        trend_toggle_row = QHBoxLayout()
+        trend_toggle_row.setContentsMargins(0, 0, 0, 0)
+        trend_toggle_row.setSpacing(10)
+        self.trend_checkboxes = {}
+        for label in ["Detection - XDR", "Email - XDR", "Inbound Mail", "Outbound Mail", "File"]:
+            chk = QCheckBox(label)
+            chk.setChecked(self.trend_visibility.get(label, True))
+            chk.setStyleSheet(f"color:{UI_THEME['text_soft']}; font-weight:800; background:transparent;")
+            chk.toggled.connect(lambda checked, name=label: self.set_trend_series_visible(name, checked))
+            self.trend_checkboxes[label] = chk
+            trend_toggle_row.addWidget(chk)
+        trend_toggle_row.addStretch(1)
+
+        graph_left.addLayout(trend_toggle_row)
+        graph_left.addWidget(self.canvas, 1)
+        container.addLayout(graph_left, 4)
 
         # 퍼센트
         percent_frame = QFrame()
-        percent_frame.setMinimumWidth(285)
-        percent_frame.setMaximumWidth(315)
+        percent_frame.setMinimumWidth(330)
+        percent_frame.setMaximumWidth(380)
         percent_frame.setMinimumHeight(210)
         percent_frame.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
 
@@ -12226,6 +12262,11 @@ Command Line :
         frame.value_label = value_label
         return frame
 
+    def set_trend_series_visible(self, series_name, visible):
+        self.trend_visibility[str(series_name)] = bool(visible)
+        if hasattr(self, "figure"):
+            self.refresh_dashboard()
+
     def refresh_dashboard(self):
         log.info(">>> ENTER refresh_dashboard()")
         log.info(f"Canvas ID → {id(self.canvas) if hasattr(self,'canvas') else 'NO CANVAS'}")
@@ -12240,20 +12281,24 @@ Command Line :
         XDR_DETECTIONS = self.dashboard_xdr_detections or []
         EMAILS = self.dashboard_emails or []
         FILES = self.dlp_rows or []
+        OUTBOUND_MAILS = self.mailscreen_rows or []
 
         COMPARE_DETECTIONS = self.dashboard_compare_detections or []
         COMPARE_XDR_DETECTIONS = self.dashboard_compare_xdr_detections or []
         COMPARE_EMAILS = self.dashboard_compare_emails or []
         COMPARE_FILES = self.dashboard_compare_dlp or []
+        COMPARE_OUTBOUND_MAILS = self.dashboard_compare_mailscreen or []
 
         log.info(f"DETECTIONS LENGTH → {len(DETECTIONS)}")
         log.info(f"XDR DETECTIONS LENGTH → {len(XDR_DETECTIONS)}")
         log.info(f"EMAILS LENGTH → {len(EMAILS)}")
         log.info(f"FILES LENGTH → {len(FILES)}")
+        log.info(f"OUTBOUND MAILS LENGTH → {len(OUTBOUND_MAILS)}")
         log.info(f"COMPARE DETECTIONS LENGTH → {len(COMPARE_DETECTIONS)}")
         log.info(f"COMPARE XDR DETECTIONS LENGTH → {len(COMPARE_XDR_DETECTIONS)}")
         log.info(f"COMPARE EMAILS LENGTH → {len(COMPARE_EMAILS)}")
         log.info(f"COMPARE FILES LENGTH → {len(COMPARE_FILES)}")
+        log.info(f"COMPARE OUTBOUND MAILS LENGTH → {len(COMPARE_OUTBOUND_MAILS)}")
 
         log.info(f"DASHBOARD LOAD → {start_date} ~ {end_date}")
         log.info(f"DASHBOARD DET COUNT → {len(DETECTIONS)}")
@@ -12456,6 +12501,7 @@ Command Line :
         det_counts = defaultdict(int)
         xdr_counts = defaultdict(int)
         mail_counts = defaultdict(int)
+        outbound_mail_counts = defaultdict(int)
         file_counts = defaultdict(int)
 
         # -------------------------
@@ -12501,6 +12547,16 @@ Command Line :
                 continue
 
         # -------------------------
+        # 🔥 Outbound Mail 집계 (MailScreen 날짜 기준)
+        # -------------------------
+        for m in OUTBOUND_MAILS:
+            if not isinstance(m, dict):
+                continue
+            t = str(m.get("date", "") or "").strip()
+            if len(t) >= 10:
+                outbound_mail_counts[t[:10]] += 1
+
+        # -------------------------
         # 🔥 File 집계 (KST 기준)
         # -------------------------
         for f in FILES:
@@ -12515,6 +12571,7 @@ Command Line :
         det_values = [det_counts[d] for d in date_list]
         xdr_values = [xdr_counts[d] for d in date_list]
         mail_values = [mail_counts[d] for d in date_list]
+        outbound_mail_values = [outbound_mail_counts[d] for d in date_list]
         file_values = [file_counts[d] for d in date_list]
 
 
@@ -12524,6 +12581,7 @@ Command Line :
         compare_det_counts = defaultdict(int)
         compare_xdr_counts = defaultdict(int)
         compare_mail_counts = defaultdict(int)
+        compare_outbound_mail_counts = defaultdict(int)
         compare_file_counts = defaultdict(int)
 
         for d in COMPARE_DETECTIONS:
@@ -12559,6 +12617,13 @@ Command Line :
             except:
                 continue
 
+        for m in COMPARE_OUTBOUND_MAILS:
+            if not isinstance(m, dict):
+                continue
+            t = str(m.get("date", "") or "").strip()
+            if len(t) >= 10:
+                compare_outbound_mail_counts[t[:10]] += 1
+
         for f in COMPARE_FILES:
             if not isinstance(f, dict):
                 continue
@@ -12579,12 +12644,14 @@ Command Line :
         day_map_det = dict(zip(date_list, det_values))
         day_map_xdr = dict(zip(date_list, xdr_values))
         day_map_mail = dict(zip(date_list, mail_values))
+        day_map_outbound_mail = dict(zip(date_list, outbound_mail_values))
         day_map_file = dict(zip(date_list, file_values))
 
         # 비교용 map (선택 범위 밖 날짜 포함)
         compare_day_map_det = dict(compare_det_counts)
         compare_day_map_xdr = dict(compare_xdr_counts)
         compare_day_map_mail = dict(compare_mail_counts)
+        compare_day_map_outbound_mail = dict(compare_outbound_mail_counts)
         compare_day_map_file = dict(compare_file_counts)
 
         def calc_percent(prev, last):
@@ -12616,17 +12683,20 @@ Command Line :
         det_daily = None
         xdr_daily = None
         mail_daily = None
+        outbound_mail_daily = None
         file_daily = None
 
         det_daily = calc_percent(compare_day_map_det.get(yesterday, 0), compare_day_map_det.get(today_str, 0))
         xdr_daily = calc_percent(compare_day_map_xdr.get(yesterday, 0), compare_day_map_xdr.get(today_str, 0))
         mail_daily = calc_percent(compare_day_map_mail.get(yesterday, 0), compare_day_map_mail.get(today_str, 0))
+        outbound_mail_daily = calc_percent(compare_day_map_outbound_mail.get(yesterday, 0), compare_day_map_outbound_mail.get(today_str, 0))
         file_daily = calc_percent(compare_day_map_file.get(yesterday, 0), compare_day_map_file.get(today_str, 0))
 
-        daily_det_text, daily_det_color = format_block("전일 Detection - XDR", det_daily)
-        daily_xdr_text, daily_xdr_color = format_block("전일 Email - XDR", xdr_daily)
-        daily_mail_text, daily_mail_color = format_block("전일 Email", mail_daily)
-        daily_file_text, daily_file_color = format_block("전일 File", file_daily)
+        daily_det_text, daily_det_color = format_block("Detection - XDR", det_daily)
+        daily_xdr_text, daily_xdr_color = format_block("Email - XDR", xdr_daily)
+        daily_mail_text, daily_mail_color = format_block("Inbound Mail", mail_daily)
+        daily_outbound_mail_text, daily_outbound_mail_color = format_block("Outbound Mail", outbound_mail_daily)
+        daily_file_text, daily_file_color = format_block("File", file_daily)
 
         # ---- 전월 대비 ----
         one_month_ago = (last_dt - relativedelta(months=1)).strftime("%Y-%m-%d")
@@ -12634,17 +12704,20 @@ Command Line :
         det_month = None
         xdr_month = None
         mail_month = None
+        outbound_mail_month = None
         file_month = None
 
         det_month = calc_percent(compare_day_map_det.get(one_month_ago, 0), compare_day_map_det.get(today_str, 0))
         xdr_month = calc_percent(compare_day_map_xdr.get(one_month_ago, 0), compare_day_map_xdr.get(today_str, 0))
         mail_month = calc_percent(compare_day_map_mail.get(one_month_ago, 0), compare_day_map_mail.get(today_str, 0))
+        outbound_mail_month = calc_percent(compare_day_map_outbound_mail.get(one_month_ago, 0), compare_day_map_outbound_mail.get(today_str, 0))
         file_month = calc_percent(compare_day_map_file.get(one_month_ago, 0), compare_day_map_file.get(today_str, 0))
 
-        monthly_det_text, monthly_det_color = format_block("전월 Detection - XDR", det_month)
-        monthly_xdr_text, monthly_xdr_color = format_block("전월 Email - XDR", xdr_month)
-        monthly_mail_text, monthly_mail_color = format_block("전월 Email", mail_month)
-        monthly_file_text, monthly_file_color = format_block("전월 File", file_month)
+        monthly_det_text, monthly_det_color = format_block("Detection - XDR", det_month)
+        monthly_xdr_text, monthly_xdr_color = format_block("Email - XDR", xdr_month)
+        monthly_mail_text, monthly_mail_color = format_block("Inbound Mail", mail_month)
+        monthly_outbound_mail_text, monthly_outbound_mail_color = format_block("Outbound Mail", outbound_mail_month)
+        monthly_file_text, monthly_file_color = format_block("File", file_month)
 
 
         # ==============================
@@ -12655,27 +12728,54 @@ Command Line :
         self.figure.clf()
         ax = self.figure.add_subplot(111)
 
-        color_det = self.trend_colors.get("Detection - XDR", UI_THEME["accent"])
-        color_xdr = self.trend_colors.get("Email - XDR", UI_THEME["accent_light"])
-        color_mail = self.trend_colors.get("Email", "#14b8a6")
-        color_file = self.trend_colors.get("File", "#f59e0b")
+        trend_series = [
+            {
+                "name": "Detection - XDR",
+                "values": det_values,
+                "color": self.trend_colors.get("Detection - XDR", UI_THEME["accent"]),
+                "offset": (-14, 8),
+                "ha": "right",
+            },
+            {
+                "name": "Email - XDR",
+                "values": xdr_values,
+                "color": self.trend_colors.get("Email - XDR", UI_THEME["accent_light"]),
+                "offset": (14, 8),
+                "ha": "left",
+            },
+            {
+                "name": "Inbound Mail",
+                "values": mail_values,
+                "color": self.trend_colors.get("Email", "#14b8a6"),
+                "offset": (-14, 10),
+                "ha": "right",
+            },
+            {
+                "name": "Outbound Mail",
+                "values": outbound_mail_values,
+                "color": self.trend_colors.get("Outbound Mail", "#ec4899"),
+                "offset": (14, -16),
+                "ha": "left",
+            },
+            {
+                "name": "File",
+                "values": file_values,
+                "color": self.trend_colors.get("File", "#f59e0b"),
+                "offset": (14, 10),
+                "ha": "left",
+            },
+        ]
+        active_series = [s for s in trend_series if self.trend_visibility.get(s["name"], True)]
 
-        dark_det = color_det
-        dark_xdr = color_xdr
-        dark_mail = color_mail
-        dark_file = color_file
-
-        ax.plot(x_dates, det_values, marker='o', linewidth=2.8,
-                color=color_det, label="Detection - XDR")
-
-        ax.plot(x_dates, xdr_values, marker='o', linewidth=2.8,
-                color=color_xdr, label="Email - XDR")
-
-        ax.plot(x_dates, mail_values, marker='o', linewidth=2.8,
-                color=color_mail, label="Email")
-
-        ax.plot(x_dates, file_values, marker='o', linewidth=2.8,
-                color=color_file, label="File")
+        for series in active_series:
+            ax.plot(
+                x_dates,
+                series["values"],
+                marker='o',
+                linewidth=2.8,
+                color=series["color"],
+                label=series["name"],
+            )
 
         # 🔥 tick 강제 고정
         ax.set_xticks(x_dates)
@@ -12701,94 +12801,43 @@ Command Line :
         # matplotlib title because it can render with broken-looking spacing.
         ax.set_title("")
 
-        legend = ax.legend(
-            loc="upper center",
-            bbox_to_anchor=(0.5, 1.16),
-            ncol=4,
-            frameon=False,
-            columnspacing=1.8,
-            handlelength=1.8,
-        )
-        for text in legend.get_texts():
-            text.set_color(UI_THEME["text_soft"])
-            text.set_fontsize(10)
-        max_y = max(max(det_values), max(xdr_values), max(mail_values), max(file_values), 1)
+        if active_series:
+            legend = ax.legend(
+                loc="upper center",
+                bbox_to_anchor=(0.5, 1.16),
+                ncol=min(5, len(active_series)),
+                frameon=False,
+                columnspacing=1.4,
+                handlelength=1.8,
+            )
+            for text in legend.get_texts():
+                text.set_color(UI_THEME["text_soft"])
+                text.set_fontsize(10)
+
+        max_y = max([max(series["values"] or [0]) for series in active_series] + [1])
         ax.set_ylim(0, max_y * 1.8)
 
         # 🔥 숫자 표시
-        for i, x in enumerate(x_dates):
-
-            # Detection → 왼쪽
-            txt1 = ax.annotate(
-                str(det_values[i]),
-                xy=(x, det_values[i]),
-                xytext=(-14, 8),
-                textcoords="offset points",
-                fontsize=9,
-                fontweight="bold",
-                color=dark_det,
-                ha="right",
-                va="bottom",
-                zorder=5
-            )
-            txt1.set_path_effects([
-                path_effects.Stroke(linewidth=3, foreground='white'),
-                path_effects.Normal()
-            ])
-
-            # Email - XDR → 오른쪽
-            txt2 = ax.annotate(
-                str(xdr_values[i]),
-                xy=(x, xdr_values[i]),
-                xytext=(14, 8),
-                textcoords="offset points",
-                fontsize=9,
-                fontweight="bold",
-                color=dark_xdr,
-                ha="left",
-                va="bottom",
-                zorder=5
-            )
-            txt2.set_path_effects([
-                path_effects.Stroke(linewidth=2, foreground='white'),
-                path_effects.Normal()
-            ])
-
-            # Email → 왼쪽 위 대각선
-            txt3 = ax.annotate(
-                str(mail_values[i]),
-                xy=(x, mail_values[i]),
-                xytext=(-14, 10),
-                textcoords="offset points",
-                fontsize=9,
-                fontweight="bold",
-                color=dark_mail,
-                ha="right",
-                va="bottom",
-                zorder=5
-            )
-            txt3.set_path_effects([
-                path_effects.Stroke(linewidth=2, foreground='white'),
-                path_effects.Normal()
-            ])
-
-            # File → 오른쪽 위 대각선
-            txt4 = ax.annotate(
-                str(file_values[i]),
-                xy=(x, file_values[i]),
-                xytext=(14, 10),
-                textcoords="offset points",
-                fontsize=9,
-                fontweight="bold",
-                color=dark_file,
-                ha="left",
-                va="bottom",
-                zorder=5
-            )
-            txt4.set_path_effects([
-                path_effects.Stroke(linewidth=2, foreground='white'),
-                path_effects.Normal()
-            ])
+        for series in active_series:
+            dx, dy = series["offset"]
+            for i, x in enumerate(x_dates):
+                value = series["values"][i]
+                txt = ax.annotate(
+                    str(value),
+                    xy=(x, value),
+                    xytext=(dx, dy),
+                    textcoords="offset points",
+                    fontsize=9,
+                    fontweight="bold",
+                    color=series["color"],
+                    ha=series["ha"],
+                    va="bottom",
+                    zorder=5
+                )
+                txt.set_path_effects([
+                    path_effects.Stroke(linewidth=2, foreground='white'),
+                    path_effects.Normal()
+                ])
 
         self.figure.subplots_adjust(
             left=0.10,
@@ -12802,7 +12851,7 @@ Command Line :
         # 🔥 전일 대비 (오른쪽 표시용)
         # ==============================
         percent_html = f"""
-        <table width='100%' cellspacing='0' cellpadding='0' style='font-size:12px; line-height:19px;'>
+        <table width='100%' cellspacing='0' cellpadding='0' style='font-size:12px; line-height:18px;'>
             <tr>
                 <td width='38%'></td>
                 <td width='31%' align='center' style='color:#6b7280; font-size:11px; font-weight:900;'>전일 대비</td>
@@ -12810,21 +12859,27 @@ Command Line :
             </tr>
             <tr><td colspan='3' style='height:4px; border-bottom:1px solid #e5e7eb;'></td></tr>
             <tr>
-                <td style='padding-top:4px; color:{UI_THEME['accent_text']}; font-size:12px; font-weight:900;'>Detection</td>
+                <td style='padding-top:4px; color:{UI_THEME['accent_text']}; font-size:12px; font-weight:900;'>Detection - XDR</td>
                 <td align='center' style='padding-top:4px; color:{daily_det_color}; font-size:12px; font-weight:900;'>{daily_det_text}</td>
                 <td align='right' style='padding-top:4px; color:{monthly_det_color}; font-size:12px; font-weight:900;'>{monthly_det_text}</td>
             </tr>
             <tr><td colspan='3' style='height:4px; border-bottom:1px solid #e5e7eb;'></td></tr>
             <tr>
-                <td style='padding-top:4px; color:{UI_THEME['accent_text']}; font-size:12px; font-weight:900;'>XDR</td>
+                <td style='padding-top:4px; color:{UI_THEME['accent_text']}; font-size:12px; font-weight:900;'>Email - XDR</td>
                 <td align='center' style='padding-top:4px; color:{daily_xdr_color}; font-size:12px; font-weight:900;'>{daily_xdr_text}</td>
                 <td align='right' style='padding-top:4px; color:{monthly_xdr_color}; font-size:12px; font-weight:900;'>{monthly_xdr_text}</td>
             </tr>
             <tr><td colspan='3' style='height:4px; border-bottom:1px solid #e5e7eb;'></td></tr>
             <tr>
-                <td style='padding-top:4px; color:{UI_THEME['accent_text']}; font-size:12px; font-weight:900;'>Email</td>
+                <td style='padding-top:4px; color:{UI_THEME['accent_text']}; font-size:12px; font-weight:900;'>Inbound Mail</td>
                 <td align='center' style='padding-top:4px; color:{daily_mail_color}; font-size:12px; font-weight:900;'>{daily_mail_text}</td>
                 <td align='right' style='padding-top:4px; color:{monthly_mail_color}; font-size:12px; font-weight:900;'>{monthly_mail_text}</td>
+            </tr>
+            <tr><td colspan='3' style='height:4px; border-bottom:1px solid #e5e7eb;'></td></tr>
+            <tr>
+                <td style='padding-top:4px; color:{UI_THEME['accent_text']}; font-size:12px; font-weight:900;'>Outbound Mail</td>
+                <td align='center' style='padding-top:4px; color:{daily_outbound_mail_color}; font-size:12px; font-weight:900;'>{daily_outbound_mail_text}</td>
+                <td align='right' style='padding-top:4px; color:{monthly_outbound_mail_color}; font-size:12px; font-weight:900;'>{monthly_outbound_mail_text}</td>
             </tr>
             <tr><td colspan='3' style='height:4px; border-bottom:1px solid #e5e7eb;'></td></tr>
             <tr>
@@ -15305,7 +15360,7 @@ Command Line :
                 "Detection": "#ef4444",
                 "XDR": "#7c3aed",
                 "Email": "#0ea5e9",
-                "Outbound Mail": "#8b5cf6",
+                "Outbound Mail": "#ec4899",
                 "File": "#f59e0b",
             }.get(str(source), UI_THEME["accent"])
 
@@ -15507,7 +15562,7 @@ Command Line :
         self.timeline_btn_search.clicked.connect(start_search)
         self.timeline_user_input.returnPressed.connect(start_search)
         self._refresh_timeline = lambda: None
-        add_empty_message("Timeline은 날짜 선택 없이 전체 Detection/XDR/Email/File 캐시에서 사용자 alias 기반으로 검색합니다.")
+        add_empty_message("Timeline은 날짜 선택 없이 전체 Detection/XDR/Inbound/Outbound/File 캐시에서 사용자 alias 기반으로 검색합니다.")
         return root
 
 
