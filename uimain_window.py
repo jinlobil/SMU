@@ -1065,6 +1065,8 @@ def init_app_cache_db(conn):
             seq TEXT,
             sender TEXT,
             sender_user_id TEXT,
+            sender_email TEXT,
+            sender_name TEXT,
             sender_detail TEXT,
             dept TEXT,
             receiver TEXT,
@@ -1076,8 +1078,15 @@ def init_app_cache_db(conn):
             UNIQUE(source_file, row_index)
         )
     """)
+    for column_name in ("sender_email", "sender_name"):
+        try:
+            conn.execute(f"ALTER TABLE mailscreen_events ADD COLUMN {column_name} TEXT")
+        except sqlite3.OperationalError:
+            pass
     conn.execute("CREATE INDEX IF NOT EXISTS idx_mailscreen_events_date ON mailscreen_events(event_date_kst)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_mailscreen_events_sender_user_id ON mailscreen_events(sender_user_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_mailscreen_events_sender_email ON mailscreen_events(sender_email)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_mailscreen_events_sender_name ON mailscreen_events(sender_name)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_mailscreen_events_sender ON mailscreen_events(sender)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_mailscreen_events_file ON mailscreen_events(source_file)")
 
@@ -1235,6 +1244,9 @@ def resolve_mailscreen_sender_identity(row):
         identity = resolve_identity_by_mailbox(email_addr_text)
 
     directory_info = get_directory_user_info(email_addr_text, local_user_id, display_sender)
+    if not email_addr_text and directory_info:
+        email_addr_text = str(directory_info.get("email", "") or "").strip()
+        local_user_id = str(directory_info.get("user_id", "") or "").strip()
 
     user_id = str(identity.get("user_id", "") or "").strip()
     if user_id in {"", "None"}:
@@ -1274,7 +1286,35 @@ def resolve_mailscreen_sender_identity(row):
     }
 
 
+def enrich_mailscreen_sender_fields(row):
+    if not isinstance(row, dict):
+        return row
+
+    enriched = dict(row)
+    identity = resolve_mailscreen_sender_identity(enriched)
+    sender_email = mailscreen_identity_text(identity.get("email"))
+    sender_name = mailscreen_identity_text(identity.get("user_name"))
+    sender_dept = mailscreen_identity_text(identity.get("dept_name"))
+
+    if not sender_email:
+        sender_email = mailscreen_extract_email(enriched.get("sender"), enriched.get("sender_detail"))
+    if not sender_name or sender_name == "None":
+        raw_sender = mailscreen_identity_text(enriched.get("sender"))
+        sender_name = "" if "@" in raw_sender else raw_sender
+    if not sender_dept or sender_dept == "None":
+        sender_dept = mailscreen_identity_text(enriched.get("dept"))
+
+    enriched["sender_email"] = sender_email or "None"
+    enriched["sender_name"] = sender_name or "None"
+    enriched["sender_user_id"] = identity.get("user_id", "None") or "None"
+    enriched["sender_dept"] = sender_dept or "None"
+    enriched["sender"] = enriched["sender_email"] if enriched["sender_email"] != "None" else mailscreen_identity_text(enriched.get("sender")) or "None"
+    enriched["dept"] = enriched["sender_dept"]
+    return enriched
+
+
 def mailscreen_index_values(row, source, path, idx, cache_date, raw_json):
+    row = enrich_mailscreen_sender_fields(row)
     event_time = str(row.get("date", "") or "") if isinstance(row, dict) else ""
     event_dt = timeline_parse_dt(event_time)
     event_date = dt_to_kst_date_text(event_dt, cache_date)
@@ -1288,6 +1328,8 @@ def mailscreen_index_values(row, source, path, idx, cache_date, raw_json):
         str(row.get("seq", "") or "") if isinstance(row, dict) else "",
         mailscreen_identity_text(row.get("sender")) if isinstance(row, dict) else "",
         identity.get("user_id", "None"),
+        mailscreen_identity_text(row.get("sender_email")) if isinstance(row, dict) else "",
+        mailscreen_identity_text(row.get("sender_name")) if isinstance(row, dict) else "",
         mailscreen_identity_text(row.get("sender_detail")) if isinstance(row, dict) else "",
         identity.get("dept_name", "미분류"),
         mailscreen_identity_text(row.get("receiver")) if isinstance(row, dict) else "",
@@ -1331,8 +1373,8 @@ APP_CACHE_INDEX_INSERTS = {
         "DELETE FROM mailscreen_events WHERE source_file = ?",
         """
         INSERT OR REPLACE INTO mailscreen_events
-            (source_file, row_index, cache_date, event_time, event_date_kst, seq, sender, sender_user_id, sender_detail, dept, receiver, subject, send_result, mail_process, policy, raw_json)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (source_file, row_index, cache_date, event_time, event_date_kst, seq, sender, sender_user_id, sender_email, sender_name, sender_detail, dept, receiver, subject, send_result, mail_process, policy, raw_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         mailscreen_index_values,
     ),
@@ -1355,6 +1397,8 @@ def sync_app_cache_file(conn, source, path, cache_date=None, file_format="json")
     for idx, row in enumerate(rows):
         if not isinstance(row, (dict, list)):
             continue
+        if source == "mailscreen" and isinstance(row, dict):
+            row = enrich_mailscreen_sender_fields(row)
         raw_json = json.dumps(row, ensure_ascii=False)
         payload.append((source, cache_date, path, idx, raw_json))
         if index_spec and isinstance(row, dict):
@@ -1418,6 +1462,11 @@ def app_cache_index_current(conn, source, path):
     if not table:
         return True
     try:
+        if source == "mailscreen":
+            return conn.execute(
+                "SELECT 1 FROM mailscreen_events WHERE source_file = ? AND sender_email IS NOT NULL LIMIT 1",
+                (path,),
+            ).fetchone() is not None
         return conn.execute(f"SELECT 1 FROM {table} WHERE source_file = ? LIMIT 1", (path,)).fetchone() is not None
     except sqlite3.Error:
         return False
@@ -1667,7 +1716,7 @@ def load_mailscreen_by_range(start_date: str, end_date: str):
                 if isinstance(payload, dict):
                     items = payload.get("items", [])
                     if isinstance(items, list):
-                        results.extend([item for item in items if isinstance(item, dict)])
+                        results.extend([enrich_mailscreen_sender_fields(item) for item in items if isinstance(item, dict)])
             except Exception as e:
                 log.warning(f"Failed to load {file_path}: {e}")
         current += timedelta(days=1)
@@ -2592,7 +2641,8 @@ def get_directory_user_dept(user):
         return "미분류", ""
 
     source = user.get("source", {}) if isinstance(user.get("source"), dict) else {}
-    if str(source.get("type", "") or "").strip() != "activeDirectory":
+    source_type = str(source.get("type", "") or "").strip()
+    if source_type and source_type != "activeDirectory":
         return "미분류", ""
 
     groups = user.get("groups", {}) if isinstance(user.get("groups"), dict) else {}
@@ -2619,12 +2669,11 @@ def build_directory_user_index():
             continue
 
         source = user.get("source", {}) if isinstance(user.get("source"), dict) else {}
-        if str(source.get("type", "") or "").strip() != "activeDirectory":
+        source_type = str(source.get("type", "") or "").strip()
+        if source_type and source_type != "activeDirectory":
             continue
 
         dept_name, dept_code = get_directory_user_dept(user)
-        if not dept_code:
-            continue
 
         entry = {
             "name": str(user.get("name", "") or "").strip(),
@@ -2635,6 +2684,8 @@ def build_directory_user_index():
         }
 
         keys = []
+        if entry["name"]:
+            keys.append(entry["name"])
         if entry["user_id"]:
             keys.append(entry["user_id"])
         if entry["email"]:
@@ -3260,6 +3311,7 @@ def normalize_timeline_email(m, ctx):
 def normalize_timeline_mailscreen(row, ctx):
     if not isinstance(row, dict):
         return None
+    row = enrich_mailscreen_sender_fields(row)
 
     event_time = str(row.get("date", "") or "").strip()
     if not event_time:
@@ -3275,7 +3327,9 @@ def normalize_timeline_mailscreen(row, ctx):
     send_result = str(row.get("send_result", "") or "None")
     send_detail = str(row.get("send_detail", "") or "None")
     policy = str(row.get("policy", "") or "None")
-    source_email = identity.get("email") or mailscreen_extract_email(sender, sender_detail)
+    source_email = mailscreen_identity_text(row.get("sender_email")) or identity.get("email") or mailscreen_extract_email(sender, sender_detail)
+    sender_name = mailscreen_identity_text(row.get("sender_name")) or identity.get("user_name", "None")
+    sender_dept = mailscreen_identity_text(row.get("sender_dept")) or identity.get("dept_name", "미분류")
     asset = source_email or sender_detail or sender or identity.get("user_id", "None")
     event_name = f"{mail_process}/{send_result}" if mail_process != "None" and send_result != "None" else (send_result or mail_process)
     direction = f"{asset} → {receiver_detail or receiver or 'None'}"
@@ -3284,9 +3338,9 @@ def normalize_timeline_mailscreen(row, ctx):
         sender,
         sender_detail,
         source_email,
-        identity.get("user_name"),
+        sender_name,
         identity.get("user_id"),
-        identity.get("dept_name"),
+        sender_dept,
         receiver,
         receiver_detail,
         subject,
@@ -3296,9 +3350,9 @@ def normalize_timeline_mailscreen(row, ctx):
     event = make_timeline_event(
         event_time,
         "Outbound Mail",
-        identity.get("user_name", "None"),
+        sender_name,
         identity.get("user_id", "None"),
-        identity.get("dept_name", "미분류"),
+        sender_dept,
         asset,
         event_name,
         direction,
@@ -13918,7 +13972,7 @@ Command Line :
         search_v.addLayout(self.outbound_search_container)
 
         table = QTableWidget()
-        headers = ["날짜", "메일 처리", "전송 결과", "제목", "발신자", "소속", "수신자", "크기", "적용 정책", "첨부"]
+        headers = ["날짜", "메일 처리", "전송 결과", "제목", "발신자 (이메일)", "발신자 명", "소속", "수신자", "크기", "적용 정책", "첨부"]
         table.setColumnCount(len(headers))
         table.setHorizontalHeaderLabels(headers)
         table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
@@ -13965,6 +14019,7 @@ Command Line :
             for row_data in self.mailscreen_rows or []:
                 if not isinstance(row_data, dict):
                     continue
+                row_data = enrich_mailscreen_sender_fields(row_data)
 
                 event_date = str(row_data.get("date", ""))[:10]
                 if event_date and (event_date < start_date or event_date > end_date):
@@ -13976,9 +14031,10 @@ Command Line :
                     "메일 처리": str(row_data.get("mail_process", "")),
                     "전송 결과": str(row_data.get("send_result", "")),
                     "제목": str(row_data.get("subject", "")),
-                    "발신자": str(row_data.get("sender", "")),
+                    "발신자 (이메일)": str(row_data.get("sender_email", "") or row_data.get("sender", "")),
+                    "발신자 명": str(row_data.get("sender_name", "")),
                     "발신자 상세": str(row_data.get("sender_detail", "")),
-                    "소속": str(row_data.get("dept", "")),
+                    "소속": str(row_data.get("sender_dept", "") or row_data.get("dept", "")),
                     "수신자": str(row_data.get("receiver", "")),
                     "수신자 상세": str(row_data.get("receiver_detail", "")),
                     "크기": str(row_data.get("size", "")),
@@ -14005,12 +14061,13 @@ Command Line :
                 table.setItem(r, 1, QTableWidgetItem(values["메일 처리"] or "None"))
                 table.setItem(r, 2, QTableWidgetItem(values["전송 결과"] or "None"))
                 table.setItem(r, 3, QTableWidgetItem(values["제목"] or "None"))
-                table.setItem(r, 4, QTableWidgetItem(values["발신자"] or "None"))
-                table.setItem(r, 5, QTableWidgetItem(values["소속"] or "None"))
-                table.setItem(r, 6, QTableWidgetItem(values["수신자"] or "None"))
-                table.setItem(r, 7, QTableWidgetItem(values["크기"] or "None"))
-                table.setItem(r, 8, QTableWidgetItem(values["적용 정책"] or "None"))
-                table.setItem(r, 9, QTableWidgetItem(values["첨부"] or ""))
+                table.setItem(r, 4, QTableWidgetItem(values["발신자 (이메일)"] or "None"))
+                table.setItem(r, 5, QTableWidgetItem(values["발신자 명"] or "None"))
+                table.setItem(r, 6, QTableWidgetItem(values["소속"] or "None"))
+                table.setItem(r, 7, QTableWidgetItem(values["수신자"] or "None"))
+                table.setItem(r, 8, QTableWidgetItem(values["크기"] or "None"))
+                table.setItem(r, 9, QTableWidgetItem(values["적용 정책"] or "None"))
+                table.setItem(r, 10, QTableWidgetItem(values["첨부"] or ""))
 
                 if "실패" in values["전송 결과"]:
                     for col in range(table.columnCount()):
@@ -14034,7 +14091,7 @@ Command Line :
 
             combo = QComboBox()
             combo.addItems([
-                "ALL", "날짜", "메일 처리", "전송 결과", "제목", "발신자", "발신자 상세",
+                "ALL", "날짜", "메일 처리", "전송 결과", "제목", "발신자 (이메일)", "발신자 명", "발신자 상세",
                 "소속", "수신자", "수신자 상세", "크기", "적용 정책", "첨부", "RawData"
             ])
             combo.setCurrentText(default_field)
