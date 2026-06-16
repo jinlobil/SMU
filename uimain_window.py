@@ -9,6 +9,10 @@ import traceback
 import logging
 import sqlite3
 import hashlib
+import base64
+import secrets
+import math
+import html
 from datetime import datetime, timezone, timedelta
 from collections import Counter, defaultdict
 
@@ -106,11 +110,13 @@ ENV_DIR = os.path.join(BASE_DIR, "env")
 ENV_PATH = os.path.join(ENV_DIR, "Sophos_env.txt")
 FIREWALL_ENV_PATH = os.path.join(ENV_DIR, "Firewall_env.txt")
 DLP_ENV_PATH = os.path.join(ENV_DIR, "DLP_env.txt")
+MAILSCREEN_ENV_PATH = os.path.join(ENV_DIR, "Mail_Screen_env.txt")
 USER_GROUP_ENV_PATH = os.path.join(ENV_DIR, "User_group_env.txt")
 REPORT_EXCEPTION_LIST_PATH = os.path.join(ENV_DIR, "Report_exception_List.txt")
 COLOR_ENV_PATH = os.path.join(ENV_DIR, "Color_env.txt")
 COLOR_THEME_DIR = os.path.join(ENV_DIR, "themes")
 DLP_DAY_DIR = os.path.join(CACHE_DIR, "dlp")
+MAILSCREEN_DAY_DIR = os.path.join(CACHE_DIR, "mailscreen")
 TIMELINE_INDEX_DIR = os.path.join(CACHE_DIR, "index")
 APP_CACHE_DB_PATH = os.path.join(TIMELINE_INDEX_DIR, "app_cache.db")
 TIMELINE_INDEX_DB_PATH = os.path.join(TIMELINE_INDEX_DIR, "timeline_index.db")
@@ -126,6 +132,7 @@ os.makedirs(LIVE_DISCOVER_DIR, exist_ok=True)
 os.makedirs(EXPORT_DIR, exist_ok=True)
 os.makedirs(REPORT_DIR, exist_ok=True)
 os.makedirs(DLP_DAY_DIR, exist_ok=True)
+os.makedirs(MAILSCREEN_DAY_DIR, exist_ok=True)
 os.makedirs(TIMELINE_INDEX_DIR, exist_ok=True)
 os.makedirs(ENV_DIR, exist_ok=True)
 os.makedirs(COLOR_THEME_DIR, exist_ok=True)
@@ -248,6 +255,7 @@ DEFAULT_COLOR_CONFIG = {
     "Threat_trend_Detection": "#0863e2",
     "Threat_trend_Detection_XDR": "#EAF3FF",
     "Threat_trend_Email": "#14b8a6",
+    "Threat_trend_Outbound_Mail": "#ec4899",
     "Threat_trend_File": "#f59e0b",
 }
 
@@ -266,6 +274,7 @@ COLOR_ENV_ALIAS = {
     "Threat_trend_Detection": ["Threat_trand_Detection"],
     "Threat_trend_Detection_XDR": ["Threat_trand_Detection_XDR"],
     "Threat_trend_Email": ["Threat_trand_Email"],
+    "Threat_trend_Outbound_Mail": ["Threat_trand_Outbound_Mail"],
     "Threat_trend_File": ["Threat_trand_File"],
 }
 
@@ -347,7 +356,8 @@ COLOR_DIALOG_GROUPS = [
     ("그래프", [
         ("Threat Trend - Detection - XDR", "Threat_trend_Detection"),
         ("Threat Trend - Email - XDR", "Threat_trend_Detection_XDR"),
-        ("Threat Trend - Email", "Threat_trend_Email"),
+        ("Threat Trend - Inbound Mail", "Threat_trend_Email"),
+        ("Threat Trend - Outbound Mail", "Threat_trend_Outbound_Mail"),
         ("Threat Trend - File", "Threat_trend_File"),
     ]),
 ]
@@ -378,7 +388,8 @@ COLOR_SETTING_TOOLTIPS = {
     "Table_Header_Text": "테이블 헤더 라벨의 글씨 색입니다.",
     "Threat_trend_Detection": "Threat Trend 그래프의 Detection - XDR 선/막대 색입니다.",
     "Threat_trend_Detection_XDR": "Threat Trend 그래프의 Email - XDR 선/막대 색입니다.",
-    "Threat_trend_Email": "Threat Trend 그래프의 Email 선/막대 색입니다.",
+    "Threat_trend_Email": "Threat Trend 그래프의 Inbound Mail 선/막대 색입니다.",
+    "Threat_trend_Outbound_Mail": "Threat Trend 그래프의 Outbound Mail 선/막대 색입니다.",
     "Threat_trend_File": "Threat Trend 그래프의 File 선/막대 색입니다.",
 }
 
@@ -923,6 +934,13 @@ APP_CACHE_SOURCES = {
     "detections": {"dir": DETECTIONS_DAY_DIR, "ext": ".json", "format": "json"},
     "emails": {"dir": EMAILS_DAY_DIR, "ext": ".json", "format": "json"},
     "dlp": {"dir": DLP_DAY_DIR, "ext": ".jsonl", "format": "jsonl"},
+    "mailscreen": {
+        "dir": MAILSCREEN_DAY_DIR,
+        "ext": ".json",
+        "format": "mailscreen",
+        "filename_template": "mailscreen_mail_{date}.json",
+        "date_regex": r"mailscreen_mail_(\d{4}-\d{2}-\d{2})\.json$",
+    },
 }
 
 APP_CACHE_SINGLE_FILES = {
@@ -1036,12 +1054,50 @@ def init_app_cache_db(conn):
     conn.execute("CREATE INDEX IF NOT EXISTS idx_dlp_events_date ON dlp_events(event_date_kst)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_dlp_events_machine ON dlp_events(machine_name)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_dlp_events_file ON dlp_events(source_file)")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS mailscreen_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_file TEXT NOT NULL,
+            row_index INTEGER NOT NULL,
+            cache_date TEXT,
+            event_time TEXT,
+            event_date_kst TEXT,
+            seq TEXT,
+            sender TEXT,
+            sender_user_id TEXT,
+            sender_email TEXT,
+            sender_name TEXT,
+            sender_detail TEXT,
+            dept TEXT,
+            receiver TEXT,
+            subject TEXT,
+            send_result TEXT,
+            mail_process TEXT,
+            policy TEXT,
+            raw_json TEXT NOT NULL,
+            UNIQUE(source_file, row_index)
+        )
+    """)
+    for column_name in ("sender_email", "sender_name"):
+        try:
+            conn.execute(f"ALTER TABLE mailscreen_events ADD COLUMN {column_name} TEXT")
+        except sqlite3.OperationalError:
+            pass
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_mailscreen_events_date ON mailscreen_events(event_date_kst)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_mailscreen_events_sender_user_id ON mailscreen_events(sender_user_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_mailscreen_events_sender_email ON mailscreen_events(sender_email)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_mailscreen_events_sender_name ON mailscreen_events(sender_name)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_mailscreen_events_sender ON mailscreen_events(sender)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_mailscreen_events_file ON mailscreen_events(source_file)")
 
 
 def load_cache_file_rows(path, file_format):
     if file_format == "jsonl":
         return load_jsonl(path)
     data = load_json(path)
+    if file_format == "mailscreen" and isinstance(data, dict):
+        items = data.get("items", [])
+        return items if isinstance(items, list) else []
     return data if isinstance(data, list) else []
 
 
@@ -1145,6 +1201,146 @@ def dlp_index_values(row, source, path, idx, cache_date, raw_json):
     )
 
 
+MAILSCREEN_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
+MAILSCREEN_BLANK_VALUES = {"", "none", "null", "nan", "미분류", "&nbsp;"}
+
+
+def mailscreen_identity_text(value):
+    text = html.unescape(str(value or "")).strip()
+    text = re.sub(r"\s+", " ", text)
+    return "" if text.lower() in MAILSCREEN_BLANK_VALUES else text
+
+
+def mailscreen_extract_email(*values):
+    for value in values:
+        text = mailscreen_identity_text(value)
+        if not text:
+            continue
+        m = MAILSCREEN_EMAIL_RE.search(text)
+        if m:
+            return m.group(0).strip()
+    return ""
+
+
+def resolve_mailscreen_sender_identity(row):
+    if not isinstance(row, dict):
+        return {
+            "email": "",
+            "user_id": "None",
+            "user_name": "None",
+            "dept_name": "미분류",
+            "dept_code": "",
+        }
+
+    sender = mailscreen_identity_text(row.get("sender"))
+    sender_detail = mailscreen_identity_text(row.get("sender_detail"))
+    dept = mailscreen_identity_text(row.get("dept"))
+    email_addr_text = mailscreen_extract_email(sender, sender_detail)
+    local_user_id = email_addr_text.split("@", 1)[0].strip() if email_addr_text else ""
+    display_sender = "" if "@" in sender else sender
+
+    identity = {}
+    if email_addr_text:
+        identity = resolve_identity_by_mailbox(email_addr_text)
+
+    directory_info = get_directory_user_info(email_addr_text, local_user_id, display_sender)
+    if not email_addr_text and directory_info:
+        email_addr_text = str(directory_info.get("email", "") or "").strip()
+        local_user_id = str(directory_info.get("user_id", "") or "").strip()
+
+    user_id = str(identity.get("user_id", "") or "").strip()
+    if user_id in {"", "None"}:
+        user_id = str(directory_info.get("user_id", "") or "").strip() or local_user_id
+    if not user_id:
+        user_id = "None"
+
+    user_name = str(identity.get("user_name", "") or "").strip()
+    if user_name in {"", "None"}:
+        user_name = str(directory_info.get("name", "") or "").strip() or display_sender
+    if not user_name and sender and "@" in sender:
+        user_name = local_user_id
+    if not user_name:
+        user_name = "None"
+
+    dept_name = dept
+    dept_code = ""
+    if not dept_name:
+        dept_name = str(identity.get("dept_name", "") or "").strip()
+        dept_code = str(identity.get("dept_code", "") or "").strip()
+    if (not dept_name or dept_name == "미분류") and directory_info:
+        dept_name = str(directory_info.get("dept_name", "") or "").strip() or dept_name
+        dept_code = str(directory_info.get("dept_code", "") or "").strip() or dept_code
+    if (not dept_name or dept_name == "미분류") and (display_sender or local_user_id):
+        org_dept, org_code = get_org_info_by_user(display_sender or user_name, local_user_id)
+        dept_name = org_dept or dept_name
+        dept_code = org_code or dept_code
+    if not dept_name:
+        dept_name = "미분류"
+
+    return {
+        "email": email_addr_text,
+        "user_id": user_id,
+        "user_name": user_name,
+        "dept_name": dept_name,
+        "dept_code": dept_code,
+    }
+
+
+def enrich_mailscreen_sender_fields(row):
+    if not isinstance(row, dict):
+        return row
+
+    enriched = dict(row)
+    identity = resolve_mailscreen_sender_identity(enriched)
+    sender_email = mailscreen_identity_text(identity.get("email"))
+    sender_name = mailscreen_identity_text(identity.get("user_name"))
+    sender_dept = mailscreen_identity_text(identity.get("dept_name"))
+
+    if not sender_email:
+        sender_email = mailscreen_extract_email(enriched.get("sender"), enriched.get("sender_detail"))
+    if not sender_name or sender_name == "None":
+        raw_sender = mailscreen_identity_text(enriched.get("sender"))
+        sender_name = "" if "@" in raw_sender else raw_sender
+    if not sender_dept or sender_dept == "None":
+        sender_dept = mailscreen_identity_text(enriched.get("dept"))
+
+    enriched["sender_email"] = sender_email or "None"
+    enriched["sender_name"] = sender_name or "None"
+    enriched["sender_user_id"] = identity.get("user_id", "None") or "None"
+    enriched["sender_dept"] = sender_dept or "None"
+    enriched["sender"] = enriched["sender_email"] if enriched["sender_email"] != "None" else mailscreen_identity_text(enriched.get("sender")) or "None"
+    enriched["dept"] = enriched["sender_dept"]
+    return enriched
+
+
+def mailscreen_index_values(row, source, path, idx, cache_date, raw_json):
+    row = enrich_mailscreen_sender_fields(row)
+    event_time = str(row.get("date", "") or "") if isinstance(row, dict) else ""
+    event_dt = timeline_parse_dt(event_time)
+    event_date = dt_to_kst_date_text(event_dt, cache_date)
+    identity = resolve_mailscreen_sender_identity(row)
+    return (
+        path,
+        idx,
+        cache_date,
+        event_time,
+        event_date,
+        str(row.get("seq", "") or "") if isinstance(row, dict) else "",
+        mailscreen_identity_text(row.get("sender")) if isinstance(row, dict) else "",
+        identity.get("user_id", "None"),
+        mailscreen_identity_text(row.get("sender_email")) if isinstance(row, dict) else "",
+        mailscreen_identity_text(row.get("sender_name")) if isinstance(row, dict) else "",
+        mailscreen_identity_text(row.get("sender_detail")) if isinstance(row, dict) else "",
+        identity.get("dept_name", "미분류"),
+        mailscreen_identity_text(row.get("receiver")) if isinstance(row, dict) else "",
+        str(row.get("subject", "") or "") if isinstance(row, dict) else "",
+        str(row.get("send_result", "") or "") if isinstance(row, dict) else "",
+        str(row.get("mail_process", "") or "") if isinstance(row, dict) else "",
+        str(row.get("policy", "") or "") if isinstance(row, dict) else "",
+        raw_json,
+    )
+
+
 APP_CACHE_INDEX_INSERTS = {
     "detections": (
         "DELETE FROM detection_events WHERE source_file = ?",
@@ -1173,6 +1369,15 @@ APP_CACHE_INDEX_INSERTS = {
         """,
         dlp_index_values,
     ),
+    "mailscreen": (
+        "DELETE FROM mailscreen_events WHERE source_file = ?",
+        """
+        INSERT OR REPLACE INTO mailscreen_events
+            (source_file, row_index, cache_date, event_time, event_date_kst, seq, sender, sender_user_id, sender_email, sender_name, sender_detail, dept, receiver, subject, send_result, mail_process, policy, raw_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        mailscreen_index_values,
+    ),
 }
 
 
@@ -1192,6 +1397,8 @@ def sync_app_cache_file(conn, source, path, cache_date=None, file_format="json")
     for idx, row in enumerate(rows):
         if not isinstance(row, (dict, list)):
             continue
+        if source == "mailscreen" and isinstance(row, dict):
+            row = enrich_mailscreen_sender_fields(row)
         raw_json = json.dumps(row, ensure_ascii=False)
         payload.append((source, cache_date, path, idx, raw_json))
         if index_spec and isinstance(row, dict):
@@ -1249,11 +1456,17 @@ def app_cache_index_current(conn, source, path):
         "detections": "detection_events",
         "emails": "email_events",
         "dlp": "dlp_events",
+        "mailscreen": "mailscreen_events",
     }
     table = table_map.get(source)
     if not table:
         return True
     try:
+        if source == "mailscreen":
+            return conn.execute(
+                "SELECT 1 FROM mailscreen_events WHERE source_file = ? AND sender_email IS NOT NULL LIMIT 1",
+                (path,),
+            ).fetchone() is not None
         return conn.execute(f"SELECT 1 FROM {table} WHERE source_file = ? LIMIT 1", (path,)).fetchone() is not None
     except sqlite3.Error:
         return False
@@ -1264,7 +1477,8 @@ def sync_app_cache_range(source, start_date, end_date, progress_cb=None):
     stats = {"indexed": 0, "skipped": 0, "rows": 0, "files": 0, "source": source}
     with app_cache_connect() as conn:
         for cache_date in iter_date_strings(start_date, end_date):
-            path = os.path.join(cfg["dir"], f"{cache_date}{cfg['ext']}")
+            filename = cfg.get("filename_template", "{date}{ext}").format(date=cache_date, ext=cfg["ext"])
+            path = os.path.join(cfg["dir"], filename)
             if not os.path.exists(path):
                 continue
             stats["files"] += 1
@@ -1285,6 +1499,10 @@ def sync_app_cache_all(progress_cb=None):
         for source, cfg in APP_CACHE_SOURCES.items():
             for path in iter_json_files(cfg["dir"], cfg["ext"]):
                 cache_date = os.path.splitext(os.path.basename(path))[0]
+                date_regex = cfg.get("date_regex")
+                if date_regex:
+                    m = re.search(date_regex, os.path.basename(path))
+                    cache_date = m.group(1) if m else cache_date
                 totals["data_files"] += 1
                 if app_cache_index_current(conn, source, path):
                     totals["data_skipped"] += 1
@@ -1316,6 +1534,7 @@ def sync_app_cache_all(progress_cb=None):
                 conn.execute("DELETE FROM detection_events WHERE source_file = ?", (path,))
                 conn.execute("DELETE FROM email_events WHERE source_file = ?", (path,))
                 conn.execute("DELETE FROM dlp_events WHERE source_file = ?", (path,))
+                conn.execute("DELETE FROM mailscreen_events WHERE source_file = ?", (path,))
                 conn.execute("DELETE FROM app_cache_files WHERE path = ?", (path,))
                 removed += 1
         totals["data_removed"] = removed
@@ -1471,6 +1690,38 @@ def load_dlp_by_range_json(start_date: str, end_date: str):
         current += timedelta(days=1)
 
     log.info(f"Loaded DLP from {start_date} ~ {end_date} : {len(results)}")
+    return results
+
+
+def load_mailscreen_by_range(start_date: str, end_date: str):
+    try:
+        sync_app_cache_range("mailscreen", start_date, end_date)
+        rows = load_indexed_raw_rows("mailscreen_events", start_date, end_date)
+        log.info(f"Loaded MailScreen from SQLite index {start_date} ~ {end_date} : {len(rows)}")
+        return rows
+    except Exception as e:
+        log.warning(f"SQLite MailScreen index load failed, fallback to JSON: {e}")
+
+    results = []
+
+    current = datetime.strptime(start_date, "%Y-%m-%d")
+    end = datetime.strptime(end_date, "%Y-%m-%d")
+
+    while current <= end:
+        date_str = current.strftime("%Y-%m-%d")
+        file_path = os.path.join(MAILSCREEN_DAY_DIR, f"mailscreen_mail_{date_str}.json")
+        if os.path.exists(file_path):
+            try:
+                payload = load_json(file_path)
+                if isinstance(payload, dict):
+                    items = payload.get("items", [])
+                    if isinstance(items, list):
+                        results.extend([enrich_mailscreen_sender_fields(item) for item in items if isinstance(item, dict)])
+            except Exception as e:
+                log.warning(f"Failed to load {file_path}: {e}")
+        current += timedelta(days=1)
+
+    log.info(f"Loaded MailScreen from {start_date} ~ {end_date} : {len(results)}")
     return results
 
 
@@ -2390,7 +2641,8 @@ def get_directory_user_dept(user):
         return "미분류", ""
 
     source = user.get("source", {}) if isinstance(user.get("source"), dict) else {}
-    if str(source.get("type", "") or "").strip() != "activeDirectory":
+    source_type = str(source.get("type", "") or "").strip()
+    if source_type and source_type != "activeDirectory":
         return "미분류", ""
 
     groups = user.get("groups", {}) if isinstance(user.get("groups"), dict) else {}
@@ -2417,12 +2669,11 @@ def build_directory_user_index():
             continue
 
         source = user.get("source", {}) if isinstance(user.get("source"), dict) else {}
-        if str(source.get("type", "") or "").strip() != "activeDirectory":
+        source_type = str(source.get("type", "") or "").strip()
+        if source_type and source_type != "activeDirectory":
             continue
 
         dept_name, dept_code = get_directory_user_dept(user)
-        if not dept_code:
-            continue
 
         entry = {
             "name": str(user.get("name", "") or "").strip(),
@@ -2433,6 +2684,8 @@ def build_directory_user_index():
         }
 
         keys = []
+        if entry["name"]:
+            keys.append(entry["name"])
         if entry["user_id"]:
             keys.append(entry["user_id"])
         if entry["email"]:
@@ -2959,6 +3212,19 @@ def make_timeline_event(time_text, source, user, user_id, dept, asset, event, di
     }
 
 
+TIMELINE_SOURCE_DISPLAY_NAMES = {
+    "Detection": "Detection - XDR",
+    "XDR": "Email - XDR",
+    "Email": "Inbound Mail",
+    "Outbound Mail": "Outbound Mail",
+    "File": "File",
+}
+
+
+def timeline_source_display_name(source):
+    return TIMELINE_SOURCE_DISPLAY_NAMES.get(str(source or ""), str(source or "None"))
+
+
 def timeline_event_matches(event, ctx):
     for value in event.get("match_values", []):
         if timeline_value_matches_context(value, ctx):
@@ -3053,6 +3319,63 @@ def normalize_timeline_email(m, ctx):
         identity.get("dept_name", "미분류"), matched_addr, reason, direction, from_addr, subject, cip, m,
         participants + [identity.get("user_name"), identity.get("user_id")]
     )]
+
+
+def normalize_timeline_mailscreen(row, ctx):
+    if not isinstance(row, dict):
+        return None
+    row = enrich_mailscreen_sender_fields(row)
+
+    event_time = str(row.get("date", "") or "").strip()
+    if not event_time:
+        return None
+
+    identity = resolve_mailscreen_sender_identity(row)
+    sender = mailscreen_identity_text(row.get("sender"))
+    sender_detail = mailscreen_identity_text(row.get("sender_detail"))
+    receiver = mailscreen_identity_text(row.get("receiver"))
+    receiver_detail = mailscreen_identity_text(row.get("receiver_detail"))
+    subject = str(row.get("subject", "") or "None")
+    mail_process = str(row.get("mail_process", "") or "None")
+    send_result = str(row.get("send_result", "") or "None")
+    send_detail = str(row.get("send_detail", "") or "None")
+    policy = str(row.get("policy", "") or "None")
+    source_email = mailscreen_identity_text(row.get("sender_email")) or identity.get("email") or mailscreen_extract_email(sender, sender_detail)
+    sender_name = mailscreen_identity_text(row.get("sender_name")) or identity.get("user_name", "None")
+    sender_dept = mailscreen_identity_text(row.get("sender_dept")) or identity.get("dept_name", "미분류")
+    asset = source_email or sender_detail or sender or identity.get("user_id", "None")
+    event_name = f"{mail_process}/{send_result}" if mail_process != "None" and send_result != "None" else (send_result or mail_process)
+    direction = f"{asset} → {receiver_detail or receiver or 'None'}"
+    peer = receiver_detail or receiver or "None"
+    match_values = [
+        sender,
+        sender_detail,
+        source_email,
+        sender_name,
+        identity.get("user_id"),
+        sender_dept,
+        receiver,
+        receiver_detail,
+        subject,
+        policy,
+    ]
+
+    event = make_timeline_event(
+        event_time,
+        "Outbound Mail",
+        sender_name,
+        identity.get("user_id", "None"),
+        sender_dept,
+        asset,
+        event_name,
+        direction,
+        peer,
+        subject,
+        policy if policy != "None" else send_detail,
+        row,
+        match_values,
+    )
+    return event if ctx is None or timeline_event_matches(event, ctx) else None
 
 
 def normalize_timeline_dlp(row, ctx):
@@ -3287,6 +3610,8 @@ def load_timeline_raw_event(cache_file, row_index):
 
         with open(cache_file, "r", encoding="utf-8") as f:
             rows = json.load(f)
+        if isinstance(rows, dict) and isinstance(rows.get("items"), list):
+            rows = rows.get("items", [])
         if isinstance(rows, list) and 0 <= row_index < len(rows):
             return rows[row_index]
     except Exception as e:
@@ -3303,7 +3628,7 @@ def query_timeline_index(keyword, sources=None):
     if not tokens:
         return [], {"message": "검색 token 없음", "events": 0, "groups": 0, "files": 0, "index": True}
 
-    sources = sorted(set(sources or ["Detection", "XDR", "Email", "File"]))
+    sources = sorted(set(sources or ["Detection", "XDR", "Email", "Outbound Mail", "File"]))
     token_placeholders = ",".join(["?"] * len(tokens))
     source_clause = ""
     params = list(tokens)
@@ -3377,6 +3702,23 @@ def index_timeline_cache_file(conn, cache_file, logical_source):
                 tokens_count += insert_timeline_index_event(conn, event, cache_file, idx)
                 events_count += 1
 
+    elif logical_source == "mailscreen":
+        try:
+            with open(cache_file, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+            rows = payload.get("items", []) if isinstance(payload, dict) else []
+        except Exception as e:
+            log.warning(f"Timeline index failed to load {cache_file}: {e}")
+            rows = []
+        if not isinstance(rows, list):
+            rows = []
+        rows_count = len(rows)
+        for idx, row in enumerate(rows):
+            event = normalize_timeline_mailscreen(row, None)
+            if event:
+                tokens_count += insert_timeline_index_event(conn, event, cache_file, idx)
+                events_count += 1
+
     elif logical_source == "dlp":
         rows = load_jsonl(cache_file)
         rows_count = len(rows)
@@ -3407,6 +3749,7 @@ def rebuild_timeline_index(progress_cb=None, force=False):
     file_specs = []
     file_specs += [(path, "detections") for path in iter_json_files(DETECTIONS_DAY_DIR, ".json")]
     file_specs += [(path, "emails") for path in iter_json_files(EMAILS_DAY_DIR, ".json")]
+    file_specs += [(path, "mailscreen") for path in iter_json_files(MAILSCREEN_DAY_DIR, ".json")]
     file_specs += [(path, "dlp") for path in iter_json_files(DLP_DAY_DIR, ".jsonl")]
     current_paths = {path for path, _ in file_specs}
 
@@ -3500,7 +3843,7 @@ class TimelineSearchWorker(QThread):
     def __init__(self, keyword, sources=None):
         super().__init__()
         self.keyword = str(keyword or "").strip()
-        self.sources = set(sources or ["Detection", "XDR", "Email", "File"])
+        self.sources = set(sources or ["Detection", "XDR", "Email", "Outbound Mail", "File"])
 
     def run(self):
         try:
@@ -3520,7 +3863,7 @@ class TimelineSearchWorker(QThread):
             if "Detection" in self.sources or "XDR" in self.sources:
                 paths = iter_json_files(DETECTIONS_DAY_DIR, ".json")
                 for idx, path in enumerate(paths, start=1):
-                    self.progress.emit(f"Detection/XDR 캐시 검색중 {idx}/{len(paths)}")
+                    self.progress.emit(f"Detection - XDR / Email - XDR 캐시 검색중 {idx}/{len(paths)}")
                     files_scanned += 1
                     try:
                         with open(path, "r", encoding="utf-8") as f:
@@ -3543,7 +3886,7 @@ class TimelineSearchWorker(QThread):
             if "Email" in self.sources:
                 paths = iter_json_files(EMAILS_DAY_DIR, ".json")
                 for idx, path in enumerate(paths, start=1):
-                    self.progress.emit(f"Email 캐시 검색중 {idx}/{len(paths)}")
+                    self.progress.emit(f"Inbound Mail 캐시 검색중 {idx}/{len(paths)}")
                     files_scanned += 1
                     try:
                         with open(path, "r", encoding="utf-8") as f:
@@ -3555,6 +3898,25 @@ class TimelineSearchWorker(QThread):
                         continue
                     for row in rows:
                         events.extend(normalize_timeline_email(row, ctx))
+
+            if "Outbound Mail" in self.sources:
+                paths = iter_json_files(MAILSCREEN_DAY_DIR, ".json")
+                for idx, path in enumerate(paths, start=1):
+                    self.progress.emit(f"Outbound Mail 캐시 검색중 {idx}/{len(paths)}")
+                    files_scanned += 1
+                    try:
+                        with open(path, "r", encoding="utf-8") as f:
+                            payload = json.load(f)
+                        rows = payload.get("items", []) if isinstance(payload, dict) else []
+                    except Exception as e:
+                        log.warning(f"Timeline failed to load {path}: {e}")
+                        continue
+                    if not isinstance(rows, list):
+                        continue
+                    for row in rows:
+                        event = normalize_timeline_mailscreen(row, ctx)
+                        if event:
+                            events.append(event)
 
             if "File" in self.sources:
                 paths = iter_json_files(DLP_DAY_DIR, ".jsonl")
@@ -3609,7 +3971,8 @@ class TimelineEventCard(QFrame):
         layout.setContentsMargins(12, 10, 12, 10)
         layout.setSpacing(4)
 
-        title = QLabel(f"{group.get('bucket', 'None')}  [{group.get('source', 'None')}]  {group.get('event', 'None')}  {group.get('count', 0)}건")
+        source_label = timeline_source_display_name(group.get("source", "None"))
+        title = QLabel(f"{group.get('bucket', 'None')}  [{source_label}]  {group.get('event', 'None')}  {group.get('count', 0)}건")
         title.setStyleSheet(f"color:{color}; font-weight:900; font-size:12px;")
         title.setWordWrap(True)
         user = QLabel(f"User: {group.get('user', 'None')} / {group.get('user_id', 'None')} / {group.get('dept', '미분류')}")
@@ -3989,6 +4352,399 @@ def load_dlp_env(path):
     return values
 
 requests.packages.urllib3.disable_warnings(category=InsecureRequestWarning)
+
+
+
+# ======================================================
+# API clients / MailScreen
+# - Uses the existing UI worker/config flow; daily cache is JSON under cache/mailscreen.
+# ======================================================
+MAILSCREEN_FIELD_NAMES = [
+    "seq", "date", "mail_process", "send_result", "send_detail", "attach",
+    "subject", "sender", "sender_detail", "dept", "receiver", "receiver_detail",
+    "size", "policy", "process_date", "approver",
+]
+
+
+def mailscreen_env_bool(value, default=False):
+    value = str(value if value is not None else "").strip().lower()
+    if not value:
+        return default
+    return value in {"1", "true", "yes", "y", "on"}
+
+
+def mailscreen_key_part_to_int(value):
+    cleaned = str(value or "").strip()
+    if not cleaned:
+        raise RuntimeError("MailScreen RSA key part is empty")
+    if re.fullmatch(r"[0-9a-fA-F]+", cleaned):
+        return int(cleaned, 16)
+    if re.fullmatch(r"\d+", cleaned):
+        return int(cleaned, 10)
+    try:
+        return int.from_bytes(base64.b64decode(cleaned), "big")
+    except Exception as e:
+        raise RuntimeError("Unsupported MailScreen RSA key format") from e
+
+
+def mailscreen_rsa_encrypt_hex(plaintext, modulus, exponent):
+    n = mailscreen_key_part_to_int(modulus)
+    e = mailscreen_key_part_to_int(exponent)
+    key_len = (n.bit_length() + 7) // 8
+    data = str(plaintext or "").encode("utf-8")
+    if len(data) > key_len - 11:
+        raise RuntimeError("MailScreen login value is too long for RSA key")
+
+    padding_len = key_len - len(data) - 3
+    padding = bytearray()
+    while len(padding) < padding_len:
+        padding.extend(b for b in secrets.token_bytes(padding_len - len(padding)) if b != 0)
+
+    encoded = b"\x00\x02" + bytes(padding[:padding_len]) + b"\x00" + data
+    encrypted = pow(int.from_bytes(encoded, "big"), e, n).to_bytes(key_len, "big")
+    return encrypted.hex()
+
+
+def mailscreen_clean_text(value):
+    value = html.unescape(str(value or ""))
+    value = re.sub(r"<br\s*/?>", "\n", value, flags=re.IGNORECASE)
+    text = BeautifulSoup(value, "html.parser").get_text(" ", strip=True)
+    return re.sub(r"\s+", " ", html.unescape(text)).strip()
+
+
+def mailscreen_tooltip_text(cell):
+    candidates = []
+    for node in [cell, *cell.find_all(True)]:
+        value = node.get("onmouseover")
+        if value:
+            candidates.append(str(value))
+    for value in candidates:
+        match = re.search(r"tooltip\s*\([^,]+,\s*(['\"])(.*?)\1", value, re.IGNORECASE | re.DOTALL)
+        if match:
+            return mailscreen_clean_text(match.group(2))
+    return ""
+
+
+def mailscreen_cell_value(cell):
+    visible = mailscreen_clean_text(cell.get_text(" ", strip=True))
+    tooltip = mailscreen_tooltip_text(cell)
+    return visible, tooltip
+
+
+def mailscreen_parse_total_count(html_text):
+    match = re.search(r"Total\s*:?\s*([\d,]+)\s*개", str(html_text or ""), re.IGNORECASE)
+    if not match:
+        return None
+    return int(match.group(1).replace(",", ""))
+
+
+def mailscreen_response_preview(html_text, limit=500):
+    text = mailscreen_clean_text(str(html_text or ""))
+    return text[:limit]
+
+
+def mailscreen_has_main_list(html_text):
+    soup = BeautifulSoup(str(html_text or ""), "html.parser")
+    return soup.select_one("#main_list") is not None
+
+
+def mailscreen_save_debug_html(html_text, date_str, page, reason):
+    safe_reason = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(reason or "debug"))[:40]
+    path = os.path.join(
+        LOG_DIR,
+        f"mailscreen_{date_str}_page{page}_{safe_reason}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
+    )
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(str(html_text or ""))
+    return path
+
+
+def mailscreen_extract_login_tokens(html_text):
+    soup = BeautifulSoup(html_text, "html.parser")
+
+    def find_value(name):
+        field = soup.find(attrs={"name": name}) or soup.find(id=name)
+        if field:
+            value = field.get("value") or field.get("content")
+            if value:
+                return str(value).strip()
+        patterns = [
+            rf"{re.escape(name)}\s*[:=]\s*['\"]([^'\"]+)['\"]",
+            rf"var\s+{re.escape(name)}\s*=\s*['\"]([^'\"]+)['\"]",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, html_text, re.IGNORECASE)
+            if match:
+                return match.group(1).strip()
+        return ""
+
+    tokens = {
+        "ct": find_value("ct"),
+        "rsa_key1": find_value("rsa_key1"),
+        "rsa_key2": find_value("rsa_key2"),
+    }
+    missing = [k for k, v in tokens.items() if not v]
+    if missing:
+        raise RuntimeError("MailScreen login token missing: " + ", ".join(missing))
+    return tokens
+
+
+def mailscreen_parse_rows(html_text):
+    soup = BeautifulSoup(html_text, "html.parser")
+    tables = soup.select("#main_list")
+    if not tables:
+        raise RuntimeError("MailScreen #main_list table not found")
+
+    rows = []
+    for table in tables:
+        for tr in table.select("tr")[1:]:
+            cells = tr.find_all("td")
+            if len(cells) < 13:
+                continue
+            checkbox = cells[0].find("input", attrs={"name": "chk[]"}) or cells[0].find("input", attrs={"type": "checkbox"})
+            seq = mailscreen_clean_text(checkbox.get("value", "")) if checkbox else ""
+            if not seq:
+                continue
+
+            values = [mailscreen_cell_value(cell) for cell in cells]
+            row = {name: "" for name in MAILSCREEN_FIELD_NAMES}
+            row["seq"] = seq
+            row["date"] = values[1][1] or values[1][0]
+            row["mail_process"] = values[2][1] or values[2][0]
+            row["send_result"] = values[3][0]
+            row["send_detail"] = values[3][1]
+            row["attach"] = values[4][1] or values[4][0]
+            row["subject"] = values[5][1] or values[5][0]
+            row["sender"] = values[6][0]
+            row["sender_detail"] = values[6][1]
+            row["dept"] = values[7][1] or values[7][0]
+            row["receiver"] = values[8][0]
+            row["receiver_detail"] = values[8][1]
+            row["size"] = values[9][1] or values[9][0]
+            row["policy"] = values[10][1] or values[10][0]
+            row["process_date"] = values[11][1] or values[11][0]
+            row["approver"] = values[12][1] or values[12][0]
+            rows.append(row)
+    return rows
+
+
+class MailScreenClient:
+    def __init__(self, progress_cb=None):
+        env = load_dlp_env(MAILSCREEN_ENV_PATH)
+        self.progress_cb = progress_cb
+        self.base_url = str(env.get("MS_BASE_URL", "")).strip().rstrip("/")
+        self.username = str(env.get("MS_USERNAME", "")).strip()
+        self.password = str(env.get("MS_PASSWORD", "")).strip()
+        self.verify_ssl = mailscreen_env_bool(env.get("MS_VERIFY_SSL", "false"), default=False)
+        self.timeout = int(str(env.get("MS_TIMEOUT", "30")).strip() or "30")
+        self.row_num = int(str(env.get("MS_ROW_NUM", "100")).strip() or "100")
+        self.sleep_seconds = float(str(env.get("MS_SLEEP", "0.3")).strip() or "0.3")
+
+        if not self.base_url:
+            raise RuntimeError("MS_BASE_URL missing")
+        if not self.username:
+            raise RuntimeError("MS_USERNAME missing")
+        if not self.password:
+            raise RuntimeError("MS_PASSWORD missing")
+
+        if not self.base_url.startswith(("http://", "https://")):
+            self.base_url = "https://" + self.base_url
+
+        self.session = requests.Session()
+        self.session.headers.update({
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
+            )
+        })
+
+    def _notify_progress(self, message):
+        if callable(self.progress_cb):
+            try:
+                self.progress_cb(str(message))
+            except Exception:
+                pass
+
+    def _headers(self, referer_path="/", content_type="application/x-www-form-urlencoded"):
+        headers = {
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
+            "Referer": f"{self.base_url}{referer_path}",
+            "Origin": self.base_url,
+        }
+        if content_type:
+            headers["Content-Type"] = content_type
+        return headers
+
+    def _response_text(self, response):
+        if not response.encoding:
+            response.encoding = response.apparent_encoding or "utf-8"
+        return response.text
+
+    def load_index_page(self):
+        r = self.session.get(
+            f"{self.base_url}/index.php",
+            headers=self._headers("/member/login_ok.php", content_type=""),
+            timeout=self.timeout,
+            verify=self.verify_ssl,
+        )
+        r.raise_for_status()
+        log.info(
+            "MailScreen index.php status=%s final_url=%s body_len=%s",
+            r.status_code,
+            getattr(r, "url", ""),
+            len(self._response_text(r)),
+        )
+
+    def load_top_page(self):
+        r = self.session.get(
+            f"{self.base_url}/top.php",
+            headers=self._headers("/index.php", content_type=""),
+            timeout=self.timeout,
+            verify=self.verify_ssl,
+        )
+        r.raise_for_status()
+        log.info(
+            "MailScreen top.php status=%s final_url=%s body_len=%s",
+            r.status_code,
+            getattr(r, "url", ""),
+            len(self._response_text(r)),
+        )
+
+    def warmup_mail_page(self):
+        r = self.session.get(
+            f"{self.base_url}/mail/mail.php",
+            headers=self._headers("/top.php", content_type=""),
+            timeout=self.timeout,
+            verify=self.verify_ssl,
+        )
+        r.raise_for_status()
+        log.info(
+            "MailScreen warmup mail.php status=%s final_url=%s body_len=%s",
+            r.status_code,
+            getattr(r, "url", ""),
+            len(self._response_text(r)),
+        )
+
+    def login(self):
+        login_url = f"{self.base_url}/member/login.php"
+        login_ok_url = f"{self.base_url}/member/login_ok.php"
+        r = self.session.get(login_url, headers=self._headers("/member/logout.php", content_type=""), timeout=self.timeout, verify=self.verify_ssl)
+        r.raise_for_status()
+        tokens = mailscreen_extract_login_tokens(self._response_text(r))
+
+        payload = {
+            "targeturl": "",
+            "ct": tokens["ct"],
+            "lang": "ko",
+            "saveemail": "on",
+            "login_email": mailscreen_rsa_encrypt_hex(self.username, tokens["rsa_key1"], tokens["rsa_key2"]),
+            "login_pwd": mailscreen_rsa_encrypt_hex(self.password, tokens["rsa_key1"], tokens["rsa_key2"]),
+        }
+        r = self.session.post(
+            login_ok_url,
+            data=payload,
+            headers=self._headers("/member/login.php"),
+            timeout=self.timeout,
+            verify=self.verify_ssl,
+        )
+        r.raise_for_status()
+        if "SID" not in self.session.cookies:
+            raise RuntimeError("MailScreen login failed: SID cookie not issued")
+        log.info("MailScreen login success: SID cookie issued")
+        self._notify_progress("MailScreen 로그인 성공")
+
+    def build_mail_payload(self, date_str, page):
+        return {
+            "who": "", "range": "", "sortby": "", "sortdir": "", "f_type": "",
+            "app_approval_reason": "", "seqs": "", "app_etc_comment": "",
+            "ref_approval_reason": "", "ref_etc_comment": "", "search_term": "free",
+            "s_date": date_str, "s_hour": "0", "s_min": "0",
+            "e_date": date_str, "e_hour": "23", "e_min": "59", "post_del": "0",
+            "row_num_slt": str(self.row_num), "row_num": str(self.row_num), "gopage": str(page),
+            "o_type": "", "prv": "", "att_act": "", "permit_id": "", "user_domain": "",
+            "filter": "", "sender_ip": "", "user_name": "", "sender_email": "",
+            "dept": "", "dept_code": "", "receiver_email": "", "header_subject": "",
+            "virus_name": "", "oattach": "", "s_state": "",
+        }
+
+    def fetch_mail_page(self, date_str, page):
+        self._notify_progress(f"MailScreen 조회중 {date_str} page={page}")
+        r = self.session.post(
+            f"{self.base_url}/mail/mail.php",
+            data=self.build_mail_payload(date_str, page),
+            headers=self._headers("/mail/mail.php"),
+            timeout=self.timeout,
+            verify=self.verify_ssl,
+        )
+        r.raise_for_status()
+        text = self._response_text(r)
+        log.info(
+            "MailScreen mail.php status=%s final_url=%s content_type=%s body_len=%s page=%s",
+            r.status_code,
+            getattr(r, "url", ""),
+            r.headers.get("Content-Type", ""),
+            len(text),
+            page,
+        )
+        if not mailscreen_has_main_list(text):
+            debug_path = mailscreen_save_debug_html(text, date_str, page, "main_list_missing")
+            preview = mailscreen_response_preview(text)
+            log.error("MailScreen #main_list missing page=%s debug_html=%s preview=%s", page, debug_path, preview)
+            raise RuntimeError(
+                "MailScreen #main_list table not found. "
+                f"Saved response HTML for diagnosis: {debug_path}. Preview: {preview}"
+            )
+        return text
+
+    def collect_mail_day(self, date_str):
+        first_html = self.fetch_mail_page(date_str, 1)
+        rows = mailscreen_parse_rows(first_html)
+        total = mailscreen_parse_total_count(first_html)
+        page_count = math.ceil(total / self.row_num) if total is not None else None
+        log.info(f"MailScreen page=1 rows={len(rows)} total={total}")
+        self._notify_progress(f"MailScreen 1페이지 수집 {len(rows)}건")
+
+        page = 2
+        while page_count is None or page <= page_count:
+            time.sleep(self.sleep_seconds)
+            page_rows = mailscreen_parse_rows(self.fetch_mail_page(date_str, page))
+            log.info(f"MailScreen page={page} rows={len(page_rows)}")
+            self._notify_progress(f"MailScreen {page}페이지 수집 {len(page_rows)}건")
+            if not page_rows:
+                break
+            rows.extend(page_rows)
+            page += 1
+
+        dedup = {}
+        for row in rows:
+            seq = str(row.get("seq", "")).strip()
+            if seq and seq not in dedup:
+                dedup[seq] = row
+        return list(dedup.values())
+
+    def refresh_mail_day(self, date_str):
+        log.info(f"Refreshing MailScreen mail history ({date_str})")
+        self.login()
+        self.load_index_page()
+        self.load_top_page()
+        self.warmup_mail_page()
+        items = self.collect_mail_day(date_str)
+        payload = {
+            "source": "mailscreen",
+            "type": "mail_history",
+            "date": date_str,
+            "collected_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "count": len(items),
+            "items": items,
+        }
+        file_path = os.path.join(MAILSCREEN_DAY_DIR, f"mailscreen_mail_{date_str}.json")
+        save_json(file_path, payload)
+        log.info(f"MailScreen saved: {len(items)} ({file_path})")
+        self._notify_progress(f"MailScreen 저장 완료 {len(items)}건")
+        return {"date": date_str, "count": len(items), "path": file_path}
 
 
 # ======================================================
@@ -5032,6 +5788,15 @@ class RefreshWorker(QThread):
 
                 api.refresh_dlp_day(self.date_str)
 
+            elif self.job_name == "MailScreen":
+                log.info("STEP 1: MailScreenClient init")
+                api = MailScreenClient(progress_cb=lambda msg: self.progress.emit("MailScreen", msg))
+
+                if not self.date_str:
+                    raise RuntimeError("MailScreen date_str missing")
+
+                api.refresh_mail_day(self.date_str)
+
             else:
                 log.info("STEP 1: SophosClient init")
                 api = SophosClient()
@@ -5970,13 +6735,16 @@ class MainWindow(QMainWindow):
         self.color_config = ensure_color_env_file()
         apply_color_config_to_theme(self.color_config)
 
-        self.auto_pending = None
+        self.auto_pending = []
+        self.auto_index_after_refresh = False
+        self.auto_continue_after_index = False
 
         self.dashboard_range = ""
         self.detection_range = ""
         self.email_range = ""
         self.xdr_range = ""
         self.dlp_range = ""
+        self.mailscreen_range = ""
 
 
         # 🔥 탭별 데이터 저장소
@@ -5988,13 +6756,22 @@ class MainWindow(QMainWindow):
         self.dashboard_compare_xdr_detections = []
         self.dashboard_compare_emails = []
         self.dashboard_compare_dlp = []
+        self.dashboard_compare_mailscreen = []
 
         self.detection_detections = []
         self.email_emails = []
         self.xdr_detections = []
         self.dlp_rows = []
+        self.mailscreen_rows = []
 
         self.trend_colors = self.trend_colors_from_config(self.color_config)
+        self.trend_visibility = {
+            "Detection - XDR": True,
+            "Email - XDR": True,
+            "Inbound Mail": True,
+            "Outbound Mail": True,
+            "File": True,
+        }
 
         self.setWindowTitle("Sophos Monitoring UI")
         self.resize(1500, 850)
@@ -6023,6 +6800,12 @@ class MainWindow(QMainWindow):
 
         self.mail_timer = QTimer()
         self.mail_timer.timeout.connect(self.auto_refresh_email)
+
+        self.dlp_timer = QTimer()
+        self.dlp_timer.timeout.connect(self.auto_refresh_dlp)
+
+        self.mailscreen_timer = QTimer()
+        self.mailscreen_timer.timeout.connect(self.auto_refresh_mailscreen)
 
         # 🔥 캘린더 UI
         self.start_date_edit = QDateEdit()
@@ -6071,6 +6854,7 @@ class MainWindow(QMainWindow):
         self.logical_tab_aliases = {
             "Detection": "Detection - XDR",
             "Detection XDR": "Email - XDR",
+            "Inbound Mail": "Email",
             "Response": "Firewall",
         }
         self.group_subtab_bars = {}
@@ -6125,7 +6909,8 @@ class MainWindow(QMainWindow):
         self.detection_tabs = add_group_tab("Detection", [
             ("Detection - XDR", "Detection - XDR", self.tab_detection_xdr()),
             ("Email - XDR", "Email - XDR", self.tab_email_xdr()),
-            ("Email", "Email", self.tab_email()),
+            ("Email", "Inbound Mail", self.tab_email()),
+            ("Outbound Mail", "Outbound Mail", self.tab_outbound_mail()),
             ("File", "File", self.tab_dlp_file()),
         ])
         self.response_tabs = add_group_tab("Response", [
@@ -6165,6 +6950,7 @@ class MainWindow(QMainWindow):
             "Detection - XDR": normalize_hex_color(config.get("Threat_trend_Detection"), DEFAULT_COLOR_CONFIG["Threat_trend_Detection"]),
             "Email - XDR": normalize_hex_color(config.get("Threat_trend_Detection_XDR"), DEFAULT_COLOR_CONFIG["Threat_trend_Detection_XDR"]),
             "Email": normalize_hex_color(config.get("Threat_trend_Email"), DEFAULT_COLOR_CONFIG["Threat_trend_Email"]),
+            "Outbound Mail": normalize_hex_color(config.get("Threat_trend_Outbound_Mail"), DEFAULT_COLOR_CONFIG["Threat_trend_Outbound_Mail"]),
             "File": normalize_hex_color(config.get("Threat_trend_File"), DEFAULT_COLOR_CONFIG["Threat_trend_File"]),
         }
 
@@ -6670,7 +7456,7 @@ class MainWindow(QMainWindow):
             "Detection - XDR Summary": "shield",
             "Detection Summary": "shield",
             "Email - XDR Summary": "radar",
-            "Email Summary": "mail",
+            "Inbound Mail Summary": "mail",
             "File Summary": "file",
             "Cache Data": "database",
             "Auto Refresh": "refresh",
@@ -7037,7 +7823,8 @@ class MainWindow(QMainWindow):
         graph_keys = [
             ("D", "Threat_trend_Detection"),
             ("X", "Threat_trend_Detection_XDR"),
-            ("E", "Threat_trend_Email"),
+            ("I", "Threat_trend_Email"),
+            ("O", "Threat_trend_Outbound_Mail"),
             ("F", "Threat_trend_File"),
         ]
         graph_swatches = []
@@ -10275,7 +11062,9 @@ class MainWindow(QMainWindow):
 
             self.dashboard_emails = load_emails_by_range(start_date, end_date)
             self.dlp_rows = load_dlp_by_range(start_date, end_date)
+            self.mailscreen_rows = load_mailscreen_by_range(start_date, end_date)
             self.dlp_range = f"{start_date} ~ {end_date}"
+            self.mailscreen_range = f"{start_date} ~ {end_date}"
 
             # =========================
             # 비교용 추가 범위 로드
@@ -10285,6 +11074,7 @@ class MainWindow(QMainWindow):
             compare_start_dt = end_dt - relativedelta(months=1)
             compare_start = compare_start_dt.strftime("%Y-%m-%d")
             self.dashboard_compare_dlp = load_dlp_by_range(compare_start, end_date)
+            self.dashboard_compare_mailscreen = load_mailscreen_by_range(compare_start, end_date)
 
             self.dashboard_compare_detections = load_endpoint_detections_by_range(compare_start, end_date)
             self.dashboard_compare_xdr_detections = load_xdr_email_detections_by_range(compare_start, end_date)
@@ -10309,6 +11099,12 @@ class MainWindow(QMainWindow):
             self.email_emails = load_emails_by_range(start_date, end_date)
             self.email_range = f"{start_date} ~ {end_date}"
             self._refresh_email()
+
+        elif current_tab == "Outbound Mail":
+            self.mailscreen_rows = load_mailscreen_by_range(start_date, end_date)
+            self.mailscreen_range = f"{start_date} ~ {end_date}"
+            if hasattr(self, "_refresh_outbound_mail"):
+                self._refresh_outbound_mail()
 
         elif current_tab == "File":
             self.dlp_rows = load_dlp_by_range(start_date, end_date)
@@ -10340,6 +11136,9 @@ class MainWindow(QMainWindow):
 
         elif tab_name == "Email":
             text = self.email_range
+
+        elif tab_name == "Outbound Mail":
+            text = self.mailscreen_range
 
         elif tab_name == "File":
             text = self.dlp_range
@@ -10620,6 +11419,22 @@ class MainWindow(QMainWindow):
         self.worker.progress.connect(self._on_refresh_progress)
         self.worker.start()
 
+    def run_refresh_mailscreen(self):
+        if self.running:
+            QMessageBox.warning(self, "진행 중", "이미 최신화가 진행 중입니다.")
+            return
+
+        date_str = self.mailscreen_refresh_date.date().toString("yyyy-MM-dd")
+
+        self.running = True
+        self.set_status("MailScreen refresh", color="blue", spinning=True)
+
+        self.worker = RefreshWorker(job_name="MailScreen", date_str=date_str)
+        self.worker.ok.connect(self._on_refresh_ok)
+        self.worker.fail.connect(self._on_refresh_fail)
+        self.worker.progress.connect(self._on_refresh_progress)
+        self.worker.start()
+
     def run_refresh_detection_range(self):
         if self.running:
             QMessageBox.warning(self, "진행 중", "이미 최신화가 진행 중입니다.")
@@ -10656,7 +11471,7 @@ class MainWindow(QMainWindow):
         end_date = end_qdate.toString("yyyy-MM-dd")
 
         self.running = True
-        self.set_status("Email refresh", color="blue", spinning=True)
+        self.set_status("Inbound Mail refresh", color="blue", spinning=True)
 
         self.worker = RefreshWorker(
             job_name="Email",
@@ -10668,7 +11483,7 @@ class MainWindow(QMainWindow):
         self.worker.start()
 
     def _on_refresh_progress(self, tab_name, message):
-        if tab_name == "DLP":
+        if tab_name in ("DLP", "MailScreen"):
             self.set_status(str(message), color="blue", spinning=True)
 
     def _on_refresh_ok(self, tab_name):
@@ -10700,10 +11515,13 @@ class MainWindow(QMainWindow):
             auto_logger.info(f"[{tab_name}] AUTO REFRESH SUCCESS")
 
         # 🔥 자동 대기 작업 처리
-        if self.auto_pending:
-            next_job = self.auto_pending
-            self.auto_pending = None
-            self.run_refresh(next_job)
+        if self.auto_index_after_refresh:
+            self.auto_index_after_refresh = False
+            self.auto_continue_after_index = True
+            self.run_data_index()
+            return
+
+        self.run_next_auto_pending()
 
 
     def _on_refresh_fail(self, tab_name, err):
@@ -10715,6 +11533,11 @@ class MainWindow(QMainWindow):
         if tab_name in ("Detection", "Email"):
             self.update_auto_status(tab_name, False)
             auto_logger.error(f"[{tab_name}] AUTO REFRESH FAIL - {err}")
+
+        if self.auto_index_after_refresh:
+            self.auto_index_after_refresh = False
+            self.auto_continue_after_index = False
+            self.run_next_auto_pending()
 
     # ==================================================
     # Context menu (right click)
@@ -11266,6 +12089,7 @@ Command Line :
         self.refresh_tab_table("Detection - XDR")
         self.refresh_tab_table("Email - XDR")
         self.refresh_tab_table("Email")
+        self.refresh_tab_table("Outbound Mail")
         self.refresh_tab_table("File")
         self.refresh_tab_table("Endpoint")
         self.refresh_tab_table("Organization")
@@ -11283,6 +12107,8 @@ Command Line :
             self._refresh_detection_xdr()
         elif tab_name == "Email" and hasattr(self, "_refresh_email"):
             self._refresh_email()
+        elif tab_name == "Outbound Mail" and hasattr(self, "_refresh_outbound_mail"):
+            self._refresh_outbound_mail()
         elif tab_name == "Endpoint" and hasattr(self, "_refresh_endpoint"):
             self._refresh_endpoint()
         elif tab_name == "Organization" and hasattr(self, "_refresh_org"):
@@ -11349,12 +12175,31 @@ Command Line :
         # 그래프
         self.figure = Figure(figsize=(10, 4), facecolor="#ffffff")
         self.canvas = FigureCanvas(self.figure)
-        container.addWidget(self.canvas, 4)
+        graph_left = QVBoxLayout()
+        graph_left.setContentsMargins(0, 0, 0, 0)
+        graph_left.setSpacing(6)
+
+        trend_toggle_row = QHBoxLayout()
+        trend_toggle_row.setContentsMargins(0, 0, 0, 0)
+        trend_toggle_row.setSpacing(10)
+        self.trend_checkboxes = {}
+        for label in ["Detection - XDR", "Email - XDR", "Inbound Mail", "Outbound Mail", "File"]:
+            chk = QCheckBox(label)
+            chk.setChecked(self.trend_visibility.get(label, True))
+            chk.setStyleSheet(f"color:{UI_THEME['text_soft']}; font-weight:800; background:transparent;")
+            chk.toggled.connect(lambda checked, name=label: self.set_trend_series_visible(name, checked))
+            self.trend_checkboxes[label] = chk
+            trend_toggle_row.addWidget(chk)
+        trend_toggle_row.addStretch(1)
+
+        graph_left.addLayout(trend_toggle_row)
+        graph_left.addWidget(self.canvas, 1)
+        container.addLayout(graph_left, 4)
 
         # 퍼센트
         percent_frame = QFrame()
-        percent_frame.setMinimumWidth(285)
-        percent_frame.setMaximumWidth(315)
+        percent_frame.setMinimumWidth(330)
+        percent_frame.setMaximumWidth(380)
         percent_frame.setMinimumHeight(210)
         percent_frame.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
 
@@ -11414,14 +12259,14 @@ Command Line :
         bottom_container.addWidget(top_card, 1)
 
         # -------------------------
-        # 오른쪽 : Detection / XDR / Email Summary
+        # 오른쪽 : Detection / XDR / Inbound Mail Summary
         # -------------------------
         right_box = QGridLayout()
         right_box.setSpacing(15)
 
         self.card_det_summary = self.make_scroll_stat_card("Detection - XDR Summary", "")
         self.card_xdr_summary = self.make_scroll_stat_card("Email - XDR Summary", "")
-        self.card_email_summary = self.make_scroll_stat_card("Email Summary", "")
+        self.card_email_summary = self.make_scroll_stat_card("Inbound Mail Summary", "")
         self.card_file_summary = self.make_scroll_stat_card("File Summary", "")
 
         right_box.addWidget(self.card_det_summary, 0, 0)
@@ -11501,6 +12346,11 @@ Command Line :
         frame.value_label = value_label
         return frame
 
+    def set_trend_series_visible(self, series_name, visible):
+        self.trend_visibility[str(series_name)] = bool(visible)
+        if hasattr(self, "figure"):
+            self.refresh_dashboard()
+
     def refresh_dashboard(self):
         log.info(">>> ENTER refresh_dashboard()")
         log.info(f"Canvas ID → {id(self.canvas) if hasattr(self,'canvas') else 'NO CANVAS'}")
@@ -11515,20 +12365,24 @@ Command Line :
         XDR_DETECTIONS = self.dashboard_xdr_detections or []
         EMAILS = self.dashboard_emails or []
         FILES = self.dlp_rows or []
+        OUTBOUND_MAILS = self.mailscreen_rows or []
 
         COMPARE_DETECTIONS = self.dashboard_compare_detections or []
         COMPARE_XDR_DETECTIONS = self.dashboard_compare_xdr_detections or []
         COMPARE_EMAILS = self.dashboard_compare_emails or []
         COMPARE_FILES = self.dashboard_compare_dlp or []
+        COMPARE_OUTBOUND_MAILS = self.dashboard_compare_mailscreen or []
 
         log.info(f"DETECTIONS LENGTH → {len(DETECTIONS)}")
         log.info(f"XDR DETECTIONS LENGTH → {len(XDR_DETECTIONS)}")
         log.info(f"EMAILS LENGTH → {len(EMAILS)}")
         log.info(f"FILES LENGTH → {len(FILES)}")
+        log.info(f"OUTBOUND MAILS LENGTH → {len(OUTBOUND_MAILS)}")
         log.info(f"COMPARE DETECTIONS LENGTH → {len(COMPARE_DETECTIONS)}")
         log.info(f"COMPARE XDR DETECTIONS LENGTH → {len(COMPARE_XDR_DETECTIONS)}")
         log.info(f"COMPARE EMAILS LENGTH → {len(COMPARE_EMAILS)}")
         log.info(f"COMPARE FILES LENGTH → {len(COMPARE_FILES)}")
+        log.info(f"COMPARE OUTBOUND MAILS LENGTH → {len(COMPARE_OUTBOUND_MAILS)}")
 
         log.info(f"DASHBOARD LOAD → {start_date} ~ {end_date}")
         log.info(f"DASHBOARD DET COUNT → {len(DETECTIONS)}")
@@ -11731,6 +12585,7 @@ Command Line :
         det_counts = defaultdict(int)
         xdr_counts = defaultdict(int)
         mail_counts = defaultdict(int)
+        outbound_mail_counts = defaultdict(int)
         file_counts = defaultdict(int)
 
         # -------------------------
@@ -11776,6 +12631,16 @@ Command Line :
                 continue
 
         # -------------------------
+        # 🔥 Outbound Mail 집계 (MailScreen 날짜 기준)
+        # -------------------------
+        for m in OUTBOUND_MAILS:
+            if not isinstance(m, dict):
+                continue
+            t = str(m.get("date", "") or "").strip()
+            if len(t) >= 10:
+                outbound_mail_counts[t[:10]] += 1
+
+        # -------------------------
         # 🔥 File 집계 (KST 기준)
         # -------------------------
         for f in FILES:
@@ -11790,6 +12655,7 @@ Command Line :
         det_values = [det_counts[d] for d in date_list]
         xdr_values = [xdr_counts[d] for d in date_list]
         mail_values = [mail_counts[d] for d in date_list]
+        outbound_mail_values = [outbound_mail_counts[d] for d in date_list]
         file_values = [file_counts[d] for d in date_list]
 
 
@@ -11799,6 +12665,7 @@ Command Line :
         compare_det_counts = defaultdict(int)
         compare_xdr_counts = defaultdict(int)
         compare_mail_counts = defaultdict(int)
+        compare_outbound_mail_counts = defaultdict(int)
         compare_file_counts = defaultdict(int)
 
         for d in COMPARE_DETECTIONS:
@@ -11834,6 +12701,13 @@ Command Line :
             except:
                 continue
 
+        for m in COMPARE_OUTBOUND_MAILS:
+            if not isinstance(m, dict):
+                continue
+            t = str(m.get("date", "") or "").strip()
+            if len(t) >= 10:
+                compare_outbound_mail_counts[t[:10]] += 1
+
         for f in COMPARE_FILES:
             if not isinstance(f, dict):
                 continue
@@ -11854,12 +12728,14 @@ Command Line :
         day_map_det = dict(zip(date_list, det_values))
         day_map_xdr = dict(zip(date_list, xdr_values))
         day_map_mail = dict(zip(date_list, mail_values))
+        day_map_outbound_mail = dict(zip(date_list, outbound_mail_values))
         day_map_file = dict(zip(date_list, file_values))
 
         # 비교용 map (선택 범위 밖 날짜 포함)
         compare_day_map_det = dict(compare_det_counts)
         compare_day_map_xdr = dict(compare_xdr_counts)
         compare_day_map_mail = dict(compare_mail_counts)
+        compare_day_map_outbound_mail = dict(compare_outbound_mail_counts)
         compare_day_map_file = dict(compare_file_counts)
 
         def calc_percent(prev, last):
@@ -11891,17 +12767,20 @@ Command Line :
         det_daily = None
         xdr_daily = None
         mail_daily = None
+        outbound_mail_daily = None
         file_daily = None
 
         det_daily = calc_percent(compare_day_map_det.get(yesterday, 0), compare_day_map_det.get(today_str, 0))
         xdr_daily = calc_percent(compare_day_map_xdr.get(yesterday, 0), compare_day_map_xdr.get(today_str, 0))
         mail_daily = calc_percent(compare_day_map_mail.get(yesterday, 0), compare_day_map_mail.get(today_str, 0))
+        outbound_mail_daily = calc_percent(compare_day_map_outbound_mail.get(yesterday, 0), compare_day_map_outbound_mail.get(today_str, 0))
         file_daily = calc_percent(compare_day_map_file.get(yesterday, 0), compare_day_map_file.get(today_str, 0))
 
-        daily_det_text, daily_det_color = format_block("전일 Detection - XDR", det_daily)
-        daily_xdr_text, daily_xdr_color = format_block("전일 Email - XDR", xdr_daily)
-        daily_mail_text, daily_mail_color = format_block("전일 Email", mail_daily)
-        daily_file_text, daily_file_color = format_block("전일 File", file_daily)
+        daily_det_text, daily_det_color = format_block("Detection - XDR", det_daily)
+        daily_xdr_text, daily_xdr_color = format_block("Email - XDR", xdr_daily)
+        daily_mail_text, daily_mail_color = format_block("Inbound Mail", mail_daily)
+        daily_outbound_mail_text, daily_outbound_mail_color = format_block("Outbound Mail", outbound_mail_daily)
+        daily_file_text, daily_file_color = format_block("File", file_daily)
 
         # ---- 전월 대비 ----
         one_month_ago = (last_dt - relativedelta(months=1)).strftime("%Y-%m-%d")
@@ -11909,17 +12788,20 @@ Command Line :
         det_month = None
         xdr_month = None
         mail_month = None
+        outbound_mail_month = None
         file_month = None
 
         det_month = calc_percent(compare_day_map_det.get(one_month_ago, 0), compare_day_map_det.get(today_str, 0))
         xdr_month = calc_percent(compare_day_map_xdr.get(one_month_ago, 0), compare_day_map_xdr.get(today_str, 0))
         mail_month = calc_percent(compare_day_map_mail.get(one_month_ago, 0), compare_day_map_mail.get(today_str, 0))
+        outbound_mail_month = calc_percent(compare_day_map_outbound_mail.get(one_month_ago, 0), compare_day_map_outbound_mail.get(today_str, 0))
         file_month = calc_percent(compare_day_map_file.get(one_month_ago, 0), compare_day_map_file.get(today_str, 0))
 
-        monthly_det_text, monthly_det_color = format_block("전월 Detection - XDR", det_month)
-        monthly_xdr_text, monthly_xdr_color = format_block("전월 Email - XDR", xdr_month)
-        monthly_mail_text, monthly_mail_color = format_block("전월 Email", mail_month)
-        monthly_file_text, monthly_file_color = format_block("전월 File", file_month)
+        monthly_det_text, monthly_det_color = format_block("Detection - XDR", det_month)
+        monthly_xdr_text, monthly_xdr_color = format_block("Email - XDR", xdr_month)
+        monthly_mail_text, monthly_mail_color = format_block("Inbound Mail", mail_month)
+        monthly_outbound_mail_text, monthly_outbound_mail_color = format_block("Outbound Mail", outbound_mail_month)
+        monthly_file_text, monthly_file_color = format_block("File", file_month)
 
 
         # ==============================
@@ -11930,27 +12812,59 @@ Command Line :
         self.figure.clf()
         ax = self.figure.add_subplot(111)
 
-        color_det = self.trend_colors.get("Detection - XDR", UI_THEME["accent"])
-        color_xdr = self.trend_colors.get("Email - XDR", UI_THEME["accent_light"])
-        color_mail = self.trend_colors.get("Email", "#14b8a6")
-        color_file = self.trend_colors.get("File", "#f59e0b")
+        trend_series = [
+            {
+                "name": "Detection - XDR",
+                "values": det_values,
+                "color": self.trend_colors.get("Detection - XDR", UI_THEME["accent"]),
+                "offset": (-14, 8),
+                "ha": "right",
+                "va": "bottom",
+            },
+            {
+                "name": "Email - XDR",
+                "values": xdr_values,
+                "color": self.trend_colors.get("Email - XDR", UI_THEME["accent_light"]),
+                "offset": (14, 8),
+                "ha": "left",
+                "va": "bottom",
+            },
+            {
+                "name": "Inbound Mail",
+                "values": mail_values,
+                "color": self.trend_colors.get("Email", "#14b8a6"),
+                "offset": (-14, -12),
+                "ha": "right",
+                "va": "top",
+            },
+            {
+                "name": "Outbound Mail",
+                "values": outbound_mail_values,
+                "color": self.trend_colors.get("Outbound Mail", "#ec4899"),
+                "offset": (14, -16),
+                "ha": "left",
+                "va": "top",
+            },
+            {
+                "name": "File",
+                "values": file_values,
+                "color": self.trend_colors.get("File", "#f59e0b"),
+                "offset": (0, 0),
+                "ha": "center",
+                "va": "center",
+            },
+        ]
+        active_series = [s for s in trend_series if self.trend_visibility.get(s["name"], True)]
 
-        dark_det = color_det
-        dark_xdr = color_xdr
-        dark_mail = color_mail
-        dark_file = color_file
-
-        ax.plot(x_dates, det_values, marker='o', linewidth=2.8,
-                color=color_det, label="Detection - XDR")
-
-        ax.plot(x_dates, xdr_values, marker='o', linewidth=2.8,
-                color=color_xdr, label="Email - XDR")
-
-        ax.plot(x_dates, mail_values, marker='o', linewidth=2.8,
-                color=color_mail, label="Email")
-
-        ax.plot(x_dates, file_values, marker='o', linewidth=2.8,
-                color=color_file, label="File")
+        for series in active_series:
+            ax.plot(
+                x_dates,
+                series["values"],
+                marker='o',
+                linewidth=2.8,
+                color=series["color"],
+                label=series["name"],
+            )
 
         # 🔥 tick 강제 고정
         ax.set_xticks(x_dates)
@@ -11976,94 +12890,43 @@ Command Line :
         # matplotlib title because it can render with broken-looking spacing.
         ax.set_title("")
 
-        legend = ax.legend(
-            loc="upper center",
-            bbox_to_anchor=(0.5, 1.16),
-            ncol=4,
-            frameon=False,
-            columnspacing=1.8,
-            handlelength=1.8,
-        )
-        for text in legend.get_texts():
-            text.set_color(UI_THEME["text_soft"])
-            text.set_fontsize(10)
-        max_y = max(max(det_values), max(xdr_values), max(mail_values), max(file_values), 1)
+        if active_series:
+            legend = ax.legend(
+                loc="upper center",
+                bbox_to_anchor=(0.5, 1.16),
+                ncol=min(5, len(active_series)),
+                frameon=False,
+                columnspacing=1.4,
+                handlelength=1.8,
+            )
+            for text in legend.get_texts():
+                text.set_color(UI_THEME["text_soft"])
+                text.set_fontsize(10)
+
+        max_y = max([max(series["values"] or [0]) for series in active_series] + [1])
         ax.set_ylim(0, max_y * 1.8)
 
         # 🔥 숫자 표시
-        for i, x in enumerate(x_dates):
-
-            # Detection → 왼쪽
-            txt1 = ax.annotate(
-                str(det_values[i]),
-                xy=(x, det_values[i]),
-                xytext=(-14, 8),
-                textcoords="offset points",
-                fontsize=9,
-                fontweight="bold",
-                color=dark_det,
-                ha="right",
-                va="bottom",
-                zorder=5
-            )
-            txt1.set_path_effects([
-                path_effects.Stroke(linewidth=3, foreground='white'),
-                path_effects.Normal()
-            ])
-
-            # Email - XDR → 오른쪽
-            txt2 = ax.annotate(
-                str(xdr_values[i]),
-                xy=(x, xdr_values[i]),
-                xytext=(14, 8),
-                textcoords="offset points",
-                fontsize=9,
-                fontweight="bold",
-                color=dark_xdr,
-                ha="left",
-                va="bottom",
-                zorder=5
-            )
-            txt2.set_path_effects([
-                path_effects.Stroke(linewidth=2, foreground='white'),
-                path_effects.Normal()
-            ])
-
-            # Email → 왼쪽 위 대각선
-            txt3 = ax.annotate(
-                str(mail_values[i]),
-                xy=(x, mail_values[i]),
-                xytext=(-14, 10),
-                textcoords="offset points",
-                fontsize=9,
-                fontweight="bold",
-                color=dark_mail,
-                ha="right",
-                va="bottom",
-                zorder=5
-            )
-            txt3.set_path_effects([
-                path_effects.Stroke(linewidth=2, foreground='white'),
-                path_effects.Normal()
-            ])
-
-            # File → 오른쪽 위 대각선
-            txt4 = ax.annotate(
-                str(file_values[i]),
-                xy=(x, file_values[i]),
-                xytext=(14, 10),
-                textcoords="offset points",
-                fontsize=9,
-                fontweight="bold",
-                color=dark_file,
-                ha="left",
-                va="bottom",
-                zorder=5
-            )
-            txt4.set_path_effects([
-                path_effects.Stroke(linewidth=2, foreground='white'),
-                path_effects.Normal()
-            ])
+        for series in active_series:
+            dx, dy = series["offset"]
+            for i, x in enumerate(x_dates):
+                value = series["values"][i]
+                txt = ax.annotate(
+                    str(value),
+                    xy=(x, value),
+                    xytext=(dx, dy),
+                    textcoords="offset points",
+                    fontsize=9,
+                    fontweight="bold",
+                    color=series["color"],
+                    ha=series["ha"],
+                    va=series["va"],
+                    zorder=5
+                )
+                txt.set_path_effects([
+                    path_effects.Stroke(linewidth=2, foreground='white'),
+                    path_effects.Normal()
+                ])
 
         self.figure.subplots_adjust(
             left=0.10,
@@ -12077,7 +12940,7 @@ Command Line :
         # 🔥 전일 대비 (오른쪽 표시용)
         # ==============================
         percent_html = f"""
-        <table width='100%' cellspacing='0' cellpadding='0' style='font-size:12px; line-height:19px;'>
+        <table width='100%' cellspacing='0' cellpadding='0' style='font-size:12px; line-height:18px;'>
             <tr>
                 <td width='38%'></td>
                 <td width='31%' align='center' style='color:#6b7280; font-size:11px; font-weight:900;'>전일 대비</td>
@@ -12085,21 +12948,27 @@ Command Line :
             </tr>
             <tr><td colspan='3' style='height:4px; border-bottom:1px solid #e5e7eb;'></td></tr>
             <tr>
-                <td style='padding-top:4px; color:{UI_THEME['accent_text']}; font-size:12px; font-weight:900;'>Detection</td>
+                <td style='padding-top:4px; color:{UI_THEME['accent_text']}; font-size:12px; font-weight:900;'>Detection - XDR</td>
                 <td align='center' style='padding-top:4px; color:{daily_det_color}; font-size:12px; font-weight:900;'>{daily_det_text}</td>
                 <td align='right' style='padding-top:4px; color:{monthly_det_color}; font-size:12px; font-weight:900;'>{monthly_det_text}</td>
             </tr>
             <tr><td colspan='3' style='height:4px; border-bottom:1px solid #e5e7eb;'></td></tr>
             <tr>
-                <td style='padding-top:4px; color:{UI_THEME['accent_text']}; font-size:12px; font-weight:900;'>XDR</td>
+                <td style='padding-top:4px; color:{UI_THEME['accent_text']}; font-size:12px; font-weight:900;'>Email - XDR</td>
                 <td align='center' style='padding-top:4px; color:{daily_xdr_color}; font-size:12px; font-weight:900;'>{daily_xdr_text}</td>
                 <td align='right' style='padding-top:4px; color:{monthly_xdr_color}; font-size:12px; font-weight:900;'>{monthly_xdr_text}</td>
             </tr>
             <tr><td colspan='3' style='height:4px; border-bottom:1px solid #e5e7eb;'></td></tr>
             <tr>
-                <td style='padding-top:4px; color:{UI_THEME['accent_text']}; font-size:12px; font-weight:900;'>Email</td>
+                <td style='padding-top:4px; color:{UI_THEME['accent_text']}; font-size:12px; font-weight:900;'>Inbound Mail</td>
                 <td align='center' style='padding-top:4px; color:{daily_mail_color}; font-size:12px; font-weight:900;'>{daily_mail_text}</td>
                 <td align='right' style='padding-top:4px; color:{monthly_mail_color}; font-size:12px; font-weight:900;'>{monthly_mail_text}</td>
+            </tr>
+            <tr><td colspan='3' style='height:4px; border-bottom:1px solid #e5e7eb;'></td></tr>
+            <tr>
+                <td style='padding-top:4px; color:{UI_THEME['accent_text']}; font-size:12px; font-weight:900;'>Outbound Mail</td>
+                <td align='center' style='padding-top:4px; color:{daily_outbound_mail_color}; font-size:12px; font-weight:900;'>{daily_outbound_mail_text}</td>
+                <td align='right' style='padding-top:4px; color:{monthly_outbound_mail_color}; font-size:12px; font-weight:900;'>{monthly_outbound_mail_text}</td>
             </tr>
             <tr><td colspan='3' style='height:4px; border-bottom:1px solid #e5e7eb;'></td></tr>
             <tr>
@@ -13118,7 +13987,209 @@ Command Line :
         return root
 
     # ==================================================
+    # Outbound Mail Tab (MailScreen)
+    # ==================================================
+    def tab_outbound_mail(self):
+        root = QWidget()
+        layout = QVBoxLayout(root)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
+
+        search_wrapper = QWidget()
+        search_wrapper.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        search_v = QVBoxLayout(search_wrapper)
+        search_v.setContentsMargins(0, 0, 0, 4)
+        search_v.setSpacing(6)
+
+        self.outbound_search_container = QVBoxLayout()
+        self.outbound_search_container.setContentsMargins(0, 0, 0, 0)
+        self.outbound_search_container.setSpacing(6)
+        search_v.addLayout(self.outbound_search_container)
+
+        table = QTableWidget()
+        headers = ["날짜", "메일 처리", "전송 결과", "제목", "발신자 (이메일)", "발신자 명", "소속", "수신자", "크기", "적용 정책", "첨부"]
+        table.setColumnCount(len(headers))
+        table.setHorizontalHeaderLabels(headers)
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        table.setSortingEnabled(True)
+
+        self.enable_context_menu(table, {})
+
+        def match_text(value, keyword, mode):
+            text = str(value or "").lower()
+            if mode == "제외":
+                return keyword not in text
+            return keyword in text
+
+        def refresh():
+            header = table.horizontalHeader()
+            sort_column = header.sortIndicatorSection()
+            sort_order = header.sortIndicatorOrder()
+
+            table.setSortingEnabled(False)
+            table.clearContents()
+            table.setRowCount(0)
+
+            search_conditions = []
+            for i in range(self.outbound_search_container.count()):
+                item = self.outbound_search_container.itemAt(i)
+                row = item.widget() if item else None
+                if not row:
+                    continue
+                row_layout = row.layout()
+                if not row_layout or row_layout.count() < 3:
+                    continue
+                combo = row_layout.itemAt(0).widget()
+                mode_combo = row_layout.itemAt(1).widget()
+                edit = row_layout.itemAt(2).widget()
+                if not combo or not mode_combo or not edit:
+                    continue
+                keyword = edit.text().strip().lower()
+                if keyword:
+                    search_conditions.append((combo.currentText(), mode_combo.currentText(), keyword))
+
+            start_date = self.start_date_edit.date().toString("yyyy-MM-dd")
+            end_date = self.end_date_edit.date().toString("yyyy-MM-dd")
+
+            for row_data in self.mailscreen_rows or []:
+                if not isinstance(row_data, dict):
+                    continue
+                row_data = enrich_mailscreen_sender_fields(row_data)
+
+                event_date = str(row_data.get("date", ""))[:10]
+                if event_date and (event_date < start_date or event_date > end_date):
+                    continue
+
+                raw_str = json.dumps(row_data, ensure_ascii=False).lower()
+                values = {
+                    "날짜": str(row_data.get("date", "")),
+                    "메일 처리": str(row_data.get("mail_process", "")),
+                    "전송 결과": str(row_data.get("send_result", "")),
+                    "제목": str(row_data.get("subject", "")),
+                    "발신자 (이메일)": str(row_data.get("sender_email", "") or row_data.get("sender", "")),
+                    "발신자 명": str(row_data.get("sender_name", "")),
+                    "발신자 상세": str(row_data.get("sender_detail", "")),
+                    "소속": str(row_data.get("sender_dept", "") or row_data.get("dept", "")),
+                    "수신자": str(row_data.get("receiver", "")),
+                    "수신자 상세": str(row_data.get("receiver_detail", "")),
+                    "크기": str(row_data.get("size", "")),
+                    "적용 정책": str(row_data.get("policy", "")),
+                    "첨부": str(row_data.get("attach", "")),
+                    "RawData": raw_str,
+                }
+
+                matched = True
+                for field, mode, keyword in search_conditions:
+                    haystack = " ".join(str(v) for v in values.values()) if field == "ALL" else values.get(field, "")
+                    if not match_text(haystack, keyword, mode):
+                        matched = False
+                        break
+                if not matched:
+                    continue
+
+                r = table.rowCount()
+                table.insertRow(r)
+
+                first_item = QTableWidgetItem(values["날짜"] or "None")
+                first_item.setData(Qt.UserRole, row_data)
+                table.setItem(r, 0, first_item)
+                table.setItem(r, 1, QTableWidgetItem(values["메일 처리"] or "None"))
+                table.setItem(r, 2, QTableWidgetItem(values["전송 결과"] or "None"))
+                table.setItem(r, 3, QTableWidgetItem(values["제목"] or "None"))
+                table.setItem(r, 4, QTableWidgetItem(values["발신자 (이메일)"] or "None"))
+                table.setItem(r, 5, QTableWidgetItem(values["발신자 명"] or "None"))
+                table.setItem(r, 6, QTableWidgetItem(values["소속"] or "None"))
+                table.setItem(r, 7, QTableWidgetItem(values["수신자"] or "None"))
+                table.setItem(r, 8, QTableWidgetItem(values["크기"] or "None"))
+                table.setItem(r, 9, QTableWidgetItem(values["적용 정책"] or "None"))
+                table.setItem(r, 10, QTableWidgetItem(values["첨부"] or ""))
+
+                if "실패" in values["전송 결과"]:
+                    for col in range(table.columnCount()):
+                        item = table.item(r, col)
+                        if item:
+                            item.setForeground(QColor(UI_THEME["danger_text"]))
+
+            table.setSortingEnabled(True)
+            if sort_column >= 0:
+                table.sortItems(sort_column, sort_order)
+
+        FIELD_W = SEARCH_FIELD_W
+        BTN_W = SEARCH_BTN_W
+        ROW_H = SEARCH_ROW_H
+
+        def add_search_row(default_field="ALL", default_mode="포함", removable=True, first=False):
+            row = QWidget()
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            row_layout.setSpacing(6)
+
+            combo = QComboBox()
+            combo.addItems([
+                "ALL", "날짜", "메일 처리", "전송 결과", "제목", "발신자 (이메일)", "발신자 명", "발신자 상세",
+                "소속", "수신자", "수신자 상세", "크기", "적용 정책", "첨부", "RawData"
+            ])
+            combo.setCurrentText(default_field)
+            combo.setFixedWidth(FIELD_W)
+            combo.setFixedHeight(ROW_H)
+
+            mode_combo = QComboBox()
+            mode_combo.addItems(["포함", "제외"])
+            mode_combo.setCurrentText(default_mode)
+            mode_combo.setFixedWidth(SEARCH_MODE_W)
+            mode_combo.setFixedHeight(ROW_H)
+
+            default_font = QApplication.font()
+            combo.setFont(default_font)
+            combo.view().setFont(default_font)
+            mode_combo.setFont(default_font)
+            mode_combo.view().setFont(default_font)
+
+            edit = QLineEdit()
+            edit.setPlaceholderText("Search...")
+            edit.setFixedHeight(ROW_H)
+            edit.setFont(default_font)
+            edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+            row_layout.addWidget(combo, 0)
+            row_layout.addWidget(mode_combo, 0)
+            row_layout.addWidget(edit, 1)
+
+            if first:
+                btn = QPushButton("+")
+                btn.setFixedSize(BTN_W, ROW_H)
+                btn.clicked.connect(lambda: add_search_row(removable=True, first=False))
+                row_layout.addWidget(btn, 0)
+            elif removable:
+                btn = QPushButton("-")
+                btn.setFixedSize(BTN_W, ROW_H)
+
+                def remove_row():
+                    row.deleteLater()
+                    refresh()
+
+                btn.clicked.connect(remove_row)
+                row_layout.addWidget(btn, 0)
+
+            edit.returnPressed.connect(refresh)
+            combo.currentIndexChanged.connect(refresh)
+            mode_combo.currentIndexChanged.connect(refresh)
+
+            self.outbound_search_container.addWidget(row)
+
+        add_search_row(default_field="ALL", default_mode="포함", removable=False, first=True)
+
+        layout.addWidget(search_wrapper, 0)
+        layout.addWidget(table, 1)
+
+        self._refresh_outbound_mail = refresh
+        refresh()
+
+        return root
+
+    # ==================================================
     # Endpoint Tab
+
     # ==================================================
     def tab_endpoint(self):
         root = QWidget()
@@ -14222,14 +15293,22 @@ Command Line :
         self.timeline_status_label = QLabel("날짜 선택과 무관하게 전체 캐시에서 검색합니다.")
         self.timeline_status_label.setStyleSheet(f"color:{UI_THEME['text_muted']}; font-weight:700;")
 
-        self.timeline_chk_detection = QCheckBox("탐지")
-        self.timeline_chk_xdr = QCheckBox("XDR")
-        self.timeline_chk_email = QCheckBox("이메일")
-        self.timeline_chk_file = QCheckBox("파일")
-        for chk in [self.timeline_chk_detection, self.timeline_chk_xdr, self.timeline_chk_email, self.timeline_chk_file]:
+        self.timeline_chk_detection = QCheckBox("Detection - XDR")
+        self.timeline_chk_xdr = QCheckBox("Email - XDR")
+        self.timeline_chk_email = QCheckBox("Inbound Mail")
+        self.timeline_chk_outbound_mail = QCheckBox("Outbound Mail")
+        self.timeline_chk_file = QCheckBox("File")
+        timeline_source_checks = [
+            self.timeline_chk_detection,
+            self.timeline_chk_xdr,
+            self.timeline_chk_email,
+            self.timeline_chk_outbound_mail,
+            self.timeline_chk_file,
+        ]
+        for chk in timeline_source_checks:
             chk.setChecked(True)
             chk.setMinimumHeight(32)
-            chk.setMinimumWidth(78)
+            chk.setMinimumWidth(118)
             chk.setStyleSheet(f"""
                 QCheckBox {{
                     color: {UI_THEME['text']};
@@ -14255,6 +15334,7 @@ Command Line :
         top.addWidget(self.timeline_chk_detection)
         top.addWidget(self.timeline_chk_xdr)
         top.addWidget(self.timeline_chk_email)
+        top.addWidget(self.timeline_chk_outbound_mail)
         top.addWidget(self.timeline_chk_file)
         top.addWidget(self.timeline_btn_search)
 
@@ -14372,6 +15452,7 @@ Command Line :
                 "Detection": "#ef4444",
                 "XDR": "#7c3aed",
                 "Email": "#0ea5e9",
+                "Outbound Mail": "#ec4899",
                 "File": "#f59e0b",
             }.get(str(source), UI_THEME["accent"])
 
@@ -14388,8 +15469,9 @@ Command Line :
             visible_items = items[:TIMELINE_DETAIL_ROW_LIMIT]
             self.timeline_detail_panel.show()
             suffix = "" if len(visible_items) == len(items) else f" / 상위 {len(visible_items):,}건 표시"
+            source_label = timeline_source_display_name(group.get("source", "None"))
             self.timeline_detail_title.setText(
-                f"{group.get('bucket', 'None')} [{group.get('source', 'None')}] {group.get('event', 'None')} - {len(items):,}건{suffix}"
+                f"{group.get('bucket', 'None')} [{source_label}] {group.get('event', 'None')} - {len(items):,}건{suffix}"
             )
             table = self.timeline_detail_table
             table.setSortingEnabled(False)
@@ -14400,7 +15482,7 @@ Command Line :
                 table.insertRow(r)
                 values = [
                     event.get("time", "None"),
-                    event.get("source", "None"),
+                    timeline_source_display_name(event.get("source", "None")),
                     event.get("user", "None"),
                     event.get("user_id", "None"),
                     event.get("dept", "미분류"),
@@ -14518,6 +15600,8 @@ Command Line :
                 sources.append("XDR")
             if self.timeline_chk_email.isChecked():
                 sources.append("Email")
+            if self.timeline_chk_outbound_mail.isChecked():
+                sources.append("Outbound Mail")
             if self.timeline_chk_file.isChecked():
                 sources.append("File")
             return sources
@@ -14525,7 +15609,7 @@ Command Line :
         def set_search_enabled(enabled):
             self.timeline_btn_search.setEnabled(enabled)
             self.timeline_user_input.setEnabled(enabled)
-            for chk in [self.timeline_chk_detection, self.timeline_chk_xdr, self.timeline_chk_email, self.timeline_chk_file]:
+            for chk in timeline_source_checks:
                 chk.setEnabled(enabled)
 
         def start_search():
@@ -14571,7 +15655,7 @@ Command Line :
         self.timeline_btn_search.clicked.connect(start_search)
         self.timeline_user_input.returnPressed.connect(start_search)
         self._refresh_timeline = lambda: None
-        add_empty_message("Timeline은 날짜 선택 없이 전체 Detection/XDR/Email/File 캐시에서 사용자 alias 기반으로 검색합니다.")
+        add_empty_message("Timeline은 날짜 선택 없이 전체 Detection/XDR/Inbound/Outbound/File 캐시에서 사용자 alias 기반으로 검색합니다.")
         return root
 
 
@@ -15099,12 +16183,51 @@ Command Line :
         self.lbl_index_tokens.setText(f"Search Tokens: {int(stats.get('tokens', 0)):,}")
         self.lbl_index_files.setText(f"Cache Files: {int(stats.get('data_total_files', stats.get('files', 0))):,}")
 
+        if self.auto_continue_after_index:
+            self.auto_continue_after_index = False
+            self.run_next_auto_pending()
+
     def _on_data_index_fail(self, err):
         self.btn_data_index.setEnabled(True)
         self._spin_timer.stop()
         self.set_status("Data index FAIL", color="red", spinning=False)
         self.lbl_index_status.setText(f"Status: FAIL - {err}")
+        self.auto_continue_after_index = False
         QMessageBox.critical(self, "Data Index 실패", err)
+
+    def queue_auto_refresh_job(self, job_name):
+        pending = self.auto_pending
+        if isinstance(pending, str):
+            pending = [pending]
+        elif not isinstance(pending, list):
+            pending = []
+
+        if job_name not in pending:
+            pending.append(job_name)
+
+        self.auto_pending = pending
+
+    def run_next_auto_pending(self):
+        pending = self.auto_pending
+        if isinstance(pending, str):
+            pending = [pending]
+
+        if not pending:
+            self.auto_pending = []
+            return
+
+        next_job = pending.pop(0)
+        self.auto_pending = pending
+        self.run_auto_refresh_job(next_job)
+
+    def run_auto_refresh_job(self, job_name):
+        self.auto_index_after_refresh = True
+        if job_name == "DLP":
+            self.run_refresh_dlp()
+        elif job_name == "MailScreen":
+            self.run_refresh_mailscreen()
+        else:
+            self.run_refresh(job_name)
 
     def tab_config(self):
         btn_style = self.button_style("primary")
@@ -15123,7 +16246,7 @@ Command Line :
         cache_card, cache_layout = self.make_card("Cache Data", legacy_title=True)
 
         btn_det_refresh = QPushButton("탐지 데이터 최신화")
-        btn_mail_refresh = QPushButton("이메일 데이터 최신화")
+        btn_mail_refresh = QPushButton("Inbound Mail 데이터 최신화")
         btn_endpoint_refresh = QPushButton("엔드포인트 데이터 최신화")
         btn_org_refresh = QPushButton("조직도 데이터 최신화")
         btn_user_refresh = QPushButton("유저 데이터 최신화")
@@ -15133,7 +16256,13 @@ Command Line :
         self.dlp_refresh_date.setDate(QDate.currentDate())
         self.dlp_refresh_date.setDisplayFormat("yyyy-MM-dd")
 
+        self.mailscreen_refresh_date = QDateEdit()
+        self.mailscreen_refresh_date.setCalendarPopup(True)
+        self.mailscreen_refresh_date.setDate(QDate.currentDate().addDays(-1))
+        self.mailscreen_refresh_date.setDisplayFormat("yyyy-MM-dd")
+
         btn_dlp_refresh = QPushButton("DLP 데이터 최신화")
+        btn_mailscreen_refresh = QPushButton("MS 데이터 최신화")
 
         # ===== Detection 기간 선택 =====
         self.det_start_date = QDateEdit()
@@ -15148,7 +16277,7 @@ Command Line :
         self.det_end_date.setDisplayFormat("yyyy-MM-dd")
         self.det_end_date.setMinimumHeight(36)
 
-        # ===== Email 기간 선택 =====
+        # ===== Inbound Mail 기간 선택 =====
         self.mail_start_date = QDateEdit()
         self.mail_start_date.setCalendarPopup(True)
         self.mail_start_date.setDate(QDate.currentDate().addDays(-6))
@@ -15167,6 +16296,7 @@ Command Line :
         btn_org_refresh.clicked.connect(lambda: self.run_refresh("Organization"))
         btn_user_refresh.clicked.connect(lambda: self.run_refresh("User"))
         btn_dlp_refresh.clicked.connect(self.run_refresh_dlp)
+        btn_mailscreen_refresh.clicked.connect(self.run_refresh_mailscreen)
 
 
         for widget in [
@@ -15175,6 +16305,7 @@ Command Line :
             self.mail_start_date,
             self.mail_end_date,
             self.dlp_refresh_date,
+            self.mailscreen_refresh_date,
         ]:
             self.prepare_form_control(widget, height=38)
 
@@ -15185,6 +16316,7 @@ Command Line :
             btn_org_refresh,
             btn_user_refresh,
             btn_dlp_refresh,
+            btn_mailscreen_refresh,
         ]:
             btn.setMinimumHeight(40)
             btn.setMinimumWidth(150)
@@ -15222,6 +16354,13 @@ Command Line :
         dlp_row.addWidget(self.dlp_refresh_date, 2)
         dlp_row.addWidget(btn_dlp_refresh, 1)
 
+        # ===== MailScreen row =====
+        mailscreen_row = QHBoxLayout()
+        mailscreen_row.setSpacing(8)
+        mailscreen_row.setContentsMargins(0, 0, 0, 0)
+        mailscreen_row.addWidget(self.mailscreen_refresh_date, 2)
+        mailscreen_row.addWidget(btn_mailscreen_refresh, 1)
+
         # ===== EP/Org/User row =====
         ep_org_row = QHBoxLayout()
         ep_org_row.setSpacing(8)
@@ -15237,6 +16376,7 @@ Command Line :
         cache_rows.addLayout(det_row)
         cache_rows.addLayout(mail_row)
         cache_rows.addLayout(dlp_row)
+        cache_rows.addLayout(mailscreen_row)
         cache_rows.addLayout(ep_org_row)
 
         cache_layout.addLayout(cache_rows)
@@ -15246,8 +16386,18 @@ Command Line :
         # ==================================================
         auto_card, auto_layout = self.make_card("Auto Refresh", legacy_title=True)
 
-        self.chk_auto_det = QCheckBox("Detection Auto Refresh")
-        self.chk_auto_mail = QCheckBox("Email Auto Refresh")
+        self.chk_auto_det = QCheckBox("Detection - XDR Auto Refresh")
+        self.chk_auto_mail = QCheckBox("Inbound Mail Auto Refresh")
+        self.chk_auto_dlp = QCheckBox("DLP Auto Refresh")
+        self.chk_auto_mailscreen = QCheckBox("MailScreen Auto Refresh")
+
+        auto_checkbox_style = (
+            f"QCheckBox {{ color:{UI_THEME['text']}; font-size:13px; font-weight:800; spacing:8px; }}"
+            f"QCheckBox::indicator {{ width:16px; height:16px; }}"
+        )
+        for chk in [self.chk_auto_det, self.chk_auto_mail, self.chk_auto_dlp, self.chk_auto_mailscreen]:
+            chk.setStyleSheet(auto_checkbox_style)
+            chk.setMinimumHeight(22)
 
         self.spin_interval = QSpinBox()
         self.spin_interval.setObjectName("intervalSpin")
@@ -15273,6 +16423,8 @@ Command Line :
 
         auto_layout.addWidget(self.chk_auto_det)
         auto_layout.addWidget(self.chk_auto_mail)
+        auto_layout.addWidget(self.chk_auto_dlp)
+        auto_layout.addWidget(self.chk_auto_mailscreen)
         auto_layout.addLayout(interval_row)
 
         self.lbl_det_status = QLabel("Last Run: -")
@@ -15296,6 +16448,8 @@ Command Line :
 
         self.chk_auto_det.stateChanged.connect(self.toggle_det_timer)
         self.chk_auto_mail.stateChanged.connect(self.toggle_mail_timer)
+        self.chk_auto_dlp.stateChanged.connect(self.toggle_dlp_timer)
+        self.chk_auto_mailscreen.stateChanged.connect(self.toggle_mailscreen_timer)
         self.spin_interval.valueChanged.connect(self.update_auto_interval)
 
         # ==================================================
@@ -15439,7 +16593,7 @@ Command Line :
 
         export_layout.addLayout(xdr_layout)
 
-        # Email Export
+        # Inbound Mail Export
         mail_layout = QHBoxLayout()
         mail_layout.setSpacing(8)
         mail_layout.setContentsMargins(0, 0, 0, 0)
@@ -15458,7 +16612,7 @@ Command Line :
         self.mail_export_start_time.setDisplayFormat("HH:mm:ss")
         self.mail_export_end_time.setDisplayFormat("HH:mm:ss")
 
-        btn_mail_export = QPushButton("Download Email Excel")
+        btn_mail_export = QPushButton("Download Inbound Mail Excel")
         btn_mail_export.setStyleSheet(btn_style)
         btn_mail_export.clicked.connect(self.export_email_excel)
 
@@ -15517,6 +16671,45 @@ Command Line :
         dlp_layout.addWidget(btn_dlp_export, 1)
 
         export_layout.addLayout(dlp_layout)
+
+        # MailScreen Export
+        mailscreen_layout = QHBoxLayout()
+        mailscreen_layout.setSpacing(8)
+        mailscreen_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.mailscreen_export_start_date = QDateEdit()
+        self.mailscreen_export_start_time = QTimeEdit()
+        self.mailscreen_export_end_date = QDateEdit()
+        self.mailscreen_export_end_time = QTimeEdit()
+
+        self.mailscreen_export_start_date.setDate(today.addDays(-6))
+        self.mailscreen_export_end_date.setDate(today)
+        self.mailscreen_export_start_date.setCalendarPopup(True)
+        self.mailscreen_export_end_date.setCalendarPopup(True)
+        self.mailscreen_export_start_time.setTime(QTime(0, 0, 0))
+        self.mailscreen_export_end_time.setTime(QTime(23, 59, 59))
+        self.mailscreen_export_start_time.setDisplayFormat("HH:mm:ss")
+        self.mailscreen_export_end_time.setDisplayFormat("HH:mm:ss")
+
+        mailscreen_export_spacer = QLabel("")
+        btn_mailscreen_export = QPushButton("Download MailScreen Excel")
+        btn_mailscreen_export.setStyleSheet(btn_style)
+        btn_mailscreen_export.clicked.connect(self.export_mailscreen_excel)
+
+        for w in [self.mailscreen_export_start_date, self.mailscreen_export_start_time,
+                  self.mailscreen_export_end_date, self.mailscreen_export_end_time]:
+            self.prepare_form_control(w, height=38)
+        btn_mailscreen_export.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        btn_mailscreen_export.setMinimumHeight(38)
+
+        mailscreen_layout.addWidget(self.mailscreen_export_start_date, 1)
+        mailscreen_layout.addWidget(self.mailscreen_export_start_time, 1)
+        mailscreen_layout.addWidget(self.mailscreen_export_end_date, 1)
+        mailscreen_layout.addWidget(self.mailscreen_export_end_time, 1)
+        mailscreen_layout.addWidget(mailscreen_export_spacer, 1)
+        mailscreen_layout.addWidget(btn_mailscreen_export, 1)
+
+        export_layout.addLayout(mailscreen_layout)
 
         layout.addWidget(export_card)
 
@@ -17560,7 +18753,7 @@ Command Line :
         emails = load_emails_by_range(start, end)
 
         if not emails:
-            QMessageBox.information(self, "Info", "No Email Data")
+            QMessageBox.information(self, "Info", "No Inbound Mail Data")
             return
 
         path = os.path.join(EXPORT_DIR, f"Email_{start}_{end}.xlsx")
@@ -17602,12 +18795,12 @@ Command Line :
                 })
 
         if not rows:
-            QMessageBox.information(self, "Info", "No Email Data")
+            QMessageBox.information(self, "Info", "No Inbound Mail Data")
             return
 
         df = pd.DataFrame(rows)
         df.to_excel(path, index=False)
-        QMessageBox.information(self, "Export", f"Email Excel saved\n{path}")
+        QMessageBox.information(self, "Export", f"Inbound Mail Excel saved\n{path}")
 
     def export_dlp_excel(self):
         try:
@@ -17686,24 +18879,108 @@ Command Line :
         except Exception as e:
             QMessageBox.critical(self, "DLP Export Error", str(e))
 
+    def export_mailscreen_excel(self):
+        try:
+            os.makedirs(EXPORT_DIR, exist_ok=True)
+
+            start_dt = combine_date_time(self.mailscreen_export_start_date, self.mailscreen_export_start_time)
+            end_dt = combine_date_time(self.mailscreen_export_end_date, self.mailscreen_export_end_time)
+
+            start_date = start_dt.strftime("%Y-%m-%d")
+            end_date = end_dt.strftime("%Y-%m-%d")
+
+            rows = load_mailscreen_by_range(start_date, end_date)
+            filtered_rows = []
+
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+
+                enriched = enrich_mailscreen_sender_fields(row)
+                event_dt = timeline_parse_dt(enriched.get("date"))
+                if not event_dt:
+                    continue
+
+                if event_dt < start_dt or event_dt > end_dt:
+                    continue
+
+                filtered_rows.append({
+                    "SEQ": str(enriched.get("seq", "None")),
+                    "날짜": str(enriched.get("date", "None")),
+                    "메일 처리": str(enriched.get("mail_process", "None")),
+                    "전송 결과": str(enriched.get("send_result", "None")),
+                    "전송 상세": str(enriched.get("send_detail", "None")),
+                    "첨부": str(enriched.get("attach", "None")),
+                    "제목": str(enriched.get("subject", "None")),
+                    "발신자 이메일": str(enriched.get("sender_email", "None")),
+                    "발신자 명": str(enriched.get("sender_name", "None")),
+                    "발신자 User ID": str(enriched.get("sender_user_id", "None")),
+                    "소속": str(enriched.get("sender_dept", "None")),
+                    "발신자 상세": str(enriched.get("sender_detail", "None")),
+                    "수신자": str(enriched.get("receiver", "None")),
+                    "수신자 상세": str(enriched.get("receiver_detail", "None")),
+                    "크기": str(enriched.get("size", "None")),
+                    "적용 정책": str(enriched.get("policy", "None")),
+                    "처리 날짜": str(enriched.get("process_date", "None")),
+                    "결재자": str(enriched.get("approver", "None")),
+                    "RawData": json.dumps(enriched, ensure_ascii=False),
+                })
+
+            if not filtered_rows:
+                QMessageBox.information(self, "MailScreen Export", "조건에 맞는 MailScreen 데이터가 없습니다.")
+                return
+
+            df = pd.DataFrame(filtered_rows)
+            file_name = f"mailscreen_export_{start_date}_{end_date}.xlsx"
+            path = get_unique_path(os.path.join(EXPORT_DIR, file_name))
+
+            df.to_excel(path, index=False)
+
+            QMessageBox.information(
+                self,
+                "MailScreen Export",
+                f"MailScreen Excel 저장 완료\n{path}"
+            )
+
+        except Exception as e:
+            QMessageBox.critical(self, "MailScreen Export Error", str(e))
+
 
     def auto_refresh_detection(self):
 
         if self.running:
-            self.auto_pending = "Detection"
+            self.auto_index_after_refresh = True
+            self.queue_auto_refresh_job("Detection")
             return
 
-        self.run_refresh("Detection")
+        self.run_auto_refresh_job("Detection")
 
     def auto_refresh_email(self):
 
         print("AUTO EMAIL TRIGGER / running =", self.running)
 
         if self.running:
-            self.auto_pending = "Email"
+            self.auto_index_after_refresh = True
+            self.queue_auto_refresh_job("Email")
             return
 
-        self.run_refresh("Email")
+        self.run_auto_refresh_job("Email")
+
+    def auto_refresh_dlp(self):
+        if self.running:
+            self.auto_index_after_refresh = True
+            self.queue_auto_refresh_job("DLP")
+            return
+
+        self.run_auto_refresh_job("DLP")
+
+    def auto_refresh_mailscreen(self):
+        if self.running:
+            self.auto_index_after_refresh = True
+            self.queue_auto_refresh_job("MailScreen")
+            return
+
+        self.run_auto_refresh_job("MailScreen")
 
     def update_auto_interval(self):
         interval = self.spin_interval.value() * 60 * 1000
@@ -17713,6 +18990,12 @@ Command Line :
 
         if self.mail_timer.isActive():
             self.mail_timer.start(interval)
+
+        if self.dlp_timer.isActive():
+            self.dlp_timer.start(interval)
+
+        if self.mailscreen_timer.isActive():
+            self.mailscreen_timer.start(interval)
 
     def toggle_det_timer(self, state):
         if state:
@@ -17742,6 +19025,22 @@ Command Line :
             self.mail_timer.start(interval)
         else:
             self.mail_timer.stop()
+
+    def toggle_dlp_timer(self, state):
+        if state:
+            interval = self.spin_interval.value() * 60 * 1000
+            self.auto_refresh_dlp()
+            self.dlp_timer.start(interval)
+        else:
+            self.dlp_timer.stop()
+
+    def toggle_mailscreen_timer(self, state):
+        if state:
+            interval = self.spin_interval.value() * 60 * 1000
+            self.auto_refresh_mailscreen()
+            self.mailscreen_timer.start(interval)
+        else:
+            self.mailscreen_timer.stop()
 
     def excepthook(exc_type, exc_value, exc_traceback):
         error_msg = "".join(traceback.format_exception(exc_type, exc_value, exc_traceback))
