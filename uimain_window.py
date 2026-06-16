@@ -11510,14 +11510,18 @@ class MainWindow(QMainWindow):
         self.apply_date_range()
 
         # 🔥 자동 상태 표시 추가
-        if tab_name in ("Detection", "Email"):
+        if tab_name in ("Detection", "Email", "DLP", "MailScreen"):
             self.update_auto_status(tab_name, True)
             auto_logger.info(f"[{tab_name}] AUTO REFRESH SUCCESS")
 
         # 🔥 자동 대기 작업 처리
         if self.auto_index_after_refresh:
+            if self.auto_pending:
+                self.run_next_auto_pending()
+                return
+
             self.auto_index_after_refresh = False
-            self.auto_continue_after_index = True
+            self.auto_continue_after_index = False
             self.run_data_index()
             return
 
@@ -11530,7 +11534,7 @@ class MainWindow(QMainWindow):
         self._spin_timer.stop()
         self.set_status(f"{tab_name} FAIL", color="red")
 
-        if tab_name in ("Detection", "Email"):
+        if tab_name in ("Detection", "Email", "DLP", "MailScreen"):
             self.update_auto_status(tab_name, False)
             auto_logger.error(f"[{tab_name}] AUTO REFRESH FAIL - {err}")
 
@@ -16262,7 +16266,7 @@ Command Line :
         self.mailscreen_refresh_date.setDisplayFormat("yyyy-MM-dd")
 
         btn_dlp_refresh = QPushButton("DLP 데이터 최신화")
-        btn_mailscreen_refresh = QPushButton("MS 데이터 최신화")
+        btn_mailscreen_refresh = QPushButton("Outbound Mail 데이터 최신화")
 
         # ===== Detection 기간 선택 =====
         self.det_start_date = QDateEdit()
@@ -16389,7 +16393,7 @@ Command Line :
         self.chk_auto_det = QCheckBox("Detection - XDR Auto Refresh")
         self.chk_auto_mail = QCheckBox("Inbound Mail Auto Refresh")
         self.chk_auto_dlp = QCheckBox("DLP Auto Refresh")
-        self.chk_auto_mailscreen = QCheckBox("MailScreen Auto Refresh")
+        self.chk_auto_mailscreen = QCheckBox("Outbound Mail Auto Refresh")
 
         auto_checkbox_style = (
             f"QCheckBox {{ color:{UI_THEME['text']}; font-size:13px; font-weight:800; spacing:8px; }}"
@@ -16427,24 +16431,40 @@ Command Line :
         auto_layout.addWidget(self.chk_auto_mailscreen)
         auto_layout.addLayout(interval_row)
 
-        self.lbl_det_status = QLabel("Last Run: -")
-        self.lbl_det_result = QLabel("Status: -")
+        auto_status_grid = QGridLayout()
+        auto_status_grid.setContentsMargins(0, 4, 0, 0)
+        auto_status_grid.setHorizontalSpacing(8)
+        auto_status_grid.setVerticalSpacing(2)
 
-        self.lbl_mail_status = QLabel("Last Run: -")
-        self.lbl_mail_result = QLabel("Status: -")
+        self.lbl_det_status = QLabel("-")
+        self.lbl_det_result = QLabel("-")
+        self.lbl_mail_status = QLabel("-")
+        self.lbl_mail_result = QLabel("-")
+        self.lbl_dlp_status = QLabel("-")
+        self.lbl_dlp_result = QLabel("-")
+        self.lbl_mailscreen_status = QLabel("-")
+        self.lbl_mailscreen_result = QLabel("-")
 
-        for label in [
-            self.lbl_det_status,
-            self.lbl_det_result,
-            self.lbl_mail_status,
-            self.lbl_mail_result,
-        ]:
-            label.setStyleSheet("color:#374151; font-size:13px; font-weight:600;")
+        auto_status_columns = [
+            ("Detection", self.lbl_det_status, self.lbl_det_result),
+            ("Inbound", self.lbl_mail_status, self.lbl_mail_result),
+            ("DLP", self.lbl_dlp_status, self.lbl_dlp_result),
+            ("Outbound", self.lbl_mailscreen_status, self.lbl_mailscreen_result),
+        ]
+        for col, (title, last_label, result_label) in enumerate(auto_status_columns):
+            title_label = QLabel(title)
+            title_label.setAlignment(Qt.AlignCenter)
+            title_label.setStyleSheet(f"color:{UI_THEME['accent_text']}; font-size:10px; font-weight:800;")
+            last_label.setAlignment(Qt.AlignCenter)
+            result_label.setAlignment(Qt.AlignCenter)
+            last_label.setStyleSheet("color:#374151; font-size:10px; font-weight:600;")
+            result_label.setStyleSheet("color:#374151; font-size:10px; font-weight:700;")
+            auto_status_grid.addWidget(title_label, 0, col)
+            auto_status_grid.addWidget(last_label, 1, col)
+            auto_status_grid.addWidget(result_label, 2, col)
+            auto_status_grid.setColumnStretch(col, 1)
 
-        auto_layout.addWidget(self.lbl_det_status)
-        auto_layout.addWidget(self.lbl_det_result)
-        auto_layout.addWidget(self.lbl_mail_status)
-        auto_layout.addWidget(self.lbl_mail_result)
+        auto_layout.addLayout(auto_status_grid)
 
         self.chk_auto_det.stateChanged.connect(self.toggle_det_timer)
         self.chk_auto_mail.stateChanged.connect(self.toggle_mail_timer)
@@ -16692,7 +16712,7 @@ Command Line :
         self.mailscreen_export_end_time.setDisplayFormat("HH:mm:ss")
 
         mailscreen_export_spacer = QLabel("")
-        btn_mailscreen_export = QPushButton("Download MailScreen Excel")
+        btn_mailscreen_export = QPushButton("Download Outbound Mail Excel")
         btn_mailscreen_export.setStyleSheet(btn_style)
         btn_mailscreen_export.clicked.connect(self.export_mailscreen_excel)
 
@@ -18541,6 +18561,27 @@ Command Line :
 
     def update_auto_status(self, kind, success=True):
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        short_now = datetime.now().strftime("%m-%d %H:%M")
+
+        targets = {
+            "Detection": (self.lbl_det_status, self.lbl_det_result),
+            "Email": (self.lbl_mail_status, self.lbl_mail_result),
+            "DLP": (self.lbl_dlp_status, self.lbl_dlp_result),
+            "MailScreen": (self.lbl_mailscreen_status, self.lbl_mailscreen_result),
+        }
+
+        if kind in targets:
+            last_label, result_label = targets[kind]
+            last_label.setToolTip(f"Last Run: {now}")
+            last_label.setText(short_now)
+
+            if success:
+                result_label.setText("SUCCESS")
+                result_label.setStyleSheet(f"color:{UI_THEME['status_success_text']}; font-size:10px; font-weight:800;")
+            else:
+                result_label.setText("FAILED")
+                result_label.setStyleSheet(f"color:{UI_THEME['status_fail_text']}; font-size:10px; font-weight:800;")
+            return
 
         if kind == "Detection":
             self.lbl_det_status.setText(f"Last Run: {now}")
@@ -18927,7 +18968,7 @@ Command Line :
                 })
 
             if not filtered_rows:
-                QMessageBox.information(self, "MailScreen Export", "조건에 맞는 MailScreen 데이터가 없습니다.")
+                QMessageBox.information(self, "Outbound Mail Export", "조건에 맞는 Outbound Mail 데이터가 없습니다.")
                 return
 
             df = pd.DataFrame(filtered_rows)
@@ -18938,12 +18979,12 @@ Command Line :
 
             QMessageBox.information(
                 self,
-                "MailScreen Export",
-                f"MailScreen Excel 저장 완료\n{path}"
+                "Outbound Mail Export",
+                f"Outbound Mail Excel 저장 완료\n{path}"
             )
 
         except Exception as e:
-            QMessageBox.critical(self, "MailScreen Export Error", str(e))
+            QMessageBox.critical(self, "Outbound Mail Export Error", str(e))
 
 
     def auto_refresh_detection(self):
