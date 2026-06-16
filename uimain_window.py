@@ -3212,6 +3212,19 @@ def make_timeline_event(time_text, source, user, user_id, dept, asset, event, di
     }
 
 
+TIMELINE_SOURCE_DISPLAY_NAMES = {
+    "Detection": "Detection - XDR",
+    "XDR": "Email - XDR",
+    "Email": "Inbound Mail",
+    "Outbound Mail": "Outbound Mail",
+    "File": "File",
+}
+
+
+def timeline_source_display_name(source):
+    return TIMELINE_SOURCE_DISPLAY_NAMES.get(str(source or ""), str(source or "None"))
+
+
 def timeline_event_matches(event, ctx):
     for value in event.get("match_values", []):
         if timeline_value_matches_context(value, ctx):
@@ -3850,7 +3863,7 @@ class TimelineSearchWorker(QThread):
             if "Detection" in self.sources or "XDR" in self.sources:
                 paths = iter_json_files(DETECTIONS_DAY_DIR, ".json")
                 for idx, path in enumerate(paths, start=1):
-                    self.progress.emit(f"Detection/XDR 캐시 검색중 {idx}/{len(paths)}")
+                    self.progress.emit(f"Detection - XDR / Email - XDR 캐시 검색중 {idx}/{len(paths)}")
                     files_scanned += 1
                     try:
                         with open(path, "r", encoding="utf-8") as f:
@@ -3873,7 +3886,7 @@ class TimelineSearchWorker(QThread):
             if "Email" in self.sources:
                 paths = iter_json_files(EMAILS_DAY_DIR, ".json")
                 for idx, path in enumerate(paths, start=1):
-                    self.progress.emit(f"Email 캐시 검색중 {idx}/{len(paths)}")
+                    self.progress.emit(f"Inbound Mail 캐시 검색중 {idx}/{len(paths)}")
                     files_scanned += 1
                     try:
                         with open(path, "r", encoding="utf-8") as f:
@@ -3958,7 +3971,8 @@ class TimelineEventCard(QFrame):
         layout.setContentsMargins(12, 10, 12, 10)
         layout.setSpacing(4)
 
-        title = QLabel(f"{group.get('bucket', 'None')}  [{group.get('source', 'None')}]  {group.get('event', 'None')}  {group.get('count', 0)}건")
+        source_label = timeline_source_display_name(group.get("source", "None"))
+        title = QLabel(f"{group.get('bucket', 'None')}  [{source_label}]  {group.get('event', 'None')}  {group.get('count', 0)}건")
         title.setStyleSheet(f"color:{color}; font-weight:900; font-size:12px;")
         title.setWordWrap(True)
         user = QLabel(f"User: {group.get('user', 'None')} / {group.get('user_id', 'None')} / {group.get('dept', '미분류')}")
@@ -7434,7 +7448,7 @@ class MainWindow(QMainWindow):
             "Detection - XDR Summary": "shield",
             "Detection Summary": "shield",
             "Email - XDR Summary": "radar",
-            "Email Summary": "mail",
+            "Inbound Mail Summary": "mail",
             "File Summary": "file",
             "Cache Data": "database",
             "Auto Refresh": "refresh",
@@ -11449,7 +11463,7 @@ class MainWindow(QMainWindow):
         end_date = end_qdate.toString("yyyy-MM-dd")
 
         self.running = True
-        self.set_status("Email refresh", color="blue", spinning=True)
+        self.set_status("Inbound Mail refresh", color="blue", spinning=True)
 
         self.worker = RefreshWorker(
             job_name="Email",
@@ -12229,14 +12243,14 @@ Command Line :
         bottom_container.addWidget(top_card, 1)
 
         # -------------------------
-        # 오른쪽 : Detection / XDR / Email Summary
+        # 오른쪽 : Detection / XDR / Inbound Mail Summary
         # -------------------------
         right_box = QGridLayout()
         right_box.setSpacing(15)
 
         self.card_det_summary = self.make_scroll_stat_card("Detection - XDR Summary", "")
         self.card_xdr_summary = self.make_scroll_stat_card("Email - XDR Summary", "")
-        self.card_email_summary = self.make_scroll_stat_card("Email Summary", "")
+        self.card_email_summary = self.make_scroll_stat_card("Inbound Mail Summary", "")
         self.card_file_summary = self.make_scroll_stat_card("File Summary", "")
 
         right_box.addWidget(self.card_det_summary, 0, 0)
@@ -12789,6 +12803,7 @@ Command Line :
                 "color": self.trend_colors.get("Detection - XDR", UI_THEME["accent"]),
                 "offset": (-14, 8),
                 "ha": "right",
+                "va": "bottom",
             },
             {
                 "name": "Email - XDR",
@@ -12796,13 +12811,15 @@ Command Line :
                 "color": self.trend_colors.get("Email - XDR", UI_THEME["accent_light"]),
                 "offset": (14, 8),
                 "ha": "left",
+                "va": "bottom",
             },
             {
                 "name": "Inbound Mail",
                 "values": mail_values,
                 "color": self.trend_colors.get("Email", "#14b8a6"),
-                "offset": (-14, 10),
+                "offset": (-14, -12),
                 "ha": "right",
+                "va": "top",
             },
             {
                 "name": "Outbound Mail",
@@ -12810,13 +12827,15 @@ Command Line :
                 "color": self.trend_colors.get("Outbound Mail", "#ec4899"),
                 "offset": (14, -16),
                 "ha": "left",
+                "va": "top",
             },
             {
                 "name": "File",
                 "values": file_values,
                 "color": self.trend_colors.get("File", "#f59e0b"),
-                "offset": (14, 10),
-                "ha": "left",
+                "offset": (0, 0),
+                "ha": "center",
+                "va": "center",
             },
         ]
         active_series = [s for s in trend_series if self.trend_visibility.get(s["name"], True)]
@@ -12885,7 +12904,7 @@ Command Line :
                     fontweight="bold",
                     color=series["color"],
                     ha=series["ha"],
-                    va="bottom",
+                    va=series["va"],
                     zorder=5
                 )
                 txt.set_path_effects([
@@ -15258,11 +15277,11 @@ Command Line :
         self.timeline_status_label = QLabel("날짜 선택과 무관하게 전체 캐시에서 검색합니다.")
         self.timeline_status_label.setStyleSheet(f"color:{UI_THEME['text_muted']}; font-weight:700;")
 
-        self.timeline_chk_detection = QCheckBox("탐지")
-        self.timeline_chk_xdr = QCheckBox("XDR")
-        self.timeline_chk_email = QCheckBox("이메일")
-        self.timeline_chk_outbound_mail = QCheckBox("아웃바운드")
-        self.timeline_chk_file = QCheckBox("파일")
+        self.timeline_chk_detection = QCheckBox("Detection - XDR")
+        self.timeline_chk_xdr = QCheckBox("Email - XDR")
+        self.timeline_chk_email = QCheckBox("Inbound Mail")
+        self.timeline_chk_outbound_mail = QCheckBox("Outbound Mail")
+        self.timeline_chk_file = QCheckBox("File")
         timeline_source_checks = [
             self.timeline_chk_detection,
             self.timeline_chk_xdr,
@@ -15273,7 +15292,7 @@ Command Line :
         for chk in timeline_source_checks:
             chk.setChecked(True)
             chk.setMinimumHeight(32)
-            chk.setMinimumWidth(78)
+            chk.setMinimumWidth(118)
             chk.setStyleSheet(f"""
                 QCheckBox {{
                     color: {UI_THEME['text']};
@@ -15434,8 +15453,9 @@ Command Line :
             visible_items = items[:TIMELINE_DETAIL_ROW_LIMIT]
             self.timeline_detail_panel.show()
             suffix = "" if len(visible_items) == len(items) else f" / 상위 {len(visible_items):,}건 표시"
+            source_label = timeline_source_display_name(group.get("source", "None"))
             self.timeline_detail_title.setText(
-                f"{group.get('bucket', 'None')} [{group.get('source', 'None')}] {group.get('event', 'None')} - {len(items):,}건{suffix}"
+                f"{group.get('bucket', 'None')} [{source_label}] {group.get('event', 'None')} - {len(items):,}건{suffix}"
             )
             table = self.timeline_detail_table
             table.setSortingEnabled(False)
@@ -15446,7 +15466,7 @@ Command Line :
                 table.insertRow(r)
                 values = [
                     event.get("time", "None"),
-                    event.get("source", "None"),
+                    timeline_source_display_name(event.get("source", "None")),
                     event.get("user", "None"),
                     event.get("user_id", "None"),
                     event.get("dept", "미분류"),
@@ -16171,7 +16191,7 @@ Command Line :
         cache_card, cache_layout = self.make_card("Cache Data", legacy_title=True)
 
         btn_det_refresh = QPushButton("탐지 데이터 최신화")
-        btn_mail_refresh = QPushButton("이메일 데이터 최신화")
+        btn_mail_refresh = QPushButton("Inbound Mail 데이터 최신화")
         btn_endpoint_refresh = QPushButton("엔드포인트 데이터 최신화")
         btn_org_refresh = QPushButton("조직도 데이터 최신화")
         btn_user_refresh = QPushButton("유저 데이터 최신화")
@@ -16202,7 +16222,7 @@ Command Line :
         self.det_end_date.setDisplayFormat("yyyy-MM-dd")
         self.det_end_date.setMinimumHeight(36)
 
-        # ===== Email 기간 선택 =====
+        # ===== Inbound Mail 기간 선택 =====
         self.mail_start_date = QDateEdit()
         self.mail_start_date.setCalendarPopup(True)
         self.mail_start_date.setDate(QDate.currentDate().addDays(-6))
@@ -16312,7 +16332,7 @@ Command Line :
         auto_card, auto_layout = self.make_card("Auto Refresh", legacy_title=True)
 
         self.chk_auto_det = QCheckBox("Detection Auto Refresh")
-        self.chk_auto_mail = QCheckBox("Email Auto Refresh")
+        self.chk_auto_mail = QCheckBox("Inbound Mail Auto Refresh")
 
         self.spin_interval = QSpinBox()
         self.spin_interval.setObjectName("intervalSpin")
@@ -16504,7 +16524,7 @@ Command Line :
 
         export_layout.addLayout(xdr_layout)
 
-        # Email Export
+        # Inbound Mail Export
         mail_layout = QHBoxLayout()
         mail_layout.setSpacing(8)
         mail_layout.setContentsMargins(0, 0, 0, 0)
@@ -16523,7 +16543,7 @@ Command Line :
         self.mail_export_start_time.setDisplayFormat("HH:mm:ss")
         self.mail_export_end_time.setDisplayFormat("HH:mm:ss")
 
-        btn_mail_export = QPushButton("Download Email Excel")
+        btn_mail_export = QPushButton("Download Inbound Mail Excel")
         btn_mail_export.setStyleSheet(btn_style)
         btn_mail_export.clicked.connect(self.export_email_excel)
 
@@ -18625,7 +18645,7 @@ Command Line :
         emails = load_emails_by_range(start, end)
 
         if not emails:
-            QMessageBox.information(self, "Info", "No Email Data")
+            QMessageBox.information(self, "Info", "No Inbound Mail Data")
             return
 
         path = os.path.join(EXPORT_DIR, f"Email_{start}_{end}.xlsx")
@@ -18667,12 +18687,12 @@ Command Line :
                 })
 
         if not rows:
-            QMessageBox.information(self, "Info", "No Email Data")
+            QMessageBox.information(self, "Info", "No Inbound Mail Data")
             return
 
         df = pd.DataFrame(rows)
         df.to_excel(path, index=False)
-        QMessageBox.information(self, "Export", f"Email Excel saved\n{path}")
+        QMessageBox.information(self, "Export", f"Inbound Mail Excel saved\n{path}")
 
     def export_dlp_excel(self):
         try:
