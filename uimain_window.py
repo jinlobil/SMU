@@ -6735,7 +6735,9 @@ class MainWindow(QMainWindow):
         self.color_config = ensure_color_env_file()
         apply_color_config_to_theme(self.color_config)
 
-        self.auto_pending = None
+        self.auto_pending = []
+        self.auto_index_after_refresh = False
+        self.auto_continue_after_index = False
 
         self.dashboard_range = ""
         self.detection_range = ""
@@ -6798,6 +6800,12 @@ class MainWindow(QMainWindow):
 
         self.mail_timer = QTimer()
         self.mail_timer.timeout.connect(self.auto_refresh_email)
+
+        self.dlp_timer = QTimer()
+        self.dlp_timer.timeout.connect(self.auto_refresh_dlp)
+
+        self.mailscreen_timer = QTimer()
+        self.mailscreen_timer.timeout.connect(self.auto_refresh_mailscreen)
 
         # 🔥 캘린더 UI
         self.start_date_edit = QDateEdit()
@@ -11507,10 +11515,13 @@ class MainWindow(QMainWindow):
             auto_logger.info(f"[{tab_name}] AUTO REFRESH SUCCESS")
 
         # 🔥 자동 대기 작업 처리
-        if self.auto_pending:
-            next_job = self.auto_pending
-            self.auto_pending = None
-            self.run_refresh(next_job)
+        if self.auto_index_after_refresh:
+            self.auto_index_after_refresh = False
+            self.auto_continue_after_index = True
+            self.run_data_index()
+            return
+
+        self.run_next_auto_pending()
 
 
     def _on_refresh_fail(self, tab_name, err):
@@ -11522,6 +11533,11 @@ class MainWindow(QMainWindow):
         if tab_name in ("Detection", "Email"):
             self.update_auto_status(tab_name, False)
             auto_logger.error(f"[{tab_name}] AUTO REFRESH FAIL - {err}")
+
+        if self.auto_index_after_refresh:
+            self.auto_index_after_refresh = False
+            self.auto_continue_after_index = False
+            self.run_next_auto_pending()
 
     # ==================================================
     # Context menu (right click)
@@ -16167,12 +16183,51 @@ Command Line :
         self.lbl_index_tokens.setText(f"Search Tokens: {int(stats.get('tokens', 0)):,}")
         self.lbl_index_files.setText(f"Cache Files: {int(stats.get('data_total_files', stats.get('files', 0))):,}")
 
+        if self.auto_continue_after_index:
+            self.auto_continue_after_index = False
+            self.run_next_auto_pending()
+
     def _on_data_index_fail(self, err):
         self.btn_data_index.setEnabled(True)
         self._spin_timer.stop()
         self.set_status("Data index FAIL", color="red", spinning=False)
         self.lbl_index_status.setText(f"Status: FAIL - {err}")
+        self.auto_continue_after_index = False
         QMessageBox.critical(self, "Data Index 실패", err)
+
+    def queue_auto_refresh_job(self, job_name):
+        pending = self.auto_pending
+        if isinstance(pending, str):
+            pending = [pending]
+        elif not isinstance(pending, list):
+            pending = []
+
+        if job_name not in pending:
+            pending.append(job_name)
+
+        self.auto_pending = pending
+
+    def run_next_auto_pending(self):
+        pending = self.auto_pending
+        if isinstance(pending, str):
+            pending = [pending]
+
+        if not pending:
+            self.auto_pending = []
+            return
+
+        next_job = pending.pop(0)
+        self.auto_pending = pending
+        self.run_auto_refresh_job(next_job)
+
+    def run_auto_refresh_job(self, job_name):
+        self.auto_index_after_refresh = True
+        if job_name == "DLP":
+            self.run_refresh_dlp()
+        elif job_name == "MailScreen":
+            self.run_refresh_mailscreen()
+        else:
+            self.run_refresh(job_name)
 
     def tab_config(self):
         btn_style = self.button_style("primary")
@@ -16331,8 +16386,18 @@ Command Line :
         # ==================================================
         auto_card, auto_layout = self.make_card("Auto Refresh", legacy_title=True)
 
-        self.chk_auto_det = QCheckBox("Detection Auto Refresh")
+        self.chk_auto_det = QCheckBox("Detection - XDR Auto Refresh")
         self.chk_auto_mail = QCheckBox("Inbound Mail Auto Refresh")
+        self.chk_auto_dlp = QCheckBox("DLP Auto Refresh")
+        self.chk_auto_mailscreen = QCheckBox("MailScreen Auto Refresh")
+
+        auto_checkbox_style = (
+            f"QCheckBox {{ color:{UI_THEME['text']}; font-size:13px; font-weight:800; spacing:8px; }}"
+            f"QCheckBox::indicator {{ width:16px; height:16px; }}"
+        )
+        for chk in [self.chk_auto_det, self.chk_auto_mail, self.chk_auto_dlp, self.chk_auto_mailscreen]:
+            chk.setStyleSheet(auto_checkbox_style)
+            chk.setMinimumHeight(22)
 
         self.spin_interval = QSpinBox()
         self.spin_interval.setObjectName("intervalSpin")
@@ -16358,6 +16423,8 @@ Command Line :
 
         auto_layout.addWidget(self.chk_auto_det)
         auto_layout.addWidget(self.chk_auto_mail)
+        auto_layout.addWidget(self.chk_auto_dlp)
+        auto_layout.addWidget(self.chk_auto_mailscreen)
         auto_layout.addLayout(interval_row)
 
         self.lbl_det_status = QLabel("Last Run: -")
@@ -16381,6 +16448,8 @@ Command Line :
 
         self.chk_auto_det.stateChanged.connect(self.toggle_det_timer)
         self.chk_auto_mail.stateChanged.connect(self.toggle_mail_timer)
+        self.chk_auto_dlp.stateChanged.connect(self.toggle_dlp_timer)
+        self.chk_auto_mailscreen.stateChanged.connect(self.toggle_mailscreen_timer)
         self.spin_interval.valueChanged.connect(self.update_auto_interval)
 
         # ==================================================
@@ -16602,6 +16671,45 @@ Command Line :
         dlp_layout.addWidget(btn_dlp_export, 1)
 
         export_layout.addLayout(dlp_layout)
+
+        # MailScreen Export
+        mailscreen_layout = QHBoxLayout()
+        mailscreen_layout.setSpacing(8)
+        mailscreen_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.mailscreen_export_start_date = QDateEdit()
+        self.mailscreen_export_start_time = QTimeEdit()
+        self.mailscreen_export_end_date = QDateEdit()
+        self.mailscreen_export_end_time = QTimeEdit()
+
+        self.mailscreen_export_start_date.setDate(today.addDays(-6))
+        self.mailscreen_export_end_date.setDate(today)
+        self.mailscreen_export_start_date.setCalendarPopup(True)
+        self.mailscreen_export_end_date.setCalendarPopup(True)
+        self.mailscreen_export_start_time.setTime(QTime(0, 0, 0))
+        self.mailscreen_export_end_time.setTime(QTime(23, 59, 59))
+        self.mailscreen_export_start_time.setDisplayFormat("HH:mm:ss")
+        self.mailscreen_export_end_time.setDisplayFormat("HH:mm:ss")
+
+        mailscreen_export_spacer = QLabel("")
+        btn_mailscreen_export = QPushButton("Download MailScreen Excel")
+        btn_mailscreen_export.setStyleSheet(btn_style)
+        btn_mailscreen_export.clicked.connect(self.export_mailscreen_excel)
+
+        for w in [self.mailscreen_export_start_date, self.mailscreen_export_start_time,
+                  self.mailscreen_export_end_date, self.mailscreen_export_end_time]:
+            self.prepare_form_control(w, height=38)
+        btn_mailscreen_export.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        btn_mailscreen_export.setMinimumHeight(38)
+
+        mailscreen_layout.addWidget(self.mailscreen_export_start_date, 1)
+        mailscreen_layout.addWidget(self.mailscreen_export_start_time, 1)
+        mailscreen_layout.addWidget(self.mailscreen_export_end_date, 1)
+        mailscreen_layout.addWidget(self.mailscreen_export_end_time, 1)
+        mailscreen_layout.addWidget(mailscreen_export_spacer, 1)
+        mailscreen_layout.addWidget(btn_mailscreen_export, 1)
+
+        export_layout.addLayout(mailscreen_layout)
 
         layout.addWidget(export_card)
 
@@ -18771,24 +18879,108 @@ Command Line :
         except Exception as e:
             QMessageBox.critical(self, "DLP Export Error", str(e))
 
+    def export_mailscreen_excel(self):
+        try:
+            os.makedirs(EXPORT_DIR, exist_ok=True)
+
+            start_dt = combine_date_time(self.mailscreen_export_start_date, self.mailscreen_export_start_time)
+            end_dt = combine_date_time(self.mailscreen_export_end_date, self.mailscreen_export_end_time)
+
+            start_date = start_dt.strftime("%Y-%m-%d")
+            end_date = end_dt.strftime("%Y-%m-%d")
+
+            rows = load_mailscreen_by_range(start_date, end_date)
+            filtered_rows = []
+
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+
+                enriched = enrich_mailscreen_sender_fields(row)
+                event_dt = timeline_parse_dt(enriched.get("date"))
+                if not event_dt:
+                    continue
+
+                if event_dt < start_dt or event_dt > end_dt:
+                    continue
+
+                filtered_rows.append({
+                    "SEQ": str(enriched.get("seq", "None")),
+                    "날짜": str(enriched.get("date", "None")),
+                    "메일 처리": str(enriched.get("mail_process", "None")),
+                    "전송 결과": str(enriched.get("send_result", "None")),
+                    "전송 상세": str(enriched.get("send_detail", "None")),
+                    "첨부": str(enriched.get("attach", "None")),
+                    "제목": str(enriched.get("subject", "None")),
+                    "발신자 이메일": str(enriched.get("sender_email", "None")),
+                    "발신자 명": str(enriched.get("sender_name", "None")),
+                    "발신자 User ID": str(enriched.get("sender_user_id", "None")),
+                    "소속": str(enriched.get("sender_dept", "None")),
+                    "발신자 상세": str(enriched.get("sender_detail", "None")),
+                    "수신자": str(enriched.get("receiver", "None")),
+                    "수신자 상세": str(enriched.get("receiver_detail", "None")),
+                    "크기": str(enriched.get("size", "None")),
+                    "적용 정책": str(enriched.get("policy", "None")),
+                    "처리 날짜": str(enriched.get("process_date", "None")),
+                    "결재자": str(enriched.get("approver", "None")),
+                    "RawData": json.dumps(enriched, ensure_ascii=False),
+                })
+
+            if not filtered_rows:
+                QMessageBox.information(self, "MailScreen Export", "조건에 맞는 MailScreen 데이터가 없습니다.")
+                return
+
+            df = pd.DataFrame(filtered_rows)
+            file_name = f"mailscreen_export_{start_date}_{end_date}.xlsx"
+            path = get_unique_path(os.path.join(EXPORT_DIR, file_name))
+
+            df.to_excel(path, index=False)
+
+            QMessageBox.information(
+                self,
+                "MailScreen Export",
+                f"MailScreen Excel 저장 완료\n{path}"
+            )
+
+        except Exception as e:
+            QMessageBox.critical(self, "MailScreen Export Error", str(e))
+
 
     def auto_refresh_detection(self):
 
         if self.running:
-            self.auto_pending = "Detection"
+            self.auto_index_after_refresh = True
+            self.queue_auto_refresh_job("Detection")
             return
 
-        self.run_refresh("Detection")
+        self.run_auto_refresh_job("Detection")
 
     def auto_refresh_email(self):
 
         print("AUTO EMAIL TRIGGER / running =", self.running)
 
         if self.running:
-            self.auto_pending = "Email"
+            self.auto_index_after_refresh = True
+            self.queue_auto_refresh_job("Email")
             return
 
-        self.run_refresh("Email")
+        self.run_auto_refresh_job("Email")
+
+    def auto_refresh_dlp(self):
+        if self.running:
+            self.auto_index_after_refresh = True
+            self.queue_auto_refresh_job("DLP")
+            return
+
+        self.run_auto_refresh_job("DLP")
+
+    def auto_refresh_mailscreen(self):
+        if self.running:
+            self.auto_index_after_refresh = True
+            self.queue_auto_refresh_job("MailScreen")
+            return
+
+        self.run_auto_refresh_job("MailScreen")
 
     def update_auto_interval(self):
         interval = self.spin_interval.value() * 60 * 1000
@@ -18798,6 +18990,12 @@ Command Line :
 
         if self.mail_timer.isActive():
             self.mail_timer.start(interval)
+
+        if self.dlp_timer.isActive():
+            self.dlp_timer.start(interval)
+
+        if self.mailscreen_timer.isActive():
+            self.mailscreen_timer.start(interval)
 
     def toggle_det_timer(self, state):
         if state:
@@ -18827,6 +19025,22 @@ Command Line :
             self.mail_timer.start(interval)
         else:
             self.mail_timer.stop()
+
+    def toggle_dlp_timer(self, state):
+        if state:
+            interval = self.spin_interval.value() * 60 * 1000
+            self.auto_refresh_dlp()
+            self.dlp_timer.start(interval)
+        else:
+            self.dlp_timer.stop()
+
+    def toggle_mailscreen_timer(self, state):
+        if state:
+            interval = self.spin_interval.value() * 60 * 1000
+            self.auto_refresh_mailscreen()
+            self.mailscreen_timer.start(interval)
+        else:
+            self.mailscreen_timer.stop()
 
     def excepthook(exc_type, exc_value, exc_traceback):
         error_msg = "".join(traceback.format_exception(exc_type, exc_value, exc_traceback))
