@@ -9456,6 +9456,7 @@ class MainWindow(QMainWindow):
             endpoint_detections = load_endpoint_detections_by_range(start_date, end_date)
             xdr_detections_report = load_xdr_email_detections_by_range(start_date, end_date)
             emails = load_emails_by_range(start_date, end_date)
+            mailscreen_rows = load_mailscreen_by_range(start_date, end_date)
             dlp_rows = load_dlp_by_range(start_date, end_date)
             perf.mark("load data")
             progress("DLP 분석 중...")
@@ -9528,6 +9529,105 @@ class MainWindow(QMainWindow):
                 ],
                 key=lambda x: (-x["total"], x["dept_name"])
             )
+
+            # ── Outbound Mail(MailScreen) 부서/결재 집계 ─────────────────────────
+            outbound_rows = []
+            outbound_dept_stats = defaultdict(lambda: {
+                "total": 0,
+                "success": 0,
+                "fail": 0,
+                "approved": 0,
+                "rejected": 0,
+                "canceled": 0,
+                "senders": set(),
+                "receivers": Counter(),
+                "policies": Counter(),
+                "processes": Counter(),
+            })
+            outbound_process_counter = Counter()
+            outbound_policy_counter = Counter()
+            outbound_receiver_domain_counter = Counter()
+            outbound_success_count = 0
+            outbound_fail_count = 0
+
+            def _outbound_receiver_domain(value):
+                text = str(value or "").strip()
+                if not text or text == "None":
+                    return "None"
+                first = text.split(",")[0].strip().split()[0].strip("<>()[];,")
+                if "@" in first:
+                    return first.rsplit("@", 1)[-1].lower() or "None"
+                return "None"
+
+            for _row in mailscreen_rows:
+                if not isinstance(_row, dict):
+                    continue
+                _row = enrich_mailscreen_sender_fields(_row)
+                _dt = timeline_parse_dt(_row.get("date"))
+                if _dt and (_dt < start_dt or _dt > end_dt):
+                    continue
+
+                outbound_rows.append(_row)
+                _dept = str(_row.get("sender_dept") or _row.get("dept") or "미분류").strip() or "미분류"
+                _sender = str(_row.get("sender_name") or _row.get("sender_email") or _row.get("sender") or "None").strip()
+                _send_result = str(_row.get("send_result") or "None").strip()
+                _mail_process = str(_row.get("mail_process") or "None").strip()
+                _policy = str(_row.get("policy") or "None").strip()
+                _receiver_domain = _outbound_receiver_domain(_row.get("receiver_detail") or _row.get("receiver"))
+
+                _stat = outbound_dept_stats[_dept]
+                _stat["total"] += 1
+                if _sender and _sender != "None":
+                    _stat["senders"].add(_sender)
+                if _receiver_domain != "None":
+                    _stat["receivers"][_receiver_domain] += 1
+                    outbound_receiver_domain_counter[_receiver_domain] += 1
+                if _policy and _policy != "None":
+                    _stat["policies"][_policy] += 1
+                    outbound_policy_counter[_policy] += 1
+                if _mail_process and _mail_process != "None":
+                    _stat["processes"][_mail_process] += 1
+                    outbound_process_counter[_mail_process] += 1
+
+                if _send_result == "성공":
+                    _stat["success"] += 1
+                    outbound_success_count += 1
+                elif _send_result == "실패":
+                    _stat["fail"] += 1
+                    outbound_fail_count += 1
+
+                if "결재" in _mail_process and "승인" in _mail_process:
+                    _stat["approved"] += 1
+                elif "결재" in _mail_process and "반려" in _mail_process:
+                    _stat["rejected"] += 1
+                elif "결재" in _mail_process and "취소" in _mail_process:
+                    _stat["canceled"] += 1
+
+            outbound_dept_rank = sorted(
+                [
+                    {
+                        "dept_name": _dept,
+                        "total": _st["total"],
+                        "success": _st["success"],
+                        "fail": _st["fail"],
+                        "approved": _st["approved"],
+                        "rejected": _st["rejected"],
+                        "canceled": _st["canceled"],
+                        "sender_count": len(_st["senders"]),
+                        "top_policies": _st["policies"].most_common(3),
+                        "top_receivers": _st["receivers"].most_common(3),
+                        "top_processes": _st["processes"].most_common(3),
+                    }
+                    for _dept, _st in outbound_dept_stats.items()
+                ],
+                key=lambda x: (-x["total"], x["dept_name"])
+            )
+            outbound_approval_rows = [
+                {"status": "결재(승인)", "total": sum(int(x.get("approved", 0) or 0) for x in outbound_dept_rank)},
+                {"status": "결재(반려)", "total": sum(int(x.get("rejected", 0) or 0) for x in outbound_dept_rank)},
+                {"status": "결재(취소)", "total": sum(int(x.get("canceled", 0) or 0) for x in outbound_dept_rank)},
+            ]
+            outbound_approval_rows = [x for x in outbound_approval_rows if int(x.get("total", 0) or 0) > 0]
 
             perf.mark("pre-metrics aggregation")
             metrics = self.build_security_insight_metrics(
@@ -10747,6 +10847,136 @@ class MainWindow(QMainWindow):
                         c.setFillColor(colors.HexColor("#374151"))
                         c.drawString(MARGIN + 6, y, "주요 메일박스: " + ", ".join(mb_preview))
                         y -= 14
+
+                    c.setStrokeColor(colors.HexColor("#dbeafe"))
+                    c.setLineWidth(1.0)
+                    c.line(MARGIN + 8, y + 2, MARGIN + CONTENT_W - 8, y + 2)
+                    c.setStrokeColor(colors.black)
+                    y -= 24
+
+            # ═══════════════════════════════════════════════════
+            # PAGE Outbound Mail — MailScreen 부서/결재 분석
+            # ═══════════════════════════════════════════════════
+            if outbound_rows:
+                y = new_page()
+
+                y = section_bar("Outbound Mail 전체 현황", y)
+                c.setFont(rf, 10)
+                outbound_total_count = len(outbound_rows)
+                approval_total = sum(int(x.get("total", 0) or 0) for x in outbound_approval_rows)
+                c.drawString(
+                    MARGIN + 6,
+                    y,
+                    f"Outbound Mail 총 {outbound_total_count:,}건  /  성공 {outbound_success_count:,}건  "
+                    f"/  실패 {outbound_fail_count:,}건  /  결재 {approval_total:,}건"
+                )
+                y -= 18
+
+                y = draw_distribution_card(
+                    "Outbound Mail 부서 Top 5 시각화",
+                    outbound_dept_rank,
+                    y,
+                    subtitle="발송건수 기준 / 상위 부서 합계",
+                )
+
+                if outbound_approval_rows:
+                    y = draw_distribution_card(
+                        "Outbound Mail 결재 처리 현황",
+                        outbound_approval_rows,
+                        y,
+                        label_key="status",
+                        value_key="total",
+                        subtitle="승인·반려·취소 건수",
+                    )
+
+                y = section_bar("Outbound Mail 부서별 현황", y)
+
+                outbound_summary_rows = []
+                for item in outbound_dept_rank[:5]:
+                    outbound_summary_rows.append([
+                        item.get("dept_name", "미분류"),
+                        str(item.get("total", 0)),
+                        str(item.get("success", 0)),
+                        str(item.get("fail", 0)),
+                        str(item.get("approved", 0)),
+                        str(item.get("rejected", 0)),
+                        str(item.get("canceled", 0)),
+                    ])
+
+                y = mini_table(
+                    MARGIN,
+                    y,
+                    ["부서", "총건수", "성공", "실패", "승인", "반려", "취소"],
+                    outbound_summary_rows,
+                    [160, 62, 56, 56, 56, 56, 59],
+                    font_size=7.3
+                )
+                y -= 10
+
+                y = section_bar("Outbound Mail 결재 인사이트", y)
+                approval_summary_rows = [[
+                    "결재(승인)",
+                    str(sum(int(x.get("approved", 0) or 0) for x in outbound_dept_rank)),
+                    "승인 절차를 거쳐 외부 발송된 정책 대상 메일",
+                ], [
+                    "결재(반려)",
+                    str(sum(int(x.get("rejected", 0) or 0) for x in outbound_dept_rank)),
+                    "승인 단계에서 외부 발송이 반려된 메일",
+                ], [
+                    "결재(취소)",
+                    str(sum(int(x.get("canceled", 0) or 0) for x in outbound_dept_rank)),
+                    "요청 후 취소되어 실제 발송으로 이어지지 않은 메일",
+                ]]
+                y = mini_table_multiline(
+                    MARGIN,
+                    y,
+                    ["결재 상태", "건수", "해석"],
+                    approval_summary_rows,
+                    [95, 50, CONTENT_W - 145],
+                    font_size=7.2,
+                    line_height=9
+                )
+                y -= 10
+
+                y = section_bar("Outbound Mail 상위 부서 상세", y)
+
+                for oi, item in enumerate(outbound_dept_rank[:5], start=1):
+                    dept_name = item.get("dept_name", "미분류")
+                    total = item.get("total", 0)
+                    success = item.get("success", 0)
+                    fail = item.get("fail", 0)
+                    approved = item.get("approved", 0)
+                    rejected = item.get("rejected", 0)
+                    canceled = item.get("canceled", 0)
+
+                    y = self.check_page(c, y, threshold=185, font_name=rf, font_size=8)
+                    y = draw_rank_header(
+                        oi,
+                        dept_name,
+                        f"총 {total:,}건 · 성공 {success:,}건 · 실패 {fail:,}건 · 승인 {approved:,}건 · 반려 {rejected:,}건 · 취소 {canceled:,}건",
+                        y,
+                    )
+
+                    policy_rows = [[name, str(cnt)] for name, cnt in item.get("top_policies", [])] or [["-", "0"]]
+                    y = mini_table(
+                        MARGIN,
+                        y,
+                        ["주요 정책", "건수"],
+                        policy_rows,
+                        [430, 75],
+                        font_size=7
+                    )
+                    y -= 4
+
+                    receiver_rows = [[name, str(cnt)] for name, cnt in item.get("top_receivers", [])] or [["-", "0"]]
+                    y = mini_table(
+                        MARGIN,
+                        y,
+                        ["주요 수신 도메인", "건수"],
+                        receiver_rows,
+                        [430, 75],
+                        font_size=7
+                    )
 
                     c.setStrokeColor(colors.HexColor("#dbeafe"))
                     c.setLineWidth(1.0)
