@@ -8907,7 +8907,6 @@ class MainWindow(QMainWindow):
         # 대기 큐에서 다음 자동 새로고침 1건을 꺼내 실행(체인 유지)
         if self.auto_pending:
             next_job = self.auto_pending.pop(0)
-            self._sync_auto_refresh_date_range(next_job)
             self.run_refresh(next_job)
 
     def _on_refresh_ok(self, tab_name):
@@ -15438,7 +15437,6 @@ Command Line :
                 self.auto_pending.append("Detection")
             return
 
-        self._sync_auto_refresh_date_range("Detection")
         self.run_refresh("Detection")
 
     def auto_refresh_email(self):
@@ -15448,30 +15446,7 @@ Command Line :
                 self.auto_pending.append("Email")
             return
 
-        self._sync_auto_refresh_date_range("Email")
         self.run_refresh("Email")
-
-    def _sync_auto_refresh_date_range(self, job_name):
-        """Auto Refresh 실행 직전에 날짜 선택값을 시스템 날짜로 맞춘다.
-
-        Auto Refresh는 사용자가 Config 화면에 설정해 둔 기간을 따르지 않고,
-        실행 시점의 시스템 날짜 하루치만 최신화한다.
-        """
-        if job_name == "Detection":
-            start_edit = getattr(self, "det_start_date", None)
-            end_edit = getattr(self, "det_end_date", None)
-        elif job_name == "Email":
-            start_edit = getattr(self, "mail_start_date", None)
-            end_edit = getattr(self, "mail_end_date", None)
-        else:
-            return
-
-        if start_edit is None or end_edit is None:
-            return
-
-        today = QDate.currentDate()
-        start_edit.setDate(today)
-        end_edit.setDate(today)
 
     def update_auto_interval(self):
         interval = self.spin_interval.value() * 60 * 1000
