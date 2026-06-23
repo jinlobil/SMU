@@ -11654,6 +11654,8 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "진행 중", "이미 최신화가 진행 중입니다.")
             return
 
+        # Outbound Mail 최신화는 선택된 날짜가 아니라 실행 시점의 시스템 날짜를 사용한다.
+        self.mailscreen_refresh_date.setDate(QDate.currentDate())
         date_str = self.mailscreen_refresh_date.date().toString("yyyy-MM-dd")
 
         self.running = True
@@ -16456,12 +16458,30 @@ Command Line :
 
     def run_auto_refresh_job(self, job_name):
         self.auto_index_after_refresh = True
-        if job_name == "DLP":
-            self.run_refresh_dlp()
+
+        today = QDate.currentDate().toString("yyyy-MM-dd")
+        if job_name in ("Detection", "Email"):
+            date_str = f"{today}|{today}"
+        elif job_name == "DLP":
+            date_str = today
         elif job_name == "MailScreen":
-            self.run_refresh_mailscreen()
+            date_str = today
         else:
             self.run_refresh(job_name)
+            return
+
+        if self.running:
+            self.queue_auto_refresh_job(job_name)
+            return
+
+        self.running = True
+        self.set_status(f"{job_name} refresh", color="blue", spinning=True)
+
+        self.worker = RefreshWorker(job_name=job_name, date_str=date_str)
+        self.worker.ok.connect(self._on_refresh_ok)
+        self.worker.fail.connect(self._on_refresh_fail)
+        self.worker.progress.connect(self._on_refresh_progress)
+        self.worker.start()
 
     def tab_config(self):
         btn_style = self.button_style("primary")
@@ -16492,7 +16512,7 @@ Command Line :
 
         self.mailscreen_refresh_date = QDateEdit()
         self.mailscreen_refresh_date.setCalendarPopup(True)
-        self.mailscreen_refresh_date.setDate(QDate.currentDate().addDays(-1))
+        self.mailscreen_refresh_date.setDate(QDate.currentDate())
         self.mailscreen_refresh_date.setDisplayFormat("yyyy-MM-dd")
 
         btn_dlp_refresh = QPushButton("DLP 데이터 최신화")
