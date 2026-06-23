@@ -16456,12 +16456,31 @@ Command Line :
 
     def run_auto_refresh_job(self, job_name):
         self.auto_index_after_refresh = True
+        self._sync_auto_refresh_date_to_system_date(job_name)
         if job_name == "DLP":
             self.run_refresh_dlp()
         elif job_name == "MailScreen":
             self.run_refresh_mailscreen()
         else:
             self.run_refresh(job_name)
+
+    def _sync_auto_refresh_date_to_system_date(self, job_name):
+        """Auto Refresh는 설정된 기간이 아니라 실행 시점의 시스템 날짜 하루치를 최신화한다."""
+        if job_name == "Detection":
+            start_edit = getattr(self, "det_start_date", None)
+            end_edit = getattr(self, "det_end_date", None)
+        elif job_name == "Email":
+            start_edit = getattr(self, "mail_start_date", None)
+            end_edit = getattr(self, "mail_end_date", None)
+        else:
+            return
+
+        if start_edit is None or end_edit is None:
+            return
+
+        today = QDate.currentDate()
+        start_edit.setDate(today)
+        end_edit.setDate(today)
 
     def tab_config(self):
         btn_style = self.button_style("primary")
