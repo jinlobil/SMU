@@ -598,6 +598,8 @@ def parse_multiline_domains(text: str):
 
 DLP_AI_DEST_KW = [
     "openai", "chatgpt", "oaiusercontent", "claude", "claudeusercontent",
+    "anthropic.com", "api.anthropic.com", "claude.ai", "platform.claude.com",
+    "downloads.claude.ai", "bridge.claudeusercontent.com", "raw.githubusercontent.com",
     "gemini", "copilot", "perplexity", "ppl-ai-file-upload", "midjourney",
     "magnific", "klingai", "zeta-ai", "aspose.ai", "genspark",
     "aicreation", "gamma.app", "vizcom", "firefly", "sensei.adobe",
@@ -745,6 +747,16 @@ def _collapse_report_hostname(hostname: str) -> str:
         return "pdf24.org"
     if host.endswith(".oaiusercontent.com"):
         return "oaiusercontent.com"
+    if host == "api.anthropic.com":
+        return "api.anthropic.com"
+    if host == "claude.ai" or host.endswith(".claude.ai"):
+        return "claude.ai"
+    if host == "platform.claude.com":
+        return "platform.claude.com"
+    if host == "downloads.claude.ai":
+        return "downloads.claude.ai"
+    if host == "bridge.claudeusercontent.com":
+        return "bridge.claudeusercontent.com"
     if host.endswith(".claudeusercontent.com"):
         return "claudeusercontent.com"
     if host.endswith(".cloudflarestorage.com"):
@@ -783,6 +795,23 @@ def normalize_report_destination(value):
     hostname = _extract_report_hostname(s)
     collapsed = _collapse_report_hostname(hostname)
     return collapsed or s.lower()
+
+
+def clean_report_unknown(value, default="미분류"):
+    text = str(value or "").strip()
+    if not text or text.lower() in {"none", "null", "nan", "-"}:
+        return default
+    return text
+
+
+def safe_report_inline_value(value, max_len=72, default="기타/확인 필요"):
+    text = clean_report_unknown(value, default=default)
+    if text != default and re.search(r"\([^)]{0,12}$", text):
+        return default
+    text = re.sub(r"\s+", " ", text).strip()
+    if len(text) > max_len:
+        return text[: max_len - 1].rstrip() + "…"
+    return text
 
 
 def classify_dlp_destination(target_name="", target_type="", dest_detail=""):
@@ -9677,7 +9706,7 @@ class MainWindow(QMainWindow):
                     continue
 
                 outbound_rows.append(_row)
-                _dept = str(_row.get("sender_dept") or _row.get("dept") or "미분류").strip() or "미분류"
+                _dept = clean_report_unknown(_row.get("sender_dept") or _row.get("dept"), default="미분류")
                 _sender = str(_row.get("sender_name") or _row.get("sender_email") or _row.get("sender") or "None").strip()
                 _send_result = str(_row.get("send_result") or "None").strip()
                 _mail_process = str(_row.get("mail_process") or "None").strip()
@@ -9746,6 +9775,8 @@ class MainWindow(QMainWindow):
                 detection_timeline,
                 report_identity_resolver=report_identity_resolver,
             )
+            metrics["email_xdr_count"] = len(xdr_detections_report)
+            metrics["outbound_mail_count"] = len(outbound_rows)
             perf.mark("security metrics")
             progress("PDF 생성 중...")
             dlp_dept_rank        = metrics.get("dlp_dept_rank", [])
@@ -9938,7 +9969,10 @@ class MainWindow(QMainWindow):
                     for val, cw in zip(row, col_widths):
                         text = str(val)
                         while stringWidth(text, rf, font_size) > cw - 8 and len(text) > 3:
-                            text = text[:-2] + "…"
+                            keep = max(4, len(text) - 4)
+                            head = max(2, keep // 2)
+                            tail = max(2, keep - head)
+                            text = text[:head] + "…" + text[-tail:]
                         c.drawString(ox + 4, y_pos - 11, text)
                         ox += cw
                     c.setStrokeColor(colors.HexColor("#d6e4f5"))
@@ -10393,14 +10427,14 @@ class MainWindow(QMainWindow):
                 c.roundRect(MARGIN + 14, y_pos - 28, 58, 18, 9, fill=1, stroke=0)
                 c.setFillColor(colors.white)
                 c.setFont(rf, 8)
-                c.drawCentredString(MARGIN + 43, y_pos - 22, str(risk_level))
+                c.drawCentredString(MARGIN + 43, y_pos - 22, str(risk_display_label))
 
                 c.setFillColor(theme["text"])
                 c.setFont(rf, 18)
                 c.drawString(MARGIN + 86, y_pos - 24, f"{risk_score}/100점")
                 c.setFont(rf, 8)
                 c.setFillColor(theme["muted"])
-                c.drawString(MARGIN + 86, y_pos - 40, f"선택 기간 {selected_days}일 기준 종합 위험도")
+                c.drawString(MARGIN + 86, y_pos - 40, "통계 기반 점검 우선도 · 실제 악성 여부는 상세 분석 필요")
 
                 summary = (risk.get("factors", []) or ["주요 위험 요인을 기준으로 산정되었습니다."])[0]
                 summary_lines = wrap_report_text(summary, CONTENT_W - 236, font_size=7.6)[:2]
@@ -10450,6 +10484,12 @@ class MainWindow(QMainWindow):
             # 리스크 카드
             risk_level = risk.get("level", "LOW")
             risk_score = risk.get("score", 0)
+            risk_display_label = {
+                "CRITICAL": "점검 필요",
+                "HIGH": "점검 필요",
+                "MEDIUM": "주의",
+                "LOW": "관심 필요",
+            }.get(str(risk_level), "관심 필요")
             rc = {
                 "CRITICAL": colors.HexColor("#991b1b"),
                 "HIGH": colors.HexColor("#dc2626"),
@@ -10461,19 +10501,23 @@ class MainWindow(QMainWindow):
             c.setFont(rf, 10)
             c.drawString(MARGIN + 16, y - 18, "종합 위험도")
             c.setFont(rf, 28)
-            c.drawString(MARGIN + 16, y - 54, str(risk_level))
+            c.drawString(MARGIN + 16, y - 54, str(risk_display_label))
             c.setFont(rf, 24)
             c.drawRightString(MARGIN + CONTENT_W - 18, y - 54, f"Score: {risk_score}/100")
+            c.setFont(rf, 7)
+            c.drawRightString(MARGIN + CONTENT_W - 18, y - 18, "통계 기반 점검 우선도 / 실제 악성 여부는 상세 분석 필요")
             c.setFillColor(theme["text"])
             y -= 88
 
             # 숫자 카드 3개
             card_data = [
                 ("Endpoint Detection", metrics.get("endpoint_detection_count", 0), colors.HexColor("#1d4ed8")),
-                ("Email Events",       metrics.get("email_count", 0),              colors.HexColor("#0f766e")),
+                ("Email 전체 이벤트",       metrics.get("email_count", 0),              colors.HexColor("#0f766e")),
+                ("Email XDR 탐지",       metrics.get("email_xdr_count", 0),              colors.HexColor("#7c3aed")),
+                ("Outbound Mail",       metrics.get("outbound_mail_count", 0),              colors.HexColor("#ec4899")),
                 ("DLP Events",         metrics.get("dlp_count", 0),                colors.HexColor("#92400e")),
             ]
-            cw_card = (CONTENT_W - 12) / 3
+            cw_card = (CONTENT_W - 18) / 4
             for i, (ct, cv, cc) in enumerate(card_data):
                 cx = MARGIN + i * (cw_card + 6)
                 draw_soft_card(cx, y, cw_card, 70, radius=11, fill=cc, stroke=cc, shadow=True)
@@ -10593,7 +10637,18 @@ class MainWindow(QMainWindow):
             y = section_bar("관리자 요약", y)
 
             manager_highlights = [
-                f"총 이벤트: Detection {metrics.get('endpoint_detection_count', 0):,}건 / Email {metrics.get('email_count', 0):,}건 / DLP {metrics.get('dlp_count', 0):,}건",
+                (
+                    f"한 줄 요약: 정상 업무성 이벤트가 포함될 수 있는 반복 탐지 중심이며, "
+                    f"Email·DLP는 처리 현황 기준 샘플링 점검이 필요합니다."
+                ),
+                "결론: 상위 발생 항목 중심으로 정상 업무성 여부와 반복 이상 행위를 샘플링 확인하는 것이 적절합니다.",
+                (
+                    f"총 이벤트: Endpoint Detection {metrics.get('endpoint_detection_count', 0):,}건 / "
+                    f"Email 전체 {metrics.get('email_count', 0):,}건 / "
+                    f"Email XDR {metrics.get('email_xdr_count', 0):,}건 / "
+                    f"Outbound Mail {metrics.get('outbound_mail_count', 0):,}건 / "
+                    f"DLP {metrics.get('dlp_count', 0):,}건"
+                ),
             ]
             if metrics.get("top_host"):
                 manager_highlights.append(
@@ -10604,21 +10659,25 @@ class MainWindow(QMainWindow):
                     f"주요 탐지 룰: {metrics.get('top_rule')} ({metrics.get('top_rule_count', 0):,}건)"
                 )
             top_dlp_dept = metrics.get("top_dlp_dept", {}) or {}
-            if top_dlp_dept:
+            if top_dlp_dept and clean_report_unknown(top_dlp_dept.get('dept_name'), default="미분류") != "미분류":
                 manager_highlights.append(
-                    f"DLP 최다 부서: {top_dlp_dept.get('dept_name', '미분류')} ({top_dlp_dept.get('total', 0):,}건)"
+                    f"DLP 최다 부서: {clean_report_unknown(top_dlp_dept.get('dept_name'))} ({top_dlp_dept.get('total', 0):,}건)"
+                )
+            if metrics.get("unclassified_user_count", 0) > 0:
+                manager_highlights.append(
+                    f"운영 품질 개선: DLP 미분류 사용자/부서 매핑 {metrics.get('unclassified_user_count', 0):,}개 보완 필요"
                 )
             if cross_host_count > 0:
                 manager_highlights.append(
-                    f"Detection + DLP 교차 호스트 {cross_host_count:,}개 — 우선 점검 대상"
+                    f"Detection + DLP 교차 호스트 {cross_host_count:,}개 — 실제 연관성은 상세 이벤트 기준 확인 필요"
                 )
             if triple_overlap_count > 0:
                 manager_highlights.append(
-                    f"Detection·Email·DLP 3종 동시 발생일 {triple_overlap_count:,}일 확인"
+                    f"Detection·Email·DLP 3종 동일 날짜 발생 {triple_overlap_count:,}일 — 직접 연관성은 별도 분석 필요"
                 )
 
-            # 과도한 문장형 설명 대신 한눈에 보는 결론 5개만 표시한다.
-            y = draw_numbered_card_list(manager_highlights[:5], y, accent=theme["primary"], font_size=7.8)
+            # 과도한 문장형 설명 대신 한눈에 보는 결론 중심으로 표시한다.
+            y = draw_numbered_card_list(manager_highlights[:7], y, accent=theme["primary"], font_size=7.8)
             y -= 4
 
             # ═══════════════════════════════════════════════════
@@ -18059,14 +18118,17 @@ Command Line :
             top_target_types = top_dlp_dept.get("top_target_types", [])
             top_dest_details = top_dlp_dept.get("top_dest_details", [])
 
-            parts = [f"DLP 최다 발생 부서는 '{dept_name}'이며 총 {total}건, 차단율 {block_ratio}%입니다."]
+            if clean_report_unknown(dept_name, default="미분류") == "미분류":
+                parts = [f"DLP 미분류 이벤트가 {total}건 확인되어 사용자/부서 매핑 보완이 필요합니다"]
+            else:
+                parts = [f"DLP 최다 발생 부서는 '{dept_name}'이며 총 {total}건, 차단율 {block_ratio}%입니다"]
 
             if top_sources:
-                parts.append(f"주요 파일은 {top_sources[0][0]}")
+                parts.append(f"주요 파일은 {safe_report_inline_value(top_sources[0][0])}")
             if top_target_types:
-                parts.append(f"주요 대상유형은 {top_target_types[0][0]}")
+                parts.append(f"주요 대상유형은 {safe_report_inline_value(top_target_types[0][0])}")
             if top_dest_details:
-                parts.append(f"주요 목적지는 {top_dest_details[0][0]}")
+                parts.append(f"주요 목적지는 {safe_report_inline_value(top_dest_details[0][0])}")
 
             lines.append(" / ".join(parts) + ".")
 
@@ -18108,11 +18170,12 @@ Command Line :
                 day_preview = ", ".join(triple_overlap_days_preview)
                 lines.append(
                     f"Detection·Email·DLP 3종 이벤트가 같은 날짜에 함께 발생한 날이 {triple_overlap_count}일 확인되었습니다. "
-                    f"주요 날짜: {day_preview}"
+                    f"주요 날짜: {day_preview}. 동일 날짜 발생은 시간적 중첩이며 직접 연관성은 사용자/호스트/파일/URL 기준 상세 분석이 필요합니다."
                 )
             else:
                 lines.append(
-                    f"Detection·Email·DLP 3종 이벤트가 같은 날짜에 함께 발생한 날이 {triple_overlap_count}일 확인되었습니다."
+                    f"Detection·Email·DLP 3종 이벤트가 같은 날짜에 함께 발생한 날이 {triple_overlap_count}일 확인되었습니다. "
+                    "동일 날짜 발생은 시간적 중첩이며 직접 연관성은 별도 상세 분석이 필요합니다."
                 )
 
         if repeated_cross_host_count > 0:
@@ -18207,7 +18270,7 @@ Command Line :
             })
             factors.append(f"{label} {score}/{max_score} — {interpretation}")
 
-        # 1) Endpoint 위협 활동: 단말 탐지의 양, 확산 범위, 반복 룰, 특정 호스트 집중도를 함께 본다. (25점)
+        # 1) Endpoint 탐지 이벤트: 단말 탐지의 양, 확산 범위, 반복 룰, 특정 호스트 집중도를 함께 본다. (25점)
         endpoint_score = 0
         endpoint_score += band(avg_endpoint_per_day, [(30, 10), (10, 6), (1, 3)])
         endpoint_score += band(unique_host_count, [(20, 7), (10, 5), (3, 3), (1, 1)])
@@ -18215,14 +18278,14 @@ Command Line :
         endpoint_score += band(top_host_ratio, [(50, 3), (30, 2), (15, 1)])
         endpoint_score = min(endpoint_score, 25)
         endpoint_interpretation = (
-            "탐지량·호스트 확산·반복 룰이 함께 높아 단말 우선 분석이 필요합니다."
+            "탐지량·호스트 확산·반복 룰이 함께 높아 상위 호스트/룰 우선 확인이 필요합니다."
             if endpoint_score >= 18 else
             "반복 또는 확산 징후가 있어 상위 호스트/룰 중심 확인이 필요합니다."
             if endpoint_score >= 9 else
             "단말 탐지는 제한적이나 발생 내역은 추적 대상입니다."
         )
         add_breakdown(
-            "Endpoint 위협 활동",
+            "Endpoint 탐지 이벤트",
             endpoint_score,
             25,
             f"총 {endpoint_count:,}건 / {selected_days}일 = 일평균 {avg_endpoint_per_day:,}건, "
@@ -18230,7 +18293,7 @@ Command Line :
             endpoint_interpretation,
         )
 
-        # 2) Email 유입 위험: 고위험 메일의 절대량과 메일 이벤트 내 비중을 함께 본다. (20점)
+        # 2) Email 이벤트: 고위험 메일의 절대량과 메일 이벤트 내 비중을 함께 본다. (20점)
         email_score = 0
         email_score += band(avg_high_risk_email_per_day, [(30, 10), (10, 7), (3, 4), (1, 2)])
         email_score += band(avg_email_per_day, [(300, 4), (100, 3), (30, 2), (1, 1)])
@@ -18239,14 +18302,14 @@ Command Line :
             email_score += 2
         email_score = min(email_score, 20)
         email_interpretation = (
-            "고위험 메일 유입량과 비중이 높아 유입 후 단말 행위 연계 점검이 필요합니다."
+            "Email XDR 탐지량과 비중이 높아 발신자·URL·첨부파일 기준 샘플링 확인이 필요합니다."
             if email_score >= 14 else
             "의심 메일이 지속 확인되어 발신자·URL·첨부파일 기준 샘플링이 필요합니다."
             if email_score >= 7 else
-            "메일 유입 위험은 낮지만 Endpoint 이벤트와 같은 기간 존재 여부를 유지 관찰합니다."
+            "Email 이벤트 위험은 낮지만 Endpoint 이벤트와 같은 기간 존재 여부를 유지 관찰합니다."
         )
         add_breakdown(
-            "Email 유입 위험",
+            "Email 탐지/로그 이벤트",
             email_score,
             20,
             f"Email 총 {email_count:,}건 / 일평균 {avg_email_per_day:,}건, "
@@ -18254,24 +18317,23 @@ Command Line :
             email_interpretation,
         )
 
-        # 3) DLP 반출 노출: DLP 발생량, 허용 비중, 민감 목적지 분류, 부서 집중도를 함께 본다. (30점)
+        # 3) DLP 이벤트: DLP 발생량, 허용 비중, 민감 목적지 분류, 부서 집중도를 함께 본다. (30점)
         dlp_score = 0
         dlp_score += band(avg_dlp_per_day, [(1000, 8), (500, 6), (100, 4), (1, 2)])
-        dlp_score += band(dlp_allowed_ratio, [(95, 7), (80, 5), (50, 3), (1, 1)]) if dlp_count else 0
         dlp_score += band(dlp_sensitive_category_ratio, [(50, 8), (25, 6), (10, 4), (1, 2)])
         dlp_score += band(dlp_top_dept_ratio, [(50, 5), (30, 3), (15, 2)])
         dlp_score += band(unclassified_user_count, [(30, 2), (10, 1)])
         dlp_score = min(dlp_score, 30)
         sensitive_preview = ", ".join([f"{name} {cnt:,}건" for name, cnt in dlp_top_sensitive_categories[:3]]) or "민감 목적지 분류 없음"
         dlp_interpretation = (
-            "허용 반출과 민감 목적지 사용이 함께 높아 파일 샘플링 및 정책 예외 검토가 필요합니다."
+            "DLP 이벤트 중 허용 처리 비중이 높아 업무성 이벤트와 정책 예외 대상이 적절히 분리되는지 샘플링 점검이 필요합니다."
             if dlp_score >= 21 else
-            "반출 이벤트가 지속 확인되어 상위 부서·목적지·파일명 기준 점검이 필요합니다."
+            "DLP 이벤트가 지속 확인되어 상위 부서·목적지·파일명 기준 확인이 필요합니다."
             if dlp_score >= 10 else
-            "DLP 노출은 제한적이나 허용 이벤트는 목적지 기준으로 추적합니다."
+            "DLP 이벤트는 제한적이나 허용 이벤트는 목적지 기준으로 추적합니다."
         )
         add_breakdown(
-            "DLP 반출 노출",
+            "DLP 이벤트/정책 처리",
             dlp_score,
             30,
             f"총 {dlp_count:,}건 / 일평균 {avg_dlp_per_day:,}건, 허용 비중 {dlp_allowed_ratio}%, "
@@ -18279,7 +18341,7 @@ Command Line :
             dlp_interpretation,
         )
 
-        # 4) 상관/연계 위험: Detection과 DLP, Email이 같은 호스트/날짜에서 겹치는지를 본다. (20점)
+        # 4) 상관/연계 확인: Detection과 DLP, Email이 같은 호스트/날짜에서 겹치는지를 본다. (20점)
         correlation_score = 0
         correlation_score += band(cross_host_count, [(20, 8), (10, 6), (5, 4), (1, 2)])
         correlation_score += band(cross_host_ratio, [(50, 5), (30, 3), (10, 1)])
@@ -18287,14 +18349,14 @@ Command Line :
         correlation_score += band(repeated_cross_host_count, [(10, 3), (1, 2)])
         correlation_score = min(correlation_score, 20)
         correlation_interpretation = (
-            "탐지·메일·DLP가 같은 기간/호스트에서 겹쳐 유입부터 반출까지의 연계 가능성을 우선 확인해야 합니다."
+            "동일 기간 내 Endpoint, Email, DLP 이벤트가 중첩되어 발생했으며 실제 연관성은 사용자 행위 및 이벤트 상세 기준 확인이 필요합니다."
             if correlation_score >= 14 else
-            "교차 호스트 또는 동시 발생일이 확인되어 시계열 상관분석이 필요합니다."
+            "교차 호스트 또는 동일 날짜 발생이 확인되어 시계열 기준 추가 확인이 필요합니다."
             if correlation_score >= 6 else
-            "상관 징후는 제한적이나 교차 호스트는 추적 목록에 유지합니다."
+            "상관 참고 항목은 제한적이나 교차 호스트는 추적 목록에 유지합니다."
         )
         add_breakdown(
-            "상관/연계 위험",
+            "상관/연계 확인",
             correlation_score,
             20,
             f"Detection+DLP 교차 호스트 {cross_host_count:,}개({cross_host_ratio}%), "
@@ -18351,17 +18413,17 @@ Command Line :
         level = str(risk.get("level", "LOW"))
 
         if level == "CRITICAL":
-            lines.append("복수 보안 신호가 강하게 중첩되어 즉시 대응이 필요한 치명 위험 수준입니다.")
-            lines.append("교차 호스트, DLP 허용 반출, 고위험 메일 유입을 우선순위로 당일 점검해야 합니다.")
+            lines.append("복수 보안 신호가 강하게 중첩되어 상세 확인이 필요한 점검 우선 구간입니다.")
+            lines.append("교차 호스트, DLP 허용 이벤트, Email XDR 탐지를 우선순위로 샘플링 확인해야 합니다.")
         elif level == "HIGH":
-            lines.append("다수의 보안 이벤트가 동시다발적으로 확인되어 우선 대응이 필요한 수준입니다.")
-            lines.append("반복 탐지 및 고위험 이벤트를 중심으로 즉시 상세 분석이 필요합니다.")
+            lines.append("다수의 보안 이벤트가 확인되어 우선 확인이 필요한 수준입니다.")
+            lines.append("반복 탐지 및 고위험 이벤트를 중심으로 상세 확인 후 필요 시 대응이 필요합니다.")
         elif level == "MEDIUM":
             lines.append("일부 반복 이벤트 및 다수 탐지가 확인되어 주의가 필요한 수준입니다.")
-            lines.append("현재 즉각적인 대규모 침해 정황은 제한적일 수 있으나 지속 모니터링이 필요합니다.")
+            lines.append("현재 즉각적인 사고 대응이 필요한 정황은 제한적일 수 있으나 지속 모니터링이 필요합니다.")
         else:
-            lines.append("전체적으로 위험도는 낮은 수준으로 평가됩니다.")
-            lines.append("현재까지 즉각적인 침해 대응이 필요한 정황은 제한적으로 판단됩니다.")
+            lines.append("전체적으로 점검 우선도는 낮은 수준으로 평가됩니다.")
+            lines.append("현재까지 즉각적인 사고 대응이 필요한 정황은 제한적으로 판단됩니다.")
 
         if metrics.get("repeat_host_exists"):
             lines.append("특정 사용자 또는 특정 호스트 중심의 반복 이벤트 여부를 함께 검토하는 것이 적절합니다.")
@@ -18370,7 +18432,11 @@ Command Line :
             lines.append("반복적으로 탐지되는 파일은 정상 프로그램 여부를 기준으로 예외처리 가능성을 검토할 수 있습니다.")
 
         if metrics.get("high_risk_email_count", 0) > 0:
-            lines.append("이메일 위협 이벤트는 수신자, 발신지, 포함 URL 또는 첨부파일 중심으로 추가 확인이 필요합니다.")
+            lines.append("Email XDR 이벤트는 수신자, 발신지, 포함 URL 또는 첨부파일 중심으로 추가 확인이 필요합니다.")
+
+        lines.append(
+            "선택 기간 내 Endpoint, Email, DLP 이벤트가 다수 발생했으나 정상 업무성 가능성이 포함되어 있어 상위 발생 항목 중심의 샘플링 점검이 필요합니다."
+        )
 
         return lines
 
@@ -18379,16 +18445,16 @@ Command Line :
         actions = []
 
         if metrics.get("repeat_rule_exists"):
-            actions.append("반복 발생 탐지 룰에 대해 정상 행위 기반 여부를 검토합니다.")
+            actions.append("반복 발생 탐지 룰 — 사용자, 실행 경로, 부모 프로세스, 파일 서명, 발생 시간 기준으로 정상 행위 여부를 확인합니다.")
 
         if metrics.get("repeat_host_exists"):
-            actions.append("탐지 집중 호스트에 대해 사용자 행위 및 실행 프로그램을 재확인합니다.")
+            actions.append("탐지 집중 호스트 — 사용자 업무 내용, 설치/업데이트 여부, 동일 파일 반복 실행 여부를 확인합니다.")
 
         if metrics.get("repeat_file_exists"):
-            actions.append("반복 탐지 파일에 대해 정상 프로그램 여부 및 예외처리 필요성을 검토합니다.")
+            actions.append("반복 탐지 파일 — 파일 경로, 서명, 배포 경로, 사용자 실행 맥락을 기준으로 정상 프로그램 여부를 확인합니다.")
 
         if metrics.get("high_risk_email_count", 0) > 0:
-            actions.append("고위험 이메일 이벤트 — 발신자, 수신자, URL, 첨부파일 기준 추가 분석을 진행합니다.")
+            actions.append("Email XDR 이벤트 — 발신자, 수신자, 제목, URL, 첨부파일, 격리 여부 기준으로 추가 확인합니다.")
 
         cross_host_rank = metrics.get("cross_host_rank", [])
         cross_host_count = metrics.get("cross_host_count", 0)
@@ -18398,9 +18464,9 @@ Command Line :
         if cross_host_count > 0:
             if cross_host_rank:
                 preview = ", ".join([name for name, _ in cross_host_rank[:3]])
-                actions.append(f"Detection + DLP 교차 호스트({preview})를 우선 점검합니다.")
+                actions.append(f"Detection + DLP 교차 호스트({preview})는 동일 사용자/호스트/파일 기준 실제 연관성 여부를 우선 확인합니다.")
             else:
-                actions.append("Detection + DLP 교차 호스트를 우선 점검합니다.")
+                actions.append("Detection + DLP 교차 호스트는 동일 사용자/호스트/파일 기준 실제 연관성 여부를 우선 확인합니다.")
 
         repeated_cross_hosts_preview = metrics.get("repeated_cross_hosts_preview", [])
         triple_overlap_days_preview = metrics.get("triple_overlap_days_preview", [])
@@ -18408,19 +18474,19 @@ Command Line :
         if repeated_cross_host_count > 0:
             if repeated_cross_hosts_preview:
                 preview = ", ".join(repeated_cross_hosts_preview)
-                actions.append(f"반복 교차 호스트({preview})의 업무성 행위 여부를 우선 확인합니다.")
+                actions.append(f"반복 교차 호스트({preview})는 정상 업무 패턴인지 반복 이상 행위인지 우선 구분합니다.")
             else:
-                actions.append("반복적으로 Detection과 DLP가 함께 발생한 호스트군의 업무성 행위 여부를 우선 확인합니다.")
+                actions.append("반복적으로 Detection과 DLP가 함께 발생한 호스트군은 정상 업무 패턴인지 반복 이상 행위인지 우선 구분합니다.")
 
         if triple_overlap_count > 0:
             if triple_overlap_days_preview:
                 preview = ", ".join(triple_overlap_days_preview)
-                actions.append(f"3종 이벤트 동시 발생일({preview})을 기준으로 전후 행위를 교차 확인합니다.")
+                actions.append(f"3종 이벤트 동일 날짜({preview})는 시간적 중첩으로 보고 사용자/호스트/파일/URL 기준 직접 연관성을 확인합니다.")
             else:
-                actions.append("Detection·Email·DLP 3종 이벤트가 겹친 날짜를 기준으로 전후 행위를 교차 확인합니다.")
+                actions.append("Detection·Email·DLP 3종 이벤트 동일 날짜는 시간적 중첩으로 보고 사용자/호스트/파일/URL 기준 직접 연관성을 확인합니다.")
 
         if metrics.get("dlp_count", 0) > 0:
-            actions.append("파일 반출 이벤트 — 업무 목적 여부 및 반복 업로드 패턴을 확인합니다.")
+            actions.append("DLP 이벤트 — 업로드 대상, 파일명, 정책명, 허용/차단 여부, 반복 사용자를 확인합니다.")
 
             top_blocked_dlp_dept = metrics.get("top_blocked_dlp_dept", {})
             if top_blocked_dlp_dept:
@@ -18428,10 +18494,10 @@ Command Line :
                 blocked = top_blocked_dlp_dept.get("blocked", 0)
                 if blocked > 0:
                     actions.append(
-                        f"DLP 차단 상위 부서('{dept_name}')에 대해 주요 파일, 업로드 대상, 사용자 반복 여부를 우선 점검합니다."
+                        f"DLP 차단 상위 부서('{dept_name}')에 대해 주요 파일, 업로드 대상, 사용자 반복 여부를 우선 확인합니다."
                     )
         if str(risk.get("level", "LOW")) in {"CRITICAL", "HIGH"}:
-            actions.append("고위험 구간 — 반복 이벤트 우선 상세 분석 및 선제 대응을 수행합니다.")
+            actions.append("점검 우선 구간 — 반복 이벤트 상세 확인 후 필요 시 대응합니다.")
 
         return actions
 
@@ -18456,7 +18522,8 @@ Command Line :
         level = str(risk.get("level", "LOW"))
 
         parts = [
-            f"선택 기간 동안 Detection {endpoint_count}건, Email {email_count}건, DLP {dlp_count}건이 확인되었습니다."
+            f"선택 기간 동안 Endpoint Detection {endpoint_count}건, Email 전체 이벤트 {email_count}건, "
+            f"Email XDR {metrics.get('email_xdr_count', 0)}건, Outbound Mail {metrics.get('outbound_mail_count', 0)}건, DLP {dlp_count}건이 확인되었습니다."
         ]
 
         if top_host:
@@ -18465,30 +18532,34 @@ Command Line :
         if top_rule:
             parts.append(f"주요 탐지 룰은 {top_rule} ({top_rule_count}건).")
         top_dlp_dept = metrics.get("top_dlp_dept", {})
-        if top_dlp_dept:
+        if top_dlp_dept and clean_report_unknown(top_dlp_dept.get("dept_name"), default="미분류") != "미분류":
             dept_name = top_dlp_dept.get("dept_name", "미분류")
             total = top_dlp_dept.get("total", 0)
             parts.append(f"DLP는 {dept_name} 부서에서 가장 많이 발생했으며 {total}건입니다.")
+        if metrics.get("unclassified_user_count", 0) > 0:
+            parts.append(
+                f"DLP 미분류 사용자/부서 매핑 {metrics.get('unclassified_user_count', 0)}개가 확인되어 운영 품질 보완이 필요합니다."
+            )
         if cross_host_count > 0:
             parts.append(
                 f"Detection과 DLP가 함께 확인된 교차 호스트는 {cross_host_count}개이며, "
-                f"탐지 호스트 대비 {cross_host_ratio}% 수준입니다."
+                f"탐지 호스트 대비 {cross_host_ratio}% 수준입니다. 실제 연관성은 상세 이벤트 기준 확인이 필요합니다."
             )
 
         if overlap_day_count > 0:
-            parts.append(f"Detection과 DLP는 총 {overlap_day_count}일 동시 발생했습니다.")
+            parts.append(f"Detection과 DLP는 총 {overlap_day_count}일 동일 날짜에 발생했습니다.")
 
         if triple_overlap_count > 0:
-            parts.append(f"Detection·Email·DLP 3종 이벤트가 같은 날짜에 함께 발생한 날은 {triple_overlap_count}일입니다.")
+            parts.append(f"Detection·Email·DLP 3종 이벤트가 같은 날짜에 발생한 날은 {triple_overlap_count}일이며, 직접 연관성은 별도 분석이 필요합니다.")
 
         if repeated_cross_host_count > 0:
-            parts.append(f"반복적으로 Detection과 DLP가 함께 나타난 호스트는 {repeated_cross_host_count}개입니다.")
+            parts.append(f"반복적으로 Detection과 DLP가 함께 나타난 호스트는 {repeated_cross_host_count}개이며, 정상 업무 패턴인지 반복 이상 행위인지 구분이 필요합니다.")
 
         if email_count > 0 and endpoint_count > 0:
-            parts.append("메일 이벤트와 Endpoint 탐지가 같은 기간 내 함께 존재하여 유입 후 행위 연계 가능성을 점검 대상으로 포함합니다.")
+            parts.append("Email 이벤트와 Endpoint 탐지가 같은 기간 내 존재하므로 사용자 행위 기준의 연관성 확인 대상으로 포함합니다.")
 
-        level_text = {"CRITICAL": "치명 위험", "HIGH": "고위험", "MEDIUM": "중위험", "LOW": "저위험"}.get(level, "저위험")
-        parts.append(f"종합 판단: {level_text} 수준.")
+        level_text = {"CRITICAL": "점검 필요", "HIGH": "점검 필요", "MEDIUM": "주의", "LOW": "관심 필요"}.get(level, "관심 필요")
+        parts.append(f"종합 판단: {level_text} 수준의 통계 기반 점검 우선도입니다.")
 
         return " ".join(parts)
 
@@ -18531,19 +18602,19 @@ Command Line :
 
         if email_count > 0:
             lines.append(
-                f"Detection과 별도로 Email 이벤트 {email_count}건이 함께 존재하여 메일 유입과 사용자 행위 간 연결 가능성도 존재합니다."
+                f"Detection과 별도로 Email 전체 이벤트 {email_count}건이 확인되어 발신자·수신자·URL·첨부파일 기준 샘플링 확인이 필요합니다."
             )
 
         if dlp_count > 0:
             lines.append(
-                f"DLP 이벤트 {dlp_count}건이 함께 확인되어 파일 업로드/반출 행위와 시점상 겹치는 구간이 있는지 추가 확인이 필요합니다."
+                f"DLP 이벤트 {dlp_count}건이 함께 확인되어 파일 업로드 대상, 정책명, 허용/차단 여부 기준 추가 확인이 필요합니다."
             )
 
         level = str(risk.get("level", "LOW"))
         if level == "CRITICAL":
-            lines.append("전체적으로는 교차 신호와 반출 노출이 높은 치명 위험 구간으로 즉시 대응 대상입니다.")
+            lines.append("전체적으로는 교차 신호와 DLP 이벤트가 높은 점검 우선 구간으로 상세 확인이 필요합니다.")
         elif level == "HIGH":
-            lines.append("전체적으로는 이벤트 집중도와 반복성이 높아 우선 분석 대상 구간으로 판단됩니다.")
+            lines.append("전체적으로는 이벤트 집중도와 반복성이 높아 우선 확인 권장 구간으로 판단됩니다.")
         elif level == "MEDIUM":
             lines.append("전체적으로는 반복 이벤트 중심의 모니터링이 필요한 수준으로 판단됩니다.")
         else:
