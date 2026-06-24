@@ -3232,6 +3232,37 @@ def timeline_event_matches(event, ctx):
     return False
 
 
+def timeline_event_matches_keyword(event, keyword):
+    keyword = str(keyword or "").strip().lower()
+    if not keyword:
+        return True
+
+    values = [
+        event.get("time"),
+        event.get("source"),
+        timeline_source_display_name(event.get("source")),
+        event.get("user"),
+        event.get("user_id"),
+        event.get("dept"),
+        event.get("asset"),
+        event.get("event"),
+        event.get("direction"),
+        event.get("peer"),
+        event.get("summary"),
+        event.get("indicator"),
+    ]
+    values.extend(event.get("match_values", []) or [])
+
+    raw = event.get("raw")
+    if raw is not None:
+        try:
+            values.append(json.dumps(raw, ensure_ascii=False, default=str))
+        except Exception:
+            values.append(str(raw))
+
+    return keyword in " ".join(str(v or "") for v in values).lower()
+
+
 def normalize_timeline_detection(d, ctx):
     if not isinstance(d, dict):
         return None
@@ -3840,25 +3871,33 @@ class TimelineSearchWorker(QThread):
     fail = pyqtSignal(str)
     progress = pyqtSignal(str)
 
-    def __init__(self, keyword, sources=None):
+    def __init__(self, keyword, sources=None, text_keyword=""):
         super().__init__()
         self.keyword = str(keyword or "").strip()
+        self.text_keyword = str(text_keyword or "").strip()
         self.sources = set(sources or ["Detection", "XDR", "Email", "Outbound Mail", "File"])
 
     def run(self):
         try:
-            if not self.keyword:
+            if not self.keyword and not self.text_keyword:
                 self.ok.emit([], {"message": "검색어를 입력하세요.", "events": 0, "groups": 0})
                 return
 
-            index_groups, index_stats = query_timeline_index(self.keyword, self.sources)
+            if not self.text_keyword:
+                index_groups, index_stats = query_timeline_index(self.keyword, self.sources)
+            else:
+                index_groups, index_stats = None, None
             if index_groups is not None:
                 self.ok.emit(index_groups, index_stats)
                 return
 
-            ctx = build_timeline_identity_context(self.keyword)
+            ctx = build_timeline_identity_context(self.keyword) if self.keyword else None
             events = []
             files_scanned = 0
+
+            def append_if_match(event):
+                if event and timeline_event_matches_keyword(event, self.text_keyword):
+                    events.append(event)
 
             if "Detection" in self.sources or "XDR" in self.sources:
                 paths = iter_json_files(DETECTIONS_DAY_DIR, ".json")
@@ -3876,12 +3915,10 @@ class TimelineSearchWorker(QThread):
                     for row in rows:
                         if "Detection" in self.sources:
                             event = normalize_timeline_detection(row, ctx)
-                            if event:
-                                events.append(event)
+                            append_if_match(event)
                         if "XDR" in self.sources:
                             event = normalize_timeline_xdr(row, ctx)
-                            if event:
-                                events.append(event)
+                            append_if_match(event)
 
             if "Email" in self.sources:
                 paths = iter_json_files(EMAILS_DAY_DIR, ".json")
@@ -3897,7 +3934,8 @@ class TimelineSearchWorker(QThread):
                     if not isinstance(rows, list):
                         continue
                     for row in rows:
-                        events.extend(normalize_timeline_email(row, ctx))
+                        for event in normalize_timeline_email(row, ctx):
+                            append_if_match(event)
 
             if "Outbound Mail" in self.sources:
                 paths = iter_json_files(MAILSCREEN_DAY_DIR, ".json")
@@ -3915,8 +3953,7 @@ class TimelineSearchWorker(QThread):
                         continue
                     for row in rows:
                         event = normalize_timeline_mailscreen(row, ctx)
-                        if event:
-                            events.append(event)
+                        append_if_match(event)
 
             if "File" in self.sources:
                 paths = iter_json_files(DLP_DAY_DIR, ".jsonl")
@@ -3925,8 +3962,7 @@ class TimelineSearchWorker(QThread):
                     files_scanned += 1
                     for row in load_jsonl(path):
                         event = normalize_timeline_dlp(row, ctx)
-                        if event:
-                            events.append(event)
+                        append_if_match(event)
 
             groups = group_timeline_events(events)
             stats = {
@@ -3934,7 +3970,7 @@ class TimelineSearchWorker(QThread):
                 "events": len(events),
                 "groups": len(groups),
                 "files": files_scanned,
-                "aliases": sorted(ctx.get("all_values", set()))[:80],
+                "aliases": sorted(ctx.get("all_values", set()))[:80] if ctx else [],
             }
             self.ok.emit(groups, stats)
         except Exception as e:
@@ -11654,6 +11690,9 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "진행 중", "이미 최신화가 진행 중입니다.")
             return
 
+        # 버튼 클릭 직전에 직접 입력한 날짜가 아직 QDateEdit 값으로 commit되지 않은 경우가 있어
+        # 현재 표시/입력 중인 텍스트를 먼저 해석한 뒤 선택 날짜를 읽는다.
+        self.mailscreen_refresh_date.interpretText()
         date_str = self.mailscreen_refresh_date.date().toString("yyyy-MM-dd")
 
         self.running = True
@@ -15521,6 +15560,9 @@ Command Line :
         lbl = QLabel("사용자")
         self.timeline_user_input = QLineEdit()
         self.timeline_user_input.setPlaceholderText("사용자명 / User ID / 메일 / Hostname 입력 후 전체 캐시 검색")
+        keyword_lbl = QLabel("키워드")
+        self.timeline_keyword_input = QLineEdit()
+        self.timeline_keyword_input.setPlaceholderText("이벤트명 / 제목 / 파일명 / IP / 해시 / RawData 키워드")
         self.timeline_btn_search = QPushButton("조회")
         self.timeline_btn_search.setProperty("buttonRole", "secondary")
         self.timeline_btn_search.setStyleSheet(self.button_style("secondary"))
@@ -15565,6 +15607,8 @@ Command Line :
 
         top.addWidget(lbl)
         top.addWidget(self.timeline_user_input, 1)
+        top.addWidget(keyword_lbl)
+        top.addWidget(self.timeline_keyword_input, 1)
         top.addWidget(self.timeline_chk_detection)
         top.addWidget(self.timeline_chk_xdr)
         top.addWidget(self.timeline_chk_email)
@@ -15843,13 +15887,15 @@ Command Line :
         def set_search_enabled(enabled):
             self.timeline_btn_search.setEnabled(enabled)
             self.timeline_user_input.setEnabled(enabled)
+            self.timeline_keyword_input.setEnabled(enabled)
             for chk in timeline_source_checks:
                 chk.setEnabled(enabled)
 
         def start_search():
             keyword = self.timeline_user_input.text().strip()
-            if not keyword:
-                add_empty_message("검색어를 입력하세요. Timeline은 전체 캐시 검색이라 빈 검색은 실행하지 않습니다.")
+            text_keyword = self.timeline_keyword_input.text().strip()
+            if not keyword and not text_keyword:
+                add_empty_message("사용자 또는 키워드를 입력하세요. Timeline은 전체 캐시 검색이라 빈 검색은 실행하지 않습니다.")
                 self.timeline_status_label.setText("검색어를 입력하세요.")
                 return
 
@@ -15867,7 +15913,7 @@ Command Line :
             clear_timeline_results()
             add_empty_message("전체 캐시 검색 중입니다...")
             self.timeline_status_label.setText("전체 캐시 검색 시작...")
-            self.timeline_worker = TimelineSearchWorker(keyword, sources)
+            self.timeline_worker = TimelineSearchWorker(keyword, sources, text_keyword)
             self.timeline_worker.progress.connect(lambda msg: self.timeline_status_label.setText(msg))
 
             def on_ok(groups, stats):
@@ -15888,8 +15934,9 @@ Command Line :
 
         self.timeline_btn_search.clicked.connect(start_search)
         self.timeline_user_input.returnPressed.connect(start_search)
+        self.timeline_keyword_input.returnPressed.connect(start_search)
         self._refresh_timeline = lambda: None
-        add_empty_message("Timeline은 날짜 선택 없이 전체 Detection/XDR/Inbound/Outbound/File 캐시에서 사용자 alias 기반으로 검색합니다.")
+        add_empty_message("Timeline은 날짜 선택 없이 전체 Detection/XDR/Inbound/Outbound/File 캐시에서 사용자 alias 또는 키워드로 검색합니다.")
         return root
 
 
@@ -16456,12 +16503,30 @@ Command Line :
 
     def run_auto_refresh_job(self, job_name):
         self.auto_index_after_refresh = True
-        if job_name == "DLP":
-            self.run_refresh_dlp()
+
+        today = QDate.currentDate().toString("yyyy-MM-dd")
+        if job_name in ("Detection", "Email"):
+            date_str = f"{today}|{today}"
+        elif job_name == "DLP":
+            date_str = today
         elif job_name == "MailScreen":
-            self.run_refresh_mailscreen()
+            date_str = today
         else:
             self.run_refresh(job_name)
+            return
+
+        if self.running:
+            self.queue_auto_refresh_job(job_name)
+            return
+
+        self.running = True
+        self.set_status(f"{job_name} refresh", color="blue", spinning=True)
+
+        self.worker = RefreshWorker(job_name=job_name, date_str=date_str)
+        self.worker.ok.connect(self._on_refresh_ok)
+        self.worker.fail.connect(self._on_refresh_fail)
+        self.worker.progress.connect(self._on_refresh_progress)
+        self.worker.start()
 
     def tab_config(self):
         btn_style = self.button_style("primary")
@@ -16492,7 +16557,7 @@ Command Line :
 
         self.mailscreen_refresh_date = QDateEdit()
         self.mailscreen_refresh_date.setCalendarPopup(True)
-        self.mailscreen_refresh_date.setDate(QDate.currentDate().addDays(-1))
+        self.mailscreen_refresh_date.setDate(QDate.currentDate())
         self.mailscreen_refresh_date.setDisplayFormat("yyyy-MM-dd")
 
         btn_dlp_refresh = QPushButton("DLP 데이터 최신화")
