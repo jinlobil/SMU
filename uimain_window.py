@@ -3232,6 +3232,41 @@ def timeline_event_matches(event, ctx):
     return False
 
 
+def timeline_event_search_values(event):
+    values = [
+        event.get("time"),
+        event.get("source"),
+        timeline_source_display_name(event.get("source")),
+        event.get("user"),
+        event.get("user_id"),
+        event.get("dept"),
+        event.get("asset"),
+        event.get("event"),
+        event.get("direction"),
+        event.get("peer"),
+        event.get("summary"),
+        event.get("indicator"),
+    ]
+    values.extend(event.get("match_values", []) or [])
+
+    raw = event.get("raw")
+    if raw is not None:
+        try:
+            values.append(json.dumps(raw, ensure_ascii=False, default=str))
+        except Exception:
+            values.append(str(raw))
+
+    return values
+
+
+def timeline_event_matches_keyword(event, keyword):
+    keyword = str(keyword or "").strip().lower()
+    if not keyword:
+        return True
+
+    return keyword in " ".join(str(v or "") for v in timeline_event_search_values(event)).lower()
+
+
 def normalize_timeline_detection(d, ctx):
     if not isinstance(d, dict):
         return None
@@ -3467,6 +3502,38 @@ def timeline_event_tokens(event):
     return sorted(tokens)
 
 
+def timeline_keyword_tokens_from_text(value):
+    text = str(value or "").strip()
+    if not text or text in {"None", "미분류"}:
+        return []
+
+    tokens = set()
+    full_key = normalize_name_key(text)
+    if 2 <= len(full_key) <= 200:
+        tokens.add(full_key)
+
+    # 영문/숫자/한글 및 보안 이벤트에서 자주 쓰는 구분자(IP, 도메인, 경로, 해시, 메일)를 토큰으로 유지한다.
+    for part in re.findall(r"[0-9A-Za-z가-힣_.@:/\\-]{2,}", text):
+        key = normalize_name_key(part)
+        if len(key) >= 2:
+            tokens.add(key)
+        if "@" in part:
+            local_key = normalize_name_key(part.split("@", 1)[0])
+            if len(local_key) >= 2:
+                tokens.add(local_key)
+
+    return sorted(tokens)
+
+
+def timeline_event_keyword_tokens(event):
+    tokens = set()
+    for value in timeline_event_search_values(event):
+        tokens.update(timeline_keyword_tokens_from_text(value))
+        if len(tokens) >= 300:
+            break
+    return sorted(tokens)[:300]
+
+
 def timeline_event_key(source, cache_file, row_index, event):
     date_part = os.path.splitext(os.path.basename(cache_file))[0]
     raw = "|".join([
@@ -3511,6 +3578,12 @@ def init_timeline_index_db(conn):
         )
     """)
     conn.execute("""
+        CREATE TABLE IF NOT EXISTS timeline_keyword_tokens (
+            token TEXT NOT NULL,
+            event_key TEXT NOT NULL
+        )
+    """)
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS timeline_files (
             path TEXT PRIMARY KEY,
             source TEXT,
@@ -3522,6 +3595,8 @@ def init_timeline_index_db(conn):
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_timeline_tokens_token ON timeline_tokens(token)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_timeline_tokens_event_key ON timeline_tokens(event_key)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_timeline_keyword_tokens_token ON timeline_keyword_tokens(token)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_timeline_keyword_tokens_event_key ON timeline_keyword_tokens(event_key)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_timeline_events_source ON timeline_events(source)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_timeline_events_time ON timeline_events(time)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_timeline_events_bucket ON timeline_events(bucket)")
@@ -3561,6 +3636,9 @@ def insert_timeline_index_event(conn, event, cache_file, row_index):
     token_count = 0
     for token in timeline_event_tokens(event):
         conn.execute("INSERT INTO timeline_tokens (token, event_key) VALUES (?, ?)", (token, event_key))
+        token_count += 1
+    for token in timeline_event_keyword_tokens(event):
+        conn.execute("INSERT INTO timeline_keyword_tokens (token, event_key) VALUES (?, ?)", (token, event_key))
         token_count += 1
     return token_count
 
@@ -3619,38 +3697,61 @@ def load_timeline_raw_event(cache_file, row_index):
     return None
 
 
-def query_timeline_index(keyword, sources=None):
+def query_timeline_index(keyword, sources=None, text_keyword=""):
     if not os.path.exists(TIMELINE_INDEX_DB_PATH):
         return None, {"message": "Timeline index DB not found"}
 
-    ctx = build_timeline_identity_context(keyword)
-    tokens = sorted(ctx.get("all_keys", set()))
-    if not tokens:
+    keyword = str(keyword or "").strip()
+    text_keyword = str(text_keyword or "").strip()
+    ctx = build_timeline_identity_context(keyword) if keyword else None
+    identity_tokens = sorted(ctx.get("all_keys", set())) if ctx else []
+    keyword_tokens = timeline_keyword_tokens_from_text(text_keyword)
+
+    if not identity_tokens and not keyword_tokens:
         return [], {"message": "검색 token 없음", "events": 0, "groups": 0, "files": 0, "index": True}
 
     sources = sorted(set(sources or ["Detection", "XDR", "Email", "Outbound Mail", "File"]))
-    token_placeholders = ",".join(["?"] * len(tokens))
-    source_clause = ""
-    params = list(tokens)
+    where_clauses = []
+    params = []
+
     if sources:
         source_placeholders = ",".join(["?"] * len(sources))
-        source_clause = f" AND e.source IN ({source_placeholders})"
+        where_clauses.append(f"e.source IN ({source_placeholders})")
         params.extend(sources)
 
+    if identity_tokens:
+        token_placeholders = ",".join(["?"] * len(identity_tokens))
+        where_clauses.append(
+            f"EXISTS (SELECT 1 FROM timeline_tokens t WHERE t.event_key = e.event_key AND t.token IN ({token_placeholders}))"
+        )
+        params.extend(identity_tokens)
+
+    if keyword_tokens:
+        keyword_placeholders = ",".join(["?"] * len(keyword_tokens))
+        keyword_like_clause = " OR ".join(["kt.token LIKE ?"] * len(keyword_tokens))
+        where_clauses.append(
+            f"EXISTS (SELECT 1 FROM timeline_keyword_tokens kt WHERE kt.event_key = e.event_key AND (kt.token IN ({keyword_placeholders}) OR {keyword_like_clause}))"
+        )
+        params.extend(keyword_tokens)
+        params.extend([f"%{token}%" for token in keyword_tokens])
+
+    where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
     sql = f"""
         SELECT DISTINCT
             e.event_key, e.source, e.time, e.bucket, e.user, e.user_id, e.dept,
             e.asset, e.event, e.direction, e.peer, e.summary, e.indicator,
             e.cache_file, e.row_index
-        FROM timeline_tokens t
-        JOIN timeline_events e ON e.event_key = t.event_key
-        WHERE t.token IN ({token_placeholders})
-        {source_clause}
+        FROM timeline_events e
+        WHERE {where_sql}
         ORDER BY e.time ASC
     """
 
     with sqlite3.connect(TIMELINE_INDEX_DB_PATH) as conn:
         init_timeline_index_db(conn)
+        if keyword_tokens:
+            keyword_token_count = conn.execute("SELECT COUNT(*) FROM timeline_keyword_tokens").fetchone()[0]
+            if keyword_token_count <= 0:
+                return None, {"message": "Timeline keyword index empty"}
         rows = conn.execute(sql, params).fetchall()
         file_count = conn.execute("SELECT COUNT(*) FROM timeline_files").fetchone()[0]
 
@@ -3661,7 +3762,7 @@ def query_timeline_index(keyword, sources=None):
         "events": len(events),
         "groups": len(groups),
         "files": file_count,
-        "aliases": sorted(ctx.get("all_values", set()))[:80],
+        "aliases": sorted(ctx.get("all_values", set()))[:80] if ctx else [],
         "index": True,
     }
 
@@ -3741,6 +3842,10 @@ def delete_timeline_index_file(conn, cache_file):
         "DELETE FROM timeline_tokens WHERE event_key IN (SELECT event_key FROM timeline_events WHERE cache_file = ?)",
         (cache_file,),
     )
+    conn.execute(
+        "DELETE FROM timeline_keyword_tokens WHERE event_key IN (SELECT event_key FROM timeline_events WHERE cache_file = ?)",
+        (cache_file,),
+    )
     conn.execute("DELETE FROM timeline_events WHERE cache_file = ?", (cache_file,))
     conn.execute("DELETE FROM timeline_files WHERE path = ?", (cache_file,))
 
@@ -3765,6 +3870,8 @@ def rebuild_timeline_index(progress_cb=None, force=False):
             row[0]: {"mtime": float(row[1] or 0), "size": int(row[2] or 0)}
             for row in conn.execute("SELECT path, mtime, size FROM timeline_files").fetchall()
         }
+        if indexed_meta and conn.execute("SELECT COUNT(*) FROM timeline_keyword_tokens").fetchone()[0] <= 0:
+            indexed_meta = {}
 
         stale_paths = sorted(set(indexed_meta) - current_paths)
         for stale_path in stale_paths:
@@ -3840,25 +3947,30 @@ class TimelineSearchWorker(QThread):
     fail = pyqtSignal(str)
     progress = pyqtSignal(str)
 
-    def __init__(self, keyword, sources=None):
+    def __init__(self, keyword, sources=None, text_keyword=""):
         super().__init__()
         self.keyword = str(keyword or "").strip()
+        self.text_keyword = str(text_keyword or "").strip()
         self.sources = set(sources or ["Detection", "XDR", "Email", "Outbound Mail", "File"])
 
     def run(self):
         try:
-            if not self.keyword:
+            if not self.keyword and not self.text_keyword:
                 self.ok.emit([], {"message": "검색어를 입력하세요.", "events": 0, "groups": 0})
                 return
 
-            index_groups, index_stats = query_timeline_index(self.keyword, self.sources)
+            index_groups, index_stats = query_timeline_index(self.keyword, self.sources, self.text_keyword)
             if index_groups is not None:
                 self.ok.emit(index_groups, index_stats)
                 return
 
-            ctx = build_timeline_identity_context(self.keyword)
+            ctx = build_timeline_identity_context(self.keyword) if self.keyword else None
             events = []
             files_scanned = 0
+
+            def append_if_match(event):
+                if event and timeline_event_matches_keyword(event, self.text_keyword):
+                    events.append(event)
 
             if "Detection" in self.sources or "XDR" in self.sources:
                 paths = iter_json_files(DETECTIONS_DAY_DIR, ".json")
@@ -3876,12 +3988,10 @@ class TimelineSearchWorker(QThread):
                     for row in rows:
                         if "Detection" in self.sources:
                             event = normalize_timeline_detection(row, ctx)
-                            if event:
-                                events.append(event)
+                            append_if_match(event)
                         if "XDR" in self.sources:
                             event = normalize_timeline_xdr(row, ctx)
-                            if event:
-                                events.append(event)
+                            append_if_match(event)
 
             if "Email" in self.sources:
                 paths = iter_json_files(EMAILS_DAY_DIR, ".json")
@@ -3897,7 +4007,8 @@ class TimelineSearchWorker(QThread):
                     if not isinstance(rows, list):
                         continue
                     for row in rows:
-                        events.extend(normalize_timeline_email(row, ctx))
+                        for event in normalize_timeline_email(row, ctx):
+                            append_if_match(event)
 
             if "Outbound Mail" in self.sources:
                 paths = iter_json_files(MAILSCREEN_DAY_DIR, ".json")
@@ -3915,8 +4026,7 @@ class TimelineSearchWorker(QThread):
                         continue
                     for row in rows:
                         event = normalize_timeline_mailscreen(row, ctx)
-                        if event:
-                            events.append(event)
+                        append_if_match(event)
 
             if "File" in self.sources:
                 paths = iter_json_files(DLP_DAY_DIR, ".jsonl")
@@ -3925,8 +4035,7 @@ class TimelineSearchWorker(QThread):
                     files_scanned += 1
                     for row in load_jsonl(path):
                         event = normalize_timeline_dlp(row, ctx)
-                        if event:
-                            events.append(event)
+                        append_if_match(event)
 
             groups = group_timeline_events(events)
             stats = {
@@ -3934,7 +4043,7 @@ class TimelineSearchWorker(QThread):
                 "events": len(events),
                 "groups": len(groups),
                 "files": files_scanned,
-                "aliases": sorted(ctx.get("all_values", set()))[:80],
+                "aliases": sorted(ctx.get("all_values", set()))[:80] if ctx else [],
             }
             self.ok.emit(groups, stats)
         except Exception as e:
@@ -11654,6 +11763,9 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "진행 중", "이미 최신화가 진행 중입니다.")
             return
 
+        # 버튼 클릭 직전에 직접 입력한 날짜가 아직 QDateEdit 값으로 commit되지 않은 경우가 있어
+        # 현재 표시/입력 중인 텍스트를 먼저 해석한 뒤 선택 날짜를 읽는다.
+        self.mailscreen_refresh_date.interpretText()
         date_str = self.mailscreen_refresh_date.date().toString("yyyy-MM-dd")
 
         self.running = True
@@ -15521,6 +15633,9 @@ Command Line :
         lbl = QLabel("사용자")
         self.timeline_user_input = QLineEdit()
         self.timeline_user_input.setPlaceholderText("사용자명 / User ID / 메일 / Hostname 입력 후 전체 캐시 검색")
+        keyword_lbl = QLabel("키워드")
+        self.timeline_keyword_input = QLineEdit()
+        self.timeline_keyword_input.setPlaceholderText("이벤트명 / 제목 / 파일명 / IP / 해시 / RawData 키워드")
         self.timeline_btn_search = QPushButton("조회")
         self.timeline_btn_search.setProperty("buttonRole", "secondary")
         self.timeline_btn_search.setStyleSheet(self.button_style("secondary"))
@@ -15565,6 +15680,8 @@ Command Line :
 
         top.addWidget(lbl)
         top.addWidget(self.timeline_user_input, 1)
+        top.addWidget(keyword_lbl)
+        top.addWidget(self.timeline_keyword_input, 1)
         top.addWidget(self.timeline_chk_detection)
         top.addWidget(self.timeline_chk_xdr)
         top.addWidget(self.timeline_chk_email)
@@ -15843,13 +15960,15 @@ Command Line :
         def set_search_enabled(enabled):
             self.timeline_btn_search.setEnabled(enabled)
             self.timeline_user_input.setEnabled(enabled)
+            self.timeline_keyword_input.setEnabled(enabled)
             for chk in timeline_source_checks:
                 chk.setEnabled(enabled)
 
         def start_search():
             keyword = self.timeline_user_input.text().strip()
-            if not keyword:
-                add_empty_message("검색어를 입력하세요. Timeline은 전체 캐시 검색이라 빈 검색은 실행하지 않습니다.")
+            text_keyword = self.timeline_keyword_input.text().strip()
+            if not keyword and not text_keyword:
+                add_empty_message("사용자 또는 키워드를 입력하세요. Timeline은 전체 캐시 검색이라 빈 검색은 실행하지 않습니다.")
                 self.timeline_status_label.setText("검색어를 입력하세요.")
                 return
 
@@ -15867,7 +15986,7 @@ Command Line :
             clear_timeline_results()
             add_empty_message("전체 캐시 검색 중입니다...")
             self.timeline_status_label.setText("전체 캐시 검색 시작...")
-            self.timeline_worker = TimelineSearchWorker(keyword, sources)
+            self.timeline_worker = TimelineSearchWorker(keyword, sources, text_keyword)
             self.timeline_worker.progress.connect(lambda msg: self.timeline_status_label.setText(msg))
 
             def on_ok(groups, stats):
@@ -15888,8 +16007,9 @@ Command Line :
 
         self.timeline_btn_search.clicked.connect(start_search)
         self.timeline_user_input.returnPressed.connect(start_search)
+        self.timeline_keyword_input.returnPressed.connect(start_search)
         self._refresh_timeline = lambda: None
-        add_empty_message("Timeline은 날짜 선택 없이 전체 Detection/XDR/Inbound/Outbound/File 캐시에서 사용자 alias 기반으로 검색합니다.")
+        add_empty_message("Timeline은 날짜 선택 없이 전체 Detection/XDR/Inbound/Outbound/File 캐시에서 사용자 alias 또는 키워드로 검색합니다.")
         return root
 
 
@@ -16456,12 +16576,30 @@ Command Line :
 
     def run_auto_refresh_job(self, job_name):
         self.auto_index_after_refresh = True
-        if job_name == "DLP":
-            self.run_refresh_dlp()
+
+        today = QDate.currentDate().toString("yyyy-MM-dd")
+        if job_name in ("Detection", "Email"):
+            date_str = f"{today}|{today}"
+        elif job_name == "DLP":
+            date_str = today
         elif job_name == "MailScreen":
-            self.run_refresh_mailscreen()
+            date_str = today
         else:
             self.run_refresh(job_name)
+            return
+
+        if self.running:
+            self.queue_auto_refresh_job(job_name)
+            return
+
+        self.running = True
+        self.set_status(f"{job_name} refresh", color="blue", spinning=True)
+
+        self.worker = RefreshWorker(job_name=job_name, date_str=date_str)
+        self.worker.ok.connect(self._on_refresh_ok)
+        self.worker.fail.connect(self._on_refresh_fail)
+        self.worker.progress.connect(self._on_refresh_progress)
+        self.worker.start()
 
     def tab_config(self):
         btn_style = self.button_style("primary")
@@ -16492,7 +16630,7 @@ Command Line :
 
         self.mailscreen_refresh_date = QDateEdit()
         self.mailscreen_refresh_date.setCalendarPopup(True)
-        self.mailscreen_refresh_date.setDate(QDate.currentDate().addDays(-1))
+        self.mailscreen_refresh_date.setDate(QDate.currentDate())
         self.mailscreen_refresh_date.setDisplayFormat("yyyy-MM-dd")
 
         btn_dlp_refresh = QPushButton("DLP 데이터 최신화")
