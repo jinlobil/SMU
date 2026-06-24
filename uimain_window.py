@@ -3232,11 +3232,7 @@ def timeline_event_matches(event, ctx):
     return False
 
 
-def timeline_event_matches_keyword(event, keyword):
-    keyword = str(keyword or "").strip().lower()
-    if not keyword:
-        return True
-
+def timeline_event_search_values(event):
     values = [
         event.get("time"),
         event.get("source"),
@@ -3260,7 +3256,15 @@ def timeline_event_matches_keyword(event, keyword):
         except Exception:
             values.append(str(raw))
 
-    return keyword in " ".join(str(v or "") for v in values).lower()
+    return values
+
+
+def timeline_event_matches_keyword(event, keyword):
+    keyword = str(keyword or "").strip().lower()
+    if not keyword:
+        return True
+
+    return keyword in " ".join(str(v or "") for v in timeline_event_search_values(event)).lower()
 
 
 def normalize_timeline_detection(d, ctx):
@@ -3498,6 +3502,38 @@ def timeline_event_tokens(event):
     return sorted(tokens)
 
 
+def timeline_keyword_tokens_from_text(value):
+    text = str(value or "").strip()
+    if not text or text in {"None", "미분류"}:
+        return []
+
+    tokens = set()
+    full_key = normalize_name_key(text)
+    if 2 <= len(full_key) <= 200:
+        tokens.add(full_key)
+
+    # 영문/숫자/한글 및 보안 이벤트에서 자주 쓰는 구분자(IP, 도메인, 경로, 해시, 메일)를 토큰으로 유지한다.
+    for part in re.findall(r"[0-9A-Za-z가-힣_.@:/\\-]{2,}", text):
+        key = normalize_name_key(part)
+        if len(key) >= 2:
+            tokens.add(key)
+        if "@" in part:
+            local_key = normalize_name_key(part.split("@", 1)[0])
+            if len(local_key) >= 2:
+                tokens.add(local_key)
+
+    return sorted(tokens)
+
+
+def timeline_event_keyword_tokens(event):
+    tokens = set()
+    for value in timeline_event_search_values(event):
+        tokens.update(timeline_keyword_tokens_from_text(value))
+        if len(tokens) >= 300:
+            break
+    return sorted(tokens)[:300]
+
+
 def timeline_event_key(source, cache_file, row_index, event):
     date_part = os.path.splitext(os.path.basename(cache_file))[0]
     raw = "|".join([
@@ -3542,6 +3578,12 @@ def init_timeline_index_db(conn):
         )
     """)
     conn.execute("""
+        CREATE TABLE IF NOT EXISTS timeline_keyword_tokens (
+            token TEXT NOT NULL,
+            event_key TEXT NOT NULL
+        )
+    """)
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS timeline_files (
             path TEXT PRIMARY KEY,
             source TEXT,
@@ -3553,6 +3595,8 @@ def init_timeline_index_db(conn):
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_timeline_tokens_token ON timeline_tokens(token)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_timeline_tokens_event_key ON timeline_tokens(event_key)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_timeline_keyword_tokens_token ON timeline_keyword_tokens(token)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_timeline_keyword_tokens_event_key ON timeline_keyword_tokens(event_key)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_timeline_events_source ON timeline_events(source)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_timeline_events_time ON timeline_events(time)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_timeline_events_bucket ON timeline_events(bucket)")
@@ -3592,6 +3636,9 @@ def insert_timeline_index_event(conn, event, cache_file, row_index):
     token_count = 0
     for token in timeline_event_tokens(event):
         conn.execute("INSERT INTO timeline_tokens (token, event_key) VALUES (?, ?)", (token, event_key))
+        token_count += 1
+    for token in timeline_event_keyword_tokens(event):
+        conn.execute("INSERT INTO timeline_keyword_tokens (token, event_key) VALUES (?, ?)", (token, event_key))
         token_count += 1
     return token_count
 
@@ -3650,38 +3697,61 @@ def load_timeline_raw_event(cache_file, row_index):
     return None
 
 
-def query_timeline_index(keyword, sources=None):
+def query_timeline_index(keyword, sources=None, text_keyword=""):
     if not os.path.exists(TIMELINE_INDEX_DB_PATH):
         return None, {"message": "Timeline index DB not found"}
 
-    ctx = build_timeline_identity_context(keyword)
-    tokens = sorted(ctx.get("all_keys", set()))
-    if not tokens:
+    keyword = str(keyword or "").strip()
+    text_keyword = str(text_keyword or "").strip()
+    ctx = build_timeline_identity_context(keyword) if keyword else None
+    identity_tokens = sorted(ctx.get("all_keys", set())) if ctx else []
+    keyword_tokens = timeline_keyword_tokens_from_text(text_keyword)
+
+    if not identity_tokens and not keyword_tokens:
         return [], {"message": "검색 token 없음", "events": 0, "groups": 0, "files": 0, "index": True}
 
     sources = sorted(set(sources or ["Detection", "XDR", "Email", "Outbound Mail", "File"]))
-    token_placeholders = ",".join(["?"] * len(tokens))
-    source_clause = ""
-    params = list(tokens)
+    where_clauses = []
+    params = []
+
     if sources:
         source_placeholders = ",".join(["?"] * len(sources))
-        source_clause = f" AND e.source IN ({source_placeholders})"
+        where_clauses.append(f"e.source IN ({source_placeholders})")
         params.extend(sources)
 
+    if identity_tokens:
+        token_placeholders = ",".join(["?"] * len(identity_tokens))
+        where_clauses.append(
+            f"EXISTS (SELECT 1 FROM timeline_tokens t WHERE t.event_key = e.event_key AND t.token IN ({token_placeholders}))"
+        )
+        params.extend(identity_tokens)
+
+    if keyword_tokens:
+        keyword_placeholders = ",".join(["?"] * len(keyword_tokens))
+        keyword_like_clause = " OR ".join(["kt.token LIKE ?"] * len(keyword_tokens))
+        where_clauses.append(
+            f"EXISTS (SELECT 1 FROM timeline_keyword_tokens kt WHERE kt.event_key = e.event_key AND (kt.token IN ({keyword_placeholders}) OR {keyword_like_clause}))"
+        )
+        params.extend(keyword_tokens)
+        params.extend([f"%{token}%" for token in keyword_tokens])
+
+    where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
     sql = f"""
         SELECT DISTINCT
             e.event_key, e.source, e.time, e.bucket, e.user, e.user_id, e.dept,
             e.asset, e.event, e.direction, e.peer, e.summary, e.indicator,
             e.cache_file, e.row_index
-        FROM timeline_tokens t
-        JOIN timeline_events e ON e.event_key = t.event_key
-        WHERE t.token IN ({token_placeholders})
-        {source_clause}
+        FROM timeline_events e
+        WHERE {where_sql}
         ORDER BY e.time ASC
     """
 
     with sqlite3.connect(TIMELINE_INDEX_DB_PATH) as conn:
         init_timeline_index_db(conn)
+        if keyword_tokens:
+            keyword_token_count = conn.execute("SELECT COUNT(*) FROM timeline_keyword_tokens").fetchone()[0]
+            if keyword_token_count <= 0:
+                return None, {"message": "Timeline keyword index empty"}
         rows = conn.execute(sql, params).fetchall()
         file_count = conn.execute("SELECT COUNT(*) FROM timeline_files").fetchone()[0]
 
@@ -3692,7 +3762,7 @@ def query_timeline_index(keyword, sources=None):
         "events": len(events),
         "groups": len(groups),
         "files": file_count,
-        "aliases": sorted(ctx.get("all_values", set()))[:80],
+        "aliases": sorted(ctx.get("all_values", set()))[:80] if ctx else [],
         "index": True,
     }
 
@@ -3772,6 +3842,10 @@ def delete_timeline_index_file(conn, cache_file):
         "DELETE FROM timeline_tokens WHERE event_key IN (SELECT event_key FROM timeline_events WHERE cache_file = ?)",
         (cache_file,),
     )
+    conn.execute(
+        "DELETE FROM timeline_keyword_tokens WHERE event_key IN (SELECT event_key FROM timeline_events WHERE cache_file = ?)",
+        (cache_file,),
+    )
     conn.execute("DELETE FROM timeline_events WHERE cache_file = ?", (cache_file,))
     conn.execute("DELETE FROM timeline_files WHERE path = ?", (cache_file,))
 
@@ -3796,6 +3870,8 @@ def rebuild_timeline_index(progress_cb=None, force=False):
             row[0]: {"mtime": float(row[1] or 0), "size": int(row[2] or 0)}
             for row in conn.execute("SELECT path, mtime, size FROM timeline_files").fetchall()
         }
+        if indexed_meta and conn.execute("SELECT COUNT(*) FROM timeline_keyword_tokens").fetchone()[0] <= 0:
+            indexed_meta = {}
 
         stale_paths = sorted(set(indexed_meta) - current_paths)
         for stale_path in stale_paths:
@@ -3883,10 +3959,7 @@ class TimelineSearchWorker(QThread):
                 self.ok.emit([], {"message": "검색어를 입력하세요.", "events": 0, "groups": 0})
                 return
 
-            if not self.text_keyword:
-                index_groups, index_stats = query_timeline_index(self.keyword, self.sources)
-            else:
-                index_groups, index_stats = None, None
+            index_groups, index_stats = query_timeline_index(self.keyword, self.sources, self.text_keyword)
             if index_groups is not None:
                 self.ok.emit(index_groups, index_stats)
                 return
