@@ -11654,8 +11654,9 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "진행 중", "이미 최신화가 진행 중입니다.")
             return
 
-        # Outbound Mail 최신화는 선택된 날짜가 아니라 실행 시점의 시스템 날짜를 사용한다.
-        self.mailscreen_refresh_date.setDate(QDate.currentDate())
+        # 버튼 클릭 직전에 직접 입력한 날짜가 아직 QDateEdit 값으로 commit되지 않은 경우가 있어
+        # 현재 표시/입력 중인 텍스트를 먼저 해석한 뒤 선택 날짜를 읽는다.
+        self.mailscreen_refresh_date.interpretText()
         date_str = self.mailscreen_refresh_date.date().toString("yyyy-MM-dd")
 
         self.running = True
