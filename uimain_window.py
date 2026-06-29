@@ -3482,7 +3482,7 @@ def group_timeline_events(events):
         group["count"] = len(group.get("items", []))
         group["time"] = min((item.get("time", "") for item in group.get("items", [])), default=group.get("bucket", ""))
 
-    groups.sort(key=lambda g: g.get("time", ""))
+    groups.sort(key=lambda g: g.get("time", ""), reverse=True)
     return groups
 
 
@@ -3743,7 +3743,7 @@ def query_timeline_index(keyword, sources=None, text_keyword=""):
             e.cache_file, e.row_index
         FROM timeline_events e
         WHERE {where_sql}
-        ORDER BY e.time ASC
+        ORDER BY e.time DESC
     """
 
     with sqlite3.connect(TIMELINE_INDEX_DB_PATH) as conn:
@@ -15817,7 +15817,7 @@ Command Line :
 
         def show_group_detail(group):
             items = group.get("items", []) if isinstance(group, dict) else []
-            visible_items = items[:TIMELINE_DETAIL_ROW_LIMIT]
+            visible_items = sorted(items, key=lambda event: event.get("time", ""), reverse=True)[:TIMELINE_DETAIL_ROW_LIMIT]
             self.timeline_detail_panel.show()
             suffix = "" if len(visible_items) == len(items) else f" / 상위 {len(visible_items):,}건 표시"
             source_label = timeline_source_display_name(group.get("source", "None"))
