@@ -1694,6 +1694,17 @@ def load_dlp_by_range_json(start_date: str, end_date: str):
     return results
 
 
+def load_dlp_all_cache():
+    results = []
+    for path in iter_json_files(DLP_DAY_DIR, ".jsonl"):
+        try:
+            results.extend(load_jsonl(path))
+        except Exception as e:
+            log.warning(f"Failed to load {path}: {e}")
+    log.info(f"Loaded DLP from all cache files : {len(results)}")
+    return results
+
+
 def load_mailscreen_by_range(start_date: str, end_date: str):
     try:
         sync_app_cache_range("mailscreen", start_date, end_date)
@@ -6875,6 +6886,7 @@ class MainWindow(QMainWindow):
         self.email_range = ""
         self.xdr_range = ""
         self.dlp_range = ""
+        self.sensitive_files_range = ""
         self.mailscreen_range = ""
 
 
@@ -6893,6 +6905,7 @@ class MainWindow(QMainWindow):
         self.email_emails = []
         self.xdr_detections = []
         self.dlp_rows = []
+        self.sensitive_dlp_rows = []
         self.mailscreen_rows = []
 
         self.trend_colors = self.trend_colors_from_config(self.color_config)
@@ -11476,8 +11489,8 @@ class MainWindow(QMainWindow):
                 self._refresh_dlp()
 
         elif current_tab == "Sensitive Files":
-            self.dlp_rows = load_dlp_by_range(start_date, end_date)
-            self.dlp_range = f"{start_date} ~ {end_date}"
+            self.sensitive_dlp_rows = load_dlp_all_cache()
+            self.sensitive_files_range = "전체 캐시"
 
             if hasattr(self, "_refresh_sensitive_files"):
                 self._refresh_sensitive_files()
@@ -11513,7 +11526,7 @@ class MainWindow(QMainWindow):
             text = self.dlp_range
 
         elif tab_name == "Sensitive Files":
-            text = self.dlp_range
+            text = getattr(self, "sensitive_files_range", "")
 
         elif tab_name == "Timeline":
             text = getattr(self, "timeline_range", "")
@@ -11881,6 +11894,8 @@ class MainWindow(QMainWindow):
 
             if hasattr(self, "_refresh_dlp"):
                 self._refresh_dlp()
+            self.sensitive_dlp_rows = load_dlp_all_cache()
+            self.sensitive_files_range = "전체 캐시"
             if hasattr(self, "_refresh_sensitive_files"):
                 self._refresh_sensitive_files()
 
@@ -15348,7 +15363,7 @@ Command Line :
         root.setObjectName("sensitiveFilesRoot")
         root.setStyleSheet(f"""
             QWidget#sensitiveFilesRoot {{
-                background: {UI_THEME['bg']};
+                background: {UI_THEME['surface']};
             }}
             QTableWidget {{
                 background: {UI_THEME['surface']};
@@ -15547,7 +15562,7 @@ Command Line :
 
         def rebuild_records():
             records = []
-            for row in self.dlp_rows or []:
+            for row in self.sensitive_dlp_rows or []:
                 if not isinstance(row, dict):
                     continue
                 record = make_sensitive_record(row)
