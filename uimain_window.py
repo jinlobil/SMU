@@ -3969,6 +3969,19 @@ class DataIndexWorker(QThread):
             self.fail.emit(str(e))
 
 
+class DlpAllCacheLoadWorker(QThread):
+    ok = pyqtSignal(list)
+    fail = pyqtSignal(str)
+
+    def run(self):
+        try:
+            self.ok.emit(load_dlp_all_cache())
+        except Exception as e:
+            log.exception("Sensitive Files cache load failed")
+            self.fail.emit(str(e))
+
+
+
 
 # ======================================================
 # Workers / Timeline search
@@ -15720,8 +15733,8 @@ Command Line :
             if record:
                 self.show_raw_dialog(record.get("row"))
 
-        def reset_sensitive_filter():
-            self.sensitive_dlp_rows = load_dlp_all_cache()
+        def finish_sensitive_reload(rows):
+            self.sensitive_dlp_rows = rows or []
             self.sensitive_files_range = "전체 캐시"
             self.sensitive_files_loaded = True
             self.sensitive_files_filter.clear()
@@ -15730,6 +15743,27 @@ Command Line :
             rebuild_records()
             render_categories()
             render_files()
+            self.sensitive_files_reset_btn.setEnabled(True)
+            self.sensitive_files_reset_btn.setText("초기화/새로고침")
+            self.set_status("Sensitive Files refreshed", color="green", spinning=False)
+
+        def fail_sensitive_reload(message):
+            self.sensitive_files_reset_btn.setEnabled(True)
+            self.sensitive_files_reset_btn.setText("초기화/새로고침")
+            self.set_status("Sensitive Files refresh FAIL", color="red", spinning=False)
+            QMessageBox.critical(self, "Sensitive Files", f"새로고침 실패: {message}")
+
+        def reset_sensitive_filter():
+            worker = getattr(self, "sensitive_files_worker", None)
+            if worker is not None and worker.isRunning():
+                return
+            self.sensitive_files_reset_btn.setEnabled(False)
+            self.sensitive_files_reset_btn.setText("새로고침중...")
+            self.set_status("Sensitive Files refresh", color="blue", spinning=True)
+            self.sensitive_files_worker = DlpAllCacheLoadWorker()
+            self.sensitive_files_worker.ok.connect(finish_sensitive_reload)
+            self.sensitive_files_worker.fail.connect(fail_sensitive_reload)
+            self.sensitive_files_worker.start()
 
         def refresh():
             if not getattr(self, "sensitive_files_loaded", False):
