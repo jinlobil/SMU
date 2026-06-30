@@ -1750,6 +1750,143 @@ def format_dlp_event_id(value):
     }
     return mapping.get(event_id.strip(), event_id)
 
+
+SENSITIVE_FILE_CATEGORY_SPECS = [
+    ("이직 / 취업", [
+        "이력서", "resume", "curriculum vitae", "자기소개서", "자소서",
+        "포트폴리오", "portfolio", "경력기술서", "입사지원", "지원서",
+        "면접", "채용", "잡코리아", "사람인", "원티드", "wanted",
+        "linkedin", "링크드인", "cover letter",
+    ]),
+    ("결혼 / 웨딩 / 사생활", [
+        "결혼", "웨딩", "wedding", "상견례", "청첩장", "예식", "예식장",
+        "스드메", "드레스", "혼수", "신혼", "신혼여행", "허니문",
+        "혼인", "예물", "예단", "커플사진", "가족사진", "웨딩사진",
+    ]),
+    ("개인 증빙 / 금융", [
+        "신분증", "주민등록증", "운전면허증", "여권", "가족관계증명서",
+        "주민등록등본", "주민등록초본", "인감증명서", "통장사본",
+        "계좌번호", "입금계좌", "입금내역", "거래내역", "잔액증명서",
+        "원천징수", "소득금액", "급여명세서", "연말정산", "건강보험",
+        "국민연금", "재직증명", "전세계약서", "월세계약서", "임대차계약서",
+    ]),
+    ("메신저 수신 파일", [
+        "카카오톡 받은 파일", "kakaotalk", "kakaotalk download",
+        "네이트온 받은 파일", "nateon", "wechat", "viber", "whatsapp",
+        "telegram desktop", "messages/attachments", "xwechat_files",
+        "viberdownloads", "discord",
+    ]),
+    ("개인 사진 / 영상", [
+        "개인사진", "가족사진", "웨딩사진", "증명사진", "프로필사진",
+        "셀카", "셀피", "selfie", "여행사진", "앨범", "본식사진",
+        "스냅사진", "여권사진", "반명함",
+    ]),
+]
+
+
+def sensitive_row_text(row):
+    field_text = " ".join(str(row.get(k, "") or "") for k in (
+        "filename", "destination", "destination_type", "item_details",
+        "destinationDetails", "machine_name", "client_name", "event_id",
+    ))
+    return f"{field_text} {json.dumps(row, ensure_ascii=False, default=str)}".lower()
+
+
+def classify_sensitive_row(row, category_specs=SENSITIVE_FILE_CATEGORY_SPECS):
+    text = sensitive_row_text(row)
+    matched_categories = []
+    matched_keywords = []
+    for category, keywords in category_specs:
+        hits = [kw for kw in keywords if kw.lower() in text]
+        if hits:
+            matched_categories.append(category)
+            matched_keywords.extend(hits)
+    if not matched_categories:
+        return None
+    return {
+        "category": matched_categories[0],
+        "categories": matched_categories,
+        "keywords": sorted(set(matched_keywords), key=lambda x: x.lower()),
+    }
+
+
+def display_sensitive_file_name(path_text):
+    text = str(path_text or "None").strip()
+    if not text or text == "None":
+        return "None"
+    normalized = text.replace("\\", "/").rstrip("/")
+    return normalized.rsplit("/", 1)[-1] or text
+
+
+def resolve_sensitive_user_name(machine_name, client_name):
+    identity = resolve_identity_by_hostname(machine_name)
+    user_name = str(identity.get("user_name", "") or "").strip()
+    if user_name and user_name != "None":
+        return user_name
+    directory_info = get_directory_user_info(client_name)
+    directory_name = str(directory_info.get("name", "") or "").strip()
+    if directory_name:
+        return directory_name
+    org_name = get_org_user_name_by_user_id(client_name)
+    if org_name:
+        return org_name
+    return str(client_name or "None")
+
+
+def make_sensitive_record(row, category_specs=SENSITIVE_FILE_CATEGORY_SPECS):
+    classified = classify_sensitive_row(row, category_specs)
+    if not classified:
+        return None
+    machine_name = str(row.get("machine_name", "None") or "None")
+    client_name = str(row.get("client_name", "None") or "None")
+    dept_name, _ = get_dept_by_hostname(machine_name)
+    filename = str(row.get("filename", "None") or "None")
+    destination = str(row.get("destination", "None") or "None")
+    destination_detail = str(row.get("item_details") or row.get("destinationDetails") or "None")
+    return {
+        "row": row,
+        "category": classified["category"],
+        "categories": classified["categories"],
+        "keywords": classified["keywords"],
+        "event_time": str(row.get("eventtimelocal", "") or ""),
+        "event": format_dlp_event_id(row.get("event_id", "None")),
+        "machine": machine_name,
+        "dept": dept_name,
+        "user": resolve_sensitive_user_name(machine_name, client_name),
+        "user_id": client_name,
+        "filename": filename,
+        "display_filename": display_sensitive_file_name(filename),
+        "destination": destination,
+        "destination_type": str(row.get("destination_type", "None") or "None"),
+        "destination_detail": destination_detail,
+        "filehash": str(row.get("filehash", "None") or "None"),
+    }
+
+
+def build_sensitive_file_records(rows, category_specs=SENSITIVE_FILE_CATEGORY_SPECS):
+    records = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        record = make_sensitive_record(row, category_specs)
+        if record:
+            records.append(record)
+
+    latest_by_file_owner = {}
+    for record in records:
+        dedupe_key = (
+            str(record.get("display_filename", "")).strip().lower(),
+            str(record.get("dept", "")).strip().lower(),
+            str(record.get("user", "")).strip().lower(),
+        )
+        current = latest_by_file_owner.get(dedupe_key)
+        if current is None or str(record.get("event_time", "")) > str(current.get("event_time", "")):
+            latest_by_file_owner[dedupe_key] = record
+
+    records = list(latest_by_file_owner.values())
+    records.sort(key=lambda r: (r["category"], r["display_filename"].lower(), r["event_time"]), reverse=False)
+    return records
+
 # ======================================================
 # Core utilities / file, session, time, and validation helpers
 # - Generic helpers that are not tied to a single UI tab.
@@ -3970,12 +4107,14 @@ class DataIndexWorker(QThread):
 
 
 class DlpAllCacheLoadWorker(QThread):
-    ok = pyqtSignal(list)
+    ok = pyqtSignal(object)
     fail = pyqtSignal(str)
 
     def run(self):
         try:
-            self.ok.emit(load_dlp_all_cache())
+            rows = load_dlp_all_cache()
+            records = build_sensitive_file_records(rows)
+            self.ok.emit({"rows": rows, "records": records})
         except Exception as e:
             log.exception("Sensitive Files cache load failed")
             self.fail.emit(str(e))
@@ -15496,37 +15635,7 @@ Command Line :
         bottom.addWidget(raw_button)
         layout.addLayout(bottom)
 
-        category_specs = [
-            ("이직 / 취업", [
-                "이력서", "resume", "curriculum vitae", "자기소개서", "자소서",
-                "포트폴리오", "portfolio", "경력기술서", "입사지원", "지원서",
-                "면접", "채용", "잡코리아", "사람인", "원티드", "wanted",
-                "linkedin", "링크드인", "cover letter",
-            ]),
-            ("결혼 / 웨딩 / 사생활", [
-                "결혼", "웨딩", "wedding", "상견례", "청첩장", "예식", "예식장",
-                "스드메", "드레스", "혼수", "신혼", "신혼여행", "허니문",
-                "혼인", "예물", "예단", "커플사진", "가족사진", "웨딩사진",
-            ]),
-            ("개인 증빙 / 금융", [
-                "신분증", "주민등록증", "운전면허증", "여권", "가족관계증명서",
-                "주민등록등본", "주민등록초본", "인감증명서", "통장사본",
-                "계좌번호", "입금계좌", "입금내역", "거래내역", "잔액증명서",
-                "원천징수", "소득금액", "급여명세서", "연말정산", "건강보험",
-                "국민연금", "재직증명", "전세계약서", "월세계약서", "임대차계약서",
-            ]),
-            ("메신저 수신 파일", [
-                "카카오톡 받은 파일", "kakaotalk", "kakaotalk download",
-                "네이트온 받은 파일", "nateon", "wechat", "viber", "whatsapp",
-                "telegram desktop", "messages/attachments", "xwechat_files",
-                "viberdownloads", "discord",
-            ]),
-            ("개인 사진 / 영상", [
-                "개인사진", "가족사진", "웨딩사진", "증명사진", "프로필사진",
-                "셀카", "셀피", "selfie", "여행사진", "앨범", "본식사진",
-                "스냅사진", "여권사진", "반명함",
-            ]),
-        ]
+        category_specs = SENSITIVE_FILE_CATEGORY_SPECS
 
         def row_text(row):
             field_text = " ".join(str(row.get(k, "") or "") for k in (
@@ -15733,14 +15842,15 @@ Command Line :
             if record:
                 self.show_raw_dialog(record.get("row"))
 
-        def finish_sensitive_reload(rows):
-            self.sensitive_dlp_rows = rows or []
+        def finish_sensitive_reload(payload):
+            payload = payload or {}
+            self.sensitive_dlp_rows = payload.get("rows") or []
+            self.sensitive_file_records = payload.get("records") or []
             self.sensitive_files_range = "전체 캐시"
             self.sensitive_files_loaded = True
             self.sensitive_files_filter.clear()
             self.sensitive_file_current_category = "전체"
             self.update_range_label()
-            rebuild_records()
             render_categories()
             render_files()
             self.sensitive_files_reset_btn.setEnabled(True)
