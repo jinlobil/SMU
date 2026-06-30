@@ -15423,7 +15423,11 @@ Command Line :
         file_headers = ["파일명", "분류", "탐지 키워드", "사용자", "부서", "시간"]
         file_table.setColumnCount(len(file_headers))
         file_table.setHorizontalHeaderLabels(file_headers)
-        file_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        file_header = file_table.horizontalHeader()
+        file_header.setSectionResizeMode(0, QHeaderView.Stretch)
+        for col, width in ((1, 140), (2, 160), (3, 110), (4, 140), (5, 145)):
+            file_header.setSectionResizeMode(col, QHeaderView.Interactive)
+            file_table.setColumnWidth(col, width)
         file_table.verticalHeader().setVisible(False)
         file_table.setSelectionBehavior(QTableWidget.SelectRows)
         file_table.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -15469,7 +15473,7 @@ Command Line :
             ("결혼 / 웨딩 / 사생활", [
                 "결혼", "웨딩", "wedding", "상견례", "청첩장", "예식", "예식장",
                 "스드메", "스튜디오", "드레스", "메이크업", "혼수", "신혼",
-                "신혼여행", "허니문", "가족사진", "웨딩사진", "본식", "촬영본",
+                "신혼여행", "허니문", "가족사진", "웨딩사진", "본식",
             ]),
             ("개인 증빙 / 금융", [
                 "신분증", "주민등록증", "운전면허증", "여권", "가족관계증명서",
