@@ -11491,6 +11491,7 @@ class MainWindow(QMainWindow):
         elif current_tab == "Sensitive Files":
             self.sensitive_dlp_rows = load_dlp_all_cache()
             self.sensitive_files_range = "전체 캐시"
+            self.sensitive_files_loaded = True
 
             if hasattr(self, "_refresh_sensitive_files"):
                 self._refresh_sensitive_files()
@@ -11896,6 +11897,7 @@ class MainWindow(QMainWindow):
                 self._refresh_dlp()
             self.sensitive_dlp_rows = load_dlp_all_cache()
             self.sensitive_files_range = "전체 캐시"
+            self.sensitive_files_loaded = True
             if hasattr(self, "_refresh_sensitive_files"):
                 self._refresh_sensitive_files()
 
@@ -15394,6 +15396,11 @@ Command Line :
         title_row.addLayout(title_box)
         title_row.addStretch(1)
 
+        self.sensitive_files_reset_btn = QPushButton("초기화")
+        self.sensitive_files_reset_btn.setMinimumHeight(36)
+        self.sensitive_files_reset_btn.setStyleSheet(self.button_style("secondary"))
+        title_row.addWidget(self.sensitive_files_reset_btn)
+
         self.sensitive_files_filter = QLineEdit()
         self.sensitive_files_filter.setPlaceholderText("파일명 / 사용자 / 경로 검색")
         self.sensitive_files_filter.setMinimumHeight(36)
@@ -15481,10 +15488,11 @@ Command Line :
         ]
 
         def row_text(row):
-            return " ".join(str(row.get(k, "") or "") for k in (
+            field_text = " ".join(str(row.get(k, "") or "") for k in (
                 "filename", "destination", "destination_type", "item_details",
                 "destinationDetails", "machine_name", "client_name", "event_id",
-            )).lower()
+            ))
+            return f"{field_text} {json.dumps(row, ensure_ascii=False, default=str)}".lower()
 
         def classify_sensitive_row(row):
             text = row_text(row)
@@ -15559,6 +15567,7 @@ Command Line :
 
         self.sensitive_file_records = []
         self.sensitive_file_current_category = "전체"
+        self.sensitive_files_loaded = bool(getattr(self, "sensitive_dlp_rows", []))
 
         def rebuild_records():
             records = []
@@ -15646,7 +15655,19 @@ Command Line :
             if record:
                 self.show_raw_dialog(record.get("row"))
 
+        def reset_sensitive_filter():
+            self.sensitive_files_filter.clear()
+            self.sensitive_file_current_category = "전체"
+            if category_table.rowCount() > 0:
+                category_table.selectRow(0)
+            render_files()
+
         def refresh():
+            if not getattr(self, "sensitive_files_loaded", False):
+                self.sensitive_dlp_rows = load_dlp_all_cache()
+                self.sensitive_files_range = "전체 캐시"
+                self.sensitive_files_loaded = True
+                self.update_range_label()
             rebuild_records()
             render_categories()
             render_files()
@@ -15654,6 +15675,7 @@ Command Line :
         category_table.itemSelectionChanged.connect(on_category_selected)
         file_table.itemSelectionChanged.connect(on_file_selected)
         self.sensitive_files_filter.textChanged.connect(render_files)
+        self.sensitive_files_reset_btn.clicked.connect(reset_sensitive_filter)
         raw_button.clicked.connect(open_selected_raw)
 
         self._refresh_sensitive_files = refresh
