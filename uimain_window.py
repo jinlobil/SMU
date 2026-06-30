@@ -122,6 +122,7 @@ APP_CACHE_DB_PATH = os.path.join(TIMELINE_INDEX_DIR, "app_cache.db")
 TIMELINE_INDEX_DB_PATH = os.path.join(TIMELINE_INDEX_DIR, "timeline_index.db")
 TIMELINE_RENDER_BATCH_SIZE = 250
 TIMELINE_DETAIL_ROW_LIMIT = 1000
+TIMELINE_KEYWORD_INDEX_VERSION = "exact_phrase_v1"
 
 
 os.makedirs(CACHE_DIR, exist_ok=True)
@@ -3260,11 +3261,12 @@ def timeline_event_search_values(event):
 
 
 def timeline_event_matches_keyword(event, keyword):
-    keyword = str(keyword or "").strip().lower()
+    keyword = normalize_timeline_keyword_text(keyword)
     if not keyword:
         return True
 
-    return keyword in " ".join(str(v or "") for v in timeline_event_search_values(event)).lower()
+    search_text = normalize_timeline_keyword_text(" ".join(str(v or "") for v in timeline_event_search_values(event)))
+    return keyword in search_text
 
 
 def normalize_timeline_detection(d, ctx):
@@ -3482,7 +3484,7 @@ def group_timeline_events(events):
         group["count"] = len(group.get("items", []))
         group["time"] = min((item.get("time", "") for item in group.get("items", [])), default=group.get("bucket", ""))
 
-    groups.sort(key=lambda g: g.get("time", ""))
+    groups.sort(key=lambda g: g.get("time", ""), reverse=True)
     return groups
 
 
@@ -3502,27 +3504,20 @@ def timeline_event_tokens(event):
     return sorted(tokens)
 
 
+def normalize_timeline_keyword_text(value):
+    text = str(value or "").strip().lower()
+    text = text.replace("\\", "/")
+    text = re.sub(r"/+", "/", text)
+    return text
+
+
 def timeline_keyword_tokens_from_text(value):
-    text = str(value or "").strip()
-    if not text or text in {"None", "미분류"}:
+    text = normalize_timeline_keyword_text(value)
+    if not text or text in {"none", "미분류"}:
         return []
-
-    tokens = set()
-    full_key = normalize_name_key(text)
-    if 2 <= len(full_key) <= 200:
-        tokens.add(full_key)
-
-    # 영문/숫자/한글 및 보안 이벤트에서 자주 쓰는 구분자(IP, 도메인, 경로, 해시, 메일)를 토큰으로 유지한다.
-    for part in re.findall(r"[0-9A-Za-z가-힣_.@:/\\-]{2,}", text):
-        key = normalize_name_key(part)
-        if len(key) >= 2:
-            tokens.add(key)
-        if "@" in part:
-            local_key = normalize_name_key(part.split("@", 1)[0])
-            if len(local_key) >= 2:
-                tokens.add(local_key)
-
-    return sorted(tokens)
+    if len(text) > 2000:
+        return []
+    return [text]
 
 
 def timeline_event_keyword_tokens(event):
@@ -3591,6 +3586,12 @@ def init_timeline_index_db(conn):
             size INTEGER,
             rows INTEGER,
             indexed_at TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS timeline_meta (
+            key TEXT PRIMARY KEY,
+            value TEXT
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_timeline_tokens_token ON timeline_tokens(token)")
@@ -3743,11 +3744,18 @@ def query_timeline_index(keyword, sources=None, text_keyword=""):
             e.cache_file, e.row_index
         FROM timeline_events e
         WHERE {where_sql}
-        ORDER BY e.time ASC
+        ORDER BY e.time DESC
     """
 
     with sqlite3.connect(TIMELINE_INDEX_DB_PATH) as conn:
         init_timeline_index_db(conn)
+        index_version_row = conn.execute(
+            "SELECT value FROM timeline_meta WHERE key = ?",
+            ("keyword_index_version",),
+        ).fetchone()
+        index_version = index_version_row[0] if index_version_row else ""
+        if index_version != TIMELINE_KEYWORD_INDEX_VERSION:
+            return None, {"message": "Timeline keyword index version mismatch"}
         if keyword_tokens:
             keyword_token_count = conn.execute("SELECT COUNT(*) FROM timeline_keyword_tokens").fetchone()[0]
             if keyword_token_count <= 0:
@@ -3870,7 +3878,16 @@ def rebuild_timeline_index(progress_cb=None, force=False):
             row[0]: {"mtime": float(row[1] or 0), "size": int(row[2] or 0)}
             for row in conn.execute("SELECT path, mtime, size FROM timeline_files").fetchall()
         }
-        if indexed_meta and conn.execute("SELECT COUNT(*) FROM timeline_keyword_tokens").fetchone()[0] <= 0:
+        index_version_row = conn.execute(
+            "SELECT value FROM timeline_meta WHERE key = ?",
+            ("keyword_index_version",),
+        ).fetchone()
+        index_version = index_version_row[0] if index_version_row else ""
+        if index_version != TIMELINE_KEYWORD_INDEX_VERSION:
+            for table in ("timeline_tokens", "timeline_keyword_tokens", "timeline_events", "timeline_files"):
+                conn.execute(f"DELETE FROM {table}")
+            indexed_meta = {}
+        elif indexed_meta and conn.execute("SELECT COUNT(*) FROM timeline_keyword_tokens").fetchone()[0] <= 0:
             indexed_meta = {}
 
         stale_paths = sorted(set(indexed_meta) - current_paths)
@@ -3908,6 +3925,11 @@ def rebuild_timeline_index(progress_cb=None, force=False):
         totals["tokens"] = conn.execute("SELECT COUNT(*) FROM timeline_tokens").fetchone()[0]
         totals["files"] = conn.execute("SELECT COUNT(*) FROM timeline_files").fetchone()[0]
         totals["rows"] = conn.execute("SELECT COALESCE(SUM(rows), 0) FROM timeline_files").fetchone()[0]
+        conn.execute(
+            "INSERT OR REPLACE INTO timeline_meta (key, value) VALUES (?, ?)",
+            ("keyword_index_version", TIMELINE_KEYWORD_INDEX_VERSION),
+        )
+        conn.commit()
 
     totals["built_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     totals["db_path"] = TIMELINE_INDEX_DB_PATH
@@ -15817,7 +15839,7 @@ Command Line :
 
         def show_group_detail(group):
             items = group.get("items", []) if isinstance(group, dict) else []
-            visible_items = items[:TIMELINE_DETAIL_ROW_LIMIT]
+            visible_items = sorted(items, key=lambda event: event.get("time", ""), reverse=True)[:TIMELINE_DETAIL_ROW_LIMIT]
             self.timeline_detail_panel.show()
             suffix = "" if len(visible_items) == len(items) else f" / 상위 {len(visible_items):,}건 표시"
             source_label = timeline_source_display_name(group.get("source", "None"))
