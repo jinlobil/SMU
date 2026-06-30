@@ -15420,7 +15420,7 @@ Command Line :
         category_table.setMaximumWidth(280)
 
         file_table = QTableWidget()
-        file_headers = ["파일명", "분류", "탐지 키워드", "사용자", "부서", "시간", "경로/대상"]
+        file_headers = ["파일명", "분류", "탐지 키워드", "사용자", "부서", "시간"]
         file_table.setColumnCount(len(file_headers))
         file_table.setHorizontalHeaderLabels(file_headers)
         file_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
@@ -15462,7 +15462,7 @@ Command Line :
 
         category_specs = [
             ("이직 / 취업", [
-                "이력서", "resume", "cv", "curriculum vitae", "자기소개서", "자소서",
+                "이력서", "resume", "curriculum vitae", "자기소개서", "자소서",
                 "포트폴리오", "portfolio", "경력기술서", "입사지원", "면접", "채용",
                 "잡코리아", "사람인", "원티드", "wanted", "linkedin",
             ]),
@@ -15511,11 +15511,33 @@ Command Line :
                 "keywords": sorted(set(matched_keywords), key=lambda x: x.lower()),
             }
 
+        def display_file_name(path_text):
+            text = str(path_text or "None").strip()
+            if not text or text == "None":
+                return "None"
+            normalized = text.replace("\\", "/").rstrip("/")
+            return normalized.rsplit("/", 1)[-1] or text
+
+        def resolve_sensitive_user_name(machine_name, client_name):
+            identity = resolve_identity_by_hostname(machine_name)
+            user_name = str(identity.get("user_name", "") or "").strip()
+            if user_name and user_name != "None":
+                return user_name
+            directory_info = get_directory_user_info(client_name)
+            directory_name = str(directory_info.get("name", "") or "").strip()
+            if directory_name:
+                return directory_name
+            org_name = get_org_user_name_by_user_id(client_name)
+            if org_name:
+                return org_name
+            return str(client_name or "None")
+
         def make_sensitive_record(row):
             classified = classify_sensitive_row(row)
             if not classified:
                 return None
             machine_name = str(row.get("machine_name", "None") or "None")
+            client_name = str(row.get("client_name", "None") or "None")
             dept_name, _ = get_dept_by_hostname(machine_name)
             filename = str(row.get("filename", "None") or "None")
             destination = str(row.get("destination", "None") or "None")
@@ -15529,8 +15551,10 @@ Command Line :
                 "event": format_dlp_event_id(row.get("event_id", "None")),
                 "machine": machine_name,
                 "dept": dept_name,
-                "user": str(row.get("client_name", "None") or "None"),
+                "user": resolve_sensitive_user_name(machine_name, client_name),
+                "user_id": client_name,
                 "filename": filename,
+                "display_filename": display_file_name(filename),
                 "destination": destination,
                 "destination_type": str(row.get("destination_type", "None") or "None"),
                 "destination_detail": destination_detail,
@@ -15540,7 +15564,7 @@ Command Line :
         def record_search_text(record):
             return " ".join(str(record.get(k, "") or "") for k in (
                 "category", "keywords", "event_time", "event", "machine",
-                "dept", "user", "filename", "destination", "destination_type",
+                "dept", "user", "user_id", "filename", "display_filename", "destination", "destination_type",
                 "destination_detail", "filehash",
             )).lower()
 
@@ -15549,11 +15573,13 @@ Command Line :
                 detail.setPlainText("파일을 선택하면 상세 정보가 표시됩니다.")
                 return
             detail.setPlainText("\n".join([
-                f"파일명: {record['filename']}",
+                f"파일명: {record['display_filename']}",
+                f"전체 경로: {record['filename']}",
                 f"분류: {', '.join(record['categories'])}",
                 f"탐지 키워드: {', '.join(record['keywords'])}",
                 "",
                 f"사용자: {record['user']}",
+                f"User ID: {record['user_id']}",
                 f"부서: {record['dept']}",
                 f"호스트: {record['machine']}",
                 "",
@@ -15577,7 +15603,7 @@ Command Line :
                 record = make_sensitive_record(row)
                 if record:
                     records.append(record)
-            records.sort(key=lambda r: (r["category"], r["filename"].lower(), r["event_time"]), reverse=False)
+            records.sort(key=lambda r: (r["category"], r["display_filename"].lower(), r["event_time"]), reverse=False)
             self.sensitive_file_records = records
 
         def render_categories():
@@ -15610,13 +15636,12 @@ Command Line :
                 r = file_table.rowCount()
                 file_table.insertRow(r)
                 values = [
-                    record["filename"],
+                    record["display_filename"],
                     record["category"],
                     ", ".join(record["keywords"]),
                     record["user"],
                     record["dept"],
                     record["event_time"],
-                    record["destination"],
                 ]
                 for c, value in enumerate(values):
                     item = QTableWidgetItem(str(value or "None"))
