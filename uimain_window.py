@@ -39,7 +39,7 @@ import matplotlib.patheffects as path_effects
 from PyQt5.QtCore import (
     Qt, QTimer, QThread, pyqtSignal,
     QDate, QTime, QRectF, QPointF,
-    QPropertyAnimation, QEasingCurve
+    QPropertyAnimation, QEasingCurve, QEvent
 )
 
 # =============================
@@ -6999,6 +6999,7 @@ class MainWindow(QMainWindow):
             "Detection": "Detection - XDR",
             "Detection XDR": "Email - XDR",
             "Inbound Mail": "Email",
+            "Forensic": "Timeline",
             "Response": "Firewall",
         }
         self.group_subtab_bars = {}
@@ -7057,11 +7058,13 @@ class MainWindow(QMainWindow):
             ("Outbound Mail", "Outbound Mail", self.tab_outbound_mail()),
             ("File", "File", self.tab_dlp_file()),
         ])
+        self.forensic_tabs = add_group_tab("Forensic", [
+            ("Timeline", "Timeline", self.tab_timeline()),
+            ("Sensitive Files", "Sensitive Files", self.tab_sensitive_files()),
+        ])
         self.response_tabs = add_group_tab("Response", [
             ("Firewall", "Firewall", self.tab_firewall()),
             ("Easy Query", "Easy Query", self.tab_live_discover()),
-            ("Timeline", "Timeline", self.tab_timeline()),
-            ("Sensitive Files", "Sensitive Files", self.tab_sensitive_files()),
         ])
         self.asset_tabs = add_group_tab("Asset", [
             ("Endpoint", "Endpoint", self.tab_endpoint()),
@@ -7080,6 +7083,7 @@ class MainWindow(QMainWindow):
 
         self.tabs.currentChanged.connect(self.on_top_tab_changed)
         self.tabs.tabBarClicked.connect(self.on_top_tab_clicked)
+        QApplication.instance().installEventFilter(self)
 
         # 🔥 시작 시 기본 7일 데이터 로드
         self.apply_date_range()
@@ -11313,6 +11317,27 @@ class MainWindow(QMainWindow):
             if bar.graphicsEffect():
                 bar.graphicsEffect().setEnabled(False)
             bar.hide()
+
+    def is_child_of_widget(self, widget, parent):
+        while widget is not None:
+            if widget is parent:
+                return True
+            widget = widget.parentWidget() if hasattr(widget, "parentWidget") else None
+        return False
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.MouseButtonPress:
+            visible_bars = [
+                bar for bar in getattr(self, "group_subtab_bars", {}).values()
+                if bar.isVisible()
+            ]
+            if visible_bars and isinstance(obj, QWidget):
+                tab_bar = self.tabs.tabBar() if hasattr(self, "tabs") else None
+                clicked_subtab = any(self.is_child_of_widget(obj, bar) for bar in visible_bars)
+                clicked_top_tab = tab_bar is not None and self.is_child_of_widget(obj, tab_bar)
+                if not clicked_subtab and not clicked_top_tab:
+                    self.hide_all_subtab_bars()
+        return super().eventFilter(obj, event)
 
     def fade_subtab_bar(self, bar, show):
         if not bar:
