@@ -1863,6 +1863,14 @@ def make_sensitive_record(row, category_specs=SENSITIVE_FILE_CATEGORY_SPECS):
     }
 
 
+def sensitive_record_search_text(record):
+    return " ".join(str(record.get(k, "") or "") for k in (
+        "category", "keywords", "event_time", "event", "machine",
+        "dept", "user", "user_id", "filename", "display_filename",
+        "destination", "destination_type", "destination_detail", "filehash",
+    )).lower()
+
+
 def build_sensitive_file_records(rows, category_specs=SENSITIVE_FILE_CATEGORY_SPECS):
     records = []
     for row in rows or []:
@@ -1885,6 +1893,8 @@ def build_sensitive_file_records(rows, category_specs=SENSITIVE_FILE_CATEGORY_SP
 
     records = list(latest_by_file_owner.values())
     records.sort(key=lambda r: (r["category"], r["display_filename"].lower(), r["event_time"]), reverse=False)
+    for record in records:
+        record["search_text"] = sensitive_record_search_text(record)
     return records
 
 # ======================================================
@@ -15602,7 +15612,7 @@ Command Line :
         file_table.verticalHeader().setVisible(False)
         file_table.setSelectionBehavior(QTableWidget.SelectRows)
         file_table.setEditTriggers(QTableWidget.NoEditTriggers)
-        file_table.setSortingEnabled(True)
+        file_table.setSortingEnabled(False)
 
         detail = QTextEdit()
         detail.setReadOnly(True)
@@ -15771,6 +15781,7 @@ Command Line :
         def render_categories():
             visible_categories = {record["category"] for record in self.sensitive_file_records}
             categories = ["전체"] + [category for category, _ in category_specs if category in visible_categories]
+            signals_were_blocked = category_table.blockSignals(True)
             category_table.setSortingEnabled(False)
             category_table.clearContents()
             category_table.setRowCount(0)
@@ -15783,40 +15794,63 @@ Command Line :
             category_table.setSortingEnabled(False)
             if category_table.rowCount() > 0:
                 category_table.selectRow(0)
+            category_table.blockSignals(signals_were_blocked)
 
         def render_files():
             selected_category = getattr(self, "sensitive_file_current_category", "전체")
             keyword = self.sensitive_files_filter.text().strip().lower()
-            file_table.setSortingEnabled(False)
-            file_table.clearContents()
-            file_table.setRowCount(0)
+            filtered_records = []
             for record in self.sensitive_file_records:
                 if selected_category != "전체" and record["category"] != selected_category:
                     continue
-                if keyword and keyword not in record_search_text(record):
+                search_text = record.get("search_text") or record_search_text(record)
+                if keyword and keyword not in search_text:
                     continue
-                r = file_table.rowCount()
-                file_table.insertRow(r)
-                values = [
-                    record["display_filename"],
-                    record["category"],
-                    ", ".join(record["keywords"]),
-                    record["user"],
-                    record["dept"],
-                    record["event_time"],
-                ]
-                for c, value in enumerate(values):
-                    item = QTableWidgetItem(str(value or "None"))
-                    if c == 0:
-                        item.setData(Qt.UserRole, record)
-                    file_table.setItem(r, c, item)
-            file_table.setSortingEnabled(True)
-            if file_table.rowCount() > 0:
-                file_table.selectRow(0)
-                first = file_table.item(0, 0)
-                render_detail(first.data(Qt.UserRole) if first else None)
-            else:
-                render_detail(None)
+                filtered_records.append(record)
+
+            token = getattr(self, "sensitive_file_render_token", 0) + 1
+            self.sensitive_file_render_token = token
+            batch_size = 150
+            file_table.setSortingEnabled(False)
+            file_table.setUpdatesEnabled(False)
+            file_table.clearContents()
+            file_table.setRowCount(len(filtered_records))
+            render_detail(None)
+
+            def fill_batch(start=0):
+                if token != getattr(self, "sensitive_file_render_token", 0):
+                    return
+                end = min(start + batch_size, len(filtered_records))
+                for r in range(start, end):
+                    record = filtered_records[r]
+                    values = [
+                        record["display_filename"],
+                        record["category"],
+                        ", ".join(record["keywords"]),
+                        record["user"],
+                        record["dept"],
+                        record["event_time"],
+                    ]
+                    for c, value in enumerate(values):
+                        item = QTableWidgetItem(str(value or "None"))
+                        if c == 0:
+                            item.setData(Qt.UserRole, record)
+                        file_table.setItem(r, c, item)
+
+                if end < len(filtered_records):
+                    QTimer.singleShot(0, lambda: fill_batch(end))
+                    return
+
+                file_table.setUpdatesEnabled(True)
+                file_table.setSortingEnabled(False)
+                if file_table.rowCount() > 0:
+                    file_table.selectRow(0)
+                    first = file_table.item(0, 0)
+                    render_detail(first.data(Qt.UserRole) if first else None)
+                else:
+                    render_detail(None)
+
+            fill_batch()
 
         def on_category_selected():
             selected = category_table.selectedItems()
@@ -15867,6 +15901,8 @@ Command Line :
             worker = getattr(self, "sensitive_files_worker", None)
             if worker is not None and worker.isRunning():
                 return
+            self.sensitive_file_render_token = getattr(self, "sensitive_file_render_token", 0) + 1
+            file_table.setUpdatesEnabled(True)
             self.sensitive_files_reset_btn.setEnabled(False)
             self.sensitive_files_reset_btn.setText("새로고침중...")
             self.set_status("Sensitive Files refresh", color="blue", spinning=True)
@@ -15877,17 +15913,19 @@ Command Line :
 
         def refresh():
             if not getattr(self, "sensitive_files_loaded", False):
-                self.sensitive_dlp_rows = load_dlp_all_cache()
-                self.sensitive_files_range = "전체 캐시"
-                self.sensitive_files_loaded = True
-                self.update_range_label()
-            rebuild_records()
+                reset_sensitive_filter()
+                return
             render_categories()
             render_files()
 
+        filter_timer = QTimer(root)
+        filter_timer.setSingleShot(True)
+        filter_timer.setInterval(250)
+        filter_timer.timeout.connect(render_files)
+
         category_table.itemSelectionChanged.connect(on_category_selected)
         file_table.itemSelectionChanged.connect(on_file_selected)
-        self.sensitive_files_filter.textChanged.connect(render_files)
+        self.sensitive_files_filter.textChanged.connect(lambda: filter_timer.start())
         self.sensitive_files_reset_btn.clicked.connect(reset_sensitive_filter)
         raw_button.clicked.connect(open_selected_raw)
 
