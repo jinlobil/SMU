@@ -15467,27 +15467,32 @@ Command Line :
         category_specs = [
             ("이직 / 취업", [
                 "이력서", "resume", "curriculum vitae", "자기소개서", "자소서",
-                "포트폴리오", "portfolio", "경력기술서", "입사지원", "면접", "채용",
-                "잡코리아", "사람인", "원티드", "wanted", "linkedin",
+                "포트폴리오", "portfolio", "경력기술서", "입사지원", "지원서",
+                "면접", "채용", "잡코리아", "사람인", "원티드", "wanted",
+                "linkedin", "링크드인", "cover letter",
             ]),
             ("결혼 / 웨딩 / 사생활", [
                 "결혼", "웨딩", "wedding", "상견례", "청첩장", "예식", "예식장",
-                "스드메", "스튜디오", "드레스", "메이크업", "혼수", "신혼",
-                "신혼여행", "허니문", "가족사진", "웨딩사진", "본식",
+                "스드메", "드레스", "혼수", "신혼", "신혼여행", "허니문",
+                "혼인", "예물", "예단", "커플사진", "가족사진", "웨딩사진",
             ]),
             ("개인 증빙 / 금융", [
                 "신분증", "주민등록증", "운전면허증", "여권", "가족관계증명서",
-                "등본", "초본", "통장사본", "계좌", "입금내역", "잔액증명",
-                "원천징수", "소득금액", "건강보험", "국민연금", "재직증명",
+                "주민등록등본", "주민등록초본", "인감증명서", "통장사본",
+                "계좌번호", "입금계좌", "입금내역", "거래내역", "잔액증명서",
+                "원천징수", "소득금액", "급여명세서", "연말정산", "건강보험",
+                "국민연금", "재직증명", "전세계약서", "월세계약서", "임대차계약서",
             ]),
             ("메신저 수신 파일", [
-                "카카오톡 받은 파일", "kakaotalk", "네이트온 받은 파일", "nateon",
-                "line", "wechat", "viber", "whatsapp", "messages/attachments",
-                "xwechat_files", "viberdownloads",
+                "카카오톡 받은 파일", "kakaotalk", "kakaotalk download",
+                "네이트온 받은 파일", "nateon", "wechat", "viber", "whatsapp",
+                "telegram desktop", "messages/attachments", "xwechat_files",
+                "viberdownloads", "discord",
             ]),
             ("개인 사진 / 영상", [
                 "개인사진", "가족사진", "웨딩사진", "증명사진", "프로필사진",
-                "셀카", "여행사진", "앨범", "본식사진", "스냅사진",
+                "셀카", "셀피", "selfie", "여행사진", "앨범", "본식사진",
+                "스냅사진", "여권사진", "반명함",
             ]),
         ]
 
@@ -15607,6 +15612,18 @@ Command Line :
                 record = make_sensitive_record(row)
                 if record:
                     records.append(record)
+            latest_by_file_owner = {}
+            for record in records:
+                dedupe_key = (
+                    str(record.get("display_filename", "")).strip().lower(),
+                    str(record.get("dept", "")).strip().lower(),
+                    str(record.get("user", "")).strip().lower(),
+                )
+                current = latest_by_file_owner.get(dedupe_key)
+                if current is None or str(record.get("event_time", "")) > str(current.get("event_time", "")):
+                    latest_by_file_owner[dedupe_key] = record
+
+            records = list(latest_by_file_owner.values())
             records.sort(key=lambda r: (r["category"], r["display_filename"].lower(), r["event_time"]), reverse=False)
             self.sensitive_file_records = records
 
