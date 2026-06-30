@@ -11514,12 +11514,12 @@ class MainWindow(QMainWindow):
                 self._refresh_dlp()
 
         elif current_tab == "Sensitive Files":
-            self.sensitive_dlp_rows = load_dlp_all_cache()
-            self.sensitive_files_range = "전체 캐시"
-            self.sensitive_files_loaded = True
-
-            if hasattr(self, "_refresh_sensitive_files"):
-                self._refresh_sensitive_files()
+            if not getattr(self, "sensitive_files_loaded", False):
+                self.sensitive_dlp_rows = load_dlp_all_cache()
+                self.sensitive_files_range = "전체 캐시"
+                self.sensitive_files_loaded = True
+                if hasattr(self, "_refresh_sensitive_files"):
+                    self._refresh_sensitive_files()
 
         elif current_tab == "Timeline":
             # Timeline은 날짜 선택과 무관하게 검색 시점에 전체 캐시를 비동기로 스캔한다.
@@ -11920,12 +11920,6 @@ class MainWindow(QMainWindow):
 
             if hasattr(self, "_refresh_dlp"):
                 self._refresh_dlp()
-            self.sensitive_dlp_rows = load_dlp_all_cache()
-            self.sensitive_files_range = "전체 캐시"
-            self.sensitive_files_loaded = True
-            if hasattr(self, "_refresh_sensitive_files"):
-                self._refresh_sensitive_files()
-
         self.apply_date_range()
 
         # 🔥 자동 상태 표시 추가
@@ -15421,7 +15415,7 @@ Command Line :
         title_row.addLayout(title_box)
         title_row.addStretch(1)
 
-        self.sensitive_files_reset_btn = QPushButton("초기화")
+        self.sensitive_files_reset_btn = QPushButton("초기화/새로고침")
         self.sensitive_files_reset_btn.setMinimumHeight(36)
         self.sensitive_files_reset_btn.setStyleSheet(self.button_style("secondary"))
         title_row.addWidget(self.sensitive_files_reset_btn)
@@ -15727,10 +15721,14 @@ Command Line :
                 self.show_raw_dialog(record.get("row"))
 
         def reset_sensitive_filter():
+            self.sensitive_dlp_rows = load_dlp_all_cache()
+            self.sensitive_files_range = "전체 캐시"
+            self.sensitive_files_loaded = True
             self.sensitive_files_filter.clear()
             self.sensitive_file_current_category = "전체"
-            if category_table.rowCount() > 0:
-                category_table.selectRow(0)
+            self.update_range_label()
+            rebuild_records()
+            render_categories()
             render_files()
 
         def refresh():
