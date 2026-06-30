@@ -1892,7 +1892,8 @@ def build_sensitive_file_records(rows, category_specs=SENSITIVE_FILE_CATEGORY_SP
             latest_by_file_owner[dedupe_key] = record
 
     records = list(latest_by_file_owner.values())
-    records.sort(key=lambda r: (r["category"], r["display_filename"].lower(), r["event_time"]), reverse=False)
+    records.sort(key=lambda r: (r["category"], r["display_filename"].lower()))
+    records.sort(key=lambda r: r["event_time"], reverse=True)
     for record in records:
         record["search_text"] = sensitive_record_search_text(record)
     return records
@@ -15775,7 +15776,8 @@ Command Line :
                     latest_by_file_owner[dedupe_key] = record
 
             records = list(latest_by_file_owner.values())
-            records.sort(key=lambda r: (r["category"], r["display_filename"].lower(), r["event_time"]), reverse=False)
+            records.sort(key=lambda r: (r["category"], r["display_filename"].lower()))
+            records.sort(key=lambda r: r["event_time"], reverse=True)
             self.sensitive_file_records = records
 
         def render_categories():
