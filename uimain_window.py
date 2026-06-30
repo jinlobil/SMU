@@ -7048,6 +7048,7 @@ class MainWindow(QMainWindow):
             ("Firewall", "Firewall", self.tab_firewall()),
             ("Easy Query", "Easy Query", self.tab_live_discover()),
             ("Timeline", "Timeline", self.tab_timeline()),
+            ("Sensitive Files", "Sensitive Files", self.tab_sensitive_files()),
         ])
         self.asset_tabs = add_group_tab("Asset", [
             ("Endpoint", "Endpoint", self.tab_endpoint()),
@@ -11474,6 +11475,13 @@ class MainWindow(QMainWindow):
             if hasattr(self, "_refresh_dlp"):
                 self._refresh_dlp()
 
+        elif current_tab == "Sensitive Files":
+            self.dlp_rows = load_dlp_by_range(start_date, end_date)
+            self.dlp_range = f"{start_date} ~ {end_date}"
+
+            if hasattr(self, "_refresh_sensitive_files"):
+                self._refresh_sensitive_files()
+
         elif current_tab == "Timeline":
             # Timeline은 날짜 선택과 무관하게 검색 시점에 전체 캐시를 비동기로 스캔한다.
             self.timeline_range = "전체 캐시"
@@ -11502,6 +11510,9 @@ class MainWindow(QMainWindow):
             text = self.mailscreen_range
 
         elif tab_name == "File":
+            text = self.dlp_range
+
+        elif tab_name == "Sensitive Files":
             text = self.dlp_range
 
         elif tab_name == "Timeline":
@@ -11870,6 +11881,8 @@ class MainWindow(QMainWindow):
 
             if hasattr(self, "_refresh_dlp"):
                 self._refresh_dlp()
+            if hasattr(self, "_refresh_sensitive_files"):
+                self._refresh_sensitive_files()
 
         self.apply_date_range()
 
@@ -12459,6 +12472,7 @@ Command Line :
         self.refresh_tab_table("Email")
         self.refresh_tab_table("Outbound Mail")
         self.refresh_tab_table("File")
+        self.refresh_tab_table("Sensitive Files")
         self.refresh_tab_table("Endpoint")
         self.refresh_tab_table("Organization")
         self.refresh_tab_table("Timeline")
@@ -12483,6 +12497,8 @@ Command Line :
             self._refresh_org()
         elif tab_name == "File" and hasattr(self, "_refresh_dlp"):
             self._refresh_dlp()
+        elif tab_name == "Sensitive Files" and hasattr(self, "_refresh_sensitive_files"):
+            self._refresh_sensitive_files()
         elif tab_name == "Timeline" and hasattr(self, "_refresh_timeline"):
             self._refresh_timeline()
 
@@ -15323,6 +15339,311 @@ Command Line :
         self.btn_live_run.setEnabled(True)
 
         QMessageBox.critical(self, "History Query Error", err)
+
+    # ==================================================
+    # Sensitive Files Tab
+    # ==================================================
+    def tab_sensitive_files(self):
+        root = QWidget()
+        root.setObjectName("sensitiveFilesRoot")
+        root.setStyleSheet(f"""
+            QWidget#sensitiveFilesRoot {{
+                background: {UI_THEME['bg']};
+            }}
+            QTableWidget {{
+                background: {UI_THEME['surface']};
+                border: 1px solid {UI_THEME['border_soft']};
+                border-radius: 12px;
+                gridline-color: {UI_THEME['border_soft']};
+            }}
+            QHeaderView::section {{
+                background: {UI_THEME['surface_soft']};
+                color: {UI_THEME['text']};
+                border: 0;
+                padding: 8px;
+                font-weight: 900;
+            }}
+        """)
+        layout = QVBoxLayout(root)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(10)
+
+        title_row = QHBoxLayout()
+        title = QLabel("Sensitive Files")
+        title.setStyleSheet(f"color:{UI_THEME['text']}; font-size:22px; font-weight:900;")
+        subtitle = QLabel("민감 파일 후보를 분류별로 모아보고, 선택한 파일의 사용자/경로/원본 이벤트를 확인합니다.")
+        subtitle.setStyleSheet(f"color:{UI_THEME['text_muted']}; font-size:12px; font-weight:700;")
+        title_box = QVBoxLayout()
+        title_box.addWidget(title)
+        title_box.addWidget(subtitle)
+        title_row.addLayout(title_box)
+        title_row.addStretch(1)
+
+        self.sensitive_files_filter = QLineEdit()
+        self.sensitive_files_filter.setPlaceholderText("파일명 / 사용자 / 경로 검색")
+        self.sensitive_files_filter.setMinimumHeight(36)
+        self.sensitive_files_filter.setMaximumWidth(360)
+        title_row.addWidget(self.sensitive_files_filter)
+        layout.addLayout(title_row)
+
+        splitter = QSplitter(Qt.Horizontal)
+
+        category_table = QTableWidget()
+        category_table.setColumnCount(1)
+        category_table.setHorizontalHeaderLabels(["분류"])
+        category_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        category_table.verticalHeader().setVisible(False)
+        category_table.setSelectionBehavior(QTableWidget.SelectRows)
+        category_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        category_table.setMaximumWidth(280)
+
+        file_table = QTableWidget()
+        file_headers = ["파일명", "분류", "탐지 키워드", "사용자", "부서", "시간", "경로/대상"]
+        file_table.setColumnCount(len(file_headers))
+        file_table.setHorizontalHeaderLabels(file_headers)
+        file_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        file_table.verticalHeader().setVisible(False)
+        file_table.setSelectionBehavior(QTableWidget.SelectRows)
+        file_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        file_table.setSortingEnabled(True)
+
+        detail = QTextEdit()
+        detail.setReadOnly(True)
+        detail.setMinimumWidth(360)
+        detail.setStyleSheet(f"""
+            QTextEdit {{
+                background: {UI_THEME['surface']};
+                color: {UI_THEME['text']};
+                border: 1px solid {UI_THEME['border_soft']};
+                border-radius: 12px;
+                padding: 10px;
+                font-family: {UI_FONT_FAMILY};
+                font-size: 12px;
+            }}
+        """)
+
+        splitter.addWidget(category_table)
+        splitter.addWidget(file_table)
+        splitter.addWidget(detail)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 2)
+        splitter.setStretchFactor(2, 1)
+        layout.addWidget(splitter, 1)
+
+        raw_button = QPushButton("Raw 보기")
+        raw_button.setStyleSheet(self.button_style("secondary"))
+        raw_button.setMinimumHeight(36)
+        bottom = QHBoxLayout()
+        bottom.addStretch(1)
+        bottom.addWidget(raw_button)
+        layout.addLayout(bottom)
+
+        category_specs = [
+            ("이직 / 취업", [
+                "이력서", "resume", "cv", "curriculum vitae", "자기소개서", "자소서",
+                "포트폴리오", "portfolio", "경력기술서", "입사지원", "면접", "채용",
+                "잡코리아", "사람인", "원티드", "wanted", "linkedin",
+            ]),
+            ("결혼 / 웨딩 / 사생활", [
+                "결혼", "웨딩", "wedding", "상견례", "청첩장", "예식", "예식장",
+                "스드메", "스튜디오", "드레스", "메이크업", "혼수", "신혼",
+                "신혼여행", "허니문", "가족사진", "웨딩사진", "본식", "촬영본",
+            ]),
+            ("개인 증빙 / 금융", [
+                "신분증", "주민등록증", "운전면허증", "여권", "가족관계증명서",
+                "등본", "초본", "통장사본", "계좌", "입금내역", "잔액증명",
+                "원천징수", "소득금액", "건강보험", "국민연금", "재직증명",
+            ]),
+            ("메신저 수신 파일", [
+                "카카오톡 받은 파일", "kakaotalk", "네이트온 받은 파일", "nateon",
+                "line", "wechat", "viber", "whatsapp", "messages/attachments",
+                "xwechat_files", "viberdownloads",
+            ]),
+            ("개인 사진 / 영상", [
+                "개인사진", "가족사진", "웨딩사진", "증명사진", "프로필사진",
+                "셀카", "여행사진", "앨범", "본식사진", "스냅사진",
+            ]),
+        ]
+
+        def row_text(row):
+            return " ".join(str(row.get(k, "") or "") for k in (
+                "filename", "destination", "destination_type", "item_details",
+                "destinationDetails", "machine_name", "client_name", "event_id",
+            )).lower()
+
+        def classify_sensitive_row(row):
+            text = row_text(row)
+            matched_categories = []
+            matched_keywords = []
+            for category, keywords in category_specs:
+                hits = [kw for kw in keywords if kw.lower() in text]
+                if hits:
+                    matched_categories.append(category)
+                    matched_keywords.extend(hits)
+            if not matched_categories:
+                return None
+            return {
+                "category": matched_categories[0],
+                "categories": matched_categories,
+                "keywords": sorted(set(matched_keywords), key=lambda x: x.lower()),
+            }
+
+        def make_sensitive_record(row):
+            classified = classify_sensitive_row(row)
+            if not classified:
+                return None
+            machine_name = str(row.get("machine_name", "None") or "None")
+            dept_name, _ = get_dept_by_hostname(machine_name)
+            filename = str(row.get("filename", "None") or "None")
+            destination = str(row.get("destination", "None") or "None")
+            destination_detail = str(row.get("item_details") or row.get("destinationDetails") or "None")
+            return {
+                "row": row,
+                "category": classified["category"],
+                "categories": classified["categories"],
+                "keywords": classified["keywords"],
+                "event_time": str(row.get("eventtimelocal", "") or ""),
+                "event": format_dlp_event_id(row.get("event_id", "None")),
+                "machine": machine_name,
+                "dept": dept_name,
+                "user": str(row.get("client_name", "None") or "None"),
+                "filename": filename,
+                "destination": destination,
+                "destination_type": str(row.get("destination_type", "None") or "None"),
+                "destination_detail": destination_detail,
+                "filehash": str(row.get("filehash", "None") or "None"),
+            }
+
+        def record_search_text(record):
+            return " ".join(str(record.get(k, "") or "") for k in (
+                "category", "keywords", "event_time", "event", "machine",
+                "dept", "user", "filename", "destination", "destination_type",
+                "destination_detail", "filehash",
+            )).lower()
+
+        def render_detail(record=None):
+            if not record:
+                detail.setPlainText("파일을 선택하면 상세 정보가 표시됩니다.")
+                return
+            detail.setPlainText("\n".join([
+                f"파일명: {record['filename']}",
+                f"분류: {', '.join(record['categories'])}",
+                f"탐지 키워드: {', '.join(record['keywords'])}",
+                "",
+                f"사용자: {record['user']}",
+                f"부서: {record['dept']}",
+                f"호스트: {record['machine']}",
+                "",
+                f"이벤트: {record['event']}",
+                f"시간: {record['event_time']}",
+                f"대상 유형: {record['destination_type']}",
+                f"대상: {record['destination']}",
+                f"목적지 세부정보: {record['destination_detail']}",
+                f"파일 해시: {record['filehash']}",
+            ]))
+
+        self.sensitive_file_records = []
+        self.sensitive_file_current_category = "전체"
+
+        def rebuild_records():
+            records = []
+            for row in self.dlp_rows or []:
+                if not isinstance(row, dict):
+                    continue
+                record = make_sensitive_record(row)
+                if record:
+                    records.append(record)
+            records.sort(key=lambda r: (r["category"], r["filename"].lower(), r["event_time"]), reverse=False)
+            self.sensitive_file_records = records
+
+        def render_categories():
+            visible_categories = {record["category"] for record in self.sensitive_file_records}
+            categories = ["전체"] + [category for category, _ in category_specs if category in visible_categories]
+            category_table.setSortingEnabled(False)
+            category_table.clearContents()
+            category_table.setRowCount(0)
+            for category in categories:
+                r = category_table.rowCount()
+                category_table.insertRow(r)
+                item = QTableWidgetItem(category)
+                item.setData(Qt.UserRole, category)
+                category_table.setItem(r, 0, item)
+            category_table.setSortingEnabled(False)
+            if category_table.rowCount() > 0:
+                category_table.selectRow(0)
+
+        def render_files():
+            selected_category = getattr(self, "sensitive_file_current_category", "전체")
+            keyword = self.sensitive_files_filter.text().strip().lower()
+            file_table.setSortingEnabled(False)
+            file_table.clearContents()
+            file_table.setRowCount(0)
+            for record in self.sensitive_file_records:
+                if selected_category != "전체" and record["category"] != selected_category:
+                    continue
+                if keyword and keyword not in record_search_text(record):
+                    continue
+                r = file_table.rowCount()
+                file_table.insertRow(r)
+                values = [
+                    record["filename"],
+                    record["category"],
+                    ", ".join(record["keywords"]),
+                    record["user"],
+                    record["dept"],
+                    record["event_time"],
+                    record["destination"],
+                ]
+                for c, value in enumerate(values):
+                    item = QTableWidgetItem(str(value or "None"))
+                    if c == 0:
+                        item.setData(Qt.UserRole, record)
+                    file_table.setItem(r, c, item)
+            file_table.setSortingEnabled(True)
+            if file_table.rowCount() > 0:
+                file_table.selectRow(0)
+                first = file_table.item(0, 0)
+                render_detail(first.data(Qt.UserRole) if first else None)
+            else:
+                render_detail(None)
+
+        def on_category_selected():
+            selected = category_table.selectedItems()
+            if selected:
+                self.sensitive_file_current_category = selected[0].data(Qt.UserRole) or "전체"
+            render_files()
+
+        def on_file_selected():
+            selected = file_table.selectedItems()
+            if not selected:
+                render_detail(None)
+                return
+            item = file_table.item(selected[0].row(), 0)
+            render_detail(item.data(Qt.UserRole) if item else None)
+
+        def open_selected_raw():
+            selected = file_table.selectedItems()
+            if not selected:
+                QMessageBox.information(self, "Sensitive Files", "선택된 파일이 없습니다.")
+                return
+            item = file_table.item(selected[0].row(), 0)
+            record = item.data(Qt.UserRole) if item else None
+            if record:
+                self.show_raw_dialog(record.get("row"))
+
+        def refresh():
+            rebuild_records()
+            render_categories()
+            render_files()
+
+        category_table.itemSelectionChanged.connect(on_category_selected)
+        file_table.itemSelectionChanged.connect(on_file_selected)
+        self.sensitive_files_filter.textChanged.connect(render_files)
+        raw_button.clicked.connect(open_selected_raw)
+
+        self._refresh_sensitive_files = refresh
+        refresh()
+        return root
 
     # ==================================================
     # DLP File Tab
