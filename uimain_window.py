@@ -1765,6 +1765,19 @@ SENSITIVE_FILE_CATEGORY_SPECS = [
         "원천징수", "소득금액", "급여명세서", "연말정산", "건강보험",
         "국민연금", "재직증명", "전세계약서", "월세계약서", "임대차계약서",
     ]),
+    ("발주 / 주문 / 거래 문서", [
+        "발주서", "주문서", "거래명세서", "출고양식", "수기발주",
+        "공동구매", "매출내역", "invoice",
+    ]),
+    ("비용 / 영수증 / 정산", [
+        "영수증", "결제증빙", "비용정산", "법카", "접대비", "회식비", "receipt",
+    ]),
+    ("계약 / 법무 / 사업자 증빙", [
+        "계약서", "계약일반조건", "사업자등록증", "채권", "변제계획서",
+    ]),
+    ("제품 / 디자인 / 마케팅 자료", [
+        "상세페이지", "썸네일", "렌더링", "로고", "누끼", ".ai", "텍플로우", "데켓",
+    ]),
     ("메신저 수신 파일", [
         "카카오톡 받은 파일", "kakaotalk", "kakaotalk download",
         "네이트온 받은 파일", "nateon", "wechat", "viber", "whatsapp",
@@ -15563,6 +15576,9 @@ Command Line :
         subtitle = QLabel("민감 파일 후보를 분류별로 모아보고, 선택한 파일의 사용자/경로/원본 이벤트를 확인합니다.")
         subtitle.setStyleSheet(f"color:{UI_THEME['text_muted']}; font-size:12px; font-weight:700;")
         title_row.addWidget(subtitle)
+        self.sensitive_files_count_label = QLabel("표시 0건")
+        self.sensitive_files_count_label.setStyleSheet(f"color:{UI_THEME['text']}; font-size:12px; font-weight:900;")
+        title_row.addWidget(self.sensitive_files_count_label)
         title_row.addStretch(1)
 
         self.sensitive_files_reset_btn = QPushButton("새로고침")
@@ -15593,9 +15609,8 @@ Command Line :
         file_table.setColumnCount(len(file_headers))
         file_table.setHorizontalHeaderLabels(file_headers)
         file_header = file_table.horizontalHeader()
-        file_header.setSectionsClickable(True)
-        file_header.setSortIndicatorShown(True)
-        file_header.setSortIndicator(5, Qt.DescendingOrder)
+        file_header.setSectionsClickable(False)
+        file_header.setSortIndicatorShown(False)
         file_header.setSectionResizeMode(0, QHeaderView.Stretch)
         for col, width in ((1, 140), (2, 160), (3, 110), (4, 140), (5, 145)):
             file_header.setSectionResizeMode(col, QHeaderView.Interactive)
@@ -15744,8 +15759,6 @@ Command Line :
 
         self.sensitive_file_records = []
         self.sensitive_file_current_category = "전체"
-        self.sensitive_file_sort_column = 5
-        self.sensitive_file_sort_order = Qt.DescendingOrder
         self.sensitive_files_loaded = bool(getattr(self, "sensitive_dlp_rows", []))
 
         def rebuild_records():
@@ -15802,23 +15815,8 @@ Command Line :
                     continue
                 filtered_records.append(record)
 
-            sort_column = getattr(self, "sensitive_file_sort_column", 5)
-            sort_order = getattr(self, "sensitive_file_sort_order", Qt.DescendingOrder)
-
-            def sort_value(record):
-                if sort_column == 0:
-                    return str(record.get("display_filename", "") or "").lower()
-                if sort_column == 1:
-                    return str(record.get("category", "") or "").lower()
-                if sort_column == 2:
-                    return ", ".join(record.get("keywords", []) or []).lower()
-                if sort_column == 3:
-                    return str(record.get("user", "") or "").lower()
-                if sort_column == 4:
-                    return str(record.get("dept", "") or "").lower()
-                return str(record.get("event_time", "") or "")
-
-            filtered_records.sort(key=sort_value, reverse=sort_order == Qt.DescendingOrder)
+            total_records = len(self.sensitive_file_records or [])
+            self.sensitive_files_count_label.setText(f"표시 {len(filtered_records):,}건 / 전체 {total_records:,}건")
 
             token = getattr(self, "sensitive_file_render_token", 0) + 1
             self.sensitive_file_render_token = token
@@ -15877,18 +15875,6 @@ Command Line :
                 return
             item = file_table.item(selected[0].row(), 0)
             render_detail(item.data(Qt.UserRole) if item else None)
-
-        def on_file_header_clicked(column):
-            current_column = getattr(self, "sensitive_file_sort_column", 5)
-            current_order = getattr(self, "sensitive_file_sort_order", Qt.DescendingOrder)
-            if column == current_column:
-                next_order = Qt.AscendingOrder if current_order == Qt.DescendingOrder else Qt.DescendingOrder
-            else:
-                next_order = Qt.DescendingOrder if column == 5 else Qt.AscendingOrder
-            self.sensitive_file_sort_column = column
-            self.sensitive_file_sort_order = next_order
-            file_header.setSortIndicator(column, next_order)
-            render_files()
 
         def open_selected_raw():
             selected = file_table.selectedItems()
@@ -15949,7 +15935,6 @@ Command Line :
 
         category_table.itemSelectionChanged.connect(on_category_selected)
         file_table.itemSelectionChanged.connect(on_file_selected)
-        file_header.sectionClicked.connect(on_file_header_clicked)
         self.sensitive_files_filter.textChanged.connect(lambda: filter_timer.start())
         self.sensitive_files_reset_btn.clicked.connect(reset_sensitive_filter)
         raw_button.clicked.connect(open_selected_raw)
