@@ -994,6 +994,12 @@ def init_app_cache_db(conn):
     conn.execute("CREATE INDEX IF NOT EXISTS idx_app_cache_records_source_date ON app_cache_records(source, cache_date)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_app_cache_records_file ON app_cache_records(source_file)")
     conn.execute("""
+        CREATE TABLE IF NOT EXISTS app_cache_meta (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )
+    """)
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS detection_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             source_file TEXT NOT NULL,
@@ -1087,6 +1093,27 @@ def init_app_cache_db(conn):
     conn.execute("CREATE INDEX IF NOT EXISTS idx_mailscreen_events_date ON mailscreen_events(event_date_kst)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_mailscreen_events_sender_user_id ON mailscreen_events(sender_user_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_mailscreen_events_sender_email ON mailscreen_events(sender_email)")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS sensitive_files_index (
+            dedupe_key TEXT PRIMARY KEY,
+            source TEXT NOT NULL,
+            category TEXT NOT NULL,
+            categories TEXT NOT NULL,
+            keywords TEXT NOT NULL,
+            event_time TEXT,
+            display_filename TEXT,
+            user TEXT,
+            user_id TEXT,
+            dept TEXT,
+            search_text TEXT,
+            record_json TEXT NOT NULL,
+            indexed_at TEXT NOT NULL
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sensitive_files_source_category_time ON sensitive_files_index(source, category, event_time DESC)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sensitive_files_category_time ON sensitive_files_index(category, event_time DESC)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sensitive_files_time ON sensitive_files_index(event_time DESC)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sensitive_files_search ON sensitive_files_index(search_text)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_mailscreen_events_sender_name ON mailscreen_events(sender_name)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_mailscreen_events_sender ON mailscreen_events(sender)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_mailscreen_events_file ON mailscreen_events(source_file)")
@@ -1539,6 +1566,7 @@ def sync_app_cache_all(progress_cb=None):
                 conn.execute("DELETE FROM app_cache_files WHERE path = ?", (path,))
                 removed += 1
         totals["data_removed"] = removed
+        totals.update(rebuild_sensitive_files_index(conn, progress_cb=progress_cb))
         conn.commit()
         totals["data_total_rows"] = conn.execute("SELECT COUNT(*) FROM app_cache_records").fetchone()[0]
         totals["data_total_files"] = conn.execute("SELECT COUNT(*) FROM app_cache_files").fetchone()[0]
@@ -2018,6 +2046,204 @@ def build_sensitive_file_records(rows, category_specs=SENSITIVE_FILE_CATEGORY_SP
     for record in records:
         record["search_text"] = sensitive_record_search_text(record)
     return records
+
+
+SENSITIVE_FILES_INDEX_VERSION = "sensitive_files_v1"
+SENSITIVE_FILES_PAGE_LIMIT = 500
+
+
+def sensitive_files_index_sources(include_dlp=True, include_outbound=True):
+    sources = []
+    if include_dlp:
+        sources.append("DLP")
+    if include_outbound:
+        sources.append("Outbound Mail")
+    return sources
+
+
+def sensitive_files_dedupe_key(record):
+    return "|".join([
+        str(record.get("source", "")).strip().lower(),
+        str(record.get("display_filename", "")).strip().lower(),
+        str(record.get("dept", "")).strip().lower(),
+        str(record.get("user", "")).strip().lower(),
+    ])
+
+
+def load_app_cache_raw_rows_from_conn(conn, source):
+    rows = conn.execute(
+        """
+        SELECT raw_json
+        FROM app_cache_records
+        WHERE source = ?
+        ORDER BY cache_date ASC, source_file ASC, row_index ASC
+        """,
+        (source,),
+    ).fetchall()
+    results = []
+    for (raw_json,) in rows:
+        try:
+            row = json.loads(raw_json)
+            if isinstance(row, dict):
+                results.append(row)
+        except Exception as e:
+            log.warning(f"Sensitive Files raw parse failed source={source}: {e}")
+    return results
+
+
+def rebuild_sensitive_files_index(conn, progress_cb=None):
+    if progress_cb:
+        progress_cb("Sensitive Files 인덱스 생성중")
+
+    dlp_rows = load_app_cache_raw_rows_from_conn(conn, "dlp")
+    mailscreen_rows = load_app_cache_raw_rows_from_conn(conn, "mailscreen")
+    records = build_sensitive_file_records(dlp_rows, mailscreen_rows=mailscreen_rows)
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    payload = []
+    for record in records:
+        record["search_text"] = record.get("search_text") or sensitive_record_search_text(record)
+        payload.append((
+            sensitive_files_dedupe_key(record),
+            str(record.get("source", "") or ""),
+            str(record.get("category", "") or ""),
+            json.dumps(record.get("categories", []) or [], ensure_ascii=False),
+            json.dumps(record.get("keywords", []) or [], ensure_ascii=False),
+            str(record.get("event_time", "") or ""),
+            str(record.get("display_filename", "") or ""),
+            str(record.get("user", "") or ""),
+            str(record.get("user_id", "") or ""),
+            str(record.get("dept", "") or ""),
+            str(record.get("search_text", "") or "").lower(),
+            json.dumps(record, ensure_ascii=False, default=str),
+            now,
+        ))
+
+    conn.execute("DELETE FROM sensitive_files_index")
+    if payload:
+        conn.executemany(
+            """
+            INSERT OR REPLACE INTO sensitive_files_index
+                (dedupe_key, source, category, categories, keywords, event_time,
+                 display_filename, user, user_id, dept, search_text, record_json, indexed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            payload,
+        )
+    conn.execute(
+        "INSERT OR REPLACE INTO app_cache_meta(key, value) VALUES (?, ?)",
+        ("sensitive_files_index_version", SENSITIVE_FILES_INDEX_VERSION),
+    )
+    conn.execute(
+        "INSERT OR REPLACE INTO app_cache_meta(key, value) VALUES (?, ?)",
+        ("sensitive_files_indexed_at", now),
+    )
+    return {
+        "sensitive_index_rows": len(records),
+        "sensitive_index_dlp_rows": len(dlp_rows),
+        "sensitive_index_mailscreen_rows": len(mailscreen_rows),
+        "sensitive_indexed_at": now,
+    }
+
+
+def sensitive_files_index_ready(conn):
+    row = conn.execute(
+        "SELECT value FROM app_cache_meta WHERE key = ?",
+        ("sensitive_files_index_version",),
+    ).fetchone()
+    return bool(row and row[0] == SENSITIVE_FILES_INDEX_VERSION)
+
+
+def sensitive_files_where_clause(category="전체", keyword="", sources=None):
+    clauses = []
+    params = []
+    source_values = list(sources or [])
+    if source_values:
+        placeholders = ",".join("?" for _ in source_values)
+        clauses.append(f"source IN ({placeholders})")
+        params.extend(source_values)
+    else:
+        clauses.append("1 = 0")
+
+    if category and category != "전체":
+        clauses.append("category = ?")
+        params.append(category)
+
+    keyword = str(keyword or "").strip().lower()
+    if keyword:
+        clauses.append("search_text LIKE ?")
+        params.append(f"%{keyword}%")
+
+    return " AND ".join(clauses), params
+
+
+def sensitive_record_from_index_json(raw_json):
+    try:
+        record = json.loads(raw_json)
+        if isinstance(record, dict):
+            record["search_text"] = record.get("search_text") or sensitive_record_search_text(record)
+            return record
+    except Exception as e:
+        log.warning(f"Sensitive Files index record parse failed: {e}")
+    return None
+
+
+def query_sensitive_files_index(category="전체", keyword="", sources=None, limit=SENSITIVE_FILES_PAGE_LIMIT, offset=0):
+    with app_cache_connect() as conn:
+        if not sensitive_files_index_ready(conn):
+            return {
+                "records": [],
+                "total": 0,
+                "category_counts": {},
+                "index_ready": False,
+                "message": "Sensitive Files 인덱스가 없습니다. Config에서 Data Index를 먼저 실행하세요.",
+            }
+
+        if sources is None:
+            sources = ["DLP", "Outbound Mail"]
+        where_sql, params = sensitive_files_where_clause(category, keyword, sources)
+        total = conn.execute(
+            f"SELECT COUNT(*) FROM sensitive_files_index WHERE {where_sql}",
+            params,
+        ).fetchone()[0]
+
+        count_where_sql, count_params = sensitive_files_where_clause("전체", keyword, sources)
+        count_rows = conn.execute(
+            f"""
+            SELECT category, COUNT(*)
+            FROM sensitive_files_index
+            WHERE {count_where_sql}
+            GROUP BY category
+            """,
+            count_params,
+        ).fetchall()
+        category_counts = {str(category): int(count) for category, count in count_rows}
+
+        rows = conn.execute(
+            f"""
+            SELECT record_json
+            FROM sensitive_files_index
+            WHERE {where_sql}
+            ORDER BY event_time DESC, display_filename ASC
+            LIMIT ? OFFSET ?
+            """,
+            params + [int(limit), int(offset)],
+        ).fetchall()
+
+    records = []
+    for (raw_json,) in rows:
+        record = sensitive_record_from_index_json(raw_json)
+        if record:
+            records.append(record)
+
+    return {
+        "records": records,
+        "total": int(total),
+        "category_counts": category_counts,
+        "index_ready": True,
+        "limit": int(limit),
+        "offset": int(offset),
+    }
 
 # ======================================================
 # Core utilities / file, session, time, and validation helpers
@@ -4242,12 +4468,24 @@ class DlpAllCacheLoadWorker(QThread):
     ok = pyqtSignal(object)
     fail = pyqtSignal(str)
 
+    def __init__(self, category="전체", keyword="", sources=None, limit=SENSITIVE_FILES_PAGE_LIMIT, offset=0):
+        super().__init__()
+        self.category = category or "전체"
+        self.keyword = keyword or ""
+        self.sources = ["DLP", "Outbound Mail"] if sources is None else list(sources)
+        self.limit = limit
+        self.offset = offset
+
     def run(self):
         try:
-            rows = load_dlp_all_indexed_cache()
-            mailscreen_rows = load_mailscreen_all_indexed_cache()
-            records = build_sensitive_file_records(rows, mailscreen_rows=mailscreen_rows)
-            self.ok.emit({"rows": rows, "mailscreen_rows": mailscreen_rows, "records": records})
+            payload = query_sensitive_files_index(
+                category=self.category,
+                keyword=self.keyword,
+                sources=self.sources,
+                limit=self.limit,
+                offset=self.offset,
+            )
+            self.ok.emit(payload)
         except Exception as e:
             log.exception("Sensitive Files cache load failed")
             self.fail.emit(str(e))
@@ -15786,11 +16024,15 @@ Command Line :
         splitter.setStretchFactor(2, 1)
         layout.addWidget(splitter, 1)
 
+        more_button = QPushButton("더 보기")
+        more_button.setStyleSheet(self.button_style("secondary"))
+        more_button.setMinimumHeight(36)
         raw_button = QPushButton("Raw 보기")
         raw_button.setStyleSheet(self.button_style("secondary"))
         raw_button.setMinimumHeight(36)
         bottom = QHBoxLayout()
         bottom.addStretch(1)
+        bottom.addWidget(more_button)
         bottom.addWidget(raw_button)
         layout.addLayout(bottom)
 
@@ -15929,41 +16171,20 @@ Command Line :
 
         self.sensitive_file_records = []
         self.sensitive_file_current_category = "전체"
-        self.sensitive_files_loaded = bool(getattr(self, "sensitive_dlp_rows", []))
+        self.sensitive_file_category_counts = {}
+        self.sensitive_files_total = 0
+        self.sensitive_files_offset = 0
+        self.sensitive_files_loaded = False
 
-        def rebuild_records():
-            records = []
-            for row in self.sensitive_dlp_rows or []:
-                if not isinstance(row, dict):
-                    continue
-                record = make_sensitive_record(row)
-                if record:
-                    records.append(record)
-            latest_by_file_owner = {}
-            for record in records:
-                dedupe_key = (
-                    str(record.get("display_filename", "")).strip().lower(),
-                    str(record.get("dept", "")).strip().lower(),
-                    str(record.get("user", "")).strip().lower(),
-                )
-                current = latest_by_file_owner.get(dedupe_key)
-                if current is None or str(record.get("event_time", "")) > str(current.get("event_time", "")):
-                    latest_by_file_owner[dedupe_key] = record
-
-            records = list(latest_by_file_owner.values())
-            records.sort(key=lambda r: (r["category"], r["display_filename"].lower()))
-            records.sort(key=lambda r: r["event_time"], reverse=True)
-            self.sensitive_file_records = records
-
-        def source_visible(record):
-            source = str(record.get("source", "DLP") or "DLP")
-            if source == "Outbound Mail":
-                return self.sensitive_files_outbound_chk.isChecked()
-            return self.sensitive_files_dlp_chk.isChecked()
+        def selected_sources():
+            return sensitive_files_index_sources(
+                include_dlp=self.sensitive_files_dlp_chk.isChecked(),
+                include_outbound=self.sensitive_files_outbound_chk.isChecked(),
+            )
 
         def render_categories():
-            visible_categories = {record["category"] for record in self.sensitive_file_records if source_visible(record)}
-            categories = ["전체"] + [category for category, _ in category_specs if category in visible_categories]
+            counts = getattr(self, "sensitive_file_category_counts", {}) or {}
+            categories = ["전체"] + [category for category, _ in category_specs if counts.get(category, 0) > 0]
             signals_were_blocked = category_table.blockSignals(True)
             category_table.setSortingEnabled(False)
             category_table.clearContents()
@@ -15971,30 +16192,33 @@ Command Line :
             for category in categories:
                 r = category_table.rowCount()
                 category_table.insertRow(r)
-                item = QTableWidgetItem(category)
+                count = sum(counts.values()) if category == "전체" else counts.get(category, 0)
+                item = QTableWidgetItem(f"{category} ({count:,})")
                 item.setData(Qt.UserRole, category)
                 category_table.setItem(r, 0, item)
             category_table.setSortingEnabled(False)
+            target_category = getattr(self, "sensitive_file_current_category", "전체")
+            selected_row = 0
+            for row in range(category_table.rowCount()):
+                item = category_table.item(row, 0)
+                if item and item.data(Qt.UserRole) == target_category:
+                    selected_row = row
+                    break
             if category_table.rowCount() > 0:
-                category_table.selectRow(0)
+                category_table.selectRow(selected_row)
             category_table.blockSignals(signals_were_blocked)
 
         def render_files():
+            records = self.sensitive_file_records or []
+            total_records = int(getattr(self, "sensitive_files_total", 0) or 0)
+            shown_count = int(getattr(self, "sensitive_files_offset", 0) or 0) + len(records)
+            shown_count = min(shown_count, total_records)
             selected_category = getattr(self, "sensitive_file_current_category", "전체")
-            keyword = self.sensitive_files_filter.text().strip().lower()
-            filtered_records = []
-            for record in self.sensitive_file_records:
-                if not source_visible(record):
-                    continue
-                if selected_category != "전체" and record["category"] != selected_category:
-                    continue
-                search_text = record.get("search_text") or record_search_text(record)
-                if keyword and keyword not in search_text:
-                    continue
-                filtered_records.append(record)
-
-            total_records = len(self.sensitive_file_records or [])
-            self.sensitive_files_count_label.setText(f"표시 {len(filtered_records):,}건 / 전체 {total_records:,}건")
+            scope_label = "전체" if selected_category == "전체" else selected_category
+            self.sensitive_files_count_label.setText(
+                f"표시 {shown_count:,}건 / {scope_label} {total_records:,}건"
+            )
+            more_button.setEnabled(shown_count < total_records)
 
             token = getattr(self, "sensitive_file_render_token", 0) + 1
             self.sensitive_file_render_token = token
@@ -16002,15 +16226,15 @@ Command Line :
             file_table.setSortingEnabled(False)
             file_table.setUpdatesEnabled(False)
             file_table.clearContents()
-            file_table.setRowCount(len(filtered_records))
+            file_table.setRowCount(len(records))
             render_detail(None)
 
             def fill_batch(start=0):
                 if token != getattr(self, "sensitive_file_render_token", 0):
                     return
-                end = min(start + batch_size, len(filtered_records))
+                end = min(start + batch_size, len(records))
                 for r in range(start, end):
-                    record = filtered_records[r]
+                    record = records[r]
                     values = [
                         record["display_filename"],
                         record["category"],
@@ -16025,7 +16249,7 @@ Command Line :
                             item.setData(Qt.UserRole, record)
                         file_table.setItem(r, c, item)
 
-                if end < len(filtered_records):
+                if end < len(records):
                     QTimer.singleShot(0, lambda: fill_batch(end))
                     return
 
@@ -16043,8 +16267,11 @@ Command Line :
         def on_category_selected():
             selected = category_table.selectedItems()
             if selected:
-                self.sensitive_file_current_category = selected[0].data(Qt.UserRole) or "전체"
-            render_files()
+                category = selected[0].data(Qt.UserRole) or "전체"
+                if category == getattr(self, "sensitive_file_current_category", "전체"):
+                    return
+                self.sensitive_file_current_category = category
+                reset_sensitive_filter()
 
         def on_file_selected():
             selected = file_table.selectedItems()
@@ -16066,19 +16293,22 @@ Command Line :
 
         def finish_sensitive_reload(payload):
             payload = payload or {}
-            self.sensitive_dlp_rows = payload.get("rows") or []
-            self.sensitive_mailscreen_rows = payload.get("mailscreen_rows") or []
             self.sensitive_file_records = payload.get("records") or []
+            self.sensitive_file_category_counts = payload.get("category_counts") or {}
+            self.sensitive_files_total = int(payload.get("total", 0) or 0)
+            self.sensitive_files_offset = int(payload.get("offset", 0) or 0)
             self.sensitive_files_range = "전체 캐시"
-            self.sensitive_files_loaded = True
-            self.sensitive_files_filter.clear()
-            self.sensitive_file_current_category = "전체"
+            self.sensitive_files_loaded = bool(payload.get("index_ready", True))
             self.update_range_label()
             render_categories()
             render_files()
             self.sensitive_files_reset_btn.setEnabled(True)
             self.sensitive_files_reset_btn.setText("새로고침")
-            self.set_status("Sensitive Files refreshed", color="green", spinning=False)
+            if payload.get("index_ready", True):
+                self.set_status("Sensitive Files refreshed", color="green", spinning=False)
+            else:
+                self.set_status("Sensitive Files index required", color="orange", spinning=False)
+                detail.setPlainText(payload.get("message") or "Sensitive Files 인덱스가 없습니다. Data Index를 먼저 실행하세요.")
 
         def fail_sensitive_reload(message):
             self.sensitive_files_reset_btn.setEnabled(True)
@@ -16086,19 +16316,46 @@ Command Line :
             self.set_status("Sensitive Files refresh FAIL", color="red", spinning=False)
             QMessageBox.critical(self, "Sensitive Files", f"새로고침 실패: {message}")
 
-        def reset_sensitive_filter():
+        def reset_sensitive_filter(offset=0, append=False):
             worker = getattr(self, "sensitive_files_worker", None)
             if worker is not None and worker.isRunning():
                 return
+            if not append:
+                self.sensitive_files_offset = 0
+            category = getattr(self, "sensitive_file_current_category", "전체")
+            keyword = self.sensitive_files_filter.text().strip()
+            sources = selected_sources()
             self.sensitive_file_render_token = getattr(self, "sensitive_file_render_token", 0) + 1
             file_table.setUpdatesEnabled(True)
             self.sensitive_files_reset_btn.setEnabled(False)
             self.sensitive_files_reset_btn.setText("새로고침중...")
             self.set_status("Sensitive Files refresh", color="blue", spinning=True)
-            self.sensitive_files_worker = DlpAllCacheLoadWorker()
-            self.sensitive_files_worker.ok.connect(finish_sensitive_reload)
+            self.sensitive_files_worker = DlpAllCacheLoadWorker(
+                category=category,
+                keyword=keyword,
+                sources=sources,
+                limit=SENSITIVE_FILES_PAGE_LIMIT,
+                offset=offset,
+            )
+            if append:
+                self.sensitive_files_worker.ok.connect(finish_sensitive_append)
+            else:
+                self.sensitive_files_worker.ok.connect(finish_sensitive_reload)
             self.sensitive_files_worker.fail.connect(fail_sensitive_reload)
             self.sensitive_files_worker.start()
+
+        def finish_sensitive_append(payload):
+            payload = payload or {}
+            existing = self.sensitive_file_records or []
+            self.sensitive_file_records = existing + (payload.get("records") or [])
+            self.sensitive_file_category_counts = payload.get("category_counts") or getattr(self, "sensitive_file_category_counts", {})
+            self.sensitive_files_total = int(payload.get("total", 0) or getattr(self, "sensitive_files_total", 0) or 0)
+            self.sensitive_files_offset = int(payload.get("offset", 0) or 0)
+            render_categories()
+            render_files()
+            self.sensitive_files_reset_btn.setEnabled(True)
+            self.sensitive_files_reset_btn.setText("새로고침")
+            self.set_status("Sensitive Files more loaded", color="green", spinning=False)
 
         def refresh():
             if not getattr(self, "sensitive_files_loaded", False):
@@ -16108,13 +16365,19 @@ Command Line :
             render_files()
 
         def on_sensitive_source_changed():
-            render_categories()
-            render_files()
+            self.sensitive_file_current_category = "전체"
+            reset_sensitive_filter()
+
+        def load_more_sensitive_files():
+            offset = int(getattr(self, "sensitive_files_offset", 0) or 0) + len(self.sensitive_file_records or [])
+            if offset >= int(getattr(self, "sensitive_files_total", 0) or 0):
+                return
+            reset_sensitive_filter(offset=offset, append=True)
 
         filter_timer = QTimer(root)
         filter_timer.setSingleShot(True)
         filter_timer.setInterval(250)
-        filter_timer.timeout.connect(render_files)
+        filter_timer.timeout.connect(lambda: reset_sensitive_filter())
 
         category_table.itemSelectionChanged.connect(on_category_selected)
         file_table.itemSelectionChanged.connect(on_file_selected)
@@ -16122,6 +16385,7 @@ Command Line :
         self.sensitive_files_dlp_chk.stateChanged.connect(on_sensitive_source_changed)
         self.sensitive_files_outbound_chk.stateChanged.connect(on_sensitive_source_changed)
         self.sensitive_files_reset_btn.clicked.connect(reset_sensitive_filter)
+        more_button.clicked.connect(load_more_sensitive_files)
         raw_button.clicked.connect(open_selected_raw)
 
         self._refresh_sensitive_files = refresh
@@ -16881,6 +17145,26 @@ Command Line :
         self.chk_fw_icheon = QCheckBox("Icheon")
         self.chk_fw_anseong = QCheckBox("Anseong")
 
+        firewall_checkbox_style = f"""
+        QCheckBox {{
+            color: {UI_THEME['text']};
+            font-weight: 700;
+            spacing: 6px;
+            background: transparent;
+        }}
+        QCheckBox::indicator {{
+            width: 16px;
+            height: 16px;
+            border: 1px solid {UI_THEME['accent']};
+            border-radius: 4px;
+            background: {UI_THEME['surface']};
+        }}
+        QCheckBox::indicator:checked {{
+            background: {UI_THEME['accent']};
+            border: 1px solid {UI_THEME['accent']};
+        }}
+        """
+
         for chk in [
             self.chk_fw_cloud,
             self.chk_fw_seoul,
@@ -16888,6 +17172,8 @@ Command Line :
             self.chk_fw_anseong,
         ]:
             chk.setChecked(True)
+            chk.setMinimumHeight(28)
+            chk.setStyleSheet(firewall_checkbox_style)
             fw_layout.addWidget(chk)
 
         query_group = QGroupBox("Firewall Group View")
@@ -17356,12 +17642,15 @@ Command Line :
         built_at = stats.get("built_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         self.lbl_index_last.setText(f"Last Build: {built_at}")
         self.lbl_index_status.setText(
-            f"Status: OK (Data {int(stats.get('data_indexed', 0)):,} indexed / {int(stats.get('data_skipped', 0)):,} skipped, Timeline {int(stats.get('indexed', 0)):,} indexed / {int(stats.get('skipped', 0)):,} skipped)"
+            f"Status: OK (Data {int(stats.get('data_indexed', 0)):,} indexed / {int(stats.get('data_skipped', 0)):,} skipped, Timeline {int(stats.get('indexed', 0)):,} indexed / {int(stats.get('skipped', 0)):,} skipped, Sensitive {int(stats.get('sensitive_index_rows', 0)):,} records)"
         )
         self.lbl_index_rows.setText(f"Data Rows: {int(stats.get('data_total_rows', stats.get('data_rows', 0))):,}")
         self.lbl_index_events.setText(f"Timeline Events: {int(stats.get('events', 0)):,}")
         self.lbl_index_tokens.setText(f"Search Tokens: {int(stats.get('tokens', 0)):,}")
         self.lbl_index_files.setText(f"Cache Files: {int(stats.get('data_total_files', stats.get('files', 0))):,}")
+        self.sensitive_files_loaded = False
+        if self.current_logical_tab_name() == "Sensitive Files" and hasattr(self, "_refresh_sensitive_files"):
+            self._refresh_sensitive_files()
 
         if self.auto_continue_after_index:
             self.auto_continue_after_index = False
