@@ -1700,6 +1700,12 @@ def load_dlp_all_indexed_cache():
     return rows
 
 
+def load_mailscreen_all_indexed_cache():
+    rows = load_app_cache_records("mailscreen")
+    log.info(f"Loaded MailScreen from SQLite index all cache : {len(rows)}")
+    return rows
+
+
 def load_mailscreen_by_range(start_date: str, end_date: str):
     try:
         sync_app_cache_range("mailscreen", start_date, end_date)
@@ -1855,6 +1861,7 @@ def make_sensitive_record(row, category_specs=SENSITIVE_FILE_CATEGORY_SPECS):
     destination_detail = str(row.get("item_details") or row.get("destinationDetails") or "None")
     return {
         "row": row,
+        "source": "DLP",
         "category": classified["category"],
         "categories": classified["categories"],
         "keywords": classified["keywords"],
@@ -1875,13 +1882,110 @@ def make_sensitive_record(row, category_specs=SENSITIVE_FILE_CATEGORY_SPECS):
 
 def sensitive_record_search_text(record):
     return " ".join(str(record.get(k, "") or "") for k in (
-        "category", "keywords", "event_time", "event", "machine",
+        "source", "category", "keywords", "event_time", "event", "machine",
         "dept", "user", "user_id", "filename", "display_filename",
         "destination", "destination_type", "destination_detail", "filehash",
+        "mail_subject", "mail_sender", "mail_receiver", "mail_policy", "mail_attach_raw",
     )).lower()
 
 
-def build_sensitive_file_records(rows, category_specs=SENSITIVE_FILE_CATEGORY_SPECS):
+MAILSCREEN_ATTACHMENT_EXTENSIONS = (
+    "docx", "doc", "xlsx", "xls", "pptx", "ppt", "jpeg", "jpg",
+    "pdf", "txt", "csv", "png", "heic", "gif", "bmp", "zip", "7z", "rar",
+    "alz", "egg", "ai", "psd", "mp4", "mov", "avi", "eml", "msg",
+)
+
+
+def clean_mailscreen_attachment_name(value):
+    text = str(value or "").strip()
+    if not text or text == "None":
+        return ""
+    text = re.sub(r"\s*\(\s*\d+\s+more\s*\)\s*$", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s*\(\s*[\d,.]+\s*(?:B|K|KB|M|MB|G|GB|T|TB)\s*\)\s*$", "", text, flags=re.IGNORECASE)
+    return text.strip(" ,;|")
+
+
+def extract_mailscreen_attachment_names(row):
+    attach_text = str(row.get("attach", "") or "").strip() if isinstance(row, dict) else ""
+    if not attach_text or attach_text == "None":
+        return []
+
+    ext_pattern = "|".join(re.escape(ext) for ext in MAILSCREEN_ATTACHMENT_EXTENSIONS)
+    pattern = re.compile(
+        rf"([^,;|\n]+?\.(?:{ext_pattern}))(?:\s*\([^)]*\))*",
+        re.IGNORECASE,
+    )
+    names = []
+    for match in pattern.finditer(attach_text):
+        name = clean_mailscreen_attachment_name(match.group(1))
+        if name and name not in names:
+            names.append(name)
+
+    if names:
+        return names
+
+    fallback = clean_mailscreen_attachment_name(attach_text)
+    return [fallback] if fallback else []
+
+
+def make_sensitive_mailscreen_record(row, attachment_name, category_specs=SENSITIVE_FILE_CATEGORY_SPECS):
+    if not isinstance(row, dict):
+        return None
+    row = enrich_mailscreen_sender_fields(row)
+    filename = clean_mailscreen_attachment_name(attachment_name)
+    if not filename:
+        return None
+
+    classify_row = dict(row)
+    classify_row["filename"] = filename
+    classify_row["destination"] = row.get("receiver_detail") or row.get("receiver") or ""
+    classify_row["destination_type"] = "Outbound Mail Attachment"
+    classify_row["item_details"] = " ".join(str(row.get(k, "") or "") for k in (
+        "subject", "policy", "mail_process", "send_result", "attach",
+    ))
+    classified = classify_sensitive_row(classify_row, category_specs)
+    if not classified:
+        return None
+
+    sender_email = mailscreen_identity_text(row.get("sender_email")) or mailscreen_identity_text(row.get("sender"))
+    sender_name = mailscreen_identity_text(row.get("sender_name")) or sender_email or "None"
+    user_id = mailscreen_identity_text(row.get("sender_user_id")) or sender_email or "None"
+    dept_name = mailscreen_identity_text(row.get("sender_dept")) or mailscreen_identity_text(row.get("dept")) or "미분류"
+    receiver = mailscreen_identity_text(row.get("receiver_detail")) or mailscreen_identity_text(row.get("receiver")) or "None"
+    mail_process = str(row.get("mail_process", "") or "None")
+    send_result = str(row.get("send_result", "") or "None")
+    event = f"{mail_process}/{send_result}" if mail_process != "None" and send_result != "None" else (send_result or mail_process)
+
+    return {
+        "row": row,
+        "source": "Outbound Mail",
+        "category": classified["category"],
+        "categories": classified["categories"],
+        "keywords": classified["keywords"],
+        "event_time": str(row.get("date", "") or ""),
+        "event": event,
+        "machine": "None",
+        "dept": dept_name,
+        "user": sender_name,
+        "user_id": user_id,
+        "filename": filename,
+        "display_filename": display_sensitive_file_name(filename),
+        "destination": receiver,
+        "destination_type": "Outbound Mail Attachment",
+        "destination_detail": str(row.get("subject", "") or "None"),
+        "filehash": "None",
+        "mail_subject": str(row.get("subject", "") or "None"),
+        "mail_sender": sender_email or "None",
+        "mail_receiver": receiver,
+        "mail_size": str(row.get("size", "") or "None"),
+        "mail_policy": str(row.get("policy", "") or "None"),
+        "mail_process": mail_process,
+        "mail_send_result": send_result,
+        "mail_attach_raw": str(row.get("attach", "") or "None"),
+    }
+
+
+def build_sensitive_file_records(rows, category_specs=SENSITIVE_FILE_CATEGORY_SPECS, mailscreen_rows=None):
     records = []
     for row in rows or []:
         if not isinstance(row, dict):
@@ -1890,9 +1994,18 @@ def build_sensitive_file_records(rows, category_specs=SENSITIVE_FILE_CATEGORY_SP
         if record:
             records.append(record)
 
+    for row in mailscreen_rows or []:
+        if not isinstance(row, dict):
+            continue
+        for attachment_name in extract_mailscreen_attachment_names(row):
+            record = make_sensitive_mailscreen_record(row, attachment_name, category_specs)
+            if record:
+                records.append(record)
+
     latest_by_file_owner = {}
     for record in records:
         dedupe_key = (
+            str(record.get("source", "")).strip().lower(),
             str(record.get("display_filename", "")).strip().lower(),
             str(record.get("dept", "")).strip().lower(),
             str(record.get("user", "")).strip().lower(),
@@ -4134,8 +4247,9 @@ class DlpAllCacheLoadWorker(QThread):
     def run(self):
         try:
             rows = load_dlp_all_indexed_cache()
-            records = build_sensitive_file_records(rows)
-            self.ok.emit({"rows": rows, "records": records})
+            mailscreen_rows = load_mailscreen_all_indexed_cache()
+            records = build_sensitive_file_records(rows, mailscreen_rows=mailscreen_rows)
+            self.ok.emit({"rows": rows, "mailscreen_rows": mailscreen_rows, "records": records})
         except Exception as e:
             log.exception("Sensitive Files cache load failed")
             self.fail.emit(str(e))
@@ -15731,16 +15845,43 @@ Command Line :
 
         def record_search_text(record):
             return " ".join(str(record.get(k, "") or "") for k in (
-                "category", "keywords", "event_time", "event", "machine",
+                "source", "category", "keywords", "event_time", "event", "machine",
                 "dept", "user", "user_id", "filename", "display_filename", "destination", "destination_type",
-                "destination_detail", "filehash",
+                "destination_detail", "filehash", "mail_subject", "mail_sender", "mail_receiver", "mail_policy", "mail_attach_raw",
             )).lower()
 
         def render_detail(record=None):
             if not record:
                 detail.setPlainText("파일을 선택하면 상세 정보가 표시됩니다.")
                 return
+            if record.get("source") == "Outbound Mail":
+                detail.setPlainText("\n".join([
+                    "출처: Outbound Mail",
+                    f"파일명: {record['display_filename']}",
+                    f"분류: {', '.join(record['categories'])}",
+                    f"탐지 키워드: {', '.join(record['keywords'])}",
+                    "",
+                    f"사용자: {record['user']}",
+                    f"User ID: {record['user_id']}",
+                    f"부서: {record['dept']}",
+                    "호스트: None",
+                    "",
+                    f"이벤트: {record['event']}",
+                    f"시간: {record['event_time']}",
+                    f"대상 유형: {record['destination_type']}",
+                    f"수신자: {record.get('mail_receiver', record['destination'])}",
+                    f"메일 제목: {record.get('mail_subject', 'None')}",
+                    f"발신자: {record.get('mail_sender', 'None')}",
+                    f"메일 크기: {record.get('mail_size', 'None')}",
+                    f"적용 정책: {record.get('mail_policy', 'None')}",
+                    f"메일 처리: {record.get('mail_process', 'None')}",
+                    f"전송 결과: {record.get('mail_send_result', 'None')}",
+                    f"첨부 원문: {record.get('mail_attach_raw', 'None')}",
+                    "파일 해시: None",
+                ]))
+                return
             detail.setPlainText("\n".join([
+                "출처: DLP",
                 f"파일명: {record['display_filename']}",
                 f"전체 경로: {record['filename']}",
                 f"분류: {', '.join(record['categories'])}",
@@ -15891,6 +16032,7 @@ Command Line :
         def finish_sensitive_reload(payload):
             payload = payload or {}
             self.sensitive_dlp_rows = payload.get("rows") or []
+            self.sensitive_mailscreen_rows = payload.get("mailscreen_rows") or []
             self.sensitive_file_records = payload.get("records") or []
             self.sensitive_files_range = "전체 캐시"
             self.sensitive_files_loaded = True
