@@ -1808,8 +1808,8 @@ def sensitive_row_text(row):
     return f"{field_text} {json.dumps(row, ensure_ascii=False, default=str)}".lower()
 
 
-def classify_sensitive_row(row, category_specs=SENSITIVE_FILE_CATEGORY_SPECS):
-    text = sensitive_row_text(row)
+def classify_sensitive_text(text, category_specs=SENSITIVE_FILE_CATEGORY_SPECS):
+    text = str(text or "").lower()
     matched_categories = []
     matched_keywords = []
     for category, keywords in category_specs:
@@ -1824,6 +1824,10 @@ def classify_sensitive_row(row, category_specs=SENSITIVE_FILE_CATEGORY_SPECS):
         "categories": matched_categories,
         "keywords": sorted(set(matched_keywords), key=lambda x: x.lower()),
     }
+
+
+def classify_sensitive_row(row, category_specs=SENSITIVE_FILE_CATEGORY_SPECS):
+    return classify_sensitive_text(sensitive_row_text(row), category_specs)
 
 
 def display_sensitive_file_name(path_text):
@@ -1936,14 +1940,8 @@ def make_sensitive_mailscreen_record(row, attachment_name, category_specs=SENSIT
     if not filename:
         return None
 
-    classify_row = dict(row)
-    classify_row["filename"] = filename
-    classify_row["destination"] = row.get("receiver_detail") or row.get("receiver") or ""
-    classify_row["destination_type"] = "Outbound Mail Attachment"
-    classify_row["item_details"] = " ".join(str(row.get(k, "") or "") for k in (
-        "subject", "policy", "mail_process", "send_result", "attach",
-    ))
-    classified = classify_sensitive_row(classify_row, category_specs)
+    subject = str(row.get("subject", "") or "")
+    classified = classify_sensitive_text(f"{filename} {subject}", category_specs)
     if not classified:
         return None
 
@@ -15697,6 +15695,13 @@ Command Line :
         title_row.addWidget(self.sensitive_files_count_label)
         title_row.addStretch(1)
 
+        self.sensitive_files_dlp_chk = QCheckBox("DLP")
+        self.sensitive_files_dlp_chk.setChecked(True)
+        self.sensitive_files_outbound_chk = QCheckBox("아웃바운드 메일")
+        self.sensitive_files_outbound_chk.setChecked(True)
+        title_row.addWidget(self.sensitive_files_dlp_chk)
+        title_row.addWidget(self.sensitive_files_outbound_chk)
+
         self.sensitive_files_reset_btn = QPushButton("새로고침")
         self.sensitive_files_reset_btn.setMinimumHeight(36)
         self.sensitive_files_reset_btn.setStyleSheet(self.button_style("secondary"))
@@ -15928,8 +15933,14 @@ Command Line :
             records.sort(key=lambda r: r["event_time"], reverse=True)
             self.sensitive_file_records = records
 
+        def source_visible(record):
+            source = str(record.get("source", "DLP") or "DLP")
+            if source == "Outbound Mail":
+                return self.sensitive_files_outbound_chk.isChecked()
+            return self.sensitive_files_dlp_chk.isChecked()
+
         def render_categories():
-            visible_categories = {record["category"] for record in self.sensitive_file_records}
+            visible_categories = {record["category"] for record in self.sensitive_file_records if source_visible(record)}
             categories = ["전체"] + [category for category, _ in category_specs if category in visible_categories]
             signals_were_blocked = category_table.blockSignals(True)
             category_table.setSortingEnabled(False)
@@ -15951,6 +15962,8 @@ Command Line :
             keyword = self.sensitive_files_filter.text().strip().lower()
             filtered_records = []
             for record in self.sensitive_file_records:
+                if not source_visible(record):
+                    continue
                 if selected_category != "전체" and record["category"] != selected_category:
                     continue
                 search_text = record.get("search_text") or record_search_text(record)
@@ -16072,6 +16085,10 @@ Command Line :
             render_categories()
             render_files()
 
+        def on_sensitive_source_changed():
+            render_categories()
+            render_files()
+
         filter_timer = QTimer(root)
         filter_timer.setSingleShot(True)
         filter_timer.setInterval(250)
@@ -16080,6 +16097,8 @@ Command Line :
         category_table.itemSelectionChanged.connect(on_category_selected)
         file_table.itemSelectionChanged.connect(on_file_selected)
         self.sensitive_files_filter.textChanged.connect(lambda: filter_timer.start())
+        self.sensitive_files_dlp_chk.stateChanged.connect(on_sensitive_source_changed)
+        self.sensitive_files_outbound_chk.stateChanged.connect(on_sensitive_source_changed)
         self.sensitive_files_reset_btn.clicked.connect(reset_sensitive_filter)
         raw_button.clicked.connect(open_selected_raw)
 
