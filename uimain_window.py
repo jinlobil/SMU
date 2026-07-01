@@ -1753,7 +1753,7 @@ SENSITIVE_FILE_CATEGORY_SPECS = [
         "면접", "채용", "잡코리아", "사람인", "원티드", "wanted",
         "linkedin", "링크드인", "cover letter",
     ]),
-    ("결혼 / 웨딩 / 사생활", [
+    ("결혼 / 웨딩", [
         "결혼", "웨딩", "wedding", "상견례", "청첩장", "예식", "예식장",
         "스드메", "드레스", "혼수", "신혼", "신혼여행", "허니문",
         "혼인", "예물", "예단", "커플사진", "가족사진", "웨딩사진",
@@ -15593,6 +15593,9 @@ Command Line :
         file_table.setColumnCount(len(file_headers))
         file_table.setHorizontalHeaderLabels(file_headers)
         file_header = file_table.horizontalHeader()
+        file_header.setSectionsClickable(True)
+        file_header.setSortIndicatorShown(True)
+        file_header.setSortIndicator(5, Qt.DescendingOrder)
         file_header.setSectionResizeMode(0, QHeaderView.Stretch)
         for col, width in ((1, 140), (2, 160), (3, 110), (4, 140), (5, 145)):
             file_header.setSectionResizeMode(col, QHeaderView.Interactive)
@@ -15741,6 +15744,8 @@ Command Line :
 
         self.sensitive_file_records = []
         self.sensitive_file_current_category = "전체"
+        self.sensitive_file_sort_column = 5
+        self.sensitive_file_sort_order = Qt.DescendingOrder
         self.sensitive_files_loaded = bool(getattr(self, "sensitive_dlp_rows", []))
 
         def rebuild_records():
@@ -15796,6 +15801,24 @@ Command Line :
                 if keyword and keyword not in search_text:
                     continue
                 filtered_records.append(record)
+
+            sort_column = getattr(self, "sensitive_file_sort_column", 5)
+            sort_order = getattr(self, "sensitive_file_sort_order", Qt.DescendingOrder)
+
+            def sort_value(record):
+                if sort_column == 0:
+                    return str(record.get("display_filename", "") or "").lower()
+                if sort_column == 1:
+                    return str(record.get("category", "") or "").lower()
+                if sort_column == 2:
+                    return ", ".join(record.get("keywords", []) or []).lower()
+                if sort_column == 3:
+                    return str(record.get("user", "") or "").lower()
+                if sort_column == 4:
+                    return str(record.get("dept", "") or "").lower()
+                return str(record.get("event_time", "") or "")
+
+            filtered_records.sort(key=sort_value, reverse=sort_order == Qt.DescendingOrder)
 
             token = getattr(self, "sensitive_file_render_token", 0) + 1
             self.sensitive_file_render_token = token
@@ -15854,6 +15877,18 @@ Command Line :
                 return
             item = file_table.item(selected[0].row(), 0)
             render_detail(item.data(Qt.UserRole) if item else None)
+
+        def on_file_header_clicked(column):
+            current_column = getattr(self, "sensitive_file_sort_column", 5)
+            current_order = getattr(self, "sensitive_file_sort_order", Qt.DescendingOrder)
+            if column == current_column:
+                next_order = Qt.AscendingOrder if current_order == Qt.DescendingOrder else Qt.DescendingOrder
+            else:
+                next_order = Qt.DescendingOrder if column == 5 else Qt.AscendingOrder
+            self.sensitive_file_sort_column = column
+            self.sensitive_file_sort_order = next_order
+            file_header.setSortIndicator(column, next_order)
+            render_files()
 
         def open_selected_raw():
             selected = file_table.selectedItems()
@@ -15914,6 +15949,7 @@ Command Line :
 
         category_table.itemSelectionChanged.connect(on_category_selected)
         file_table.itemSelectionChanged.connect(on_file_selected)
+        file_header.sectionClicked.connect(on_file_header_clicked)
         self.sensitive_files_filter.textChanged.connect(lambda: filter_timer.start())
         self.sensitive_files_reset_btn.clicked.connect(reset_sensitive_filter)
         raw_button.clicked.connect(open_selected_raw)
