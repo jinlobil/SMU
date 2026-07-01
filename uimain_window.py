@@ -1694,15 +1694,10 @@ def load_dlp_by_range_json(start_date: str, end_date: str):
     return results
 
 
-def load_dlp_all_cache():
-    results = []
-    for path in iter_json_files(DLP_DAY_DIR, ".jsonl"):
-        try:
-            results.extend(load_jsonl(path))
-        except Exception as e:
-            log.warning(f"Failed to load {path}: {e}")
-    log.info(f"Loaded DLP from all cache files : {len(results)}")
-    return results
+def load_dlp_all_indexed_cache():
+    rows = load_app_cache_records("dlp")
+    log.info(f"Loaded DLP from SQLite index all cache : {len(rows)}")
+    return rows
 
 
 def load_mailscreen_by_range(start_date: str, end_date: str):
@@ -4123,7 +4118,7 @@ class DlpAllCacheLoadWorker(QThread):
 
     def run(self):
         try:
-            rows = load_dlp_all_cache()
+            rows = load_dlp_all_indexed_cache()
             records = build_sensitive_file_records(rows)
             self.ok.emit({"rows": rows, "records": records})
         except Exception as e:
@@ -11677,12 +11672,8 @@ class MainWindow(QMainWindow):
                 self._refresh_dlp()
 
         elif current_tab == "Sensitive Files":
-            if not getattr(self, "sensitive_files_loaded", False):
-                self.sensitive_dlp_rows = load_dlp_all_cache()
-                self.sensitive_files_range = "전체 캐시"
-                self.sensitive_files_loaded = True
-                if hasattr(self, "_refresh_sensitive_files"):
-                    self._refresh_sensitive_files()
+            if hasattr(self, "_refresh_sensitive_files"):
+                self._refresh_sensitive_files()
 
         elif current_tab == "Timeline":
             # Timeline은 날짜 선택과 무관하게 검색 시점에 전체 캐시를 비동기로 스캔한다.
@@ -15578,7 +15569,7 @@ Command Line :
         title_row.addLayout(title_box)
         title_row.addStretch(1)
 
-        self.sensitive_files_reset_btn = QPushButton("초기화/새로고침")
+        self.sensitive_files_reset_btn = QPushButton("새로고침")
         self.sensitive_files_reset_btn.setMinimumHeight(36)
         self.sensitive_files_reset_btn.setStyleSheet(self.button_style("secondary"))
         title_row.addWidget(self.sensitive_files_reset_btn)
@@ -15890,12 +15881,12 @@ Command Line :
             render_categories()
             render_files()
             self.sensitive_files_reset_btn.setEnabled(True)
-            self.sensitive_files_reset_btn.setText("초기화/새로고침")
+            self.sensitive_files_reset_btn.setText("새로고침")
             self.set_status("Sensitive Files refreshed", color="green", spinning=False)
 
         def fail_sensitive_reload(message):
             self.sensitive_files_reset_btn.setEnabled(True)
-            self.sensitive_files_reset_btn.setText("초기화/새로고침")
+            self.sensitive_files_reset_btn.setText("새로고침")
             self.set_status("Sensitive Files refresh FAIL", color="red", spinning=False)
             QMessageBox.critical(self, "Sensitive Files", f"새로고침 실패: {message}")
 
