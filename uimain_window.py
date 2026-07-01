@@ -15699,6 +15699,28 @@ Command Line :
         self.sensitive_files_dlp_chk.setChecked(True)
         self.sensitive_files_outbound_chk = QCheckBox("아웃바운드 메일")
         self.sensitive_files_outbound_chk.setChecked(True)
+        sensitive_source_checkbox_style = f"""
+            QCheckBox {{
+                color: {UI_THEME['text']};
+                font-weight: 800;
+                spacing: 6px;
+                background: transparent;
+            }}
+            QCheckBox::indicator {{
+                width: 16px;
+                height: 16px;
+                border: 1px solid {UI_THEME['accent']};
+                border-radius: 4px;
+                background: {UI_THEME['surface']};
+            }}
+            QCheckBox::indicator:checked {{
+                background: {UI_THEME['accent']};
+                border: 1px solid {UI_THEME['accent']};
+            }}
+        """
+        for chk in (self.sensitive_files_dlp_chk, self.sensitive_files_outbound_chk):
+            chk.setMinimumHeight(32)
+            chk.setStyleSheet(sensitive_source_checkbox_style)
         title_row.addWidget(self.sensitive_files_dlp_chk)
         title_row.addWidget(self.sensitive_files_outbound_chk)
 
