@@ -7158,6 +7158,7 @@ class MainWindow(QMainWindow):
             "Detection XDR": "Email - XDR",
             "Inbound Mail": "Email",
             "Forensic": "Timeline",
+            "Forensics": "Timeline",
             "Response": "Firewall",
         }
         self.group_subtab_bars = {}
@@ -7216,7 +7217,7 @@ class MainWindow(QMainWindow):
             ("Outbound Mail", "Outbound Mail", self.tab_outbound_mail()),
             ("File", "File", self.tab_dlp_file()),
         ])
-        self.forensic_tabs = add_group_tab("Forensic", [
+        self.forensic_tabs = add_group_tab("Forensics", [
             ("Timeline", "Timeline", self.tab_timeline()),
             ("Sensitive Files", "Sensitive Files", self.tab_sensitive_files()),
         ])
@@ -15559,14 +15560,9 @@ Command Line :
         layout.setSpacing(10)
 
         title_row = QHBoxLayout()
-        title = QLabel("Sensitive Files")
-        title.setStyleSheet(f"color:{UI_THEME['text']}; font-size:22px; font-weight:900;")
         subtitle = QLabel("민감 파일 후보를 분류별로 모아보고, 선택한 파일의 사용자/경로/원본 이벤트를 확인합니다.")
         subtitle.setStyleSheet(f"color:{UI_THEME['text_muted']}; font-size:12px; font-weight:700;")
-        title_box = QVBoxLayout()
-        title_box.addWidget(title)
-        title_box.addWidget(subtitle)
-        title_row.addLayout(title_box)
+        title_row.addWidget(subtitle)
         title_row.addStretch(1)
 
         self.sensitive_files_reset_btn = QPushButton("새로고침")
