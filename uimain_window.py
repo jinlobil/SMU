@@ -2188,7 +2188,25 @@ def sensitive_record_from_index_json(raw_json):
     return None
 
 
-def query_sensitive_files_index(category="전체", keyword="", sources=None, limit=SENSITIVE_FILES_PAGE_LIMIT, offset=0):
+SENSITIVE_FILES_SORT_COLUMNS = {
+    "filename": "display_filename",
+    "category": "category",
+    "keywords": "keywords",
+    "user": "user",
+    "dept": "dept",
+    "time": "event_time",
+}
+
+
+def query_sensitive_files_index(
+    category="전체",
+    keyword="",
+    sources=None,
+    limit=SENSITIVE_FILES_PAGE_LIMIT,
+    offset=0,
+    sort_key="time",
+    sort_dir="desc",
+):
     with app_cache_connect() as conn:
         if not sensitive_files_index_ready(conn):
             return {
@@ -2219,12 +2237,16 @@ def query_sensitive_files_index(category="전체", keyword="", sources=None, lim
         ).fetchall()
         category_counts = {str(category): int(count) for category, count in count_rows}
 
+        sort_column = SENSITIVE_FILES_SORT_COLUMNS.get(str(sort_key or "time"), "event_time")
+        sort_direction = "ASC" if str(sort_dir or "").lower() == "asc" else "DESC"
+        secondary_direction = "DESC" if sort_column != "event_time" else sort_direction
+
         rows = conn.execute(
             f"""
             SELECT record_json
             FROM sensitive_files_index
             WHERE {where_sql}
-            ORDER BY event_time DESC, display_filename ASC
+            ORDER BY {sort_column} {sort_direction}, event_time {secondary_direction}, display_filename ASC
             LIMIT ? OFFSET ?
             """,
             params + [int(limit), int(offset)],
@@ -2243,6 +2265,8 @@ def query_sensitive_files_index(category="전체", keyword="", sources=None, lim
         "index_ready": True,
         "limit": int(limit),
         "offset": int(offset),
+        "sort_key": sort_key,
+        "sort_dir": "asc" if sort_direction == "ASC" else "desc",
     }
 
 # ======================================================
@@ -4468,13 +4492,15 @@ class DlpAllCacheLoadWorker(QThread):
     ok = pyqtSignal(object)
     fail = pyqtSignal(str)
 
-    def __init__(self, category="전체", keyword="", sources=None, limit=SENSITIVE_FILES_PAGE_LIMIT, offset=0):
+    def __init__(self, category="전체", keyword="", sources=None, limit=SENSITIVE_FILES_PAGE_LIMIT, offset=0, sort_key="time", sort_dir="desc"):
         super().__init__()
         self.category = category or "전체"
         self.keyword = keyword or ""
         self.sources = ["DLP", "Outbound Mail"] if sources is None else list(sources)
         self.limit = limit
         self.offset = offset
+        self.sort_key = sort_key or "time"
+        self.sort_dir = sort_dir or "desc"
 
     def run(self):
         try:
@@ -4484,6 +4510,8 @@ class DlpAllCacheLoadWorker(QThread):
                 sources=self.sources,
                 limit=self.limit,
                 offset=self.offset,
+                sort_key=self.sort_key,
+                sort_dir=self.sort_dir,
             )
             self.ok.emit(payload)
         except Exception as e:
@@ -15990,8 +16018,9 @@ Command Line :
         file_table.setColumnCount(len(file_headers))
         file_table.setHorizontalHeaderLabels(file_headers)
         file_header = file_table.horizontalHeader()
-        file_header.setSectionsClickable(False)
-        file_header.setSortIndicatorShown(False)
+        file_header.setSectionsClickable(True)
+        file_header.setSortIndicatorShown(True)
+        file_header.setSortIndicator(5, Qt.DescendingOrder)
         file_header.setSectionResizeMode(0, QHeaderView.Stretch)
         for col, width in ((1, 140), (2, 160), (3, 110), (4, 140), (5, 145)):
             file_header.setSectionResizeMode(col, QHeaderView.Interactive)
@@ -16184,6 +16213,8 @@ Command Line :
         self.sensitive_file_category_counts = {}
         self.sensitive_files_total = 0
         self.sensitive_files_offset = 0
+        self.sensitive_files_sort_key = "time"
+        self.sensitive_files_sort_dir = "desc"
         self.sensitive_files_loaded = False
 
         def selected_sources():
@@ -16334,6 +16365,8 @@ Command Line :
             category = getattr(self, "sensitive_file_current_category", "전체")
             keyword = self.sensitive_files_filter.text().strip()
             sources = selected_sources()
+            sort_key = getattr(self, "sensitive_files_sort_key", "time")
+            sort_dir = getattr(self, "sensitive_files_sort_dir", "desc")
             self.sensitive_file_render_token = getattr(self, "sensitive_file_render_token", 0) + 1
             file_table.setUpdatesEnabled(True)
             self.sensitive_files_reset_btn.setEnabled(False)
@@ -16345,6 +16378,8 @@ Command Line :
                 sources=sources,
                 limit=SENSITIVE_FILES_PAGE_LIMIT,
                 offset=offset,
+                sort_key=sort_key,
+                sort_dir=sort_dir,
             )
             if append:
                 self.sensitive_files_worker.ok.connect(finish_sensitive_append)
@@ -16383,6 +16418,22 @@ Command Line :
                 return
             reset_sensitive_filter(offset=offset, append=True)
 
+        def on_sensitive_header_clicked(section):
+            sort_keys = ["filename", "category", "keywords", "user", "dept", "time"]
+            if section < 0 or section >= len(sort_keys):
+                return
+            new_key = sort_keys[section]
+            current_key = getattr(self, "sensitive_files_sort_key", "time")
+            current_dir = getattr(self, "sensitive_files_sort_dir", "desc")
+            if new_key == current_key:
+                new_dir = "asc" if current_dir == "desc" else "desc"
+            else:
+                new_dir = "desc" if new_key == "time" else "asc"
+            self.sensitive_files_sort_key = new_key
+            self.sensitive_files_sort_dir = new_dir
+            file_header.setSortIndicator(section, Qt.AscendingOrder if new_dir == "asc" else Qt.DescendingOrder)
+            reset_sensitive_filter()
+
         filter_timer = QTimer(root)
         filter_timer.setSingleShot(True)
         filter_timer.setInterval(250)
@@ -16390,6 +16441,7 @@ Command Line :
 
         category_table.itemSelectionChanged.connect(on_category_selected)
         file_table.itemSelectionChanged.connect(on_file_selected)
+        file_header.sectionClicked.connect(on_sensitive_header_clicked)
         self.sensitive_files_filter.textChanged.connect(lambda: filter_timer.start())
         self.sensitive_files_dlp_chk.stateChanged.connect(on_sensitive_source_changed)
         self.sensitive_files_outbound_chk.stateChanged.connect(on_sensitive_source_changed)
