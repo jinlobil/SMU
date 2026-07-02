@@ -2354,7 +2354,7 @@ SENSITIVE_SITE_CATEGORY_SPECS = [
     ]),
 ]
 
-SENSITIVE_SITES_INDEX_VERSION = "sensitive_sites_v2"
+SENSITIVE_SITES_INDEX_VERSION = "sensitive_sites_v3"
 SENSITIVE_SITES_PAGE_LIMIT = 500
 
 
@@ -2366,11 +2366,44 @@ def normalize_site_host(value):
     return host
 
 
-def extract_url_candidates_from_text(text):
+def sensitive_site_known_domains(category_specs=SENSITIVE_SITE_CATEGORY_SPECS):
+    domains = []
+    seen = set()
+    for _, patterns in category_specs:
+        for pattern in patterns:
+            domain = normalize_site_host(pattern)
+            if domain and domain not in seen:
+                domains.append(domain)
+                seen.add(domain)
+    return domains
+
+
+def extract_url_candidates_from_text(text, category_specs=SENSITIVE_SITE_CATEGORY_SPECS):
     text = html.unescape(str(text or ""))
     candidates = []
+    seen = set()
+
+    def add_candidate(value):
+        candidate = str(value or "").strip().rstrip(".,;")
+        host = normalize_site_host(candidate)
+        if not host or host in seen:
+            return
+        candidates.append(candidate)
+        seen.add(host)
+
     for match in re.finditer(r"https?://[^\s<>'\")]+|www\.[A-Za-z0-9.-]+\.[A-Za-z]{2,}(?:/[^\s<>'\")]+)?", text, re.IGNORECASE):
-        candidates.append(match.group(0).rstrip(".,;"))
+        add_candidate(match.group(0))
+
+    for match in MAILSCREEN_EMAIL_RE.finditer(text):
+        email_domain = match.group(0).rsplit("@", 1)[-1]
+        add_candidate(email_domain)
+
+    lower_text = text.lower()
+    for domain in sensitive_site_known_domains(category_specs):
+        pattern = rf"(?<![a-z0-9.-]){re.escape(domain.lower())}(?![a-z0-9.-])"
+        if re.search(pattern, lower_text):
+            add_candidate(domain)
+
     return candidates
 
 
@@ -2457,7 +2490,12 @@ def make_sensitive_site_mailscreen_records(row, category_specs=SENSITIVE_SITE_CA
         return []
     row = enrich_mailscreen_sender_fields(row)
     subject = str(row.get("subject", "") or "")
-    candidates = extract_url_candidates_from_text(subject)
+    scan_text = " ".join(str(row.get(k, "") or "") for k in (
+        "subject", "receiver", "receiver_detail", "sender", "sender_detail",
+        "sender_email", "policy", "attach",
+    ))
+    scan_text = f"{scan_text} {json.dumps(row, ensure_ascii=False, default=str)}"
+    candidates = extract_url_candidates_from_text(scan_text, category_specs)
     if not candidates:
         return []
     sender_email = mailscreen_identity_text(row.get("sender_email")) or mailscreen_identity_text(row.get("sender"))
