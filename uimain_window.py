@@ -2416,57 +2416,150 @@ def query_sensitive_files_index(
 
 SENSITIVE_SITE_CATEGORY_SPECS = [
     ("AI 사이트", [
-        "chatgpt.com", "chat.openai.com", "openai.com", "claude.ai",
-        "gemini.google.com", "bard.google.com", "perplexity.ai", "poe.com",
-        "copilot.microsoft.com", "notebooklm.google.com", "wrtn.ai",
-        "deepseek.com", "grok.com", "x.ai",
+        "chat.openai.com", "chatgpt.com", "openai.com", "platform.openai.com",
+        "api.openai.com", "auth.openai.com", "help.openai.com", "status.openai.com",
+        "cdn.openai.com", "oaiusercontent.com",
+        "chatgpt-async-webps-prod-eastus.oaiusercontent.com", "claude.ai",
+        "console.anthropic.com", "anthropic.com", "api.anthropic.com",
+        "docs.anthropic.com", "gemini.google.com", "aistudio.google.com",
+        "makersuite.google.com", "notebooklm.google.com", "bard.google.com",
+        "ai.google", "labs.google", "deepmind.google", "vertexai.google.com",
+        "colab.research.google.com", "firebase.studio", "idx.google.com",
+        "copilot.microsoft.com", "copilot.cloud.microsoft", "m365.cloud.microsoft",
+        "copilotstudio.microsoft.com", "copilot.github.com", "perplexity.ai",
+        "poe.com", "wrtn.ai", "deepseek.com", "chat.deepseek.com",
+        "api.deepseek.com", "grok.com", "x.ai", "grok.x.com", "meta.ai",
+        "ai.meta.com", "llama.meta.com", "character.ai", "janitorai.com",
+        "spicychat.ai", "crushon.ai", "candy.ai", "chai-research.com",
+        "chai.ml", "replika.com", "you.com", "phind.com", "komo.ai",
+        "andisearch.com", "iask.ai", "consensus.app", "elicit.com",
+        "scite.ai", "cursor.com", "windsurf.com", "codeium.com", "tabnine.com",
+        "lovable.dev", "bolt.new", "v0.dev", "sourcegraph.com", "cody.dev",
+        "continue.dev", "cline.bot", "devin.ai", "cognition.ai", "amazonq.aws",
+        "manus.im", "n8n.io", "make.com", "flowiseai.com", "langflow.org",
+        "dify.ai", "midjourney.com", "nijijourney.com", "leonardo.ai",
+        "ideogram.ai", "krea.ai", "dreamstudio.ai", "stability.ai", "clipdrop.co",
+        "firefly.adobe.com", "playgroundai.com", "getimg.ai", "nightcafe.studio",
+        "civitai.com", "runwayml.com", "runway.com", "pika.art", "suno.com",
+        "udio.com", "elevenlabs.io", "heygen.com", "synthesia.io", "descript.com",
+        "kapwing.com", "veed.io", "luma.ai", "haiper.ai", "chatpdf.com",
+        "humata.ai", "askyourpdf.com", "scispace.com", "typeset.io", "jenni.ai",
+        "quillbot.com", "grammarly.com", "wordtune.com", "paperpal.com", "copy.ai",
+        "jasper.ai", "writesonic.com", "chatsonic.com", "rytr.me", "anyword.com",
+        "notion.ai", "gamma.app", "tome.app", "beautiful.ai", "presentations.ai",
+        "plusdocs.com", "pitch.com", "slidesgo.com", "slidesai.io", "decktopus.com",
+        "otter.ai", "fireflies.ai", "fathom.video", "tldv.io", "read.ai",
+        "krisp.ai", "supernormal.com", "deepl.com", "papago.naver.com",
+        "translate.google.com", "clova-x.naver.com", "clova.ai", "hyperclova.naver.com",
+        "cue.search.naver.com", "daglo.ai", "lilys.ai", "askup.ai", "upstage.ai",
+        "solar.upstage.ai", "polarisoffice.com", "khanmigo.ai", "socratic.org",
+        "quizlet.com", "duolingo.com", "dataiku.com", "databricks.com",
+        "snowflake.com", "thoughtspot.com", "akkio.com", "polymersearch.com",
     ]),
-    ("숙박시설", [
-        "yanolja.com", "www.yanolja.com", "goodchoice.kr", "www.goodchoice.kr",
-        "yeogi.com", "www.yeogi.com", "ddnayo.com", "www.ddnayo.com",
-        "tidesquare.com", "tourvis.com", "www.tourvis.com", "myrealtrip.com",
-        "www.myrealtrip.com", "triple.guide", "www.triple.guide", "interpark.com",
-        "travel.interpark.com", "nol-universe.com", "agoda.com", "www.agoda.com",
-        "booking.com", "www.booking.com", "hotels.com", "www.hotels.com",
-        "expedia.com", "www.expedia.com", "trip.com", "www.trip.com",
-        "ctrip.com", "www.ctrip.com", "trivago.com", "www.trivago.com",
-        "kayak.com", "www.kayak.com", "priceline.com", "www.priceline.com",
-        "travelocity.com", "www.travelocity.com", "orbitz.com", "www.orbitz.com",
-        "hotelcombined.com", "www.hotelcombined.com", "hotelscombined.com",
-        "www.hotelscombined.com", "skyscanner.co.kr", "www.skyscanner.co.kr",
-        "airbnb.com", "www.airbnb.com", "vrbo.com", "www.vrbo.com",
-        "hostelworld.com", "www.hostelworld.com", "lottehotel.com",
-        "www.lottehotel.com", "shillahotels.com", "www.shillahotels.com",
-        "josunhotel.com", "www.josunhotel.com", "parnas.co.kr", "www.parnas.co.kr",
-        "walkerhill.com", "www.walkerhill.com", "hanwharesort.co.kr",
-        "www.hanwharesort.co.kr", "sonohotelsresorts.com",
-        "www.sonohotelsresorts.com", "kensington.co.kr", "www.kensington.co.kr",
-        "resom.co.kr", "www.resom.co.kr", "elysian.co.kr", "www.elysian.co.kr",
-        "konjiamresort.co.kr", "www.konjiamresort.co.kr", "phoenixhnr.co.kr",
-        "www.phoenixhnr.co.kr", "high1.com", "www.high1.com", "marriott.com",
-        "www.marriott.com", "hilton.com", "www.hilton.com", "hyatt.com",
-        "www.hyatt.com", "ihg.com", "www.ihg.com", "accor.com", "all.accor.com",
-        "wyndhamhotels.com", "www.wyndhamhotels.com", "choicehotels.com",
-        "www.choicehotels.com", "bestwestern.com", "www.bestwestern.com",
-        "radissonhotels.com", "www.radissonhotels.com", "fourseasons.com",
-        "www.fourseasons.com", "mandarinoriental.com", "www.mandarinoriental.com",
-        "shangri-la.com", "www.shangri-la.com", "aman.com", "www.aman.com",
-        "kempinski.com", "www.kempinski.com",
+    ("여행 / 숙박", [
+        "yanolja.com", "goodchoice.kr", "yeogi.com", "ddnayo.com", "tidesquare.com",
+        "tourvis.com", "myrealtrip.com", "triple.guide", "interpark.com",
+        "travel.interpark.com", "nol-universe.com", "agoda.com", "booking.com",
+        "hotels.com", "expedia.com", "trip.com", "ctrip.com", "trivago.com",
+        "kayak.com", "priceline.com", "travelocity.com", "orbitz.com",
+        "hotelcombined.com", "hotelscombined.com", "skyscanner.co.kr", "airbnb.com",
+        "vrbo.com", "hostelworld.com", "lottehotel.com", "shillahotels.com",
+        "josunhotel.com", "parnas.co.kr", "walkerhill.com", "hanwharesort.co.kr",
+        "sonohotelsresorts.com", "kensington.co.kr", "resom.co.kr", "elysian.co.kr",
+        "konjiamresort.co.kr", "phoenixhnr.co.kr", "high1.com", "marriott.com",
+        "hilton.com", "hyatt.com", "ihg.com", "accor.com", "all.accor.com",
+        "wyndhamhotels.com", "choicehotels.com", "bestwestern.com", "radissonhotels.com",
+        "fourseasons.com", "mandarinoriental.com", "shangri-la.com", "aman.com",
+        "kempinski.com",
     ]),
     ("개인 메일 / 웹메일", [
-        "gmail.com", "mail.google.com", "naver.com", "mail.naver.com",
-        "daum.net", "hanmail.net", "outlook.live.com", "hotmail.com",
-        "yahoo.com", "icloud.com", "proton.me", "protonmail.com",
+        "gmail.com", "mail.google.com", "googlemail.com", "mail.naver.com",
+        "mail.daum.net", "hanmail.net", "mail.hanmail.net", "mail.kakao.com",
+        "outlook.live.com", "outlook.com", "hotmail.com", "live.com", "mail.live.com",
+        "mail.yahoo.com", "yahoo.com", "ymail.com", "rocketmail.com", "icloud.com",
+        "mail.icloud.com", "me.com", "mac.com", "proton.me", "mail.proton.me",
+        "protonmail.com", "pm.me", "tuta.com", "mail.tuta.com", "tutanota.com",
+        "tutanota.de", "tutamail.com", "tuta.io", "keemail.me", "mail.zoho.com",
+        "zohomail.com", "mail.aol.com", "aol.com", "gmx.com", "gmx.net",
+        "mail.gmx.com", "mail.gmx.net", "mail.com", "mail.yandex.com",
+        "mail.yandex.ru", "mail.qq.com", "foxmail.com", "mail.163.com",
+        "mail.126.com", "mail.yeah.net", "mail.sina.com", "mail.sina.com.cn",
+        "fastmail.com", "app.fastmail.com", "fastmail.fm", "mailfence.com",
+        "hushmail.com", "startmail.com", "runbox.com", "posteo.de", "mailbox.org",
+        "hey.com", "mail.nate.com", "empas.com", "korea.com", "dreamwiz.com",
+        "chol.com", "hanafos.com", "paran.com", "unitel.co.kr", "kornet.net",
+        "hitel.net",
     ]),
     ("클라우드 / 파일공유", [
-        "drive.google.com", "docs.google.com", "dropbox.com", "box.com",
-        "onedrive.live.com", "sharepoint.com", "wetransfer.com", "send-anywhere.com",
-        "mega.nz", "mediafire.com", "pcloud.com", "terabox.com",
+        "drive.google.com", "docs.google.com", "sheets.google.com", "slides.google.com",
+        "forms.google.com", "photos.google.com", "storage.googleapis.com",
+        "storage.cloud.google.com", "onedrive.live.com", "1drv.ms", "sharepoint.com",
+        "my.sharepoint.com", "onedrive.com", "office.live.com", "officeapps.live.com",
+        "dropbox.com", "dropboxusercontent.com", "dl.dropboxusercontent.com",
+        "dropboxstatic.com", "db.tt", "box.com", "app.box.com", "boxcloud.com",
+        "boxcdn.net", "drive.icloud.com", "icloud-content.com", "mybox.naver.com",
+        "cloud.naver.com", "drive.kakao.com", "sendy.co.kr", "wetransfer.com",
+        "we.tl", "mega.nz", "mega.io", "mega.co.nz", "mediafire.com",
+        "download.mediafire.com", "pcloud.com", "my.pcloud.com", "e.pcloud.link",
+        "u.pcloud.link", "sync.com", "cp.sync.com", "tresorit.com", "web.tresorit.com",
+        "tresorit.io", "internxt.com", "drive.internxt.com", "drive.proton.me",
+        "protondrive.com", "nordlocker.com", "web.nordlocker.com", "icedrive.net",
+        "drive.icedrive.net", "koofr.eu", "app.koofr.net", "jumpshare.com",
+        "hightail.com", "spaces.hightail.com", "filemail.com", "send-anywhere.com",
+        "fromsmash.com", "transfernow.net", "transferxl.com", "swisstransfer.com",
+        "wormhole.app", "file.io", "gofile.io", "pixeldrain.com", "catbox.moe",
+        "litterbox.catbox.moe", "krakenfiles.com", "bayfiles.com", "letsupload.io",
+        "userscloud.com", "uppit.com", "zippyshare.com", "4shared.com",
+        "4shared-china.com", "disk.yandex.com", "disk.yandex.ru", "yadi.sk",
+        "pan.baidu.com", "yun.baidu.com", "weiyun.com", "pan.qq.com",
+        "aliyundrive.com", "alipan.com", "cloud.163.com",
+    ]),
+    ("원격접속 / 파일전송 도구", [
+        "teamviewer.com", "anydesk.com", "remotedesktop.google.com",
+        "rustdesk.com", "parsec.app", "splashtop.com", "logmein.com", "gotomypc.com",
+        "realvnc.com", "vnc.com", "tightvnc.com", "ultravnc.com", "dwservice.net",
+        "assist.zoho.com", "awe-sun.com", "supremocontrol.com",
+        "getscreen.me", "meshcentral.com", "radmin.com", "mremoteng.org", "putty.org",
+        "winscp.net", "filezilla-project.org", "termius.com", "tailscale.com",
+        "zerotier.com", "ngrok.com", "cloudflared.com", "remote.it",
+    ]),
+    ("금융 / 가상자산", [
+        "kbstar.com", "obank.kbstar.com", "shinhan.com", "bank.shinhan.com",
+        "wooribank.com", "spib.wooribank.com", "hana.com", "kebhana.com",
+        "ibk.co.kr", "nonghyup.com", "nhbank.com", "sc.co.kr", "standardchartered.co.kr",
+        "citi.com", "citibank.co.kr", "kakaobank.com", "kbanknow.com", "tossbank.com",
+        "toss.im", "pay.naver.com", "kakaopay.com", "samsungcard.com",
+        "hyundaicard.com", "lottecard.co.kr", "bccard.com", "wooricard.com",
+        "hanacard.co.kr", "kbcard.com", "shinhansec.com", "miraeasset.com",
+        "samsungpop.com", "kiwoom.com", "nhqv.com", "kbsec.com", "koreainvestment.com",
+        "upbit.com", "bithumb.com", "coinone.co.kr", "korbit.co.kr", "gopax.co.kr",
+        "binance.com", "coinbase.com", "kraken.com", "crypto.com", "bybit.com",
+        "okx.com", "bitget.com", "kucoin.com", "gate.io", "mexc.com",
+        "metamask.io", "phantom.app", "trustwallet.com", "ledger.com", "trezor.io",
+    ]),
+    ("쇼핑 / 중고거래 / 개인거래", [
+        "coupang.com", "gmarket.co.kr", "auction.co.kr", "11st.co.kr", "ssg.com",
+        "emart.ssg.com", "lotteon.com", "shopping.naver.com", "smartstore.naver.com",
+        "brand.naver.com", "kream.co.kr", "musinsa.com", "ably.co.kr", "zigzag.kr",
+        "29cm.co.kr", "wconcept.co.kr", "kurly.com", "ohou.se", "todayhouse.com",
+        "interpark.com", "wemakeprice.com", "tmon.co.kr", "aliexpress.com",
+        "amazon.com", "ebay.com", "qoo10.com", "taobao.com", "tmall.com",
+        "1688.com", "jd.com", "daangn.com", "karrotmarket.com", "bunjang.co.kr",
+        "joongna.com", "hellomarket.com", "junggonara.co.kr",
     ]),
     ("채용 / 이직", [
         "saramin.co.kr", "jobkorea.co.kr", "wanted.co.kr", "linkedin.com",
         "rememberapp.co.kr", "career.co.kr", "incruit.com", "jobplanet.co.kr",
-        "blind.com", "rocketpunch.com",
+        "blind.com", "teamblind.com", "rocketpunch.com", "jumpit.co.kr",
+        "programmers.co.kr", "jasoseol.com", "linkareer.com", "superookie.com",
+        "catch.co.kr", "job.incruit.com", "albamon.com", "alba.co.kr", "work.go.kr",
+        "job.alio.go.kr", "job.seoul.go.kr", "seouljobnow.co.kr", "rallit.com",
+        "zighang.com", "jobflex.com", "jobda.im", "ninehire.com", "greetinghr.com",
+        "apply.workable.com", "wantedlab.com", "jobs.lever.co", "greenhouse.io",
+        "boards.greenhouse.io", "wellfound.com", "angel.co", "stackoverflowjobs.com",
+        "remoteok.com", "weworkremotely.com", "remotive.com", "flexjobs.com",
+        "indeed.com", "glassdoor.com", "monster.com", "ziprecruiter.com", "dice.com",
+        "seek.com.au", "jobsdb.com", "efinancialcareers.com",
     ]),
     ("문서 변환 / PDF 도구", [
         "ilovepdf.com", "smallpdf.com", "pdf24.org", "convertio.co",
@@ -2476,11 +2569,20 @@ SENSITIVE_SITE_CATEGORY_SPECS = [
     ("SNS / 커뮤니티", [
         "instagram.com", "facebook.com", "threads.net", "x.com", "twitter.com",
         "tiktok.com", "youtube.com", "reddit.com", "discord.com", "telegram.org",
-        "open.kakao.com", "kakao.com", "dcinside.com", "theqoo.net", "instiz.net",
+        "t.me", "medium.com", "tumblr.com", "pinterest.com", "snapchat.com",
+        "mastodon.social", "bsky.app", "linktr.ee", "beacons.ai", "open.kakao.com",
+        "pf.kakao.com", "talk.naver.com", "band.us", "line.me", "openchat.line.me",
+        "dcinside.com", "gall.dcinside.com", "theqoo.net", "instiz.net",
+        "fmkorea.com", "ruliweb.com", "clien.net", "ppomppu.co.kr", "82cook.com",
+        "mlbpark.donga.com", "humoruniv.com", "todayhumor.co.kr", "inven.co.kr",
+        "arca.live", "etoland.co.kr", "slrclub.com", "bobaedream.co.kr",
+        "quasarzone.com", "coolenjoy.net", "dogdrip.net", "ilbe.com",
+        "cafe.naver.com", "blog.naver.com", "section.blog.naver.com", "m.blog.naver.com",
+        "cafe.daum.net", "brunch.co.kr", "everytime.kr",
     ]),
 ]
 
-SENSITIVE_SITES_INDEX_VERSION = "sensitive_sites_v4"
+SENSITIVE_SITES_INDEX_VERSION = "sensitive_sites_v5"
 SENSITIVE_SITES_PAGE_LIMIT = 500
 
 
@@ -2670,8 +2772,6 @@ def build_sensitive_site_records(dlp_rows=None, mailscreen_rows=None):
         record = make_sensitive_site_dlp_record(row)
         if record:
             records.append(record)
-    for row in mailscreen_rows or []:
-        records.extend(make_sensitive_site_mailscreen_records(row))
 
     latest = {}
     for record in records:
@@ -2686,12 +2786,10 @@ def build_sensitive_site_records(dlp_rows=None, mailscreen_rows=None):
     return records
 
 
-def sensitive_sites_index_sources(include_dlp=True, include_outbound=True):
+def sensitive_sites_index_sources(include_dlp=True, include_outbound=False):
     sources = []
     if include_dlp:
         sources.append("DLP")
-    if include_outbound:
-        sources.append("Outbound Mail")
     return sources
 
 
@@ -2763,7 +2861,7 @@ def rebuild_sensitive_sites_index(conn, changed_paths=None, removed_paths=None, 
 
     if full_rebuild:
         dlp_rows = load_app_cache_raw_rows_from_conn(conn, "dlp")
-        mailscreen_rows = load_app_cache_raw_rows_from_conn(conn, "mailscreen")
+        mailscreen_rows = []
     else:
         delete_count = delete_sensitive_index_paths(conn, "sensitive_sites_index", changed_paths, removed_paths)
         if not target_paths:
@@ -2777,7 +2875,7 @@ def rebuild_sensitive_sites_index(conn, changed_paths=None, removed_paths=None, 
                 "sensitive_sites_indexed_at": sensitive_index_meta_version(conn, "sensitive_sites_indexed_at"),
             }
         dlp_rows = load_app_cache_raw_rows_from_conn(conn, "dlp", target_paths)
-        mailscreen_rows = load_app_cache_raw_rows_from_conn(conn, "mailscreen", target_paths)
+        mailscreen_rows = []
         log.info("Sensitive Sites index deleted changed/removed rows=%d", delete_count)
 
     records = build_sensitive_site_records(dlp_rows, mailscreen_rows)
@@ -2853,7 +2951,7 @@ def query_sensitive_sites_index(category="전체", keyword="", sources=None, lim
                 "message": "Sensitive Sites 인덱스가 없습니다. Config에서 Data Index를 먼저 실행하세요.",
             }
         if sources is None:
-            sources = ["DLP", "Outbound Mail"]
+            sources = ["DLP"]
         where_sql, params = sensitive_sites_where_clause(category, keyword, sources)
         total = conn.execute(f"SELECT COUNT(*) FROM sensitive_sites_index WHERE {where_sql}", params).fetchone()[0]
         count_where_sql, count_params = sensitive_sites_where_clause("전체", keyword, sources)
@@ -5139,7 +5237,7 @@ class SensitiveSitesLoadWorker(QThread):
         super().__init__()
         self.category = category or "전체"
         self.keyword = keyword or ""
-        self.sources = ["DLP", "Outbound Mail"] if sources is None else list(sources)
+        self.sources = ["DLP"] if sources is None else list(sources)
         self.limit = limit
         self.offset = offset
 
@@ -17105,18 +17203,14 @@ Command Line :
 
         self.sensitive_sites_dlp_chk = QCheckBox("DLP")
         self.sensitive_sites_dlp_chk.setChecked(True)
-        self.sensitive_sites_outbound_chk = QCheckBox("아웃바운드 메일")
-        self.sensitive_sites_outbound_chk.setChecked(True)
         checkbox_style = f"""
             QCheckBox {{ color: {UI_THEME['text']}; font-weight: 800; spacing: 6px; background: transparent; }}
             QCheckBox::indicator {{ width: 16px; height: 16px; border: 1px solid {UI_THEME['accent']}; border-radius: 4px; background: {UI_THEME['surface']}; }}
             QCheckBox::indicator:checked {{ background: {UI_THEME['accent']}; border: 1px solid {UI_THEME['accent']}; }}
         """
-        for chk in (self.sensitive_sites_dlp_chk, self.sensitive_sites_outbound_chk):
-            chk.setMinimumHeight(32)
-            chk.setStyleSheet(checkbox_style)
+        self.sensitive_sites_dlp_chk.setMinimumHeight(32)
+        self.sensitive_sites_dlp_chk.setStyleSheet(checkbox_style)
         title_row.addWidget(self.sensitive_sites_dlp_chk)
-        title_row.addWidget(self.sensitive_sites_outbound_chk)
 
         self.sensitive_sites_reset_btn = QPushButton("새로고침")
         self.sensitive_sites_reset_btn.setMinimumHeight(36)
@@ -17200,10 +17294,7 @@ Command Line :
         self.sensitive_sites_loaded = False
 
         def selected_sources():
-            return sensitive_sites_index_sources(
-                include_dlp=self.sensitive_sites_dlp_chk.isChecked(),
-                include_outbound=self.sensitive_sites_outbound_chk.isChecked(),
-            )
+            return sensitive_sites_index_sources(include_dlp=self.sensitive_sites_dlp_chk.isChecked())
 
         def render_detail(record=None):
             if not record:
@@ -17424,7 +17515,6 @@ Command Line :
         site_table.itemSelectionChanged.connect(on_site_selected)
         self.sensitive_sites_filter.textChanged.connect(lambda: filter_timer.start())
         self.sensitive_sites_dlp_chk.stateChanged.connect(on_source_changed)
-        self.sensitive_sites_outbound_chk.stateChanged.connect(on_source_changed)
         self.sensitive_sites_reset_btn.clicked.connect(reset_sensitive_sites_filter)
         more_button.clicked.connect(load_more)
         raw_button.clicked.connect(open_selected_raw)
