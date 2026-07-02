@@ -2354,7 +2354,7 @@ SENSITIVE_SITE_CATEGORY_SPECS = [
     ]),
 ]
 
-SENSITIVE_SITES_INDEX_VERSION = "sensitive_sites_v1"
+SENSITIVE_SITES_INDEX_VERSION = "sensitive_sites_v2"
 SENSITIVE_SITES_PAGE_LIMIT = 500
 
 
@@ -2413,10 +2413,19 @@ def make_sensitive_site_dlp_record(row, category_specs=SENSITIVE_SITE_CATEGORY_S
         return None
     destination = str(row.get("destination", "") or "")
     detail = str(row.get("item_details") or row.get("destinationDetails") or "")
-    host = normalize_site_host(destination) or normalize_site_host(detail)
-    if not host or host in {"local-file-path", "internal-file-server"}:
-        return None
-    classified = classify_sensitive_site(host, destination or detail, category_specs)
+    site_candidates = [detail, destination]
+    selected_url = ""
+    selected_host = ""
+    classified = None
+    for candidate in site_candidates:
+        host = normalize_site_host(candidate)
+        if not host or host in {"local-file-path", "internal-file-server"}:
+            continue
+        classified = classify_sensitive_site(host, candidate, category_specs)
+        if classified:
+            selected_host = host
+            selected_url = candidate
+            break
     if not classified:
         return None
     machine_name = str(row.get("machine_name", "None") or "None")
@@ -2430,8 +2439,8 @@ def make_sensitive_site_dlp_record(row, category_specs=SENSITIVE_SITE_CATEGORY_S
         "keywords": classified["keywords"],
         "event_time": str(row.get("eventtimelocal", "") or ""),
         "event": format_dlp_event_id(row.get("event_id", "None")),
-        "site": host,
-        "url": destination or detail or host,
+        "site": selected_host,
+        "url": selected_url or selected_host,
         "destination": destination or "None",
         "detail": detail or "None",
         "machine": machine_name,
