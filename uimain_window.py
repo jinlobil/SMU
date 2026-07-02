@@ -1105,6 +1105,8 @@ def init_app_cache_db(conn):
             user TEXT,
             user_id TEXT,
             dept TEXT,
+            source_file TEXT,
+            row_index INTEGER,
             search_text TEXT,
             record_json TEXT NOT NULL,
             indexed_at TEXT NOT NULL
@@ -1114,6 +1116,12 @@ def init_app_cache_db(conn):
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sensitive_files_category_time ON sensitive_files_index(category, event_time DESC)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sensitive_files_time ON sensitive_files_index(event_time DESC)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sensitive_files_search ON sensitive_files_index(search_text)")
+    for column_sql in ("source_file TEXT", "row_index INTEGER"):
+        try:
+            conn.execute(f"ALTER TABLE sensitive_files_index ADD COLUMN {column_sql}")
+        except sqlite3.OperationalError:
+            pass
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sensitive_files_source_file ON sensitive_files_index(source_file)")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS sensitive_sites_index (
             dedupe_key TEXT PRIMARY KEY,
@@ -1127,6 +1135,8 @@ def init_app_cache_db(conn):
             user TEXT,
             user_id TEXT,
             dept TEXT,
+            source_file TEXT,
+            row_index INTEGER,
             search_text TEXT,
             record_json TEXT NOT NULL,
             indexed_at TEXT NOT NULL
@@ -1136,6 +1146,12 @@ def init_app_cache_db(conn):
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sensitive_sites_category_time ON sensitive_sites_index(category, event_time DESC)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sensitive_sites_time ON sensitive_sites_index(event_time DESC)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sensitive_sites_search ON sensitive_sites_index(search_text)")
+    for column_sql in ("source_file TEXT", "row_index INTEGER"):
+        try:
+            conn.execute(f"ALTER TABLE sensitive_sites_index ADD COLUMN {column_sql}")
+        except sqlite3.OperationalError:
+            pass
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sensitive_sites_source_file ON sensitive_sites_index(source_file)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_mailscreen_events_sender_name ON mailscreen_events(sender_name)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_mailscreen_events_sender ON mailscreen_events(sender)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_mailscreen_events_file ON mailscreen_events(source_file)")
@@ -1546,6 +1562,8 @@ def sync_app_cache_range(source, start_date, end_date, progress_cb=None):
 def sync_app_cache_all(progress_cb=None):
     totals = {"data_rows": 0, "data_files": 0, "data_indexed": 0, "data_skipped": 0}
     with app_cache_connect() as conn:
+        changed_paths = []
+        removed_paths = []
         for source, cfg in APP_CACHE_SOURCES.items():
             for path in iter_json_files(cfg["dir"], cfg["ext"]):
                 cache_date = os.path.splitext(os.path.basename(path))[0]
@@ -1560,6 +1578,7 @@ def sync_app_cache_all(progress_cb=None):
                 if progress_cb:
                     progress_cb(f"SQLite 데이터 반영중 - {source} {cache_date}")
                 totals["data_rows"] += sync_app_cache_file(conn, source, path, cache_date, cfg["format"])
+                changed_paths.append(path)
                 totals["data_indexed"] += 1
         for source, path in APP_CACHE_SINGLE_FILES.items():
             if not os.path.exists(path):
@@ -1571,6 +1590,7 @@ def sync_app_cache_all(progress_cb=None):
             if progress_cb:
                 progress_cb(f"SQLite 데이터 반영중 - {source}")
             totals["data_rows"] += sync_app_cache_file(conn, source, path, None, "json")
+            changed_paths.append(path)
             totals["data_indexed"] += 1
         existing_paths = set()
         for source, cfg in APP_CACHE_SOURCES.items():
@@ -1586,10 +1606,11 @@ def sync_app_cache_all(progress_cb=None):
                 conn.execute("DELETE FROM dlp_events WHERE source_file = ?", (path,))
                 conn.execute("DELETE FROM mailscreen_events WHERE source_file = ?", (path,))
                 conn.execute("DELETE FROM app_cache_files WHERE path = ?", (path,))
+                removed_paths.append(path)
                 removed += 1
         totals["data_removed"] = removed
-        totals.update(rebuild_sensitive_files_index(conn, progress_cb=progress_cb))
-        totals.update(rebuild_sensitive_sites_index(conn, progress_cb=progress_cb))
+        totals.update(rebuild_sensitive_files_index(conn, changed_paths=changed_paths, removed_paths=removed_paths, progress_cb=progress_cb))
+        totals.update(rebuild_sensitive_sites_index(conn, changed_paths=changed_paths, removed_paths=removed_paths, progress_cb=progress_cb))
         conn.commit()
         totals["data_total_rows"] = conn.execute("SELECT COUNT(*) FROM app_cache_records").fetchone()[0]
         totals["data_total_files"] = conn.execute("SELECT COUNT(*) FROM app_cache_files").fetchone()[0]
@@ -2084,7 +2105,7 @@ def build_sensitive_file_records(rows, category_specs=SENSITIVE_FILE_CATEGORY_SP
     return records
 
 
-SENSITIVE_FILES_INDEX_VERSION = "sensitive_files_v2"
+SENSITIVE_FILES_INDEX_VERSION = "sensitive_files_v3"
 SENSITIVE_FILES_PAGE_LIMIT = 500
 
 
@@ -2106,39 +2127,140 @@ def sensitive_files_dedupe_key(record):
     ])
 
 
-def load_app_cache_raw_rows_from_conn(conn, source):
+def load_app_cache_raw_rows_from_conn(conn, source, source_files=None):
+    params = [source]
+    where_sql = "source = ?"
+    source_file_values = list(source_files or [])
+    if source_file_values:
+        placeholders = ",".join("?" for _ in source_file_values)
+        where_sql += f" AND source_file IN ({placeholders})"
+        params.extend(source_file_values)
     rows = conn.execute(
-        """
-        SELECT raw_json
+        f"""
+        SELECT source_file, row_index, raw_json
         FROM app_cache_records
-        WHERE source = ?
+        WHERE {where_sql}
         ORDER BY cache_date ASC, source_file ASC, row_index ASC
         """,
-        (source,),
+        params,
     ).fetchall()
     results = []
-    for (raw_json,) in rows:
+    for source_file, row_index, raw_json in rows:
         try:
             row = json.loads(raw_json)
             if isinstance(row, dict):
+                row["__source_file"] = source_file
+                row["__row_index"] = row_index
                 results.append(row)
         except Exception as e:
-            log.warning(f"Sensitive Files raw parse failed source={source}: {e}")
+            log.warning(f"Sensitive index raw parse failed source={source}: {e}")
     return results
 
 
-def rebuild_sensitive_files_index(conn, progress_cb=None):
+def sensitive_index_meta_version(conn, key):
+    row = conn.execute("SELECT value FROM app_cache_meta WHERE key = ?", (key,)).fetchone()
+    return row[0] if row else ""
+
+
+def should_full_rebuild_sensitive_index(conn, version_key, expected_version, changed_paths, removed_paths):
+    if changed_paths is None and removed_paths is None:
+        return True
+    return sensitive_index_meta_version(conn, version_key) != expected_version
+
+
+def delete_sensitive_index_paths(conn, table_name, changed_paths=None, removed_paths=None):
+    paths = sorted(set((changed_paths or []) + (removed_paths or [])))
+    if not paths:
+        return 0
+    placeholders = ",".join("?" for _ in paths)
+    cur = conn.execute(f"DELETE FROM {table_name} WHERE source_file IN ({placeholders})", paths)
+    return cur.rowcount if cur.rowcount is not None else 0
+
+
+def insert_sensitive_files_payload(conn, payload, replace_existing=True):
+    if not payload:
+        return 0
+    if replace_existing:
+        conn.executemany(
+            """
+            INSERT OR REPLACE INTO sensitive_files_index
+                (dedupe_key, source, category, categories, keywords, event_time,
+                 display_filename, user, user_id, dept, source_file, row_index, search_text, record_json, indexed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            payload,
+        )
+        return len(payload)
+
+    inserted = 0
+    for item in payload:
+        dedupe_key = item[0]
+        event_time = item[5]
+        existing = conn.execute(
+            "SELECT event_time FROM sensitive_files_index WHERE dedupe_key = ?",
+            (dedupe_key,),
+        ).fetchone()
+        if existing and str(existing[0] or "") > str(event_time or ""):
+            continue
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO sensitive_files_index
+                (dedupe_key, source, category, categories, keywords, event_time,
+                 display_filename, user, user_id, dept, source_file, row_index, search_text, record_json, indexed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            item,
+        )
+        inserted += 1
+    return inserted
+
+
+def rebuild_sensitive_files_index(conn, changed_paths=None, removed_paths=None, progress_cb=None):
+    start_ts = time.perf_counter()
+    full_rebuild = should_full_rebuild_sensitive_index(
+        conn,
+        "sensitive_files_index_version",
+        SENSITIVE_FILES_INDEX_VERSION,
+        changed_paths,
+        removed_paths,
+    )
+    target_paths = None if full_rebuild else list(changed_paths or [])
     if progress_cb:
-        progress_cb("Sensitive Files 인덱스 생성중")
+        progress_cb("Sensitive Files 인덱스 생성중" if full_rebuild else "Sensitive Files 증분 인덱스 생성중")
+    log.info(
+        "Sensitive Files index start mode=%s changed=%d removed=%d",
+        "full" if full_rebuild else "incremental",
+        len(changed_paths or []),
+        len(removed_paths or []),
+    )
 
-    dlp_rows = load_app_cache_raw_rows_from_conn(conn, "dlp")
-    mailscreen_rows = load_app_cache_raw_rows_from_conn(conn, "mailscreen")
+    if full_rebuild:
+        dlp_rows = load_app_cache_raw_rows_from_conn(conn, "dlp")
+        mailscreen_rows = load_app_cache_raw_rows_from_conn(conn, "mailscreen")
+    else:
+        delete_count = delete_sensitive_index_paths(conn, "sensitive_files_index", changed_paths, removed_paths)
+        if not target_paths:
+            conn.execute(
+                "INSERT OR REPLACE INTO app_cache_meta(key, value) VALUES (?, ?)",
+                ("sensitive_files_index_version", SENSITIVE_FILES_INDEX_VERSION),
+            )
+            log.info("Sensitive Files index no changed files deleted=%d elapsed=%.2fs", delete_count, time.perf_counter() - start_ts)
+            return {
+                "sensitive_index_rows": conn.execute("SELECT COUNT(*) FROM sensitive_files_index").fetchone()[0],
+                "sensitive_index_dlp_rows": 0,
+                "sensitive_index_mailscreen_rows": 0,
+                "sensitive_indexed_at": sensitive_index_meta_version(conn, "sensitive_files_indexed_at"),
+            }
+        dlp_rows = load_app_cache_raw_rows_from_conn(conn, "dlp", target_paths)
+        mailscreen_rows = load_app_cache_raw_rows_from_conn(conn, "mailscreen", target_paths)
+        log.info("Sensitive Files index deleted changed/removed rows=%d", delete_count)
+
     records = build_sensitive_file_records(dlp_rows, mailscreen_rows=mailscreen_rows)
-
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     payload = []
     for record in records:
         record["search_text"] = record.get("search_text") or sensitive_record_search_text(record)
+        row = record.get("row") if isinstance(record.get("row"), dict) else {}
         payload.append((
             sensitive_files_dedupe_key(record),
             str(record.get("source", "") or ""),
@@ -2150,22 +2272,16 @@ def rebuild_sensitive_files_index(conn, progress_cb=None):
             str(record.get("user", "") or ""),
             str(record.get("user_id", "") or ""),
             str(record.get("dept", "") or ""),
+            str(row.get("__source_file", "") or ""),
+            int(row.get("__row_index", -1) if str(row.get("__row_index", "")).strip() else -1),
             str(record.get("search_text", "") or "").lower(),
             json.dumps(record, ensure_ascii=False, default=str),
             now,
         ))
 
-    conn.execute("DELETE FROM sensitive_files_index")
-    if payload:
-        conn.executemany(
-            """
-            INSERT OR REPLACE INTO sensitive_files_index
-                (dedupe_key, source, category, categories, keywords, event_time,
-                 display_filename, user, user_id, dept, search_text, record_json, indexed_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            payload,
-        )
+    if full_rebuild:
+        conn.execute("DELETE FROM sensitive_files_index")
+    inserted = insert_sensitive_files_payload(conn, payload, replace_existing=full_rebuild)
     conn.execute(
         "INSERT OR REPLACE INTO app_cache_meta(key, value) VALUES (?, ?)",
         ("sensitive_files_index_version", SENSITIVE_FILES_INDEX_VERSION),
@@ -2174,13 +2290,23 @@ def rebuild_sensitive_files_index(conn, progress_cb=None):
         "INSERT OR REPLACE INTO app_cache_meta(key, value) VALUES (?, ?)",
         ("sensitive_files_indexed_at", now),
     )
+    total_rows = conn.execute("SELECT COUNT(*) FROM sensitive_files_index").fetchone()[0]
+    log.info(
+        "Sensitive Files index done mode=%s dlp_rows=%d mailscreen_rows=%d records=%d inserted=%d total=%d elapsed=%.2fs",
+        "full" if full_rebuild else "incremental",
+        len(dlp_rows),
+        len(mailscreen_rows),
+        len(records),
+        inserted,
+        total_rows,
+        time.perf_counter() - start_ts,
+    )
     return {
-        "sensitive_index_rows": len(records),
+        "sensitive_index_rows": total_rows,
         "sensitive_index_dlp_rows": len(dlp_rows),
         "sensitive_index_mailscreen_rows": len(mailscreen_rows),
         "sensitive_indexed_at": now,
     }
-
 
 def sensitive_files_index_ready(conn):
     row = conn.execute(
@@ -2354,7 +2480,7 @@ SENSITIVE_SITE_CATEGORY_SPECS = [
     ]),
 ]
 
-SENSITIVE_SITES_INDEX_VERSION = "sensitive_sites_v3"
+SENSITIVE_SITES_INDEX_VERSION = "sensitive_sites_v4"
 SENSITIVE_SITES_PAGE_LIMIT = 500
 
 
@@ -2491,10 +2617,8 @@ def make_sensitive_site_mailscreen_records(row, category_specs=SENSITIVE_SITE_CA
     row = enrich_mailscreen_sender_fields(row)
     subject = str(row.get("subject", "") or "")
     scan_text = " ".join(str(row.get(k, "") or "") for k in (
-        "subject", "receiver", "receiver_detail", "sender", "sender_detail",
-        "sender_email", "policy", "attach",
+        "subject", "receiver", "sender", "attach",
     ))
-    scan_text = f"{scan_text} {json.dumps(row, ensure_ascii=False, default=str)}"
     candidates = extract_url_candidates_from_text(scan_text, category_specs)
     if not candidates:
         return []
@@ -2580,43 +2704,119 @@ def sensitive_sites_dedupe_key(record):
     ])
 
 
-def rebuild_sensitive_sites_index(conn, progress_cb=None):
+def insert_sensitive_sites_payload(conn, payload, replace_existing=True):
+    if not payload:
+        return 0
+    if replace_existing:
+        conn.executemany(
+            """
+            INSERT OR REPLACE INTO sensitive_sites_index
+                (dedupe_key, source, category, categories, keywords, event_time,
+                 site, url, user, user_id, dept, source_file, row_index, search_text, record_json, indexed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            payload,
+        )
+        return len(payload)
+
+    inserted = 0
+    for item in payload:
+        dedupe_key = item[0]
+        event_time = item[5]
+        existing = conn.execute(
+            "SELECT event_time FROM sensitive_sites_index WHERE dedupe_key = ?",
+            (dedupe_key,),
+        ).fetchone()
+        if existing and str(existing[0] or "") > str(event_time or ""):
+            continue
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO sensitive_sites_index
+                (dedupe_key, source, category, categories, keywords, event_time,
+                 site, url, user, user_id, dept, source_file, row_index, search_text, record_json, indexed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            item,
+        )
+        inserted += 1
+    return inserted
+
+
+def rebuild_sensitive_sites_index(conn, changed_paths=None, removed_paths=None, progress_cb=None):
+    start_ts = time.perf_counter()
+    full_rebuild = should_full_rebuild_sensitive_index(
+        conn,
+        "sensitive_sites_index_version",
+        SENSITIVE_SITES_INDEX_VERSION,
+        changed_paths,
+        removed_paths,
+    )
+    target_paths = None if full_rebuild else list(changed_paths or [])
     if progress_cb:
-        progress_cb("Sensitive Sites 인덱스 생성중")
-    dlp_rows = load_app_cache_raw_rows_from_conn(conn, "dlp")
-    mailscreen_rows = load_app_cache_raw_rows_from_conn(conn, "mailscreen")
+        progress_cb("Sensitive Sites 인덱스 생성중" if full_rebuild else "Sensitive Sites 증분 인덱스 생성중")
+    log.info(
+        "Sensitive Sites index start mode=%s changed=%d removed=%d",
+        "full" if full_rebuild else "incremental",
+        len(changed_paths or []),
+        len(removed_paths or []),
+    )
+
+    if full_rebuild:
+        dlp_rows = load_app_cache_raw_rows_from_conn(conn, "dlp")
+        mailscreen_rows = load_app_cache_raw_rows_from_conn(conn, "mailscreen")
+    else:
+        delete_count = delete_sensitive_index_paths(conn, "sensitive_sites_index", changed_paths, removed_paths)
+        if not target_paths:
+            conn.execute(
+                "INSERT OR REPLACE INTO app_cache_meta(key, value) VALUES (?, ?)",
+                ("sensitive_sites_index_version", SENSITIVE_SITES_INDEX_VERSION),
+            )
+            log.info("Sensitive Sites index no changed files deleted=%d elapsed=%.2fs", delete_count, time.perf_counter() - start_ts)
+            return {
+                "sensitive_sites_index_rows": conn.execute("SELECT COUNT(*) FROM sensitive_sites_index").fetchone()[0],
+                "sensitive_sites_indexed_at": sensitive_index_meta_version(conn, "sensitive_sites_indexed_at"),
+            }
+        dlp_rows = load_app_cache_raw_rows_from_conn(conn, "dlp", target_paths)
+        mailscreen_rows = load_app_cache_raw_rows_from_conn(conn, "mailscreen", target_paths)
+        log.info("Sensitive Sites index deleted changed/removed rows=%d", delete_count)
+
     records = build_sensitive_site_records(dlp_rows, mailscreen_rows)
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     payload = []
     for record in records:
         record["search_text"] = record.get("search_text") or sensitive_site_search_text(record)
+        row = record.get("row") if isinstance(record.get("row"), dict) else {}
         payload.append((
             sensitive_sites_dedupe_key(record), str(record.get("source", "") or ""),
             str(record.get("category", "") or ""), json.dumps(record.get("categories", []) or [], ensure_ascii=False),
             json.dumps(record.get("keywords", []) or [], ensure_ascii=False), str(record.get("event_time", "") or ""),
             str(record.get("site", "") or ""), str(record.get("url", "") or ""),
             str(record.get("user", "") or ""), str(record.get("user_id", "") or ""),
-            str(record.get("dept", "") or ""), str(record.get("search_text", "") or "").lower(),
+            str(record.get("dept", "") or ""), str(row.get("__source_file", "") or ""),
+            int(row.get("__row_index", -1) if str(row.get("__row_index", "")).strip() else -1),
+            str(record.get("search_text", "") or "").lower(),
             json.dumps(record, ensure_ascii=False, default=str), now,
         ))
-    conn.execute("DELETE FROM sensitive_sites_index")
-    if payload:
-        conn.executemany(
-            """
-            INSERT OR REPLACE INTO sensitive_sites_index
-                (dedupe_key, source, category, categories, keywords, event_time,
-                 site, url, user, user_id, dept, search_text, record_json, indexed_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            payload,
-        )
+    if full_rebuild:
+        conn.execute("DELETE FROM sensitive_sites_index")
+    inserted = insert_sensitive_sites_payload(conn, payload, replace_existing=full_rebuild)
     conn.execute("INSERT OR REPLACE INTO app_cache_meta(key, value) VALUES (?, ?)", ("sensitive_sites_index_version", SENSITIVE_SITES_INDEX_VERSION))
     conn.execute("INSERT OR REPLACE INTO app_cache_meta(key, value) VALUES (?, ?)", ("sensitive_sites_indexed_at", now))
+    total_rows = conn.execute("SELECT COUNT(*) FROM sensitive_sites_index").fetchone()[0]
+    log.info(
+        "Sensitive Sites index done mode=%s dlp_rows=%d mailscreen_rows=%d records=%d inserted=%d total=%d elapsed=%.2fs",
+        "full" if full_rebuild else "incremental",
+        len(dlp_rows),
+        len(mailscreen_rows),
+        len(records),
+        inserted,
+        total_rows,
+        time.perf_counter() - start_ts,
+    )
     return {
-        "sensitive_sites_index_rows": len(records),
+        "sensitive_sites_index_rows": total_rows,
         "sensitive_sites_indexed_at": now,
     }
-
 
 def sensitive_sites_index_ready(conn):
     row = conn.execute(
