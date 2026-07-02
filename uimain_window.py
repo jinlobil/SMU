@@ -39,7 +39,7 @@ import matplotlib.patheffects as path_effects
 from PyQt5.QtCore import (
     Qt, QTimer, QThread, pyqtSignal,
     QDate, QTime, QRectF, QPointF,
-    QPropertyAnimation, QEasingCurve
+    QPropertyAnimation, QEasingCurve, QEvent
 )
 
 # =============================
@@ -122,6 +122,7 @@ APP_CACHE_DB_PATH = os.path.join(TIMELINE_INDEX_DIR, "app_cache.db")
 TIMELINE_INDEX_DB_PATH = os.path.join(TIMELINE_INDEX_DIR, "timeline_index.db")
 TIMELINE_RENDER_BATCH_SIZE = 250
 TIMELINE_DETAIL_ROW_LIMIT = 1000
+TIMELINE_KEYWORD_INDEX_VERSION = "exact_phrase_v1"
 
 
 os.makedirs(CACHE_DIR, exist_ok=True)
@@ -993,6 +994,12 @@ def init_app_cache_db(conn):
     conn.execute("CREATE INDEX IF NOT EXISTS idx_app_cache_records_source_date ON app_cache_records(source, cache_date)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_app_cache_records_file ON app_cache_records(source_file)")
     conn.execute("""
+        CREATE TABLE IF NOT EXISTS app_cache_meta (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )
+    """)
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS detection_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             source_file TEXT NOT NULL,
@@ -1086,6 +1093,49 @@ def init_app_cache_db(conn):
     conn.execute("CREATE INDEX IF NOT EXISTS idx_mailscreen_events_date ON mailscreen_events(event_date_kst)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_mailscreen_events_sender_user_id ON mailscreen_events(sender_user_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_mailscreen_events_sender_email ON mailscreen_events(sender_email)")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS sensitive_files_index (
+            dedupe_key TEXT PRIMARY KEY,
+            source TEXT NOT NULL,
+            category TEXT NOT NULL,
+            categories TEXT NOT NULL,
+            keywords TEXT NOT NULL,
+            event_time TEXT,
+            display_filename TEXT,
+            user TEXT,
+            user_id TEXT,
+            dept TEXT,
+            search_text TEXT,
+            record_json TEXT NOT NULL,
+            indexed_at TEXT NOT NULL
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sensitive_files_source_category_time ON sensitive_files_index(source, category, event_time DESC)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sensitive_files_category_time ON sensitive_files_index(category, event_time DESC)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sensitive_files_time ON sensitive_files_index(event_time DESC)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sensitive_files_search ON sensitive_files_index(search_text)")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS sensitive_sites_index (
+            dedupe_key TEXT PRIMARY KEY,
+            source TEXT NOT NULL,
+            category TEXT NOT NULL,
+            categories TEXT NOT NULL,
+            keywords TEXT NOT NULL,
+            event_time TEXT,
+            site TEXT,
+            url TEXT,
+            user TEXT,
+            user_id TEXT,
+            dept TEXT,
+            search_text TEXT,
+            record_json TEXT NOT NULL,
+            indexed_at TEXT NOT NULL
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sensitive_sites_source_category_time ON sensitive_sites_index(source, category, event_time DESC)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sensitive_sites_category_time ON sensitive_sites_index(category, event_time DESC)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sensitive_sites_time ON sensitive_sites_index(event_time DESC)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sensitive_sites_search ON sensitive_sites_index(search_text)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_mailscreen_events_sender_name ON mailscreen_events(sender_name)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_mailscreen_events_sender ON mailscreen_events(sender)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_mailscreen_events_file ON mailscreen_events(source_file)")
@@ -1538,6 +1588,8 @@ def sync_app_cache_all(progress_cb=None):
                 conn.execute("DELETE FROM app_cache_files WHERE path = ?", (path,))
                 removed += 1
         totals["data_removed"] = removed
+        totals.update(rebuild_sensitive_files_index(conn, progress_cb=progress_cb))
+        totals.update(rebuild_sensitive_sites_index(conn, progress_cb=progress_cb))
         conn.commit()
         totals["data_total_rows"] = conn.execute("SELECT COUNT(*) FROM app_cache_records").fetchone()[0]
         totals["data_total_files"] = conn.execute("SELECT COUNT(*) FROM app_cache_files").fetchone()[0]
@@ -1693,6 +1745,18 @@ def load_dlp_by_range_json(start_date: str, end_date: str):
     return results
 
 
+def load_dlp_all_indexed_cache():
+    rows = load_app_cache_records("dlp")
+    log.info(f"Loaded DLP from SQLite index all cache : {len(rows)}")
+    return rows
+
+
+def load_mailscreen_all_indexed_cache():
+    rows = load_app_cache_records("mailscreen")
+    log.info(f"Loaded MailScreen from SQLite index all cache : {len(rows)}")
+    return rows
+
+
 def load_mailscreen_by_range(start_date: str, end_date: str):
     try:
         sync_app_cache_range("mailscreen", start_date, end_date)
@@ -1737,6 +1801,847 @@ def format_dlp_event_id(value):
         "Content Threat Blocked": "차단",
     }
     return mapping.get(event_id.strip(), event_id)
+
+
+SENSITIVE_FILE_CATEGORY_SPECS = [
+    ("이직 / 취업", [
+        "이력서", "resume", "curriculum vitae", "자기소개서", "자소서",
+        "포트폴리오", "portfolio", "경력기술서", "입사지원", "지원서",
+        "면접", "채용", "잡코리아", "사람인", "원티드", "wanted",
+        "linkedin", "링크드인", "cover letter",
+    ]),
+    ("결혼 / 웨딩 / 연애", [
+        "결혼", "웨딩", "wedding", "상견례", "청첩장", "예식", "예식장",
+        "스드메", "드레스", "혼수", "신혼", "신혼여행", "허니문",
+        "혼인", "예물", "예단", "커플사진", "가족사진", "웨딩사진",
+        "연애", "남친", "여친", "남자친구", "여자친구", "애인", "연인",
+        "데이트", "소개팅", "프로포즈", "기념일", "커플", "커플링",
+        "데이트사진", "오빠",
+    ]),
+    ("개인 증빙 / 금융", [
+        "신분증", "주민등록증", "운전면허증", "여권", "가족관계증명서",
+        "주민등록등본", "주민등록초본", "인감증명서", "통장사본",
+        "계좌번호", "입금계좌", "입금내역", "거래내역", "잔액증명서",
+        "원천징수", "소득금액", "급여명세서", "연말정산", "건강보험",
+        "국민연금", "재직증명", "전세계약서", "월세계약서", "임대차계약서",
+    ]),
+    ("발주 / 주문 / 거래 문서", [
+        "발주서", "주문서", "거래명세서", "출고양식", "수기발주",
+        "공동구매", "매출내역", "invoice",
+    ]),
+    ("비용 / 영수증 / 정산", [
+        "영수증", "결제증빙", "비용정산", "법카", "접대비", "회식비", "receipt",
+    ]),
+    ("계약 / 법무 / 사업자 증빙", [
+        "계약서", "계약일반조건", "사업자등록증", "채권", "변제계획서",
+    ]),
+    ("제품 / 디자인 / 마케팅 자료", [
+        "상세페이지", "썸네일", "렌더링", "로고", "누끼", "데켓",
+        "택플로우", "TACTFLOW", "인플루언서", "시딩",
+        "유튜브", "마케팅", "쇼츠", "숏츠", "론칭", "콜라보",
+    ]),
+    ("메신저 수신 파일", [
+        "카카오톡 받은 파일", "kakaotalk", "kakaotalk download",
+        "네이트온 받은 파일", "nateon", "wechat", "viber", "whatsapp",
+        "telegram desktop", "messages/attachments", "xwechat_files",
+        "viberdownloads", "discord",
+    ]),
+    ("개인 사진 / 영상", [
+        "개인사진", "가족사진", "웨딩사진", "증명사진", "프로필사진",
+        "셀카", "셀피", "selfie", "여행사진", "앨범", "본식사진",
+        "스냅사진", "여권사진", "반명함",
+    ]),
+]
+
+
+SENSITIVE_FILE_CATEGORY_REGEX_SPECS = [
+    ("결혼 / 웨딩 / 연애", [
+        (r"\d{2,4}\s*일\s*(?:기념|기념일)", "N일 기념일"),
+    ]),
+]
+
+
+def sensitive_row_text(row):
+    field_text = " ".join(str(row.get(k, "") or "") for k in (
+        "filename", "destination", "destination_type", "item_details",
+        "destinationDetails", "machine_name", "client_name", "event_id",
+    ))
+    return f"{field_text} {json.dumps(row, ensure_ascii=False, default=str)}".lower()
+
+
+def classify_sensitive_text(text, category_specs=SENSITIVE_FILE_CATEGORY_SPECS):
+    text = str(text or "").lower()
+    matched_categories = []
+    matched_keywords = []
+    for category, keywords in category_specs:
+        hits = [kw for kw in keywords if kw.lower() in text]
+        if hits:
+            matched_categories.append(category)
+            matched_keywords.extend(hits)
+    for category, patterns in SENSITIVE_FILE_CATEGORY_REGEX_SPECS:
+        hits = []
+        for pattern, label in patterns:
+            if re.search(pattern, text, re.IGNORECASE):
+                hits.append(label)
+        if hits:
+            matched_categories.append(category)
+            matched_keywords.extend(hits)
+    if not matched_categories:
+        return None
+    return {
+        "category": matched_categories[0],
+        "categories": matched_categories,
+        "keywords": sorted(set(matched_keywords), key=lambda x: x.lower()),
+    }
+
+
+def classify_sensitive_row(row, category_specs=SENSITIVE_FILE_CATEGORY_SPECS):
+    return classify_sensitive_text(sensitive_row_text(row), category_specs)
+
+
+def display_sensitive_file_name(path_text):
+    text = str(path_text or "None").strip()
+    if not text or text == "None":
+        return "None"
+    normalized = text.replace("\\", "/").rstrip("/")
+    return normalized.rsplit("/", 1)[-1] or text
+
+
+def resolve_sensitive_user_name(machine_name, client_name):
+    identity = resolve_identity_by_hostname(machine_name)
+    user_name = str(identity.get("user_name", "") or "").strip()
+    if user_name and user_name != "None":
+        return user_name
+    directory_info = get_directory_user_info(client_name)
+    directory_name = str(directory_info.get("name", "") or "").strip()
+    if directory_name:
+        return directory_name
+    org_name = get_org_user_name_by_user_id(client_name)
+    if org_name:
+        return org_name
+    return str(client_name or "None")
+
+
+def make_sensitive_record(row, category_specs=SENSITIVE_FILE_CATEGORY_SPECS):
+    classified = classify_sensitive_row(row, category_specs)
+    if not classified:
+        return None
+    machine_name = str(row.get("machine_name", "None") or "None")
+    client_name = str(row.get("client_name", "None") or "None")
+    dept_name, _ = get_dept_by_hostname(machine_name)
+    filename = str(row.get("filename", "None") or "None")
+    destination = str(row.get("destination", "None") or "None")
+    destination_detail = str(row.get("item_details") or row.get("destinationDetails") or "None")
+    return {
+        "row": row,
+        "source": "DLP",
+        "category": classified["category"],
+        "categories": classified["categories"],
+        "keywords": classified["keywords"],
+        "event_time": str(row.get("eventtimelocal", "") or ""),
+        "event": format_dlp_event_id(row.get("event_id", "None")),
+        "machine": machine_name,
+        "dept": dept_name,
+        "user": resolve_sensitive_user_name(machine_name, client_name),
+        "user_id": client_name,
+        "filename": filename,
+        "display_filename": display_sensitive_file_name(filename),
+        "destination": destination,
+        "destination_type": str(row.get("destination_type", "None") or "None"),
+        "destination_detail": destination_detail,
+        "filehash": str(row.get("filehash", "None") or "None"),
+    }
+
+
+def sensitive_record_search_text(record):
+    return " ".join(str(record.get(k, "") or "") for k in (
+        "source", "category", "keywords", "event_time", "event", "machine",
+        "dept", "user", "user_id", "filename", "display_filename",
+        "destination", "destination_type", "destination_detail", "filehash",
+        "mail_subject", "mail_sender", "mail_receiver", "mail_policy", "mail_attach_raw",
+    )).lower()
+
+
+MAILSCREEN_ATTACHMENT_EXTENSIONS = (
+    "docx", "doc", "xlsx", "xls", "pptx", "ppt", "jpeg", "jpg",
+    "pdf", "txt", "csv", "png", "heic", "gif", "bmp", "zip", "7z", "rar",
+    "alz", "egg", "ai", "psd", "mp4", "mov", "avi", "eml", "msg",
+)
+
+
+def clean_mailscreen_attachment_name(value):
+    text = str(value or "").strip()
+    if not text or text == "None":
+        return ""
+    text = re.sub(r"\s*\(\s*\d+\s+more\s*\)\s*$", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s*\(\s*[\d,.]+\s*(?:B|K|KB|M|MB|G|GB|T|TB)\s*\)\s*$", "", text, flags=re.IGNORECASE)
+    return text.strip(" ,;|")
+
+
+def extract_mailscreen_attachment_names(row):
+    attach_text = str(row.get("attach", "") or "").strip() if isinstance(row, dict) else ""
+    if not attach_text or attach_text == "None":
+        return []
+
+    ext_pattern = "|".join(re.escape(ext) for ext in MAILSCREEN_ATTACHMENT_EXTENSIONS)
+    pattern = re.compile(
+        rf"([^,;|\n]+?\.(?:{ext_pattern}))(?:\s*\([^)]*\))*",
+        re.IGNORECASE,
+    )
+    names = []
+    for match in pattern.finditer(attach_text):
+        name = clean_mailscreen_attachment_name(match.group(1))
+        if name and name not in names:
+            names.append(name)
+
+    if names:
+        return names
+
+    fallback = clean_mailscreen_attachment_name(attach_text)
+    return [fallback] if fallback else []
+
+
+def make_sensitive_mailscreen_record(row, attachment_name, category_specs=SENSITIVE_FILE_CATEGORY_SPECS):
+    if not isinstance(row, dict):
+        return None
+    row = enrich_mailscreen_sender_fields(row)
+    filename = clean_mailscreen_attachment_name(attachment_name)
+    if not filename:
+        return None
+
+    subject = str(row.get("subject", "") or "")
+    classified = classify_sensitive_text(f"{filename} {subject}", category_specs)
+    if not classified:
+        return None
+
+    sender_email = mailscreen_identity_text(row.get("sender_email")) or mailscreen_identity_text(row.get("sender"))
+    sender_name = mailscreen_identity_text(row.get("sender_name")) or sender_email or "None"
+    user_id = mailscreen_identity_text(row.get("sender_user_id")) or sender_email or "None"
+    dept_name = mailscreen_identity_text(row.get("sender_dept")) or mailscreen_identity_text(row.get("dept")) or "미분류"
+    receiver = mailscreen_identity_text(row.get("receiver_detail")) or mailscreen_identity_text(row.get("receiver")) or "None"
+    mail_process = str(row.get("mail_process", "") or "None")
+    send_result = str(row.get("send_result", "") or "None")
+    event = f"{mail_process}/{send_result}" if mail_process != "None" and send_result != "None" else (send_result or mail_process)
+
+    return {
+        "row": row,
+        "source": "Outbound Mail",
+        "category": classified["category"],
+        "categories": classified["categories"],
+        "keywords": classified["keywords"],
+        "event_time": str(row.get("date", "") or ""),
+        "event": event,
+        "machine": "None",
+        "dept": dept_name,
+        "user": sender_name,
+        "user_id": user_id,
+        "filename": filename,
+        "display_filename": display_sensitive_file_name(filename),
+        "destination": receiver,
+        "destination_type": "Outbound Mail Attachment",
+        "destination_detail": str(row.get("subject", "") or "None"),
+        "filehash": "None",
+        "mail_subject": str(row.get("subject", "") or "None"),
+        "mail_sender": sender_email or "None",
+        "mail_receiver": receiver,
+        "mail_size": str(row.get("size", "") or "None"),
+        "mail_policy": str(row.get("policy", "") or "None"),
+        "mail_process": mail_process,
+        "mail_send_result": send_result,
+        "mail_attach_raw": str(row.get("attach", "") or "None"),
+    }
+
+
+def build_sensitive_file_records(rows, category_specs=SENSITIVE_FILE_CATEGORY_SPECS, mailscreen_rows=None):
+    records = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        record = make_sensitive_record(row, category_specs)
+        if record:
+            records.append(record)
+
+    for row in mailscreen_rows or []:
+        if not isinstance(row, dict):
+            continue
+        for attachment_name in extract_mailscreen_attachment_names(row):
+            record = make_sensitive_mailscreen_record(row, attachment_name, category_specs)
+            if record:
+                records.append(record)
+
+    latest_by_file_owner = {}
+    for record in records:
+        dedupe_key = (
+            str(record.get("source", "")).strip().lower(),
+            str(record.get("display_filename", "")).strip().lower(),
+            str(record.get("dept", "")).strip().lower(),
+            str(record.get("user", "")).strip().lower(),
+        )
+        current = latest_by_file_owner.get(dedupe_key)
+        if current is None or str(record.get("event_time", "")) > str(current.get("event_time", "")):
+            latest_by_file_owner[dedupe_key] = record
+
+    records = list(latest_by_file_owner.values())
+    records.sort(key=lambda r: (r["category"], r["display_filename"].lower()))
+    records.sort(key=lambda r: r["event_time"], reverse=True)
+    for record in records:
+        record["search_text"] = sensitive_record_search_text(record)
+    return records
+
+
+SENSITIVE_FILES_INDEX_VERSION = "sensitive_files_v2"
+SENSITIVE_FILES_PAGE_LIMIT = 500
+
+
+def sensitive_files_index_sources(include_dlp=True, include_outbound=True):
+    sources = []
+    if include_dlp:
+        sources.append("DLP")
+    if include_outbound:
+        sources.append("Outbound Mail")
+    return sources
+
+
+def sensitive_files_dedupe_key(record):
+    return "|".join([
+        str(record.get("source", "")).strip().lower(),
+        str(record.get("display_filename", "")).strip().lower(),
+        str(record.get("dept", "")).strip().lower(),
+        str(record.get("user", "")).strip().lower(),
+    ])
+
+
+def load_app_cache_raw_rows_from_conn(conn, source):
+    rows = conn.execute(
+        """
+        SELECT raw_json
+        FROM app_cache_records
+        WHERE source = ?
+        ORDER BY cache_date ASC, source_file ASC, row_index ASC
+        """,
+        (source,),
+    ).fetchall()
+    results = []
+    for (raw_json,) in rows:
+        try:
+            row = json.loads(raw_json)
+            if isinstance(row, dict):
+                results.append(row)
+        except Exception as e:
+            log.warning(f"Sensitive Files raw parse failed source={source}: {e}")
+    return results
+
+
+def rebuild_sensitive_files_index(conn, progress_cb=None):
+    if progress_cb:
+        progress_cb("Sensitive Files 인덱스 생성중")
+
+    dlp_rows = load_app_cache_raw_rows_from_conn(conn, "dlp")
+    mailscreen_rows = load_app_cache_raw_rows_from_conn(conn, "mailscreen")
+    records = build_sensitive_file_records(dlp_rows, mailscreen_rows=mailscreen_rows)
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    payload = []
+    for record in records:
+        record["search_text"] = record.get("search_text") or sensitive_record_search_text(record)
+        payload.append((
+            sensitive_files_dedupe_key(record),
+            str(record.get("source", "") or ""),
+            str(record.get("category", "") or ""),
+            json.dumps(record.get("categories", []) or [], ensure_ascii=False),
+            json.dumps(record.get("keywords", []) or [], ensure_ascii=False),
+            str(record.get("event_time", "") or ""),
+            str(record.get("display_filename", "") or ""),
+            str(record.get("user", "") or ""),
+            str(record.get("user_id", "") or ""),
+            str(record.get("dept", "") or ""),
+            str(record.get("search_text", "") or "").lower(),
+            json.dumps(record, ensure_ascii=False, default=str),
+            now,
+        ))
+
+    conn.execute("DELETE FROM sensitive_files_index")
+    if payload:
+        conn.executemany(
+            """
+            INSERT OR REPLACE INTO sensitive_files_index
+                (dedupe_key, source, category, categories, keywords, event_time,
+                 display_filename, user, user_id, dept, search_text, record_json, indexed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            payload,
+        )
+    conn.execute(
+        "INSERT OR REPLACE INTO app_cache_meta(key, value) VALUES (?, ?)",
+        ("sensitive_files_index_version", SENSITIVE_FILES_INDEX_VERSION),
+    )
+    conn.execute(
+        "INSERT OR REPLACE INTO app_cache_meta(key, value) VALUES (?, ?)",
+        ("sensitive_files_indexed_at", now),
+    )
+    return {
+        "sensitive_index_rows": len(records),
+        "sensitive_index_dlp_rows": len(dlp_rows),
+        "sensitive_index_mailscreen_rows": len(mailscreen_rows),
+        "sensitive_indexed_at": now,
+    }
+
+
+def sensitive_files_index_ready(conn):
+    row = conn.execute(
+        "SELECT value FROM app_cache_meta WHERE key = ?",
+        ("sensitive_files_index_version",),
+    ).fetchone()
+    return bool(row and row[0] == SENSITIVE_FILES_INDEX_VERSION)
+
+
+def sensitive_files_where_clause(category="전체", keyword="", sources=None):
+    clauses = []
+    params = []
+    source_values = list(sources or [])
+    if source_values:
+        placeholders = ",".join("?" for _ in source_values)
+        clauses.append(f"source IN ({placeholders})")
+        params.extend(source_values)
+    else:
+        clauses.append("1 = 0")
+
+    if category and category != "전체":
+        clauses.append("category = ?")
+        params.append(category)
+
+    keyword = str(keyword or "").strip().lower()
+    if keyword:
+        clauses.append("search_text LIKE ?")
+        params.append(f"%{keyword}%")
+
+    return " AND ".join(clauses), params
+
+
+def sensitive_record_from_index_json(raw_json):
+    try:
+        record = json.loads(raw_json)
+        if isinstance(record, dict):
+            record["search_text"] = record.get("search_text") or sensitive_record_search_text(record)
+            return record
+    except Exception as e:
+        log.warning(f"Sensitive Files index record parse failed: {e}")
+    return None
+
+
+def query_sensitive_files_index(
+    category="전체",
+    keyword="",
+    sources=None,
+    limit=SENSITIVE_FILES_PAGE_LIMIT,
+    offset=0,
+):
+    with app_cache_connect() as conn:
+        if not sensitive_files_index_ready(conn):
+            return {
+                "records": [],
+                "total": 0,
+                "category_counts": {},
+                "index_ready": False,
+                "message": "Sensitive Files 인덱스가 없습니다. Config에서 Data Index를 먼저 실행하세요.",
+            }
+
+        if sources is None:
+            sources = ["DLP", "Outbound Mail"]
+        where_sql, params = sensitive_files_where_clause(category, keyword, sources)
+        total = conn.execute(
+            f"SELECT COUNT(*) FROM sensitive_files_index WHERE {where_sql}",
+            params,
+        ).fetchone()[0]
+
+        count_where_sql, count_params = sensitive_files_where_clause("전체", keyword, sources)
+        count_rows = conn.execute(
+            f"""
+            SELECT category, COUNT(*)
+            FROM sensitive_files_index
+            WHERE {count_where_sql}
+            GROUP BY category
+            """,
+            count_params,
+        ).fetchall()
+        category_counts = {str(category): int(count) for category, count in count_rows}
+
+        rows = conn.execute(
+            f"""
+            SELECT record_json
+            FROM sensitive_files_index
+            WHERE {where_sql}
+            ORDER BY event_time DESC, display_filename ASC
+            LIMIT ? OFFSET ?
+            """,
+            params + [int(limit), int(offset)],
+        ).fetchall()
+
+    records = []
+    for (raw_json,) in rows:
+        record = sensitive_record_from_index_json(raw_json)
+        if record:
+            records.append(record)
+
+    return {
+        "records": records,
+        "total": int(total),
+        "category_counts": category_counts,
+        "index_ready": True,
+        "limit": int(limit),
+        "offset": int(offset),
+    }
+
+
+SENSITIVE_SITE_CATEGORY_SPECS = [
+    ("AI 사이트", [
+        "chatgpt.com", "chat.openai.com", "openai.com", "claude.ai",
+        "gemini.google.com", "bard.google.com", "perplexity.ai", "poe.com",
+        "copilot.microsoft.com", "notebooklm.google.com", "wrtn.ai",
+        "deepseek.com", "grok.com", "x.ai",
+    ]),
+    ("숙박시설", [
+        "yanolja.com", "www.yanolja.com", "goodchoice.kr", "www.goodchoice.kr",
+        "yeogi.com", "www.yeogi.com", "ddnayo.com", "www.ddnayo.com",
+        "tidesquare.com", "tourvis.com", "www.tourvis.com", "myrealtrip.com",
+        "www.myrealtrip.com", "triple.guide", "www.triple.guide", "interpark.com",
+        "travel.interpark.com", "nol-universe.com", "agoda.com", "www.agoda.com",
+        "booking.com", "www.booking.com", "hotels.com", "www.hotels.com",
+        "expedia.com", "www.expedia.com", "trip.com", "www.trip.com",
+        "ctrip.com", "www.ctrip.com", "trivago.com", "www.trivago.com",
+        "kayak.com", "www.kayak.com", "priceline.com", "www.priceline.com",
+        "travelocity.com", "www.travelocity.com", "orbitz.com", "www.orbitz.com",
+        "hotelcombined.com", "www.hotelcombined.com", "hotelscombined.com",
+        "www.hotelscombined.com", "skyscanner.co.kr", "www.skyscanner.co.kr",
+        "airbnb.com", "www.airbnb.com", "vrbo.com", "www.vrbo.com",
+        "hostelworld.com", "www.hostelworld.com", "lottehotel.com",
+        "www.lottehotel.com", "shillahotels.com", "www.shillahotels.com",
+        "josunhotel.com", "www.josunhotel.com", "parnas.co.kr", "www.parnas.co.kr",
+        "walkerhill.com", "www.walkerhill.com", "hanwharesort.co.kr",
+        "www.hanwharesort.co.kr", "sonohotelsresorts.com",
+        "www.sonohotelsresorts.com", "kensington.co.kr", "www.kensington.co.kr",
+        "resom.co.kr", "www.resom.co.kr", "elysian.co.kr", "www.elysian.co.kr",
+        "konjiamresort.co.kr", "www.konjiamresort.co.kr", "phoenixhnr.co.kr",
+        "www.phoenixhnr.co.kr", "high1.com", "www.high1.com", "marriott.com",
+        "www.marriott.com", "hilton.com", "www.hilton.com", "hyatt.com",
+        "www.hyatt.com", "ihg.com", "www.ihg.com", "accor.com", "all.accor.com",
+        "wyndhamhotels.com", "www.wyndhamhotels.com", "choicehotels.com",
+        "www.choicehotels.com", "bestwestern.com", "www.bestwestern.com",
+        "radissonhotels.com", "www.radissonhotels.com", "fourseasons.com",
+        "www.fourseasons.com", "mandarinoriental.com", "www.mandarinoriental.com",
+        "shangri-la.com", "www.shangri-la.com", "aman.com", "www.aman.com",
+        "kempinski.com", "www.kempinski.com",
+    ]),
+    ("개인 메일 / 웹메일", [
+        "gmail.com", "mail.google.com", "naver.com", "mail.naver.com",
+        "daum.net", "hanmail.net", "outlook.live.com", "hotmail.com",
+        "yahoo.com", "icloud.com", "proton.me", "protonmail.com",
+    ]),
+    ("클라우드 / 파일공유", [
+        "drive.google.com", "docs.google.com", "dropbox.com", "box.com",
+        "onedrive.live.com", "sharepoint.com", "wetransfer.com", "send-anywhere.com",
+        "mega.nz", "mediafire.com", "pcloud.com", "terabox.com",
+    ]),
+    ("채용 / 이직", [
+        "saramin.co.kr", "jobkorea.co.kr", "wanted.co.kr", "linkedin.com",
+        "rememberapp.co.kr", "career.co.kr", "incruit.com", "jobplanet.co.kr",
+        "blind.com", "rocketpunch.com",
+    ]),
+    ("문서 변환 / PDF 도구", [
+        "ilovepdf.com", "smallpdf.com", "pdf24.org", "convertio.co",
+        "cloudconvert.com", "freeconvert.com", "remove.bg", "canva.com",
+        "figma.com", "photopea.com", "tinywow.com",
+    ]),
+    ("SNS / 커뮤니티", [
+        "instagram.com", "facebook.com", "threads.net", "x.com", "twitter.com",
+        "tiktok.com", "youtube.com", "reddit.com", "discord.com", "telegram.org",
+        "open.kakao.com", "kakao.com", "dcinside.com", "theqoo.net", "instiz.net",
+    ]),
+]
+
+SENSITIVE_SITES_INDEX_VERSION = "sensitive_sites_v1"
+SENSITIVE_SITES_PAGE_LIMIT = 500
+
+
+def normalize_site_host(value):
+    host = _extract_report_hostname(value)
+    host = host.lower().strip().strip(".")
+    if host.startswith("www."):
+        return host[4:]
+    return host
+
+
+def extract_url_candidates_from_text(text):
+    text = html.unescape(str(text or ""))
+    candidates = []
+    for match in re.finditer(r"https?://[^\s<>'\")]+|www\.[A-Za-z0-9.-]+\.[A-Za-z]{2,}(?:/[^\s<>'\")]+)?", text, re.IGNORECASE):
+        candidates.append(match.group(0).rstrip(".,;"))
+    return candidates
+
+
+def classify_sensitive_site(host, url="", category_specs=SENSITIVE_SITE_CATEGORY_SPECS):
+    normalized_host = normalize_site_host(host) or normalize_site_host(url)
+    matched_categories = []
+    matched_keywords = []
+    for category, patterns in category_specs:
+        hits = []
+        seen_needles = set()
+        for pattern in patterns:
+            needle = normalize_site_host(pattern)
+            if not needle or needle in seen_needles:
+                continue
+            if normalized_host == needle or normalized_host.endswith("." + needle):
+                hits.append(needle)
+                seen_needles.add(needle)
+        if hits:
+            matched_categories.append(category)
+            matched_keywords.extend(hits)
+    if not matched_categories:
+        return None
+    return {
+        "category": matched_categories[0],
+        "categories": matched_categories,
+        "keywords": sorted(set(matched_keywords), key=lambda x: x.lower()),
+    }
+
+
+def sensitive_site_search_text(record):
+    return " ".join(str(record.get(k, "") or "") for k in (
+        "source", "category", "keywords", "event_time", "event", "site", "url",
+        "dept", "user", "user_id", "machine", "destination", "subject", "sender",
+        "receiver", "policy",
+    )).lower()
+
+
+def make_sensitive_site_dlp_record(row, category_specs=SENSITIVE_SITE_CATEGORY_SPECS):
+    if not isinstance(row, dict):
+        return None
+    destination = str(row.get("destination", "") or "")
+    detail = str(row.get("item_details") or row.get("destinationDetails") or "")
+    host = normalize_site_host(destination) or normalize_site_host(detail)
+    if not host or host in {"local-file-path", "internal-file-server"}:
+        return None
+    classified = classify_sensitive_site(host, destination or detail, category_specs)
+    if not classified:
+        return None
+    machine_name = str(row.get("machine_name", "None") or "None")
+    client_name = str(row.get("client_name", "None") or "None")
+    dept_name, _ = get_dept_by_hostname(machine_name)
+    return {
+        "row": row,
+        "source": "DLP",
+        "category": classified["category"],
+        "categories": classified["categories"],
+        "keywords": classified["keywords"],
+        "event_time": str(row.get("eventtimelocal", "") or ""),
+        "event": format_dlp_event_id(row.get("event_id", "None")),
+        "site": host,
+        "url": destination or detail or host,
+        "destination": destination or "None",
+        "detail": detail or "None",
+        "machine": machine_name,
+        "dept": dept_name,
+        "user": resolve_sensitive_user_name(machine_name, client_name),
+        "user_id": client_name,
+        "filename": str(row.get("filename", "None") or "None"),
+        "filehash": str(row.get("filehash", "None") or "None"),
+    }
+
+
+def make_sensitive_site_mailscreen_records(row, category_specs=SENSITIVE_SITE_CATEGORY_SPECS):
+    if not isinstance(row, dict):
+        return []
+    row = enrich_mailscreen_sender_fields(row)
+    subject = str(row.get("subject", "") or "")
+    candidates = extract_url_candidates_from_text(subject)
+    if not candidates:
+        return []
+    sender_email = mailscreen_identity_text(row.get("sender_email")) or mailscreen_identity_text(row.get("sender"))
+    sender_name = mailscreen_identity_text(row.get("sender_name")) or sender_email or "None"
+    user_id = mailscreen_identity_text(row.get("sender_user_id")) or sender_email or "None"
+    dept_name = mailscreen_identity_text(row.get("sender_dept")) or mailscreen_identity_text(row.get("dept")) or "미분류"
+    receiver = mailscreen_identity_text(row.get("receiver_detail")) or mailscreen_identity_text(row.get("receiver")) or "None"
+    records = []
+    for candidate in candidates:
+        host = normalize_site_host(candidate)
+        if not host:
+            continue
+        classified = classify_sensitive_site(host, candidate, category_specs)
+        if not classified:
+            continue
+        mail_process = str(row.get("mail_process", "") or "None")
+        send_result = str(row.get("send_result", "") or "None")
+        event = f"{mail_process}/{send_result}" if mail_process != "None" and send_result != "None" else (send_result or mail_process)
+        records.append({
+            "row": row,
+            "source": "Outbound Mail",
+            "category": classified["category"],
+            "categories": classified["categories"],
+            "keywords": classified["keywords"],
+            "event_time": str(row.get("date", "") or ""),
+            "event": event,
+            "site": host,
+            "url": candidate,
+            "destination": receiver,
+            "detail": subject or "None",
+            "machine": "None",
+            "dept": dept_name,
+            "user": sender_name,
+            "user_id": user_id,
+            "subject": subject or "None",
+            "sender": sender_email or "None",
+            "receiver": receiver,
+            "policy": str(row.get("policy", "") or "None"),
+            "mail_process": mail_process,
+            "mail_send_result": send_result,
+        })
+    return records
+
+
+def build_sensitive_site_records(dlp_rows=None, mailscreen_rows=None):
+    records = []
+    for row in dlp_rows or []:
+        record = make_sensitive_site_dlp_record(row)
+        if record:
+            records.append(record)
+    for row in mailscreen_rows or []:
+        records.extend(make_sensitive_site_mailscreen_records(row))
+
+    latest = {}
+    for record in records:
+        dedupe_key = sensitive_sites_dedupe_key(record)
+        current = latest.get(dedupe_key)
+        if current is None or str(record.get("event_time", "")) > str(current.get("event_time", "")):
+            latest[dedupe_key] = record
+    records = list(latest.values())
+    records.sort(key=lambda r: (r.get("event_time", ""), r.get("site", "")), reverse=True)
+    for record in records:
+        record["search_text"] = sensitive_site_search_text(record)
+    return records
+
+
+def sensitive_sites_index_sources(include_dlp=True, include_outbound=True):
+    sources = []
+    if include_dlp:
+        sources.append("DLP")
+    if include_outbound:
+        sources.append("Outbound Mail")
+    return sources
+
+
+def sensitive_sites_dedupe_key(record):
+    return "|".join([
+        str(record.get("source", "")).strip().lower(),
+        str(record.get("site", "")).strip().lower(),
+        str(record.get("dept", "")).strip().lower(),
+        str(record.get("user", "")).strip().lower(),
+    ])
+
+
+def rebuild_sensitive_sites_index(conn, progress_cb=None):
+    if progress_cb:
+        progress_cb("Sensitive Sites 인덱스 생성중")
+    dlp_rows = load_app_cache_raw_rows_from_conn(conn, "dlp")
+    mailscreen_rows = load_app_cache_raw_rows_from_conn(conn, "mailscreen")
+    records = build_sensitive_site_records(dlp_rows, mailscreen_rows)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    payload = []
+    for record in records:
+        record["search_text"] = record.get("search_text") or sensitive_site_search_text(record)
+        payload.append((
+            sensitive_sites_dedupe_key(record), str(record.get("source", "") or ""),
+            str(record.get("category", "") or ""), json.dumps(record.get("categories", []) or [], ensure_ascii=False),
+            json.dumps(record.get("keywords", []) or [], ensure_ascii=False), str(record.get("event_time", "") or ""),
+            str(record.get("site", "") or ""), str(record.get("url", "") or ""),
+            str(record.get("user", "") or ""), str(record.get("user_id", "") or ""),
+            str(record.get("dept", "") or ""), str(record.get("search_text", "") or "").lower(),
+            json.dumps(record, ensure_ascii=False, default=str), now,
+        ))
+    conn.execute("DELETE FROM sensitive_sites_index")
+    if payload:
+        conn.executemany(
+            """
+            INSERT OR REPLACE INTO sensitive_sites_index
+                (dedupe_key, source, category, categories, keywords, event_time,
+                 site, url, user, user_id, dept, search_text, record_json, indexed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            payload,
+        )
+    conn.execute("INSERT OR REPLACE INTO app_cache_meta(key, value) VALUES (?, ?)", ("sensitive_sites_index_version", SENSITIVE_SITES_INDEX_VERSION))
+    conn.execute("INSERT OR REPLACE INTO app_cache_meta(key, value) VALUES (?, ?)", ("sensitive_sites_indexed_at", now))
+    return {
+        "sensitive_sites_index_rows": len(records),
+        "sensitive_sites_indexed_at": now,
+    }
+
+
+def sensitive_sites_index_ready(conn):
+    row = conn.execute(
+        "SELECT value FROM app_cache_meta WHERE key = ?",
+        ("sensitive_sites_index_version",),
+    ).fetchone()
+    return bool(row and row[0] == SENSITIVE_SITES_INDEX_VERSION)
+
+
+def sensitive_sites_where_clause(category="전체", keyword="", sources=None):
+    clauses = []
+    params = []
+    source_values = list(sources or [])
+    if source_values:
+        clauses.append(f"source IN ({','.join('?' for _ in source_values)})")
+        params.extend(source_values)
+    else:
+        clauses.append("1 = 0")
+    if category and category != "전체":
+        clauses.append("category = ?")
+        params.append(category)
+    keyword = str(keyword or "").strip().lower()
+    if keyword:
+        clauses.append("search_text LIKE ?")
+        params.append(f"%{keyword}%")
+    return " AND ".join(clauses), params
+
+
+def query_sensitive_sites_index(category="전체", keyword="", sources=None, limit=SENSITIVE_SITES_PAGE_LIMIT, offset=0):
+    with app_cache_connect() as conn:
+        if not sensitive_sites_index_ready(conn):
+            return {
+                "records": [], "total": 0, "category_counts": {}, "index_ready": False,
+                "message": "Sensitive Sites 인덱스가 없습니다. Config에서 Data Index를 먼저 실행하세요.",
+            }
+        if sources is None:
+            sources = ["DLP", "Outbound Mail"]
+        where_sql, params = sensitive_sites_where_clause(category, keyword, sources)
+        total = conn.execute(f"SELECT COUNT(*) FROM sensitive_sites_index WHERE {where_sql}", params).fetchone()[0]
+        count_where_sql, count_params = sensitive_sites_where_clause("전체", keyword, sources)
+        count_rows = conn.execute(
+            f"SELECT category, COUNT(*) FROM sensitive_sites_index WHERE {count_where_sql} GROUP BY category",
+            count_params,
+        ).fetchall()
+        category_counts = {str(category): int(count) for category, count in count_rows}
+        rows = conn.execute(
+            f"""
+            SELECT record_json
+            FROM sensitive_sites_index
+            WHERE {where_sql}
+            ORDER BY event_time DESC, site ASC
+            LIMIT ? OFFSET ?
+            """,
+            params + [int(limit), int(offset)],
+        ).fetchall()
+    records = []
+    for (raw_json,) in rows:
+        try:
+            record = json.loads(raw_json)
+            if isinstance(record, dict):
+                records.append(record)
+        except Exception as e:
+            log.warning(f"Sensitive Sites index record parse failed: {e}")
+    return {
+        "records": records, "total": int(total), "category_counts": category_counts,
+        "index_ready": True, "limit": int(limit), "offset": int(offset),
+    }
 
 # ======================================================
 # Core utilities / file, session, time, and validation helpers
@@ -3260,11 +4165,12 @@ def timeline_event_search_values(event):
 
 
 def timeline_event_matches_keyword(event, keyword):
-    keyword = str(keyword or "").strip().lower()
+    keyword = normalize_timeline_keyword_text(keyword)
     if not keyword:
         return True
 
-    return keyword in " ".join(str(v or "") for v in timeline_event_search_values(event)).lower()
+    search_text = normalize_timeline_keyword_text(" ".join(str(v or "") for v in timeline_event_search_values(event)))
+    return keyword in search_text
 
 
 def normalize_timeline_detection(d, ctx):
@@ -3482,7 +4388,7 @@ def group_timeline_events(events):
         group["count"] = len(group.get("items", []))
         group["time"] = min((item.get("time", "") for item in group.get("items", [])), default=group.get("bucket", ""))
 
-    groups.sort(key=lambda g: g.get("time", ""))
+    groups.sort(key=lambda g: g.get("time", ""), reverse=True)
     return groups
 
 
@@ -3502,27 +4408,20 @@ def timeline_event_tokens(event):
     return sorted(tokens)
 
 
+def normalize_timeline_keyword_text(value):
+    text = str(value or "").strip().lower()
+    text = text.replace("\\", "/")
+    text = re.sub(r"/+", "/", text)
+    return text
+
+
 def timeline_keyword_tokens_from_text(value):
-    text = str(value or "").strip()
-    if not text or text in {"None", "미분류"}:
+    text = normalize_timeline_keyword_text(value)
+    if not text or text in {"none", "미분류"}:
         return []
-
-    tokens = set()
-    full_key = normalize_name_key(text)
-    if 2 <= len(full_key) <= 200:
-        tokens.add(full_key)
-
-    # 영문/숫자/한글 및 보안 이벤트에서 자주 쓰는 구분자(IP, 도메인, 경로, 해시, 메일)를 토큰으로 유지한다.
-    for part in re.findall(r"[0-9A-Za-z가-힣_.@:/\\-]{2,}", text):
-        key = normalize_name_key(part)
-        if len(key) >= 2:
-            tokens.add(key)
-        if "@" in part:
-            local_key = normalize_name_key(part.split("@", 1)[0])
-            if len(local_key) >= 2:
-                tokens.add(local_key)
-
-    return sorted(tokens)
+    if len(text) > 2000:
+        return []
+    return [text]
 
 
 def timeline_event_keyword_tokens(event):
@@ -3591,6 +4490,12 @@ def init_timeline_index_db(conn):
             size INTEGER,
             rows INTEGER,
             indexed_at TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS timeline_meta (
+            key TEXT PRIMARY KEY,
+            value TEXT
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_timeline_tokens_token ON timeline_tokens(token)")
@@ -3743,11 +4648,18 @@ def query_timeline_index(keyword, sources=None, text_keyword=""):
             e.cache_file, e.row_index
         FROM timeline_events e
         WHERE {where_sql}
-        ORDER BY e.time ASC
+        ORDER BY e.time DESC
     """
 
     with sqlite3.connect(TIMELINE_INDEX_DB_PATH) as conn:
         init_timeline_index_db(conn)
+        index_version_row = conn.execute(
+            "SELECT value FROM timeline_meta WHERE key = ?",
+            ("keyword_index_version",),
+        ).fetchone()
+        index_version = index_version_row[0] if index_version_row else ""
+        if index_version != TIMELINE_KEYWORD_INDEX_VERSION:
+            return None, {"message": "Timeline keyword index version mismatch"}
         if keyword_tokens:
             keyword_token_count = conn.execute("SELECT COUNT(*) FROM timeline_keyword_tokens").fetchone()[0]
             if keyword_token_count <= 0:
@@ -3870,7 +4782,16 @@ def rebuild_timeline_index(progress_cb=None, force=False):
             row[0]: {"mtime": float(row[1] or 0), "size": int(row[2] or 0)}
             for row in conn.execute("SELECT path, mtime, size FROM timeline_files").fetchall()
         }
-        if indexed_meta and conn.execute("SELECT COUNT(*) FROM timeline_keyword_tokens").fetchone()[0] <= 0:
+        index_version_row = conn.execute(
+            "SELECT value FROM timeline_meta WHERE key = ?",
+            ("keyword_index_version",),
+        ).fetchone()
+        index_version = index_version_row[0] if index_version_row else ""
+        if index_version != TIMELINE_KEYWORD_INDEX_VERSION:
+            for table in ("timeline_tokens", "timeline_keyword_tokens", "timeline_events", "timeline_files"):
+                conn.execute(f"DELETE FROM {table}")
+            indexed_meta = {}
+        elif indexed_meta and conn.execute("SELECT COUNT(*) FROM timeline_keyword_tokens").fetchone()[0] <= 0:
             indexed_meta = {}
 
         stale_paths = sorted(set(indexed_meta) - current_paths)
@@ -3908,6 +4829,11 @@ def rebuild_timeline_index(progress_cb=None, force=False):
         totals["tokens"] = conn.execute("SELECT COUNT(*) FROM timeline_tokens").fetchone()[0]
         totals["files"] = conn.execute("SELECT COUNT(*) FROM timeline_files").fetchone()[0]
         totals["rows"] = conn.execute("SELECT COALESCE(SUM(rows), 0) FROM timeline_files").fetchone()[0]
+        conn.execute(
+            "INSERT OR REPLACE INTO timeline_meta (key, value) VALUES (?, ?)",
+            ("keyword_index_version", TIMELINE_KEYWORD_INDEX_VERSION),
+        )
+        conn.commit()
 
     totals["built_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     totals["db_path"] = TIMELINE_INDEX_DB_PATH
@@ -3934,6 +4860,61 @@ class DataIndexWorker(QThread):
         except Exception as e:
             log.exception("Data index rebuild failed")
             self.fail.emit(str(e))
+
+
+class DlpAllCacheLoadWorker(QThread):
+    ok = pyqtSignal(object)
+    fail = pyqtSignal(str)
+
+    def __init__(self, category="전체", keyword="", sources=None, limit=SENSITIVE_FILES_PAGE_LIMIT, offset=0):
+        super().__init__()
+        self.category = category or "전체"
+        self.keyword = keyword or ""
+        self.sources = ["DLP", "Outbound Mail"] if sources is None else list(sources)
+        self.limit = limit
+        self.offset = offset
+
+    def run(self):
+        try:
+            payload = query_sensitive_files_index(
+                category=self.category,
+                keyword=self.keyword,
+                sources=self.sources,
+                limit=self.limit,
+                offset=self.offset,
+            )
+            self.ok.emit(payload)
+        except Exception as e:
+            log.exception("Sensitive Files cache load failed")
+            self.fail.emit(str(e))
+
+
+class SensitiveSitesLoadWorker(QThread):
+    ok = pyqtSignal(object)
+    fail = pyqtSignal(str)
+
+    def __init__(self, category="전체", keyword="", sources=None, limit=SENSITIVE_SITES_PAGE_LIMIT, offset=0):
+        super().__init__()
+        self.category = category or "전체"
+        self.keyword = keyword or ""
+        self.sources = ["DLP", "Outbound Mail"] if sources is None else list(sources)
+        self.limit = limit
+        self.offset = offset
+
+    def run(self):
+        try:
+            payload = query_sensitive_sites_index(
+                category=self.category,
+                keyword=self.keyword,
+                sources=self.sources,
+                limit=self.limit,
+                offset=self.offset,
+            )
+            self.ok.emit(payload)
+        except Exception as e:
+            log.exception("Sensitive Sites cache load failed")
+            self.fail.emit(str(e))
+
 
 
 
@@ -6853,6 +7834,7 @@ class MainWindow(QMainWindow):
         self.email_range = ""
         self.xdr_range = ""
         self.dlp_range = ""
+        self.sensitive_files_range = ""
         self.mailscreen_range = ""
 
 
@@ -6871,6 +7853,7 @@ class MainWindow(QMainWindow):
         self.email_emails = []
         self.xdr_detections = []
         self.dlp_rows = []
+        self.sensitive_dlp_rows = []
         self.mailscreen_rows = []
 
         self.trend_colors = self.trend_colors_from_config(self.color_config)
@@ -6964,6 +7947,8 @@ class MainWindow(QMainWindow):
             "Detection": "Detection - XDR",
             "Detection XDR": "Email - XDR",
             "Inbound Mail": "Email",
+            "Forensic": "Timeline",
+            "Forensics": "Timeline",
             "Response": "Firewall",
         }
         self.group_subtab_bars = {}
@@ -7022,10 +8007,14 @@ class MainWindow(QMainWindow):
             ("Outbound Mail", "Outbound Mail", self.tab_outbound_mail()),
             ("File", "File", self.tab_dlp_file()),
         ])
+        self.forensic_tabs = add_group_tab("Forensics", [
+            ("Timeline", "Timeline", self.tab_timeline()),
+            ("Sensitive Files", "Sensitive Files", self.tab_sensitive_files()),
+            ("Sensitive Sites", "Sensitive Sites", self.tab_sensitive_sites()),
+        ])
         self.response_tabs = add_group_tab("Response", [
             ("Firewall", "Firewall", self.tab_firewall()),
             ("Easy Query", "Easy Query", self.tab_live_discover()),
-            ("Timeline", "Timeline", self.tab_timeline()),
         ])
         self.asset_tabs = add_group_tab("Asset", [
             ("Endpoint", "Endpoint", self.tab_endpoint()),
@@ -7044,6 +8033,7 @@ class MainWindow(QMainWindow):
 
         self.tabs.currentChanged.connect(self.on_top_tab_changed)
         self.tabs.tabBarClicked.connect(self.on_top_tab_clicked)
+        QApplication.instance().installEventFilter(self)
 
         # 🔥 시작 시 기본 7일 데이터 로드
         self.apply_date_range()
@@ -11278,6 +12268,27 @@ class MainWindow(QMainWindow):
                 bar.graphicsEffect().setEnabled(False)
             bar.hide()
 
+    def is_child_of_widget(self, widget, parent):
+        while widget is not None:
+            if widget is parent:
+                return True
+            widget = widget.parentWidget() if hasattr(widget, "parentWidget") else None
+        return False
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.MouseButtonPress:
+            visible_bars = [
+                bar for bar in getattr(self, "group_subtab_bars", {}).values()
+                if bar.isVisible()
+            ]
+            if visible_bars and isinstance(obj, QWidget):
+                tab_bar = self.tabs.tabBar() if hasattr(self, "tabs") else None
+                clicked_subtab = any(self.is_child_of_widget(obj, bar) for bar in visible_bars)
+                clicked_top_tab = tab_bar is not None and self.is_child_of_widget(obj, tab_bar)
+                if not clicked_subtab and not clicked_top_tab:
+                    self.hide_all_subtab_bars()
+        return super().eventFilter(obj, event)
+
     def fade_subtab_bar(self, bar, show):
         if not bar:
             return
@@ -11452,6 +12463,14 @@ class MainWindow(QMainWindow):
             if hasattr(self, "_refresh_dlp"):
                 self._refresh_dlp()
 
+        elif current_tab == "Sensitive Files":
+            if hasattr(self, "_refresh_sensitive_files"):
+                self._refresh_sensitive_files()
+
+        elif current_tab == "Sensitive Sites":
+            if hasattr(self, "_refresh_sensitive_sites"):
+                self._refresh_sensitive_sites()
+
         elif current_tab == "Timeline":
             # Timeline은 날짜 선택과 무관하게 검색 시점에 전체 캐시를 비동기로 스캔한다.
             self.timeline_range = "전체 캐시"
@@ -11481,6 +12500,12 @@ class MainWindow(QMainWindow):
 
         elif tab_name == "File":
             text = self.dlp_range
+
+        elif tab_name == "Sensitive Files":
+            text = getattr(self, "sensitive_files_range", "")
+
+        elif tab_name == "Sensitive Sites":
+            text = getattr(self, "sensitive_sites_range", "")
 
         elif tab_name == "Timeline":
             text = getattr(self, "timeline_range", "")
@@ -11848,7 +12873,6 @@ class MainWindow(QMainWindow):
 
             if hasattr(self, "_refresh_dlp"):
                 self._refresh_dlp()
-
         self.apply_date_range()
 
         # 🔥 자동 상태 표시 추가
@@ -12437,6 +13461,8 @@ Command Line :
         self.refresh_tab_table("Email")
         self.refresh_tab_table("Outbound Mail")
         self.refresh_tab_table("File")
+        self.refresh_tab_table("Sensitive Files")
+        self.refresh_tab_table("Sensitive Sites")
         self.refresh_tab_table("Endpoint")
         self.refresh_tab_table("Organization")
         self.refresh_tab_table("Timeline")
@@ -12461,6 +13487,10 @@ Command Line :
             self._refresh_org()
         elif tab_name == "File" and hasattr(self, "_refresh_dlp"):
             self._refresh_dlp()
+        elif tab_name == "Sensitive Files" and hasattr(self, "_refresh_sensitive_files"):
+            self._refresh_sensitive_files()
+        elif tab_name == "Sensitive Sites" and hasattr(self, "_refresh_sensitive_sites"):
+            self._refresh_sensitive_sites()
         elif tab_name == "Timeline" and hasattr(self, "_refresh_timeline"):
             self._refresh_timeline()
 
@@ -15303,6 +16333,864 @@ Command Line :
         QMessageBox.critical(self, "History Query Error", err)
 
     # ==================================================
+    # Sensitive Files Tab
+    # ==================================================
+    def tab_sensitive_files(self):
+        root = QWidget()
+        root.setObjectName("sensitiveFilesRoot")
+        root.setStyleSheet(f"""
+            QWidget#sensitiveFilesRoot {{
+                background: {UI_THEME['surface']};
+            }}
+            QTableWidget {{
+                background: {UI_THEME['surface']};
+                border: 1px solid {UI_THEME['border_soft']};
+                border-radius: 12px;
+                gridline-color: {UI_THEME['border_soft']};
+            }}
+            QHeaderView::section {{
+                background: {UI_THEME['surface_soft']};
+                color: {UI_THEME['text']};
+                border: 0;
+                padding: 8px;
+                font-weight: 900;
+            }}
+        """)
+        layout = QVBoxLayout(root)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(10)
+
+        title_row = QHBoxLayout()
+        subtitle = QLabel("민감 파일 후보를 분류별로 모아보고, 선택한 파일의 사용자/경로/원본 이벤트를 확인합니다.")
+        subtitle.setStyleSheet(f"color:{UI_THEME['text_muted']}; font-size:12px; font-weight:700;")
+        title_row.addWidget(subtitle)
+        self.sensitive_files_count_label = QLabel("표시 0건")
+        self.sensitive_files_count_label.setStyleSheet(f"color:{UI_THEME['text']}; font-size:12px; font-weight:900;")
+        title_row.addWidget(self.sensitive_files_count_label)
+        title_row.addStretch(1)
+
+        self.sensitive_files_dlp_chk = QCheckBox("DLP")
+        self.sensitive_files_dlp_chk.setChecked(True)
+        self.sensitive_files_outbound_chk = QCheckBox("아웃바운드 메일")
+        self.sensitive_files_outbound_chk.setChecked(True)
+        sensitive_source_checkbox_style = f"""
+            QCheckBox {{
+                color: {UI_THEME['text']};
+                font-weight: 800;
+                spacing: 6px;
+                background: transparent;
+            }}
+            QCheckBox::indicator {{
+                width: 16px;
+                height: 16px;
+                border: 1px solid {UI_THEME['accent']};
+                border-radius: 4px;
+                background: {UI_THEME['surface']};
+            }}
+            QCheckBox::indicator:checked {{
+                background: {UI_THEME['accent']};
+                border: 1px solid {UI_THEME['accent']};
+            }}
+        """
+        for chk in (self.sensitive_files_dlp_chk, self.sensitive_files_outbound_chk):
+            chk.setMinimumHeight(32)
+            chk.setStyleSheet(sensitive_source_checkbox_style)
+        title_row.addWidget(self.sensitive_files_dlp_chk)
+        title_row.addWidget(self.sensitive_files_outbound_chk)
+
+        self.sensitive_files_reset_btn = QPushButton("새로고침")
+        self.sensitive_files_reset_btn.setMinimumHeight(36)
+        self.sensitive_files_reset_btn.setStyleSheet(self.button_style("secondary"))
+        title_row.addWidget(self.sensitive_files_reset_btn)
+
+        self.sensitive_files_filter = QLineEdit()
+        self.sensitive_files_filter.setPlaceholderText("파일명 / 사용자 / 경로 검색")
+        self.sensitive_files_filter.setMinimumHeight(36)
+        self.sensitive_files_filter.setMaximumWidth(360)
+        title_row.addWidget(self.sensitive_files_filter)
+        layout.addLayout(title_row)
+
+        splitter = QSplitter(Qt.Horizontal)
+
+        category_table = QTableWidget()
+        category_table.setColumnCount(1)
+        category_table.setHorizontalHeaderLabels(["분류"])
+        category_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        category_table.verticalHeader().setVisible(False)
+        category_table.setSelectionBehavior(QTableWidget.SelectRows)
+        category_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        category_table.setMaximumWidth(280)
+
+        file_table = QTableWidget()
+        file_headers = ["파일명", "분류", "탐지 키워드", "사용자", "부서", "시간"]
+        file_table.setColumnCount(len(file_headers))
+        file_table.setHorizontalHeaderLabels(file_headers)
+        file_header = file_table.horizontalHeader()
+        file_header.setSectionsClickable(False)
+        file_header.setSortIndicatorShown(False)
+        file_header.setSectionResizeMode(0, QHeaderView.Stretch)
+        for col, width in ((1, 140), (2, 160), (3, 110), (4, 140), (5, 145)):
+            file_header.setSectionResizeMode(col, QHeaderView.Interactive)
+            file_table.setColumnWidth(col, width)
+        file_table.verticalHeader().setVisible(False)
+        file_table.setSelectionBehavior(QTableWidget.SelectRows)
+        file_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        file_table.setSortingEnabled(False)
+
+        more_button = QPushButton("더 보기")
+        more_button.setStyleSheet(self.button_style("secondary"))
+        more_button.setMinimumHeight(34)
+        file_panel = QWidget()
+        file_panel_layout = QVBoxLayout(file_panel)
+        file_panel_layout.setContentsMargins(0, 0, 0, 0)
+        file_panel_layout.setSpacing(6)
+        file_panel_layout.addWidget(file_table, 1)
+        more_row = QHBoxLayout()
+        more_row.addStretch(1)
+        more_row.addWidget(more_button)
+        more_row.addStretch(1)
+        file_panel_layout.addLayout(more_row)
+
+        detail = QTextEdit()
+        detail.setReadOnly(True)
+        detail.setMinimumWidth(360)
+        detail.setStyleSheet(f"""
+            QTextEdit {{
+                background: {UI_THEME['surface']};
+                color: {UI_THEME['text']};
+                border: 1px solid {UI_THEME['border_soft']};
+                border-radius: 12px;
+                padding: 10px;
+                font-family: {UI_FONT_FAMILY};
+                font-size: 12px;
+            }}
+        """)
+
+        splitter.addWidget(category_table)
+        splitter.addWidget(file_panel)
+        splitter.addWidget(detail)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 2)
+        splitter.setStretchFactor(2, 1)
+        layout.addWidget(splitter, 1)
+
+        raw_button = QPushButton("Raw 보기")
+        raw_button.setStyleSheet(self.button_style("secondary"))
+        raw_button.setMinimumHeight(36)
+        bottom = QHBoxLayout()
+        bottom.addStretch(1)
+        bottom.addWidget(raw_button)
+        layout.addLayout(bottom)
+
+        category_specs = SENSITIVE_FILE_CATEGORY_SPECS
+
+        def row_text(row):
+            field_text = " ".join(str(row.get(k, "") or "") for k in (
+                "filename", "destination", "destination_type", "item_details",
+                "destinationDetails", "machine_name", "client_name", "event_id",
+            ))
+            return f"{field_text} {json.dumps(row, ensure_ascii=False, default=str)}".lower()
+
+        def classify_sensitive_row(row):
+            text = row_text(row)
+            matched_categories = []
+            matched_keywords = []
+            for category, keywords in category_specs:
+                hits = [kw for kw in keywords if kw.lower() in text]
+                if hits:
+                    matched_categories.append(category)
+                    matched_keywords.extend(hits)
+            if not matched_categories:
+                return None
+            return {
+                "category": matched_categories[0],
+                "categories": matched_categories,
+                "keywords": sorted(set(matched_keywords), key=lambda x: x.lower()),
+            }
+
+        def display_file_name(path_text):
+            text = str(path_text or "None").strip()
+            if not text or text == "None":
+                return "None"
+            normalized = text.replace("\\", "/").rstrip("/")
+            return normalized.rsplit("/", 1)[-1] or text
+
+        def resolve_sensitive_user_name(machine_name, client_name):
+            identity = resolve_identity_by_hostname(machine_name)
+            user_name = str(identity.get("user_name", "") or "").strip()
+            if user_name and user_name != "None":
+                return user_name
+            directory_info = get_directory_user_info(client_name)
+            directory_name = str(directory_info.get("name", "") or "").strip()
+            if directory_name:
+                return directory_name
+            org_name = get_org_user_name_by_user_id(client_name)
+            if org_name:
+                return org_name
+            return str(client_name or "None")
+
+        def make_sensitive_record(row):
+            classified = classify_sensitive_row(row)
+            if not classified:
+                return None
+            machine_name = str(row.get("machine_name", "None") or "None")
+            client_name = str(row.get("client_name", "None") or "None")
+            dept_name, _ = get_dept_by_hostname(machine_name)
+            filename = str(row.get("filename", "None") or "None")
+            destination = str(row.get("destination", "None") or "None")
+            destination_detail = str(row.get("item_details") or row.get("destinationDetails") or "None")
+            return {
+                "row": row,
+                "category": classified["category"],
+                "categories": classified["categories"],
+                "keywords": classified["keywords"],
+                "event_time": str(row.get("eventtimelocal", "") or ""),
+                "event": format_dlp_event_id(row.get("event_id", "None")),
+                "machine": machine_name,
+                "dept": dept_name,
+                "user": resolve_sensitive_user_name(machine_name, client_name),
+                "user_id": client_name,
+                "filename": filename,
+                "display_filename": display_file_name(filename),
+                "destination": destination,
+                "destination_type": str(row.get("destination_type", "None") or "None"),
+                "destination_detail": destination_detail,
+                "filehash": str(row.get("filehash", "None") or "None"),
+            }
+
+        def record_search_text(record):
+            return " ".join(str(record.get(k, "") or "") for k in (
+                "source", "category", "keywords", "event_time", "event", "machine",
+                "dept", "user", "user_id", "filename", "display_filename", "destination", "destination_type",
+                "destination_detail", "filehash", "mail_subject", "mail_sender", "mail_receiver", "mail_policy", "mail_attach_raw",
+            )).lower()
+
+        def render_detail(record=None):
+            if not record:
+                detail.setPlainText("파일을 선택하면 상세 정보가 표시됩니다.")
+                return
+            if record.get("source") == "Outbound Mail":
+                detail.setPlainText("\n".join([
+                    "출처: Outbound Mail",
+                    f"파일명: {record['display_filename']}",
+                    f"분류: {', '.join(record['categories'])}",
+                    f"탐지 키워드: {', '.join(record['keywords'])}",
+                    "",
+                    f"사용자: {record['user']}",
+                    f"User ID: {record['user_id']}",
+                    f"부서: {record['dept']}",
+                    "호스트: None",
+                    "",
+                    f"이벤트: {record['event']}",
+                    f"시간: {record['event_time']}",
+                    f"대상 유형: {record['destination_type']}",
+                    f"수신자: {record.get('mail_receiver', record['destination'])}",
+                    f"메일 제목: {record.get('mail_subject', 'None')}",
+                    f"발신자: {record.get('mail_sender', 'None')}",
+                    f"메일 크기: {record.get('mail_size', 'None')}",
+                    f"적용 정책: {record.get('mail_policy', 'None')}",
+                    f"메일 처리: {record.get('mail_process', 'None')}",
+                    f"전송 결과: {record.get('mail_send_result', 'None')}",
+                    f"첨부 원문: {record.get('mail_attach_raw', 'None')}",
+                    "파일 해시: None",
+                ]))
+                return
+            detail.setPlainText("\n".join([
+                "출처: DLP",
+                f"파일명: {record['display_filename']}",
+                f"전체 경로: {record['filename']}",
+                f"분류: {', '.join(record['categories'])}",
+                f"탐지 키워드: {', '.join(record['keywords'])}",
+                "",
+                f"사용자: {record['user']}",
+                f"User ID: {record['user_id']}",
+                f"부서: {record['dept']}",
+                f"호스트: {record['machine']}",
+                "",
+                f"이벤트: {record['event']}",
+                f"시간: {record['event_time']}",
+                f"대상 유형: {record['destination_type']}",
+                f"대상: {record['destination']}",
+                f"목적지 세부정보: {record['destination_detail']}",
+                f"파일 해시: {record['filehash']}",
+            ]))
+
+        self.sensitive_file_records = []
+        self.sensitive_file_current_category = "전체"
+        self.sensitive_file_category_counts = {}
+        self.sensitive_files_total = 0
+        self.sensitive_files_offset = 0
+        self.sensitive_files_loaded = False
+
+        def selected_sources():
+            return sensitive_files_index_sources(
+                include_dlp=self.sensitive_files_dlp_chk.isChecked(),
+                include_outbound=self.sensitive_files_outbound_chk.isChecked(),
+            )
+
+        def render_categories():
+            counts = getattr(self, "sensitive_file_category_counts", {}) or {}
+            categories = ["전체"] + [category for category, _ in category_specs if counts.get(category, 0) > 0]
+            signals_were_blocked = category_table.blockSignals(True)
+            category_table.setSortingEnabled(False)
+            category_table.clearContents()
+            category_table.setRowCount(0)
+            for category in categories:
+                r = category_table.rowCount()
+                category_table.insertRow(r)
+                item = QTableWidgetItem(category)
+                item.setData(Qt.UserRole, category)
+                category_table.setItem(r, 0, item)
+            category_table.setSortingEnabled(False)
+            target_category = getattr(self, "sensitive_file_current_category", "전체")
+            selected_row = 0
+            for row in range(category_table.rowCount()):
+                item = category_table.item(row, 0)
+                if item and item.data(Qt.UserRole) == target_category:
+                    selected_row = row
+                    break
+            if category_table.rowCount() > 0:
+                category_table.selectRow(selected_row)
+            category_table.blockSignals(signals_were_blocked)
+
+        def render_files():
+            records = self.sensitive_file_records or []
+            total_records = int(getattr(self, "sensitive_files_total", 0) or 0)
+            shown_count = int(getattr(self, "sensitive_files_offset", 0) or 0) + len(records)
+            shown_count = min(shown_count, total_records)
+            selected_category = getattr(self, "sensitive_file_current_category", "전체")
+            scope_label = "전체" if selected_category == "전체" else selected_category
+            self.sensitive_files_count_label.setText(
+                f"표시 {shown_count:,}건 / {scope_label} {total_records:,}건"
+            )
+            more_button.setEnabled(shown_count < total_records)
+
+            token = getattr(self, "sensitive_file_render_token", 0) + 1
+            self.sensitive_file_render_token = token
+            batch_size = 150
+            file_table.setSortingEnabled(False)
+            file_table.setUpdatesEnabled(False)
+            file_table.clearContents()
+            file_table.setRowCount(len(records))
+            render_detail(None)
+
+            def fill_batch(start=0):
+                if token != getattr(self, "sensitive_file_render_token", 0):
+                    return
+                end = min(start + batch_size, len(records))
+                for r in range(start, end):
+                    record = records[r]
+                    values = [
+                        record["display_filename"],
+                        record["category"],
+                        ", ".join(record["keywords"]),
+                        record["user"],
+                        record["dept"],
+                        record["event_time"],
+                    ]
+                    for c, value in enumerate(values):
+                        item = QTableWidgetItem(str(value or "None"))
+                        if c == 0:
+                            item.setData(Qt.UserRole, record)
+                        file_table.setItem(r, c, item)
+
+                if end < len(records):
+                    QTimer.singleShot(0, lambda: fill_batch(end))
+                    return
+
+                file_table.setUpdatesEnabled(True)
+                file_table.setSortingEnabled(False)
+                if file_table.rowCount() > 0:
+                    file_table.selectRow(0)
+                    first = file_table.item(0, 0)
+                    render_detail(first.data(Qt.UserRole) if first else None)
+                else:
+                    render_detail(None)
+
+            fill_batch()
+
+        def on_category_selected():
+            selected = category_table.selectedItems()
+            if selected:
+                category = selected[0].data(Qt.UserRole) or "전체"
+                if category == getattr(self, "sensitive_file_current_category", "전체"):
+                    return
+                self.sensitive_file_current_category = category
+                reset_sensitive_filter()
+
+        def on_file_selected():
+            selected = file_table.selectedItems()
+            if not selected:
+                render_detail(None)
+                return
+            item = file_table.item(selected[0].row(), 0)
+            render_detail(item.data(Qt.UserRole) if item else None)
+
+        def open_selected_raw():
+            selected = file_table.selectedItems()
+            if not selected:
+                QMessageBox.information(self, "Sensitive Files", "선택된 파일이 없습니다.")
+                return
+            item = file_table.item(selected[0].row(), 0)
+            record = item.data(Qt.UserRole) if item else None
+            if record:
+                self.show_raw_dialog(record.get("row"))
+
+        def finish_sensitive_reload(payload):
+            payload = payload or {}
+            self.sensitive_file_records = payload.get("records") or []
+            self.sensitive_file_category_counts = payload.get("category_counts") or {}
+            self.sensitive_files_total = int(payload.get("total", 0) or 0)
+            self.sensitive_files_offset = int(payload.get("offset", 0) or 0)
+            self.sensitive_files_range = "전체 캐시"
+            self.sensitive_files_loaded = bool(payload.get("index_ready", True))
+            self.update_range_label()
+            render_categories()
+            render_files()
+            self.sensitive_files_reset_btn.setEnabled(True)
+            self.sensitive_files_reset_btn.setText("새로고침")
+            if payload.get("index_ready", True):
+                self.set_status("Sensitive Files refreshed", color="green", spinning=False)
+            else:
+                self.set_status("Sensitive Files index required", color="orange", spinning=False)
+                detail.setPlainText(payload.get("message") or "Sensitive Files 인덱스가 없습니다. Data Index를 먼저 실행하세요.")
+
+        def fail_sensitive_reload(message):
+            self.sensitive_files_reset_btn.setEnabled(True)
+            self.sensitive_files_reset_btn.setText("새로고침")
+            self.set_status("Sensitive Files refresh FAIL", color="red", spinning=False)
+            QMessageBox.critical(self, "Sensitive Files", f"새로고침 실패: {message}")
+
+        def reset_sensitive_filter(offset=0, append=False):
+            worker = getattr(self, "sensitive_files_worker", None)
+            if worker is not None and worker.isRunning():
+                return
+            if not append:
+                self.sensitive_files_offset = 0
+            category = getattr(self, "sensitive_file_current_category", "전체")
+            keyword = self.sensitive_files_filter.text().strip()
+            sources = selected_sources()
+            self.sensitive_file_render_token = getattr(self, "sensitive_file_render_token", 0) + 1
+            file_table.setUpdatesEnabled(True)
+            self.sensitive_files_reset_btn.setEnabled(False)
+            self.sensitive_files_reset_btn.setText("새로고침중...")
+            self.set_status("Sensitive Files refresh", color="blue", spinning=True)
+            self.sensitive_files_worker = DlpAllCacheLoadWorker(
+                category=category,
+                keyword=keyword,
+                sources=sources,
+                limit=SENSITIVE_FILES_PAGE_LIMIT,
+                offset=offset,
+            )
+            if append:
+                self.sensitive_files_worker.ok.connect(finish_sensitive_append)
+            else:
+                self.sensitive_files_worker.ok.connect(finish_sensitive_reload)
+            self.sensitive_files_worker.fail.connect(fail_sensitive_reload)
+            self.sensitive_files_worker.start()
+
+        def finish_sensitive_append(payload):
+            payload = payload or {}
+            existing = self.sensitive_file_records or []
+            self.sensitive_file_records = existing + (payload.get("records") or [])
+            self.sensitive_file_category_counts = payload.get("category_counts") or getattr(self, "sensitive_file_category_counts", {})
+            self.sensitive_files_total = int(payload.get("total", 0) or getattr(self, "sensitive_files_total", 0) or 0)
+            self.sensitive_files_offset = int(payload.get("offset", 0) or 0)
+            render_categories()
+            render_files()
+            self.sensitive_files_reset_btn.setEnabled(True)
+            self.sensitive_files_reset_btn.setText("새로고침")
+            self.set_status("Sensitive Files more loaded", color="green", spinning=False)
+
+        def refresh():
+            if not getattr(self, "sensitive_files_loaded", False):
+                reset_sensitive_filter()
+                return
+            render_categories()
+            render_files()
+
+        def on_sensitive_source_changed():
+            self.sensitive_file_current_category = "전체"
+            reset_sensitive_filter()
+
+        def load_more_sensitive_files():
+            offset = int(getattr(self, "sensitive_files_offset", 0) or 0) + len(self.sensitive_file_records or [])
+            if offset >= int(getattr(self, "sensitive_files_total", 0) or 0):
+                return
+            reset_sensitive_filter(offset=offset, append=True)
+
+        filter_timer = QTimer(root)
+        filter_timer.setSingleShot(True)
+        filter_timer.setInterval(250)
+        filter_timer.timeout.connect(lambda: reset_sensitive_filter())
+
+        category_table.itemSelectionChanged.connect(on_category_selected)
+        file_table.itemSelectionChanged.connect(on_file_selected)
+        self.sensitive_files_filter.textChanged.connect(lambda: filter_timer.start())
+        self.sensitive_files_dlp_chk.stateChanged.connect(on_sensitive_source_changed)
+        self.sensitive_files_outbound_chk.stateChanged.connect(on_sensitive_source_changed)
+        self.sensitive_files_reset_btn.clicked.connect(reset_sensitive_filter)
+        more_button.clicked.connect(load_more_sensitive_files)
+        raw_button.clicked.connect(open_selected_raw)
+
+        self._refresh_sensitive_files = refresh
+        refresh()
+        return root
+
+    # ==================================================
+    # Sensitive Sites Tab
+    # ==================================================
+    def tab_sensitive_sites(self):
+        root = QWidget()
+        root.setObjectName("sensitiveSitesRoot")
+        root.setStyleSheet(f"""
+            QWidget#sensitiveSitesRoot {{ background: {UI_THEME['surface']}; }}
+            QTableWidget {{ background: {UI_THEME['surface']}; border: 1px solid {UI_THEME['border_soft']}; border-radius: 12px; gridline-color: {UI_THEME['border_soft']}; }}
+            QHeaderView::section {{ background: {UI_THEME['surface_soft']}; color: {UI_THEME['text']}; border: 0; padding: 8px; font-weight: 900; }}
+        """)
+        layout = QVBoxLayout(root)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(10)
+
+        title_row = QHBoxLayout()
+        subtitle = QLabel("민감 사이트 후보를 분류별로 모아보고, 선택한 사이트의 사용자/목적지/원본 이벤트를 확인합니다.")
+        subtitle.setStyleSheet(f"color:{UI_THEME['text_muted']}; font-size:12px; font-weight:700;")
+        title_row.addWidget(subtitle)
+        self.sensitive_sites_count_label = QLabel("표시 0건")
+        self.sensitive_sites_count_label.setStyleSheet(f"color:{UI_THEME['text']}; font-size:12px; font-weight:900;")
+        title_row.addWidget(self.sensitive_sites_count_label)
+        title_row.addStretch(1)
+
+        self.sensitive_sites_dlp_chk = QCheckBox("DLP")
+        self.sensitive_sites_dlp_chk.setChecked(True)
+        self.sensitive_sites_outbound_chk = QCheckBox("아웃바운드 메일")
+        self.sensitive_sites_outbound_chk.setChecked(True)
+        checkbox_style = f"""
+            QCheckBox {{ color: {UI_THEME['text']}; font-weight: 800; spacing: 6px; background: transparent; }}
+            QCheckBox::indicator {{ width: 16px; height: 16px; border: 1px solid {UI_THEME['accent']}; border-radius: 4px; background: {UI_THEME['surface']}; }}
+            QCheckBox::indicator:checked {{ background: {UI_THEME['accent']}; border: 1px solid {UI_THEME['accent']}; }}
+        """
+        for chk in (self.sensitive_sites_dlp_chk, self.sensitive_sites_outbound_chk):
+            chk.setMinimumHeight(32)
+            chk.setStyleSheet(checkbox_style)
+        title_row.addWidget(self.sensitive_sites_dlp_chk)
+        title_row.addWidget(self.sensitive_sites_outbound_chk)
+
+        self.sensitive_sites_reset_btn = QPushButton("새로고침")
+        self.sensitive_sites_reset_btn.setMinimumHeight(36)
+        self.sensitive_sites_reset_btn.setStyleSheet(self.button_style("secondary"))
+        title_row.addWidget(self.sensitive_sites_reset_btn)
+
+        self.sensitive_sites_filter = QLineEdit()
+        self.sensitive_sites_filter.setPlaceholderText("사이트 / 사용자 / URL 검색")
+        self.sensitive_sites_filter.setMinimumHeight(36)
+        self.sensitive_sites_filter.setMaximumWidth(360)
+        title_row.addWidget(self.sensitive_sites_filter)
+        layout.addLayout(title_row)
+
+        splitter = QSplitter(Qt.Horizontal)
+        category_table = QTableWidget()
+        category_table.setColumnCount(1)
+        category_table.setHorizontalHeaderLabels(["분류"])
+        category_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        category_table.verticalHeader().setVisible(False)
+        category_table.setSelectionBehavior(QTableWidget.SelectRows)
+        category_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        category_table.setMaximumWidth(280)
+
+        site_table = QTableWidget()
+        site_headers = ["사이트", "분류", "탐지 키워드", "사용자", "부서", "시간"]
+        site_table.setColumnCount(len(site_headers))
+        site_table.setHorizontalHeaderLabels(site_headers)
+        site_header = site_table.horizontalHeader()
+        site_header.setSectionsClickable(False)
+        site_header.setSortIndicatorShown(False)
+        site_header.setSectionResizeMode(0, QHeaderView.Stretch)
+        for col, width in ((1, 150), (2, 160), (3, 110), (4, 140), (5, 145)):
+            site_header.setSectionResizeMode(col, QHeaderView.Interactive)
+            site_table.setColumnWidth(col, width)
+        site_table.verticalHeader().setVisible(False)
+        site_table.setSelectionBehavior(QTableWidget.SelectRows)
+        site_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        site_table.setSortingEnabled(False)
+
+        more_button = QPushButton("더 보기")
+        more_button.setStyleSheet(self.button_style("secondary"))
+        more_button.setMinimumHeight(34)
+        site_panel = QWidget()
+        site_panel_layout = QVBoxLayout(site_panel)
+        site_panel_layout.setContentsMargins(0, 0, 0, 0)
+        site_panel_layout.setSpacing(6)
+        site_panel_layout.addWidget(site_table, 1)
+        more_row = QHBoxLayout()
+        more_row.addStretch(1)
+        more_row.addWidget(more_button)
+        more_row.addStretch(1)
+        site_panel_layout.addLayout(more_row)
+
+        detail = QTextEdit()
+        detail.setReadOnly(True)
+        detail.setStyleSheet(f"""
+            QTextEdit {{ background: {UI_THEME['surface']}; color: {UI_THEME['text']}; border: 1px solid {UI_THEME['border_soft']}; border-radius: 12px; padding: 10px; font-family: {UI_FONT_FAMILY}; font-size: 12px; }}
+        """)
+
+        splitter.addWidget(category_table)
+        splitter.addWidget(site_panel)
+        splitter.addWidget(detail)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 2)
+        splitter.setStretchFactor(2, 1)
+        layout.addWidget(splitter, 1)
+
+        raw_button = QPushButton("Raw 보기")
+        raw_button.setStyleSheet(self.button_style("secondary"))
+        raw_button.setMinimumHeight(36)
+        bottom = QHBoxLayout()
+        bottom.addStretch(1)
+        bottom.addWidget(raw_button)
+        layout.addLayout(bottom)
+
+        self.sensitive_site_records = []
+        self.sensitive_site_current_category = "전체"
+        self.sensitive_site_category_counts = {}
+        self.sensitive_sites_total = 0
+        self.sensitive_sites_offset = 0
+        self.sensitive_sites_loaded = False
+
+        def selected_sources():
+            return sensitive_sites_index_sources(
+                include_dlp=self.sensitive_sites_dlp_chk.isChecked(),
+                include_outbound=self.sensitive_sites_outbound_chk.isChecked(),
+            )
+
+        def render_detail(record=None):
+            if not record:
+                detail.setPlainText("사이트를 선택하면 상세 정보가 표시됩니다.")
+                return
+            lines = [
+                f"출처: {record.get('source', 'None')}",
+                f"사이트: {record.get('site', 'None')}",
+                f"URL/대상: {record.get('url', 'None')}",
+                f"분류: {', '.join(record.get('categories', []) or [])}",
+                f"탐지 키워드: {', '.join(record.get('keywords', []) or [])}",
+                "",
+                f"사용자: {record.get('user', 'None')}",
+                f"User ID: {record.get('user_id', 'None')}",
+                f"부서: {record.get('dept', 'None')}",
+                f"호스트: {record.get('machine', 'None')}",
+                "",
+                f"이벤트: {record.get('event', 'None')}",
+                f"시간: {record.get('event_time', 'None')}",
+            ]
+            if record.get("source") == "Outbound Mail":
+                lines.extend([
+                    f"메일 제목: {record.get('subject', 'None')}",
+                    f"발신자: {record.get('sender', 'None')}",
+                    f"수신자: {record.get('receiver', 'None')}",
+                    f"적용 정책: {record.get('policy', 'None')}",
+                    f"메일 처리: {record.get('mail_process', 'None')}",
+                    f"전송 결과: {record.get('mail_send_result', 'None')}",
+                ])
+            else:
+                lines.extend([
+                    f"대상: {record.get('destination', 'None')}",
+                    f"목적지 세부정보: {record.get('detail', 'None')}",
+                    f"파일명: {record.get('filename', 'None')}",
+                    f"파일 해시: {record.get('filehash', 'None')}",
+                ])
+            detail.setPlainText("\n".join(lines))
+
+        def render_categories():
+            counts = getattr(self, "sensitive_site_category_counts", {}) or {}
+            categories = ["전체"] + [category for category, _ in SENSITIVE_SITE_CATEGORY_SPECS if counts.get(category, 0) > 0]
+            signals_were_blocked = category_table.blockSignals(True)
+            category_table.clearContents()
+            category_table.setRowCount(0)
+            for category in categories:
+                r = category_table.rowCount()
+                category_table.insertRow(r)
+                item = QTableWidgetItem(category)
+                item.setData(Qt.UserRole, category)
+                category_table.setItem(r, 0, item)
+            target_category = getattr(self, "sensitive_site_current_category", "전체")
+            selected_row = 0
+            for row in range(category_table.rowCount()):
+                item = category_table.item(row, 0)
+                if item and item.data(Qt.UserRole) == target_category:
+                    selected_row = row
+                    break
+            if category_table.rowCount() > 0:
+                category_table.selectRow(selected_row)
+            category_table.blockSignals(signals_were_blocked)
+
+        def render_sites():
+            records = self.sensitive_site_records or []
+            total_records = int(getattr(self, "sensitive_sites_total", 0) or 0)
+            shown_count = min(int(getattr(self, "sensitive_sites_offset", 0) or 0) + len(records), total_records)
+            selected_category = getattr(self, "sensitive_site_current_category", "전체")
+            scope_label = "전체" if selected_category == "전체" else selected_category
+            self.sensitive_sites_count_label.setText(f"표시 {shown_count:,}건 / {scope_label} {total_records:,}건")
+            more_button.setEnabled(shown_count < total_records)
+
+            token = getattr(self, "sensitive_site_render_token", 0) + 1
+            self.sensitive_site_render_token = token
+            site_table.setSortingEnabled(False)
+            site_table.setUpdatesEnabled(False)
+            site_table.clearContents()
+            site_table.setRowCount(len(records))
+            render_detail(None)
+
+            def fill_batch(start=0):
+                if token != getattr(self, "sensitive_site_render_token", 0):
+                    return
+                end = min(start + 150, len(records))
+                for r in range(start, end):
+                    record = records[r]
+                    values = [
+                        record.get("site", "None"),
+                        record.get("category", "None"),
+                        ", ".join(record.get("keywords", []) or []),
+                        record.get("user", "None"),
+                        record.get("dept", "None"),
+                        record.get("event_time", "None"),
+                    ]
+                    for c, value in enumerate(values):
+                        item = QTableWidgetItem(str(value or "None"))
+                        if c == 0:
+                            item.setData(Qt.UserRole, record)
+                        site_table.setItem(r, c, item)
+                if end < len(records):
+                    QTimer.singleShot(0, lambda: fill_batch(end))
+                    return
+                site_table.setUpdatesEnabled(True)
+                if site_table.rowCount() > 0:
+                    site_table.selectRow(0)
+                    first = site_table.item(0, 0)
+                    render_detail(first.data(Qt.UserRole) if first else None)
+                else:
+                    render_detail(None)
+            fill_batch()
+
+        def on_category_selected():
+            selected = category_table.selectedItems()
+            if selected:
+                category = selected[0].data(Qt.UserRole) or "전체"
+                if category == getattr(self, "sensitive_site_current_category", "전체"):
+                    return
+                self.sensitive_site_current_category = category
+                reset_sensitive_sites_filter()
+
+        def on_site_selected():
+            selected = site_table.selectedItems()
+            if not selected:
+                render_detail(None)
+                return
+            item = site_table.item(selected[0].row(), 0)
+            render_detail(item.data(Qt.UserRole) if item else None)
+
+        def open_selected_raw():
+            selected = site_table.selectedItems()
+            if not selected:
+                QMessageBox.information(self, "Sensitive Sites", "선택된 사이트가 없습니다.")
+                return
+            item = site_table.item(selected[0].row(), 0)
+            record = item.data(Qt.UserRole) if item else None
+            if record:
+                self.show_raw_dialog(record.get("row"))
+
+        def finish_reload(payload):
+            payload = payload or {}
+            self.sensitive_site_records = payload.get("records") or []
+            self.sensitive_site_category_counts = payload.get("category_counts") or {}
+            self.sensitive_sites_total = int(payload.get("total", 0) or 0)
+            self.sensitive_sites_offset = int(payload.get("offset", 0) or 0)
+            self.sensitive_sites_range = "전체 캐시"
+            self.sensitive_sites_loaded = bool(payload.get("index_ready", True))
+            self.update_range_label()
+            render_categories()
+            render_sites()
+            self.sensitive_sites_reset_btn.setEnabled(True)
+            self.sensitive_sites_reset_btn.setText("새로고침")
+            if payload.get("index_ready", True):
+                self.set_status("Sensitive Sites refreshed", color="green", spinning=False)
+            else:
+                self.set_status("Sensitive Sites index required", color="orange", spinning=False)
+                detail.setPlainText(payload.get("message") or "Sensitive Sites 인덱스가 없습니다. Data Index를 먼저 실행하세요.")
+
+        def finish_append(payload):
+            payload = payload or {}
+            self.sensitive_site_records = (self.sensitive_site_records or []) + (payload.get("records") or [])
+            self.sensitive_site_category_counts = payload.get("category_counts") or getattr(self, "sensitive_site_category_counts", {})
+            self.sensitive_sites_total = int(payload.get("total", 0) or getattr(self, "sensitive_sites_total", 0) or 0)
+            self.sensitive_sites_offset = int(payload.get("offset", 0) or 0)
+            render_categories()
+            render_sites()
+            self.sensitive_sites_reset_btn.setEnabled(True)
+            self.sensitive_sites_reset_btn.setText("새로고침")
+            self.set_status("Sensitive Sites more loaded", color="green", spinning=False)
+
+        def fail_reload(message):
+            self.sensitive_sites_reset_btn.setEnabled(True)
+            self.sensitive_sites_reset_btn.setText("새로고침")
+            self.set_status("Sensitive Sites refresh FAIL", color="red", spinning=False)
+            QMessageBox.critical(self, "Sensitive Sites", f"새로고침 실패: {message}")
+
+        def reset_sensitive_sites_filter(offset=0, append=False):
+            worker = getattr(self, "sensitive_sites_worker", None)
+            if worker is not None and worker.isRunning():
+                return
+            if not append:
+                self.sensitive_sites_offset = 0
+            self.sensitive_site_render_token = getattr(self, "sensitive_site_render_token", 0) + 1
+            site_table.setUpdatesEnabled(True)
+            self.sensitive_sites_reset_btn.setEnabled(False)
+            self.sensitive_sites_reset_btn.setText("새로고침중...")
+            self.set_status("Sensitive Sites refresh", color="blue", spinning=True)
+            self.sensitive_sites_worker = SensitiveSitesLoadWorker(
+                category=getattr(self, "sensitive_site_current_category", "전체"),
+                keyword=self.sensitive_sites_filter.text().strip(),
+                sources=selected_sources(),
+                limit=SENSITIVE_SITES_PAGE_LIMIT,
+                offset=offset,
+            )
+            self.sensitive_sites_worker.ok.connect(finish_append if append else finish_reload)
+            self.sensitive_sites_worker.fail.connect(fail_reload)
+            self.sensitive_sites_worker.start()
+
+        def refresh():
+            if not getattr(self, "sensitive_sites_loaded", False):
+                reset_sensitive_sites_filter()
+                return
+            render_categories()
+            render_sites()
+
+        def on_source_changed():
+            self.sensitive_site_current_category = "전체"
+            reset_sensitive_sites_filter()
+
+        def load_more():
+            offset = int(getattr(self, "sensitive_sites_offset", 0) or 0) + len(self.sensitive_site_records or [])
+            if offset >= int(getattr(self, "sensitive_sites_total", 0) or 0):
+                return
+            reset_sensitive_sites_filter(offset=offset, append=True)
+
+        filter_timer = QTimer(root)
+        filter_timer.setSingleShot(True)
+        filter_timer.setInterval(250)
+        filter_timer.timeout.connect(lambda: reset_sensitive_sites_filter())
+        category_table.itemSelectionChanged.connect(on_category_selected)
+        site_table.itemSelectionChanged.connect(on_site_selected)
+        self.sensitive_sites_filter.textChanged.connect(lambda: filter_timer.start())
+        self.sensitive_sites_dlp_chk.stateChanged.connect(on_source_changed)
+        self.sensitive_sites_outbound_chk.stateChanged.connect(on_source_changed)
+        self.sensitive_sites_reset_btn.clicked.connect(reset_sensitive_sites_filter)
+        more_button.clicked.connect(load_more)
+        raw_button.clicked.connect(open_selected_raw)
+        self._refresh_sensitive_sites = refresh
+        refresh()
+        return root
+
+    # ==================================================
     # DLP File Tab
     # ==================================================
     def tab_dlp_file(self):
@@ -15817,7 +17705,7 @@ Command Line :
 
         def show_group_detail(group):
             items = group.get("items", []) if isinstance(group, dict) else []
-            visible_items = items[:TIMELINE_DETAIL_ROW_LIMIT]
+            visible_items = sorted(items, key=lambda event: event.get("time", ""), reverse=True)[:TIMELINE_DETAIL_ROW_LIMIT]
             self.timeline_detail_panel.show()
             suffix = "" if len(visible_items) == len(items) else f" / 상위 {len(visible_items):,}건 표시"
             source_label = timeline_source_display_name(group.get("source", "None"))
@@ -16055,6 +17943,26 @@ Command Line :
         self.chk_fw_icheon = QCheckBox("Icheon")
         self.chk_fw_anseong = QCheckBox("Anseong")
 
+        firewall_checkbox_style = f"""
+        QCheckBox {{
+            color: {UI_THEME['text']};
+            font-weight: 700;
+            spacing: 6px;
+            background: transparent;
+        }}
+        QCheckBox::indicator {{
+            width: 16px;
+            height: 16px;
+            border: 1px solid {UI_THEME['accent']};
+            border-radius: 4px;
+            background: {UI_THEME['surface']};
+        }}
+        QCheckBox::indicator:checked {{
+            background: {UI_THEME['accent']};
+            border: 1px solid {UI_THEME['accent']};
+        }}
+        """
+
         for chk in [
             self.chk_fw_cloud,
             self.chk_fw_seoul,
@@ -16062,6 +17970,8 @@ Command Line :
             self.chk_fw_anseong,
         ]:
             chk.setChecked(True)
+            chk.setMinimumHeight(28)
+            chk.setStyleSheet(firewall_checkbox_style)
             fw_layout.addWidget(chk)
 
         query_group = QGroupBox("Firewall Group View")
@@ -16530,12 +18440,18 @@ Command Line :
         built_at = stats.get("built_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         self.lbl_index_last.setText(f"Last Build: {built_at}")
         self.lbl_index_status.setText(
-            f"Status: OK (Data {int(stats.get('data_indexed', 0)):,} indexed / {int(stats.get('data_skipped', 0)):,} skipped, Timeline {int(stats.get('indexed', 0)):,} indexed / {int(stats.get('skipped', 0)):,} skipped)"
+            f"Status: OK (Data {int(stats.get('data_indexed', 0)):,} indexed / {int(stats.get('data_skipped', 0)):,} skipped, Timeline {int(stats.get('indexed', 0)):,} indexed / {int(stats.get('skipped', 0)):,} skipped, Sensitive Files {int(stats.get('sensitive_index_rows', 0)):,} records, Sensitive Sites {int(stats.get('sensitive_sites_index_rows', 0)):,} records)"
         )
         self.lbl_index_rows.setText(f"Data Rows: {int(stats.get('data_total_rows', stats.get('data_rows', 0))):,}")
         self.lbl_index_events.setText(f"Timeline Events: {int(stats.get('events', 0)):,}")
         self.lbl_index_tokens.setText(f"Search Tokens: {int(stats.get('tokens', 0)):,}")
         self.lbl_index_files.setText(f"Cache Files: {int(stats.get('data_total_files', stats.get('files', 0))):,}")
+        self.sensitive_files_loaded = False
+        self.sensitive_sites_loaded = False
+        if self.current_logical_tab_name() == "Sensitive Files" and hasattr(self, "_refresh_sensitive_files"):
+            self._refresh_sensitive_files()
+        if self.current_logical_tab_name() == "Sensitive Sites" and hasattr(self, "_refresh_sensitive_sites"):
+            self._refresh_sensitive_sites()
 
         if self.auto_continue_after_index:
             self.auto_continue_after_index = False
