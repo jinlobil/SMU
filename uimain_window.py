@@ -1787,10 +1787,13 @@ SENSITIVE_FILE_CATEGORY_SPECS = [
         "면접", "채용", "잡코리아", "사람인", "원티드", "wanted",
         "linkedin", "링크드인", "cover letter",
     ]),
-    ("결혼 / 웨딩", [
+    ("결혼 / 웨딩 / 연애", [
         "결혼", "웨딩", "wedding", "상견례", "청첩장", "예식", "예식장",
         "스드메", "드레스", "혼수", "신혼", "신혼여행", "허니문",
         "혼인", "예물", "예단", "커플사진", "가족사진", "웨딩사진",
+        "연애", "남친", "여친", "남자친구", "여자친구", "애인", "연인",
+        "데이트", "소개팅", "프로포즈", "기념일", "커플", "커플링",
+        "데이트사진", "오빠",
     ]),
     ("개인 증빙 / 금융", [
         "신분증", "주민등록증", "운전면허증", "여권", "가족관계증명서",
@@ -1828,6 +1831,13 @@ SENSITIVE_FILE_CATEGORY_SPECS = [
 ]
 
 
+SENSITIVE_FILE_CATEGORY_REGEX_SPECS = [
+    ("결혼 / 웨딩 / 연애", [
+        (r"\d{2,4}\s*일\s*(?:기념|기념일)", "N일 기념일"),
+    ]),
+]
+
+
 def sensitive_row_text(row):
     field_text = " ".join(str(row.get(k, "") or "") for k in (
         "filename", "destination", "destination_type", "item_details",
@@ -1842,6 +1852,14 @@ def classify_sensitive_text(text, category_specs=SENSITIVE_FILE_CATEGORY_SPECS):
     matched_keywords = []
     for category, keywords in category_specs:
         hits = [kw for kw in keywords if kw.lower() in text]
+        if hits:
+            matched_categories.append(category)
+            matched_keywords.extend(hits)
+    for category, patterns in SENSITIVE_FILE_CATEGORY_REGEX_SPECS:
+        hits = []
+        for pattern, label in patterns:
+            if re.search(pattern, text, re.IGNORECASE):
+                hits.append(label)
         if hits:
             matched_categories.append(category)
             matched_keywords.extend(hits)
@@ -2048,7 +2066,7 @@ def build_sensitive_file_records(rows, category_specs=SENSITIVE_FILE_CATEGORY_SP
     return records
 
 
-SENSITIVE_FILES_INDEX_VERSION = "sensitive_files_v1"
+SENSITIVE_FILES_INDEX_VERSION = "sensitive_files_v2"
 SENSITIVE_FILES_PAGE_LIMIT = 500
 
 
