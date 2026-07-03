@@ -17491,11 +17491,7 @@ Command Line :
             self.sensitive_sites_worker.start()
 
         def refresh():
-            if not getattr(self, "sensitive_sites_loaded", False):
-                reset_sensitive_sites_filter()
-                return
-            render_categories()
-            render_sites()
+            reset_sensitive_sites_filter()
 
         def on_source_changed():
             self.sensitive_site_current_category = "전체"
