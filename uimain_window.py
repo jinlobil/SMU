@@ -2793,6 +2793,3455 @@ def build_sensitive_site_records(dlp_rows=None, mailscreen_rows=None):
     return records
 
 
+def sensitive_sites_index_sources(include_dlp=True, include_outbound=False):
+    sources = []
+    if include_dlp:
+        sources.append("DLP")
+    return sources
+
+
+def sensitive_sites_dedupe_key(record):
+    return "|".join([
+        str(record.get("source", "")).strip().lower(),
+        str(record.get("site", "")).strip().lower(),
+        str(record.get("dept", "")).strip().lower(),
+        str(record.get("user", "")).strip().lower(),
+    ])
+
+
+def insert_sensitive_sites_payload(conn, payload, replace_existing=True):
+    if not payload:
+        return 0
+    if replace_existing:
+        conn.executemany(
+            """
+            INSERT OR REPLACE INTO sensitive_sites_index
+                (dedupe_key, source, category, categories, keywords, event_time,
+                 site, url, user, user_id, dept, source_file, row_index, search_text, record_json, indexed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            payload,
+        )
+        return len(payload)
+
+    inserted = 0
+    for item in payload:
+        dedupe_key = item[0]
+        event_time = item[5]
+        existing = conn.execute(
+            "SELECT event_time FROM sensitive_sites_index WHERE dedupe_key = ?",
+            (dedupe_key,),
+        ).fetchone()
+        if existing and str(existing[0] or "") > str(event_time or ""):
+            continue
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO sensitive_sites_index
+                (dedupe_key, source, category, categories, keywords, event_time,
+                 site, url, user, user_id, dept, source_file, row_index, search_text, record_json, indexed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            item,
+        )
+        inserted += 1
+    return inserted
+
+
+def rebuild_sensitive_sites_index(conn, changed_paths=None, removed_paths=None, progress_cb=None):
+    start_ts = time.perf_counter()
+    full_rebuild = should_full_rebuild_sensitive_index(
+        conn,
+        "sensitive_sites_index_version",
+        SENSITIVE_SITES_INDEX_VERSION,
+        changed_paths,
+        removed_paths,
+    )
+    target_paths = None if full_rebuild else list(changed_paths or [])
+    if progress_cb:
+        progress_cb("Sensitive Sites 인덱스 생성중" if full_rebuild else "Sensitive Sites 증분 인덱스 생성중")
+    log.info(
+        "Sensitive Sites index start mode=%s changed=%d removed=%d",
+        "full" if full_rebuild else "incremental",
+        len(changed_paths or []),
+        len(removed_paths or []),
+    )
+
+    if full_rebuild:
+        dlp_rows = load_app_cache_raw_rows_from_conn(conn, "dlp")
+        mailscreen_rows = []
+    else:
+        delete_count = delete_sensitive_index_paths(conn, "sensitive_sites_index", changed_paths, removed_paths)
+        if not target_paths:
+            conn.execute(
+                "INSERT OR REPLACE INTO app_cache_meta(key, value) VALUES (?, ?)",
+                ("sensitive_sites_index_version", SENSITIVE_SITES_INDEX_VERSION),
+            )
+            log.info("Sensitive Sites index no changed files deleted=%d elapsed=%.2fs", delete_count, time.perf_counter() - start_ts)
+            return {
+                "sensitive_sites_index_rows": conn.execute("SELECT COUNT(*) FROM sensitive_sites_index").fetchone()[0],
+                "sensitive_sites_indexed_at": sensitive_index_meta_version(conn, "sensitive_sites_indexed_at"),
+            }
+        dlp_rows = load_app_cache_raw_rows_from_conn(conn, "dlp", target_paths)
+        mailscreen_rows = []
+        log.info("Sensitive Sites index deleted changed/removed rows=%d", delete_count)
+
+    records = build_sensitive_site_records(dlp_rows, mailscreen_rows)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    payload = []
+    for record in records:
+        record["search_text"] = record.get("search_text") or sensitive_site_search_text(record)
+        row = record.get("row") if isinstance(record.get("row"), dict) else {}
+        payload.append((
+            sensitive_sites_dedupe_key(record), str(record.get("source", "") or ""),
+            str(record.get("category", "") or ""), json.dumps(record.get("categories", []) or [], ensure_ascii=False),
+            json.dumps(record.get("keywords", []) or [], ensure_ascii=False), str(record.get("event_time", "") or ""),
+            str(record.get("site", "") or ""), str(record.get("url", "") or ""),
+            str(record.get("user", "") or ""), str(record.get("user_id", "") or ""),
+            str(record.get("dept", "") or ""), str(row.get("__source_file", "") or ""),
+            int(row.get("__row_index", -1) if str(row.get("__row_index", "")).strip() else -1),
+            str(record.get("search_text", "") or "").lower(),
+            json.dumps(record, ensure_ascii=False, default=str), now,
+        ))
+    if full_rebuild:
+        conn.execute("DELETE FROM sensitive_sites_index")
+    inserted = insert_sensitive_sites_payload(conn, payload, replace_existing=full_rebuild)
+    conn.execute("INSERT OR REPLACE INTO app_cache_meta(key, value) VALUES (?, ?)", ("sensitive_sites_index_version", SENSITIVE_SITES_INDEX_VERSION))
+    conn.execute("INSERT OR REPLACE INTO app_cache_meta(key, value) VALUES (?, ?)", ("sensitive_sites_indexed_at", now))
+    total_rows = conn.execute("SELECT COUNT(*) FROM sensitive_sites_index").fetchone()[0]
+    log.info(
+        "Sensitive Sites index done mode=%s dlp_rows=%d mailscreen_rows=%d records=%d inserted=%d total=%d elapsed=%.2fs",
+        "full" if full_rebuild else "incremental",
+        len(dlp_rows),
+        len(mailscreen_rows),
+        len(records),
+        inserted,
+        total_rows,
+        time.perf_counter() - start_ts,
+    )
+    return {
+        "sensitive_sites_index_rows": total_rows,
+        "sensitive_sites_indexed_at": now,
+    }
+
+def sensitive_sites_index_ready(conn):
+    row = conn.execute(
+        "SELECT value FROM app_cache_meta WHERE key = ?",
+        ("sensitive_sites_index_version",),
+    ).fetchone()
+    return bool(row and row[0] == SENSITIVE_SITES_INDEX_VERSION)
+
+
+def sensitive_sites_where_clause(category="전체", keyword="", sources=None):
+    clauses = []
+    params = []
+    source_values = list(sources or [])
+    if source_values:
+        clauses.append(f"source IN ({','.join('?' for _ in source_values)})")
+        params.extend(source_values)
+    else:
+        clauses.append("1 = 0")
+    if category and category != "전체":
+        clauses.append("category = ?")
+        params.append(category)
+    keyword = str(keyword or "").strip().lower()
+    if keyword:
+        clauses.append("search_text LIKE ?")
+        params.append(f"%{keyword}%")
+    return " AND ".join(clauses), params
+
+
+def refresh_sensitive_sites_dlp_index():
+    start_ts = time.perf_counter()
+    with app_cache_connect() as conn:
+        changed_paths = []
+        removed_paths = []
+        cfg = APP_CACHE_SOURCES["dlp"]
+        for path in iter_json_files(cfg["dir"], cfg["ext"]):
+            if app_cache_index_current(conn, "dlp", path):
+                continue
+            cache_date = os.path.splitext(os.path.basename(path))[0]
+            sync_app_cache_file(conn, "dlp", path, cache_date, cfg["format"])
+            changed_paths.append(path)
+
+        existing_dlp_paths = set(iter_json_files(cfg["dir"], cfg["ext"]))
+        stale_rows = conn.execute("SELECT path FROM app_cache_files WHERE source = ?", ("dlp",)).fetchall()
+        for (path,) in stale_rows:
+            if path in existing_dlp_paths:
+                continue
+            conn.execute("DELETE FROM app_cache_records WHERE source_file = ?", (path,))
+            conn.execute("DELETE FROM dlp_events WHERE source_file = ?", (path,))
+            conn.execute("DELETE FROM app_cache_files WHERE path = ?", (path,))
+            removed_paths.append(path)
+
+        stats = rebuild_sensitive_sites_index(
+            conn,
+            changed_paths=changed_paths,
+            removed_paths=removed_paths,
+            progress_cb=None,
+        )
+        conn.commit()
+    log.info(
+        "Sensitive Sites refresh synced DLP changed=%d removed=%d total=%s elapsed=%.2fs",
+        len(changed_paths),
+        len(removed_paths),
+        stats.get("sensitive_sites_index_rows"),
+        time.perf_counter() - start_ts,
+    )
+    return stats
+
+
+def query_sensitive_sites_index(category="전체", keyword="", sources=None, limit=SENSITIVE_SITES_PAGE_LIMIT, offset=0):
+    with app_cache_connect() as conn:
+        if not sensitive_sites_index_ready(conn):
+            return {
+                "records": [], "total": 0, "category_counts": {}, "index_ready": False,
+                "message": "Sensitive Sites 인덱스가 없습니다. Config에서 Data Index를 먼저 실행하세요.",
+            }
+        if sources is None:
+            sources = ["DLP"]
+        where_sql, params = sensitive_sites_where_clause(category, keyword, sources)
+        total = conn.execute(f"SELECT COUNT(*) FROM sensitive_sites_index WHERE {where_sql}", params).fetchone()[0]
+        count_where_sql, count_params = sensitive_sites_where_clause("전체", keyword, sources)
+        count_rows = conn.execute(
+            f"SELECT category, COUNT(*) FROM sensitive_sites_index WHERE {count_where_sql} GROUP BY category",
+            count_params,
+        ).fetchall()
+        category_counts = {str(category): int(count) for category, count in count_rows}
+        rows = conn.execute(
+            f"""
+            SELECT record_json
+            FROM sensitive_sites_index
+            WHERE {where_sql}
+            ORDER BY event_time DESC, site ASC
+            LIMIT ? OFFSET ?
+            """,
+            params + [int(limit), int(offset)],
+        ).fetchall()
+    records = []
+    for (raw_json,) in rows:
+        try:
+            record = json.loads(raw_json)
+            if isinstance(record, dict):
+                records.append(record)
+        except Exception as e:
+            log.warning(f"Sensitive Sites index record parse failed: {e}")
+    return {
+        "records": records, "total": int(total), "category_counts": category_counts,
+        "index_ready": True, "limit": int(limit), "offset": int(offset),
+    }
+
+
+SENSITIVE_FILE_CATEGORY_SPECS = [
+    ("이직 / 취업", [
+        "이력서", "resume", "curriculum vitae", "자기소개서", "자소서",
+        "포트폴리오", "portfolio", "경력기술서", "입사지원", "지원서",
+        "면접", "채용", "잡코리아", "사람인", "원티드", "wanted",
+        "linkedin", "링크드인", "cover letter",
+    ]),
+    ("결혼 / 웨딩 / 연애", [
+        "결혼", "웨딩", "wedding", "상견례", "청첩장", "예식", "예식장",
+        "스드메", "드레스", "혼수", "신혼", "신혼여행", "허니문",
+        "혼인", "예물", "예단", "커플사진", "가족사진", "웨딩사진",
+        "연애", "남친", "여친", "남자친구", "여자친구", "연인",
+        "소개팅", "프로포즈", "커플", "커플링", "데이트사진", "오빠",
+    ]),
+    ("개인 증빙 / 금융", [
+        "신분증", "주민등록증", "운전면허증", "여권", "가족관계증명서",
+        "주민등록등본", "주민등록초본", "인감증명서", "통장사본",
+        "계좌번호", "입금계좌", "입금내역", "거래내역", "잔액증명서",
+        "원천징수", "소득금액", "급여명세서", "연말정산", "건강보험",
+        "국민연금", "재직증명", "전세계약서", "월세계약서", "임대차계약서",
+    ]),
+    ("발주 / 주문 / 거래 문서", [
+        "발주서", "주문서", "거래명세서", "출고양식", "수기발주",
+        "공동구매", "매출내역", "invoice",
+    ]),
+    ("비용 / 영수증 / 정산", [
+        "영수증", "결제증빙", "비용정산", "법카", "접대비", "회식비", "receipt",
+    ]),
+    ("계약 / 법무 / 사업자 증빙", [
+        "계약서", "계약일반조건", "사업자등록증", "채권", "변제계획서",
+    ]),
+    ("제품 / 디자인 / 마케팅 자료", [
+        "상세페이지", "썸네일", "렌더링", "로고", "누끼", "데켓",
+        "택플로우", "TACTFLOW", "인플루언서", "시딩",
+        "유튜브", "마케팅", "쇼츠", "숏츠", "론칭", "콜라보",
+    ]),
+    ("메신저 수신 파일", [
+        "카카오톡 받은 파일", "kakaotalk", "kakaotalk download",
+        "네이트온 받은 파일", "nateon", "wechat", "viber", "whatsapp",
+        "telegram desktop", "messages/attachments", "xwechat_files",
+        "viberdownloads", "discord",
+    ]),
+    ("개인 사진 / 영상", [
+        "개인사진", "가족사진", "웨딩사진", "증명사진", "프로필사진",
+        "셀카", "셀피", "selfie", "여행사진", "앨범", "본식사진",
+        "스냅사진", "여권사진", "반명함",
+    ]),
+]
+
+
+SENSITIVE_FILE_CATEGORY_REGEX_SPECS = []
+
+
+def sensitive_row_text(row):
+    field_text = " ".join(str(row.get(k, "") or "") for k in (
+        "filename", "destination", "destination_type", "item_details",
+        "destinationDetails", "machine_name", "client_name", "event_id",
+    ))
+    return f"{field_text} {json.dumps(row, ensure_ascii=False, default=str)}".lower()
+
+
+def classify_sensitive_text(text, category_specs=SENSITIVE_FILE_CATEGORY_SPECS):
+    text = str(text or "").lower()
+    matched_categories = []
+    matched_keywords = []
+    for category, keywords in category_specs:
+        hits = [kw for kw in keywords if kw.lower() in text]
+        if hits:
+            matched_categories.append(category)
+            matched_keywords.extend(hits)
+    for category, patterns in SENSITIVE_FILE_CATEGORY_REGEX_SPECS:
+        hits = []
+        for pattern, label in patterns:
+            if re.search(pattern, text, re.IGNORECASE):
+                hits.append(label)
+        if hits:
+            matched_categories.append(category)
+            matched_keywords.extend(hits)
+    if not matched_categories:
+        return None
+    return {
+        "category": matched_categories[0],
+        "categories": matched_categories,
+        "keywords": sorted(set(matched_keywords), key=lambda x: x.lower()),
+    }
+
+
+def classify_sensitive_row(row, category_specs=SENSITIVE_FILE_CATEGORY_SPECS):
+    return classify_sensitive_text(sensitive_row_text(row), category_specs)
+
+
+def display_sensitive_file_name(path_text):
+    text = str(path_text or "None").strip()
+    if not text or text == "None":
+        return "None"
+    normalized = text.replace("\\", "/").rstrip("/")
+    return normalized.rsplit("/", 1)[-1] or text
+
+
+def resolve_sensitive_user_name(machine_name, client_name):
+    identity = resolve_identity_by_hostname(machine_name)
+    user_name = str(identity.get("user_name", "") or "").strip()
+    if user_name and user_name != "None":
+        return user_name
+    directory_info = get_directory_user_info(client_name)
+    directory_name = str(directory_info.get("name", "") or "").strip()
+    if directory_name:
+        return directory_name
+    org_name = get_org_user_name_by_user_id(client_name)
+    if org_name:
+        return org_name
+    return str(client_name or "None")
+
+
+def make_sensitive_record(row, category_specs=SENSITIVE_FILE_CATEGORY_SPECS):
+    classified = classify_sensitive_row(row, category_specs)
+    if not classified:
+        return None
+    machine_name = str(row.get("machine_name", "None") or "None")
+    client_name = str(row.get("client_name", "None") or "None")
+    dept_name, _ = get_dept_by_hostname(machine_name)
+    filename = str(row.get("filename", "None") or "None")
+    destination = str(row.get("destination", "None") or "None")
+    destination_detail = str(row.get("item_details") or row.get("destinationDetails") or "None")
+    return {
+        "row": row,
+        "source": "DLP",
+        "category": classified["category"],
+        "categories": classified["categories"],
+        "keywords": classified["keywords"],
+        "event_time": str(row.get("eventtimelocal", "") or ""),
+        "event": format_dlp_event_id(row.get("event_id", "None")),
+        "machine": machine_name,
+        "dept": dept_name,
+        "user": resolve_sensitive_user_name(machine_name, client_name),
+        "user_id": client_name,
+        "filename": filename,
+        "display_filename": display_sensitive_file_name(filename),
+        "destination": destination,
+        "destination_type": str(row.get("destination_type", "None") or "None"),
+        "destination_detail": destination_detail,
+        "filehash": str(row.get("filehash", "None") or "None"),
+    }
+
+
+def sensitive_record_search_text(record):
+    return " ".join(str(record.get(k, "") or "") for k in (
+        "source", "category", "keywords", "event_time", "event", "machine",
+        "dept", "user", "user_id", "filename", "display_filename",
+        "destination", "destination_type", "destination_detail", "filehash",
+        "mail_subject", "mail_sender", "mail_receiver", "mail_policy", "mail_attach_raw",
+    )).lower()
+
+
+MAILSCREEN_ATTACHMENT_EXTENSIONS = (
+    "docx", "doc", "xlsx", "xls", "pptx", "ppt", "jpeg", "jpg",
+    "pdf", "txt", "csv", "png", "heic", "gif", "bmp", "zip", "7z", "rar",
+    "alz", "egg", "ai", "psd", "mp4", "mov", "avi", "eml", "msg",
+)
+
+
+def clean_mailscreen_attachment_name(value):
+    text = str(value or "").strip()
+    if not text or text == "None":
+        return ""
+    text = re.sub(r"\s*\(\s*\d+\s+more\s*\)\s*$", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s*\(\s*[\d,.]+\s*(?:B|K|KB|M|MB|G|GB|T|TB)\s*\)\s*$", "", text, flags=re.IGNORECASE)
+    return text.strip(" ,;|")
+
+
+def extract_mailscreen_attachment_names(row):
+    attach_text = str(row.get("attach", "") or "").strip() if isinstance(row, dict) else ""
+    if not attach_text or attach_text == "None":
+        return []
+
+    ext_pattern = "|".join(re.escape(ext) for ext in MAILSCREEN_ATTACHMENT_EXTENSIONS)
+    pattern = re.compile(
+        rf"([^,;|\n]+?\.(?:{ext_pattern}))(?:\s*\([^)]*\))*",
+        re.IGNORECASE,
+    )
+    names = []
+    for match in pattern.finditer(attach_text):
+        name = clean_mailscreen_attachment_name(match.group(1))
+        if name and name not in names:
+            names.append(name)
+
+    if names:
+        return names
+
+    fallback = clean_mailscreen_attachment_name(attach_text)
+    return [fallback] if fallback else []
+
+
+def make_sensitive_mailscreen_record(row, attachment_name, category_specs=SENSITIVE_FILE_CATEGORY_SPECS):
+    if not isinstance(row, dict):
+        return None
+    row = enrich_mailscreen_sender_fields(row)
+    filename = clean_mailscreen_attachment_name(attachment_name)
+    if not filename:
+        return None
+
+    subject = str(row.get("subject", "") or "")
+    classified = classify_sensitive_text(f"{filename} {subject}", category_specs)
+    if not classified:
+        return None
+
+    sender_email = mailscreen_identity_text(row.get("sender_email")) or mailscreen_identity_text(row.get("sender"))
+    sender_name = mailscreen_identity_text(row.get("sender_name")) or sender_email or "None"
+    user_id = mailscreen_identity_text(row.get("sender_user_id")) or sender_email or "None"
+    dept_name = mailscreen_identity_text(row.get("sender_dept")) or mailscreen_identity_text(row.get("dept")) or "미분류"
+    receiver = mailscreen_identity_text(row.get("receiver_detail")) or mailscreen_identity_text(row.get("receiver")) or "None"
+    mail_process = str(row.get("mail_process", "") or "None")
+    send_result = str(row.get("send_result", "") or "None")
+    event = f"{mail_process}/{send_result}" if mail_process != "None" and send_result != "None" else (send_result or mail_process)
+
+    return {
+        "row": row,
+        "source": "Outbound Mail",
+        "category": classified["category"],
+        "categories": classified["categories"],
+        "keywords": classified["keywords"],
+        "event_time": str(row.get("date", "") or ""),
+        "event": event,
+        "machine": "None",
+        "dept": dept_name,
+        "user": sender_name,
+        "user_id": user_id,
+        "filename": filename,
+        "display_filename": display_sensitive_file_name(filename),
+        "destination": receiver,
+        "destination_type": "Outbound Mail Attachment",
+        "destination_detail": str(row.get("subject", "") or "None"),
+        "filehash": "None",
+        "mail_subject": str(row.get("subject", "") or "None"),
+        "mail_sender": sender_email or "None",
+        "mail_receiver": receiver,
+        "mail_size": str(row.get("size", "") or "None"),
+        "mail_policy": str(row.get("policy", "") or "None"),
+        "mail_process": mail_process,
+        "mail_send_result": send_result,
+        "mail_attach_raw": str(row.get("attach", "") or "None"),
+    }
+
+
+def build_sensitive_file_records(rows, category_specs=SENSITIVE_FILE_CATEGORY_SPECS, mailscreen_rows=None):
+    records = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        record = make_sensitive_record(row, category_specs)
+        if record:
+            records.append(record)
+
+    for row in mailscreen_rows or []:
+        if not isinstance(row, dict):
+            continue
+        for attachment_name in extract_mailscreen_attachment_names(row):
+            record = make_sensitive_mailscreen_record(row, attachment_name, category_specs)
+            if record:
+                records.append(record)
+
+    latest_by_file_owner = {}
+    for record in records:
+        dedupe_key = (
+            str(record.get("source", "")).strip().lower(),
+            str(record.get("display_filename", "")).strip().lower(),
+            str(record.get("dept", "")).strip().lower(),
+            str(record.get("user", "")).strip().lower(),
+        )
+        current = latest_by_file_owner.get(dedupe_key)
+        if current is None or str(record.get("event_time", "")) > str(current.get("event_time", "")):
+            latest_by_file_owner[dedupe_key] = record
+
+    records = list(latest_by_file_owner.values())
+    records.sort(key=lambda r: (r["category"], r["display_filename"].lower()))
+    records.sort(key=lambda r: r["event_time"], reverse=True)
+    for record in records:
+        record["search_text"] = sensitive_record_search_text(record)
+    return records
+
+
+SENSITIVE_FILES_INDEX_VERSION = "sensitive_files_v3"
+SENSITIVE_FILES_PAGE_LIMIT = 500
+
+
+def sensitive_files_index_sources(include_dlp=True, include_outbound=True):
+    sources = []
+    if include_dlp:
+        sources.append("DLP")
+    if include_outbound:
+        sources.append("Outbound Mail")
+    return sources
+
+
+def sensitive_files_dedupe_key(record):
+    return "|".join([
+        str(record.get("source", "")).strip().lower(),
+        str(record.get("display_filename", "")).strip().lower(),
+        str(record.get("dept", "")).strip().lower(),
+        str(record.get("user", "")).strip().lower(),
+    ])
+
+
+def load_app_cache_raw_rows_from_conn(conn, source, source_files=None):
+    params = [source]
+    where_sql = "source = ?"
+    source_file_values = list(source_files or [])
+    if source_file_values:
+        placeholders = ",".join("?" for _ in source_file_values)
+        where_sql += f" AND source_file IN ({placeholders})"
+        params.extend(source_file_values)
+    rows = conn.execute(
+        f"""
+        SELECT source_file, row_index, raw_json
+        FROM app_cache_records
+        WHERE {where_sql}
+        ORDER BY cache_date ASC, source_file ASC, row_index ASC
+        """,
+        params,
+    ).fetchall()
+    results = []
+    for source_file, row_index, raw_json in rows:
+        try:
+            row = json.loads(raw_json)
+            if isinstance(row, dict):
+                row["__source_file"] = source_file
+                row["__row_index"] = row_index
+                results.append(row)
+        except Exception as e:
+            log.warning(f"Sensitive index raw parse failed source={source}: {e}")
+    return results
+
+
+def sensitive_index_meta_version(conn, key):
+    row = conn.execute("SELECT value FROM app_cache_meta WHERE key = ?", (key,)).fetchone()
+    return row[0] if row else ""
+
+
+def should_full_rebuild_sensitive_index(conn, version_key, expected_version, changed_paths, removed_paths):
+    if changed_paths is None and removed_paths is None:
+        return True
+    return sensitive_index_meta_version(conn, version_key) != expected_version
+
+
+def delete_sensitive_index_paths(conn, table_name, changed_paths=None, removed_paths=None):
+    paths = sorted(set((changed_paths or []) + (removed_paths or [])))
+    if not paths:
+        return 0
+    placeholders = ",".join("?" for _ in paths)
+    cur = conn.execute(f"DELETE FROM {table_name} WHERE source_file IN ({placeholders})", paths)
+    return cur.rowcount if cur.rowcount is not None else 0
+
+
+def insert_sensitive_files_payload(conn, payload, replace_existing=True):
+    if not payload:
+        return 0
+    if replace_existing:
+        conn.executemany(
+            """
+            INSERT OR REPLACE INTO sensitive_files_index
+                (dedupe_key, source, category, categories, keywords, event_time,
+                 display_filename, user, user_id, dept, source_file, row_index, search_text, record_json, indexed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            payload,
+        )
+        return len(payload)
+
+    inserted = 0
+    for item in payload:
+        dedupe_key = item[0]
+        event_time = item[5]
+        existing = conn.execute(
+            "SELECT event_time FROM sensitive_files_index WHERE dedupe_key = ?",
+            (dedupe_key,),
+        ).fetchone()
+        if existing and str(existing[0] or "") > str(event_time or ""):
+            continue
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO sensitive_files_index
+                (dedupe_key, source, category, categories, keywords, event_time,
+                 display_filename, user, user_id, dept, source_file, row_index, search_text, record_json, indexed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            item,
+        )
+        inserted += 1
+    return inserted
+
+
+def rebuild_sensitive_files_index(conn, changed_paths=None, removed_paths=None, progress_cb=None):
+    start_ts = time.perf_counter()
+    full_rebuild = should_full_rebuild_sensitive_index(
+        conn,
+        "sensitive_files_index_version",
+        SENSITIVE_FILES_INDEX_VERSION,
+        changed_paths,
+        removed_paths,
+    )
+    target_paths = None if full_rebuild else list(changed_paths or [])
+    if progress_cb:
+        progress_cb("Sensitive Files 인덱스 생성중" if full_rebuild else "Sensitive Files 증분 인덱스 생성중")
+    log.info(
+        "Sensitive Files index start mode=%s changed=%d removed=%d",
+        "full" if full_rebuild else "incremental",
+        len(changed_paths or []),
+        len(removed_paths or []),
+    )
+
+    if full_rebuild:
+        dlp_rows = load_app_cache_raw_rows_from_conn(conn, "dlp")
+        mailscreen_rows = load_app_cache_raw_rows_from_conn(conn, "mailscreen")
+    else:
+        delete_count = delete_sensitive_index_paths(conn, "sensitive_files_index", changed_paths, removed_paths)
+        if not target_paths:
+            conn.execute(
+                "INSERT OR REPLACE INTO app_cache_meta(key, value) VALUES (?, ?)",
+                ("sensitive_files_index_version", SENSITIVE_FILES_INDEX_VERSION),
+            )
+            log.info("Sensitive Files index no changed files deleted=%d elapsed=%.2fs", delete_count, time.perf_counter() - start_ts)
+            return {
+                "sensitive_index_rows": conn.execute("SELECT COUNT(*) FROM sensitive_files_index").fetchone()[0],
+                "sensitive_index_dlp_rows": 0,
+                "sensitive_index_mailscreen_rows": 0,
+                "sensitive_indexed_at": sensitive_index_meta_version(conn, "sensitive_files_indexed_at"),
+            }
+        dlp_rows = load_app_cache_raw_rows_from_conn(conn, "dlp", target_paths)
+        mailscreen_rows = load_app_cache_raw_rows_from_conn(conn, "mailscreen", target_paths)
+        log.info("Sensitive Files index deleted changed/removed rows=%d", delete_count)
+
+    records = build_sensitive_file_records(dlp_rows, mailscreen_rows=mailscreen_rows)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    payload = []
+    for record in records:
+        record["search_text"] = record.get("search_text") or sensitive_record_search_text(record)
+        row = record.get("row") if isinstance(record.get("row"), dict) else {}
+        payload.append((
+            sensitive_files_dedupe_key(record),
+            str(record.get("source", "") or ""),
+            str(record.get("category", "") or ""),
+            json.dumps(record.get("categories", []) or [], ensure_ascii=False),
+            json.dumps(record.get("keywords", []) or [], ensure_ascii=False),
+            str(record.get("event_time", "") or ""),
+            str(record.get("display_filename", "") or ""),
+            str(record.get("user", "") or ""),
+            str(record.get("user_id", "") or ""),
+            str(record.get("dept", "") or ""),
+            str(row.get("__source_file", "") or ""),
+            int(row.get("__row_index", -1) if str(row.get("__row_index", "")).strip() else -1),
+            str(record.get("search_text", "") or "").lower(),
+            json.dumps(record, ensure_ascii=False, default=str),
+            now,
+        ))
+
+    if full_rebuild:
+        conn.execute("DELETE FROM sensitive_files_index")
+    inserted = insert_sensitive_files_payload(conn, payload, replace_existing=full_rebuild)
+    conn.execute(
+        "INSERT OR REPLACE INTO app_cache_meta(key, value) VALUES (?, ?)",
+        ("sensitive_files_index_version", SENSITIVE_FILES_INDEX_VERSION),
+    )
+    conn.execute(
+        "INSERT OR REPLACE INTO app_cache_meta(key, value) VALUES (?, ?)",
+        ("sensitive_files_indexed_at", now),
+    )
+    total_rows = conn.execute("SELECT COUNT(*) FROM sensitive_files_index").fetchone()[0]
+    log.info(
+        "Sensitive Files index done mode=%s dlp_rows=%d mailscreen_rows=%d records=%d inserted=%d total=%d elapsed=%.2fs",
+        "full" if full_rebuild else "incremental",
+        len(dlp_rows),
+        len(mailscreen_rows),
+        len(records),
+        inserted,
+        total_rows,
+        time.perf_counter() - start_ts,
+    )
+    return {
+        "sensitive_index_rows": total_rows,
+        "sensitive_index_dlp_rows": len(dlp_rows),
+        "sensitive_index_mailscreen_rows": len(mailscreen_rows),
+        "sensitive_indexed_at": now,
+    }
+
+def sensitive_files_index_ready(conn):
+    row = conn.execute(
+        "SELECT value FROM app_cache_meta WHERE key = ?",
+        ("sensitive_files_index_version",),
+    ).fetchone()
+    return bool(row and row[0] == SENSITIVE_FILES_INDEX_VERSION)
+
+
+def sensitive_files_where_clause(category="전체", keyword="", sources=None):
+    clauses = []
+    params = []
+    source_values = list(sources or [])
+    if source_values:
+        placeholders = ",".join("?" for _ in source_values)
+        clauses.append(f"source IN ({placeholders})")
+        params.extend(source_values)
+    else:
+        clauses.append("1 = 0")
+
+    if category and category != "전체":
+        clauses.append("category = ?")
+        params.append(category)
+
+    keyword = str(keyword or "").strip().lower()
+    if keyword:
+        clauses.append("search_text LIKE ?")
+        params.append(f"%{keyword}%")
+
+    return " AND ".join(clauses), params
+
+
+def sensitive_record_from_index_json(raw_json):
+    try:
+        record = json.loads(raw_json)
+        if isinstance(record, dict):
+            record["search_text"] = record.get("search_text") or sensitive_record_search_text(record)
+            return record
+    except Exception as e:
+        log.warning(f"Sensitive Files index record parse failed: {e}")
+    return None
+
+
+def query_sensitive_files_index(
+    category="전체",
+    keyword="",
+    sources=None,
+    limit=SENSITIVE_FILES_PAGE_LIMIT,
+    offset=0,
+):
+    with app_cache_connect() as conn:
+        if not sensitive_files_index_ready(conn):
+            return {
+                "records": [],
+                "total": 0,
+                "category_counts": {},
+                "index_ready": False,
+                "message": "Sensitive Files 인덱스가 없습니다. Config에서 Data Index를 먼저 실행하세요.",
+            }
+
+        if sources is None:
+            sources = ["DLP", "Outbound Mail"]
+        where_sql, params = sensitive_files_where_clause(category, keyword, sources)
+        total = conn.execute(
+            f"SELECT COUNT(*) FROM sensitive_files_index WHERE {where_sql}",
+            params,
+        ).fetchone()[0]
+
+        count_where_sql, count_params = sensitive_files_where_clause("전체", keyword, sources)
+        count_rows = conn.execute(
+            f"""
+            SELECT category, COUNT(*)
+            FROM sensitive_files_index
+            WHERE {count_where_sql}
+            GROUP BY category
+            """,
+            count_params,
+        ).fetchall()
+        category_counts = {str(category): int(count) for category, count in count_rows}
+
+        rows = conn.execute(
+            f"""
+            SELECT record_json
+            FROM sensitive_files_index
+            WHERE {where_sql}
+            ORDER BY event_time DESC, display_filename ASC
+            LIMIT ? OFFSET ?
+            """,
+            params + [int(limit), int(offset)],
+        ).fetchall()
+
+    records = []
+    for (raw_json,) in rows:
+        record = sensitive_record_from_index_json(raw_json)
+        if record:
+            records.append(record)
+
+    return {
+        "records": records,
+        "total": int(total),
+        "category_counts": category_counts,
+        "index_ready": True,
+        "limit": int(limit),
+        "offset": int(offset),
+    }
+
+
+SENSITIVE_SITE_CATEGORY_SPECS = [
+    ("AI 사이트", [
+        "chat.openai.com", "chatgpt.com", "openai.com", "platform.openai.com",
+        "api.openai.com", "auth.openai.com", "help.openai.com", "status.openai.com",
+        "cdn.openai.com", "oaiusercontent.com",
+        "chatgpt-async-webps-prod-eastus.oaiusercontent.com", "claude.ai",
+        "console.anthropic.com", "anthropic.com", "api.anthropic.com",
+        "docs.anthropic.com", "gemini.google.com", "aistudio.google.com",
+        "makersuite.google.com", "notebooklm.google.com", "bard.google.com",
+        "ai.google", "labs.google", "deepmind.google", "vertexai.google.com",
+        "colab.research.google.com", "firebase.studio", "idx.google.com",
+        "copilot.microsoft.com", "copilot.cloud.microsoft", "m365.cloud.microsoft",
+        "copilotstudio.microsoft.com", "copilot.github.com", "perplexity.ai",
+        "poe.com", "wrtn.ai", "deepseek.com", "chat.deepseek.com",
+        "api.deepseek.com", "grok.com", "x.ai", "grok.x.com", "meta.ai",
+        "ai.meta.com", "llama.meta.com", "character.ai", "janitorai.com",
+        "spicychat.ai", "crushon.ai", "candy.ai", "chai-research.com",
+        "chai.ml", "replika.com", "you.com", "phind.com", "komo.ai",
+        "andisearch.com", "iask.ai", "consensus.app", "elicit.com",
+        "scite.ai", "cursor.com", "windsurf.com", "codeium.com", "tabnine.com",
+        "lovable.dev", "bolt.new", "v0.dev", "sourcegraph.com", "cody.dev",
+        "continue.dev", "cline.bot", "devin.ai", "cognition.ai", "amazonq.aws",
+        "manus.im", "n8n.io", "make.com", "flowiseai.com", "langflow.org",
+        "dify.ai", "midjourney.com", "nijijourney.com", "leonardo.ai",
+        "ideogram.ai", "krea.ai", "dreamstudio.ai", "stability.ai", "clipdrop.co",
+        "firefly.adobe.com", "playgroundai.com", "getimg.ai", "nightcafe.studio",
+        "civitai.com", "runwayml.com", "runway.com", "pika.art", "suno.com",
+        "udio.com", "elevenlabs.io", "heygen.com", "synthesia.io", "descript.com",
+        "kapwing.com", "veed.io", "luma.ai", "haiper.ai", "chatpdf.com",
+        "humata.ai", "askyourpdf.com", "scispace.com", "typeset.io", "jenni.ai",
+        "quillbot.com", "grammarly.com", "wordtune.com", "paperpal.com", "copy.ai",
+        "jasper.ai", "writesonic.com", "chatsonic.com", "rytr.me", "anyword.com",
+        "notion.ai", "gamma.app", "tome.app", "beautiful.ai", "presentations.ai",
+        "plusdocs.com", "pitch.com", "slidesgo.com", "slidesai.io", "decktopus.com",
+        "otter.ai", "fireflies.ai", "fathom.video", "tldv.io", "read.ai",
+        "krisp.ai", "supernormal.com", "deepl.com", "papago.naver.com",
+        "translate.google.com", "clova-x.naver.com", "clova.ai", "hyperclova.naver.com",
+        "cue.search.naver.com", "daglo.ai", "lilys.ai", "askup.ai", "upstage.ai",
+        "solar.upstage.ai", "polarisoffice.com", "khanmigo.ai", "socratic.org",
+        "quizlet.com", "duolingo.com", "dataiku.com", "databricks.com",
+        "snowflake.com", "thoughtspot.com", "akkio.com", "polymersearch.com",
+    ]),
+    ("여행 / 숙박", [
+        "yanolja.com", "goodchoice.kr", "yeogi.com", "ddnayo.com", "tidesquare.com",
+        "tourvis.com", "myrealtrip.com", "triple.guide", "interpark.com",
+        "travel.interpark.com", "nol-universe.com", "agoda.com", "booking.com",
+        "hotels.com", "expedia.com", "trip.com", "ctrip.com", "trivago.com",
+        "kayak.com", "priceline.com", "travelocity.com", "orbitz.com",
+        "hotelcombined.com", "hotelscombined.com", "skyscanner.co.kr", "airbnb.com",
+        "vrbo.com", "hostelworld.com", "lottehotel.com", "shillahotels.com",
+        "josunhotel.com", "parnas.co.kr", "walkerhill.com", "hanwharesort.co.kr",
+        "sonohotelsresorts.com", "kensington.co.kr", "resom.co.kr", "elysian.co.kr",
+        "konjiamresort.co.kr", "phoenixhnr.co.kr", "high1.com", "marriott.com",
+        "hilton.com", "hyatt.com", "ihg.com", "accor.com", "all.accor.com",
+        "wyndhamhotels.com", "choicehotels.com", "bestwestern.com", "radissonhotels.com",
+        "fourseasons.com", "mandarinoriental.com", "shangri-la.com", "aman.com",
+        "kempinski.com",
+    ]),
+    ("개인 메일 / 웹메일", [
+        "gmail.com", "mail.google.com", "googlemail.com", "mail.naver.com",
+        "mail.daum.net", "hanmail.net", "mail.hanmail.net", "mail.kakao.com",
+        "outlook.live.com", "outlook.com", "hotmail.com", "live.com", "mail.live.com",
+        "mail.yahoo.com", "yahoo.com", "ymail.com", "rocketmail.com", "icloud.com",
+        "mail.icloud.com", "me.com", "mac.com", "proton.me", "mail.proton.me",
+        "protonmail.com", "pm.me", "tuta.com", "mail.tuta.com", "tutanota.com",
+        "tutanota.de", "tutamail.com", "tuta.io", "keemail.me", "mail.zoho.com",
+        "zohomail.com", "mail.aol.com", "aol.com", "gmx.com", "gmx.net",
+        "mail.gmx.com", "mail.gmx.net", "mail.com", "mail.yandex.com",
+        "mail.yandex.ru", "mail.qq.com", "foxmail.com", "mail.163.com",
+        "mail.126.com", "mail.yeah.net", "mail.sina.com", "mail.sina.com.cn",
+        "fastmail.com", "app.fastmail.com", "fastmail.fm", "mailfence.com",
+        "hushmail.com", "startmail.com", "runbox.com", "posteo.de", "mailbox.org",
+        "hey.com", "mail.nate.com", "empas.com", "korea.com", "dreamwiz.com",
+        "chol.com", "hanafos.com", "paran.com", "unitel.co.kr", "kornet.net",
+        "hitel.net",
+    ]),
+    ("클라우드 / 파일공유", [
+        "drive.google.com", "docs.google.com", "sheets.google.com", "slides.google.com",
+        "forms.google.com", "photos.google.com", "storage.googleapis.com",
+        "storage.cloud.google.com", "onedrive.live.com", "1drv.ms", "sharepoint.com",
+        "my.sharepoint.com", "onedrive.com", "office.live.com", "officeapps.live.com",
+        "dropbox.com", "dropboxusercontent.com", "dl.dropboxusercontent.com",
+        "dropboxstatic.com", "db.tt", "box.com", "app.box.com", "boxcloud.com",
+        "boxcdn.net", "drive.icloud.com", "icloud-content.com", "mybox.naver.com",
+        "cloud.naver.com", "drive.kakao.com", "sendy.co.kr", "wetransfer.com",
+        "we.tl", "mega.nz", "mega.io", "mega.co.nz", "mediafire.com",
+        "download.mediafire.com", "pcloud.com", "my.pcloud.com", "e.pcloud.link",
+        "u.pcloud.link", "sync.com", "cp.sync.com", "tresorit.com", "web.tresorit.com",
+        "tresorit.io", "internxt.com", "drive.internxt.com", "drive.proton.me",
+        "protondrive.com", "nordlocker.com", "web.nordlocker.com", "icedrive.net",
+        "drive.icedrive.net", "koofr.eu", "app.koofr.net", "jumpshare.com",
+        "hightail.com", "spaces.hightail.com", "filemail.com", "send-anywhere.com",
+        "fromsmash.com", "transfernow.net", "transferxl.com", "swisstransfer.com",
+        "wormhole.app", "file.io", "gofile.io", "pixeldrain.com", "catbox.moe",
+        "litterbox.catbox.moe", "krakenfiles.com", "bayfiles.com", "letsupload.io",
+        "userscloud.com", "uppit.com", "zippyshare.com", "4shared.com",
+        "4shared-china.com", "disk.yandex.com", "disk.yandex.ru", "yadi.sk",
+        "pan.baidu.com", "yun.baidu.com", "weiyun.com", "pan.qq.com",
+        "aliyundrive.com", "alipan.com", "cloud.163.com",
+    ]),
+    ("원격접속 / 파일전송 도구", [
+        "teamviewer.com", "anydesk.com", "remotedesktop.google.com",
+        "rustdesk.com", "parsec.app", "splashtop.com", "logmein.com", "gotomypc.com",
+        "realvnc.com", "vnc.com", "tightvnc.com", "ultravnc.com", "dwservice.net",
+        "assist.zoho.com", "awe-sun.com", "supremocontrol.com",
+        "getscreen.me", "meshcentral.com", "radmin.com", "mremoteng.org", "putty.org",
+        "winscp.net", "filezilla-project.org", "termius.com", "tailscale.com",
+        "zerotier.com", "ngrok.com", "cloudflared.com", "remote.it",
+    ]),
+    ("금융 / 가상자산", [
+        "kbstar.com", "obank.kbstar.com", "shinhan.com", "bank.shinhan.com",
+        "wooribank.com", "spib.wooribank.com", "hana.com", "kebhana.com",
+        "ibk.co.kr", "nonghyup.com", "nhbank.com", "sc.co.kr", "standardchartered.co.kr",
+        "citi.com", "citibank.co.kr", "kakaobank.com", "kbanknow.com", "tossbank.com",
+        "toss.im", "pay.naver.com", "kakaopay.com", "samsungcard.com",
+        "hyundaicard.com", "lottecard.co.kr", "bccard.com", "wooricard.com",
+        "hanacard.co.kr", "kbcard.com", "shinhansec.com", "miraeasset.com",
+        "samsungpop.com", "kiwoom.com", "nhqv.com", "kbsec.com", "koreainvestment.com",
+        "upbit.com", "bithumb.com", "coinone.co.kr", "korbit.co.kr", "gopax.co.kr",
+        "binance.com", "coinbase.com", "kraken.com", "crypto.com", "bybit.com",
+        "okx.com", "bitget.com", "kucoin.com", "gate.io", "mexc.com",
+        "metamask.io", "phantom.app", "trustwallet.com", "ledger.com", "trezor.io",
+    ]),
+    ("쇼핑 / 중고거래 / 개인거래", [
+        "coupang.com", "gmarket.co.kr", "auction.co.kr", "11st.co.kr", "ssg.com",
+        "emart.ssg.com", "lotteon.com", "shopping.naver.com", "smartstore.naver.com",
+        "brand.naver.com", "kream.co.kr", "musinsa.com", "ably.co.kr", "zigzag.kr",
+        "29cm.co.kr", "wconcept.co.kr", "kurly.com", "ohou.se", "todayhouse.com",
+        "interpark.com", "wemakeprice.com", "tmon.co.kr", "aliexpress.com",
+        "amazon.com", "ebay.com", "qoo10.com", "taobao.com", "tmall.com",
+        "1688.com", "jd.com", "daangn.com", "karrotmarket.com", "bunjang.co.kr",
+        "joongna.com", "hellomarket.com", "junggonara.co.kr",
+    ]),
+    ("채용 / 이직", [
+        "saramin.co.kr", "jobkorea.co.kr", "wanted.co.kr", "linkedin.com",
+        "rememberapp.co.kr", "career.co.kr", "incruit.com", "jobplanet.co.kr",
+        "blind.com", "teamblind.com", "rocketpunch.com", "jumpit.co.kr",
+        "programmers.co.kr", "jasoseol.com", "linkareer.com", "superookie.com",
+        "catch.co.kr", "job.incruit.com", "albamon.com", "alba.co.kr", "work.go.kr",
+        "job.alio.go.kr", "job.seoul.go.kr", "seouljobnow.co.kr", "rallit.com",
+        "zighang.com", "jobflex.com", "jobda.im", "ninehire.com", "greetinghr.com",
+        "apply.workable.com", "wantedlab.com", "jobs.lever.co", "greenhouse.io",
+        "boards.greenhouse.io", "wellfound.com", "angel.co", "stackoverflowjobs.com",
+        "remoteok.com", "weworkremotely.com", "remotive.com", "flexjobs.com",
+        "indeed.com", "glassdoor.com", "monster.com", "ziprecruiter.com", "dice.com",
+        "seek.com.au", "jobsdb.com", "efinancialcareers.com",
+    ]),
+    ("문서 변환 / PDF 도구", [
+        "ilovepdf.com", "smallpdf.com", "pdf24.org", "convertio.co",
+        "cloudconvert.com", "freeconvert.com", "remove.bg", "canva.com",
+        "figma.com", "photopea.com", "tinywow.com",
+    ]),
+    ("SNS / 커뮤니티", [
+        "instagram.com", "facebook.com", "threads.net", "x.com", "twitter.com",
+        "tiktok.com", "youtube.com", "reddit.com", "discord.com", "telegram.org",
+        "t.me", "medium.com", "tumblr.com", "pinterest.com", "snapchat.com",
+        "mastodon.social", "bsky.app", "linktr.ee", "beacons.ai", "open.kakao.com",
+        "pf.kakao.com", "talk.naver.com", "band.us", "line.me", "openchat.line.me",
+        "dcinside.com", "gall.dcinside.com", "theqoo.net", "instiz.net",
+        "fmkorea.com", "ruliweb.com", "clien.net", "ppomppu.co.kr", "82cook.com",
+        "mlbpark.donga.com", "humoruniv.com", "todayhumor.co.kr", "inven.co.kr",
+        "arca.live", "etoland.co.kr", "slrclub.com", "bobaedream.co.kr",
+        "quasarzone.com", "coolenjoy.net", "dogdrip.net", "ilbe.com",
+        "cafe.naver.com", "blog.naver.com", "section.blog.naver.com", "m.blog.naver.com",
+        "cafe.daum.net", "brunch.co.kr", "everytime.kr",
+    ]),
+]
+
+SENSITIVE_SITES_INDEX_VERSION = "sensitive_sites_v5"
+SENSITIVE_SITES_PAGE_LIMIT = 500
+
+
+def normalize_site_host(value):
+    host = _extract_report_hostname(value)
+    host = host.lower().strip().strip(".")
+    if host.startswith("www."):
+        return host[4:]
+    return host
+
+
+def sensitive_site_known_domains(category_specs=SENSITIVE_SITE_CATEGORY_SPECS):
+    domains = []
+    seen = set()
+    for _, patterns in category_specs:
+        for pattern in patterns:
+            domain = normalize_site_host(pattern)
+            if domain and domain not in seen:
+                domains.append(domain)
+                seen.add(domain)
+    return domains
+
+
+def extract_url_candidates_from_text(text, category_specs=SENSITIVE_SITE_CATEGORY_SPECS):
+    text = html.unescape(str(text or ""))
+    candidates = []
+    seen = set()
+
+    def add_candidate(value):
+        candidate = str(value or "").strip().rstrip(".,;")
+        host = normalize_site_host(candidate)
+        if not host or host in seen:
+            return
+        candidates.append(candidate)
+        seen.add(host)
+
+    for match in re.finditer(r"https?://[^\s<>'\")]+|www\.[A-Za-z0-9.-]+\.[A-Za-z]{2,}(?:/[^\s<>'\")]+)?", text, re.IGNORECASE):
+        add_candidate(match.group(0))
+
+    for match in MAILSCREEN_EMAIL_RE.finditer(text):
+        email_domain = match.group(0).rsplit("@", 1)[-1]
+        add_candidate(email_domain)
+
+    lower_text = text.lower()
+    for domain in sensitive_site_known_domains(category_specs):
+        pattern = rf"(?<![a-z0-9.-]){re.escape(domain.lower())}(?![a-z0-9.-])"
+        if re.search(pattern, lower_text):
+            add_candidate(domain)
+
+    return candidates
+
+
+def classify_sensitive_site(host, url="", category_specs=SENSITIVE_SITE_CATEGORY_SPECS):
+    normalized_host = normalize_site_host(host) or normalize_site_host(url)
+    matched_categories = []
+    matched_keywords = []
+    for category, patterns in category_specs:
+        hits = []
+        seen_needles = set()
+        for pattern in patterns:
+            needle = normalize_site_host(pattern)
+            if not needle or needle in seen_needles:
+                continue
+            if normalized_host == needle or normalized_host.endswith("." + needle):
+                hits.append(needle)
+                seen_needles.add(needle)
+        if hits:
+            matched_categories.append(category)
+            matched_keywords.extend(hits)
+    if not matched_categories:
+        return None
+    return {
+        "category": matched_categories[0],
+        "categories": matched_categories,
+        "keywords": sorted(set(matched_keywords), key=lambda x: x.lower()),
+    }
+
+
+def sensitive_site_search_text(record):
+    return " ".join(str(record.get(k, "") or "") for k in (
+        "source", "category", "keywords", "event_time", "event", "site", "url",
+        "dept", "user", "user_id", "machine", "destination", "subject", "sender",
+        "receiver", "policy",
+    )).lower()
+
+
+def make_sensitive_site_dlp_record(row, category_specs=SENSITIVE_SITE_CATEGORY_SPECS):
+    if not isinstance(row, dict):
+        return None
+    destination = str(row.get("destination", "") or "")
+    detail = str(row.get("item_details") or row.get("destinationDetails") or "")
+    site_candidates = [detail, destination]
+    selected_url = ""
+    selected_host = ""
+    classified = None
+    for candidate in site_candidates:
+        host = normalize_site_host(candidate)
+        if not host or host in {"local-file-path", "internal-file-server"}:
+            continue
+        classified = classify_sensitive_site(host, candidate, category_specs)
+        if classified:
+            selected_host = host
+            selected_url = candidate
+            break
+    if not classified:
+        return None
+    machine_name = str(row.get("machine_name", "None") or "None")
+    client_name = str(row.get("client_name", "None") or "None")
+    dept_name, _ = get_dept_by_hostname(machine_name)
+    return {
+        "row": row,
+        "source": "DLP",
+        "category": classified["category"],
+        "categories": classified["categories"],
+        "keywords": classified["keywords"],
+        "event_time": str(row.get("eventtimelocal", "") or ""),
+        "event": format_dlp_event_id(row.get("event_id", "None")),
+        "site": selected_host,
+        "url": selected_url or selected_host,
+        "destination": destination or "None",
+        "detail": detail or "None",
+        "machine": machine_name,
+        "dept": dept_name,
+        "user": resolve_sensitive_user_name(machine_name, client_name),
+        "user_id": client_name,
+        "filename": str(row.get("filename", "None") or "None"),
+        "filehash": str(row.get("filehash", "None") or "None"),
+    }
+
+
+def make_sensitive_site_mailscreen_records(row, category_specs=SENSITIVE_SITE_CATEGORY_SPECS):
+    if not isinstance(row, dict):
+        return []
+    row = enrich_mailscreen_sender_fields(row)
+    subject = str(row.get("subject", "") or "")
+    scan_text = " ".join(str(row.get(k, "") or "") for k in (
+        "subject", "receiver", "sender", "attach",
+    ))
+    candidates = extract_url_candidates_from_text(scan_text, category_specs)
+    if not candidates:
+        return []
+    sender_email = mailscreen_identity_text(row.get("sender_email")) or mailscreen_identity_text(row.get("sender"))
+    sender_name = mailscreen_identity_text(row.get("sender_name")) or sender_email or "None"
+    user_id = mailscreen_identity_text(row.get("sender_user_id")) or sender_email or "None"
+    dept_name = mailscreen_identity_text(row.get("sender_dept")) or mailscreen_identity_text(row.get("dept")) or "미분류"
+    receiver = mailscreen_identity_text(row.get("receiver_detail")) or mailscreen_identity_text(row.get("receiver")) or "None"
+    records = []
+    for candidate in candidates:
+        host = normalize_site_host(candidate)
+        if not host:
+            continue
+        classified = classify_sensitive_site(host, candidate, category_specs)
+        if not classified:
+            continue
+        mail_process = str(row.get("mail_process", "") or "None")
+        send_result = str(row.get("send_result", "") or "None")
+        event = f"{mail_process}/{send_result}" if mail_process != "None" and send_result != "None" else (send_result or mail_process)
+        records.append({
+            "row": row,
+            "source": "Outbound Mail",
+            "category": classified["category"],
+            "categories": classified["categories"],
+            "keywords": classified["keywords"],
+            "event_time": str(row.get("date", "") or ""),
+            "event": event,
+            "site": host,
+            "url": candidate,
+            "destination": receiver,
+            "detail": subject or "None",
+            "machine": "None",
+            "dept": dept_name,
+            "user": sender_name,
+            "user_id": user_id,
+            "subject": subject or "None",
+            "sender": sender_email or "None",
+            "receiver": receiver,
+            "policy": str(row.get("policy", "") or "None"),
+            "mail_process": mail_process,
+            "mail_send_result": send_result,
+        })
+    return records
+
+
+def build_sensitive_site_records(dlp_rows=None, mailscreen_rows=None):
+    records = []
+    for row in dlp_rows or []:
+        record = make_sensitive_site_dlp_record(row)
+        if record:
+            records.append(record)
+
+    latest = {}
+    for record in records:
+        dedupe_key = sensitive_sites_dedupe_key(record)
+        current = latest.get(dedupe_key)
+        if current is None or str(record.get("event_time", "")) > str(current.get("event_time", "")):
+            latest[dedupe_key] = record
+    records = list(latest.values())
+    records.sort(key=lambda r: (r.get("event_time", ""), r.get("site", "")), reverse=True)
+    for record in records:
+        record["search_text"] = sensitive_site_search_text(record)
+    return records
+
+
+def sensitive_sites_index_sources(include_dlp=True, include_outbound=False):
+    sources = []
+    if include_dlp:
+        sources.append("DLP")
+    return sources
+
+
+def sensitive_sites_dedupe_key(record):
+    return "|".join([
+        str(record.get("source", "")).strip().lower(),
+        str(record.get("site", "")).strip().lower(),
+        str(record.get("dept", "")).strip().lower(),
+        str(record.get("user", "")).strip().lower(),
+    ])
+
+
+def insert_sensitive_sites_payload(conn, payload, replace_existing=True):
+    if not payload:
+        return 0
+    if replace_existing:
+        conn.executemany(
+            """
+            INSERT OR REPLACE INTO sensitive_sites_index
+                (dedupe_key, source, category, categories, keywords, event_time,
+                 site, url, user, user_id, dept, source_file, row_index, search_text, record_json, indexed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            payload,
+        )
+        return len(payload)
+
+    inserted = 0
+    for item in payload:
+        dedupe_key = item[0]
+        event_time = item[5]
+        existing = conn.execute(
+            "SELECT event_time FROM sensitive_sites_index WHERE dedupe_key = ?",
+            (dedupe_key,),
+        ).fetchone()
+        if existing and str(existing[0] or "") > str(event_time or ""):
+            continue
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO sensitive_sites_index
+                (dedupe_key, source, category, categories, keywords, event_time,
+                 site, url, user, user_id, dept, source_file, row_index, search_text, record_json, indexed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            item,
+        )
+        inserted += 1
+    return inserted
+
+
+def rebuild_sensitive_sites_index(conn, changed_paths=None, removed_paths=None, progress_cb=None):
+    start_ts = time.perf_counter()
+    full_rebuild = should_full_rebuild_sensitive_index(
+        conn,
+        "sensitive_sites_index_version",
+        SENSITIVE_SITES_INDEX_VERSION,
+        changed_paths,
+        removed_paths,
+    )
+    target_paths = None if full_rebuild else list(changed_paths or [])
+    if progress_cb:
+        progress_cb("Sensitive Sites 인덱스 생성중" if full_rebuild else "Sensitive Sites 증분 인덱스 생성중")
+    log.info(
+        "Sensitive Sites index start mode=%s changed=%d removed=%d",
+        "full" if full_rebuild else "incremental",
+        len(changed_paths or []),
+        len(removed_paths or []),
+    )
+
+    if full_rebuild:
+        dlp_rows = load_app_cache_raw_rows_from_conn(conn, "dlp")
+        mailscreen_rows = []
+    else:
+        delete_count = delete_sensitive_index_paths(conn, "sensitive_sites_index", changed_paths, removed_paths)
+        if not target_paths:
+            conn.execute(
+                "INSERT OR REPLACE INTO app_cache_meta(key, value) VALUES (?, ?)",
+                ("sensitive_sites_index_version", SENSITIVE_SITES_INDEX_VERSION),
+            )
+            log.info("Sensitive Sites index no changed files deleted=%d elapsed=%.2fs", delete_count, time.perf_counter() - start_ts)
+            return {
+                "sensitive_sites_index_rows": conn.execute("SELECT COUNT(*) FROM sensitive_sites_index").fetchone()[0],
+                "sensitive_sites_indexed_at": sensitive_index_meta_version(conn, "sensitive_sites_indexed_at"),
+            }
+        dlp_rows = load_app_cache_raw_rows_from_conn(conn, "dlp", target_paths)
+        mailscreen_rows = []
+        log.info("Sensitive Sites index deleted changed/removed rows=%d", delete_count)
+
+    records = build_sensitive_site_records(dlp_rows, mailscreen_rows)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    payload = []
+    for record in records:
+        record["search_text"] = record.get("search_text") or sensitive_site_search_text(record)
+        row = record.get("row") if isinstance(record.get("row"), dict) else {}
+        payload.append((
+            sensitive_sites_dedupe_key(record), str(record.get("source", "") or ""),
+            str(record.get("category", "") or ""), json.dumps(record.get("categories", []) or [], ensure_ascii=False),
+            json.dumps(record.get("keywords", []) or [], ensure_ascii=False), str(record.get("event_time", "") or ""),
+            str(record.get("site", "") or ""), str(record.get("url", "") or ""),
+            str(record.get("user", "") or ""), str(record.get("user_id", "") or ""),
+            str(record.get("dept", "") or ""), str(row.get("__source_file", "") or ""),
+            int(row.get("__row_index", -1) if str(row.get("__row_index", "")).strip() else -1),
+            str(record.get("search_text", "") or "").lower(),
+            json.dumps(record, ensure_ascii=False, default=str), now,
+        ))
+    if full_rebuild:
+        conn.execute("DELETE FROM sensitive_sites_index")
+    inserted = insert_sensitive_sites_payload(conn, payload, replace_existing=full_rebuild)
+    conn.execute("INSERT OR REPLACE INTO app_cache_meta(key, value) VALUES (?, ?)", ("sensitive_sites_index_version", SENSITIVE_SITES_INDEX_VERSION))
+    conn.execute("INSERT OR REPLACE INTO app_cache_meta(key, value) VALUES (?, ?)", ("sensitive_sites_indexed_at", now))
+    total_rows = conn.execute("SELECT COUNT(*) FROM sensitive_sites_index").fetchone()[0]
+    log.info(
+        "Sensitive Sites index done mode=%s dlp_rows=%d mailscreen_rows=%d records=%d inserted=%d total=%d elapsed=%.2fs",
+        "full" if full_rebuild else "incremental",
+        len(dlp_rows),
+        len(mailscreen_rows),
+        len(records),
+        inserted,
+        total_rows,
+        time.perf_counter() - start_ts,
+    )
+    return {
+        "sensitive_sites_index_rows": total_rows,
+        "sensitive_sites_indexed_at": now,
+    }
+
+def sensitive_sites_index_ready(conn):
+    row = conn.execute(
+        "SELECT value FROM app_cache_meta WHERE key = ?",
+        ("sensitive_sites_index_version",),
+    ).fetchone()
+    return bool(row and row[0] == SENSITIVE_SITES_INDEX_VERSION)
+
+
+def sensitive_sites_where_clause(category="전체", keyword="", sources=None):
+    clauses = []
+    params = []
+    source_values = list(sources or [])
+    if source_values:
+        clauses.append(f"source IN ({','.join('?' for _ in source_values)})")
+        params.extend(source_values)
+    else:
+        clauses.append("1 = 0")
+    if category and category != "전체":
+        clauses.append("category = ?")
+        params.append(category)
+    keyword = str(keyword or "").strip().lower()
+    if keyword:
+        clauses.append("search_text LIKE ?")
+        params.append(f"%{keyword}%")
+    return " AND ".join(clauses), params
+
+
+def query_sensitive_sites_index(category="전체", keyword="", sources=None, limit=SENSITIVE_SITES_PAGE_LIMIT, offset=0):
+    with app_cache_connect() as conn:
+        if not sensitive_sites_index_ready(conn):
+            return {
+                "records": [], "total": 0, "category_counts": {}, "index_ready": False,
+                "message": "Sensitive Sites 인덱스가 없습니다. Config에서 Data Index를 먼저 실행하세요.",
+            }
+        if sources is None:
+            sources = ["DLP"]
+        where_sql, params = sensitive_sites_where_clause(category, keyword, sources)
+        total = conn.execute(f"SELECT COUNT(*) FROM sensitive_sites_index WHERE {where_sql}", params).fetchone()[0]
+        count_where_sql, count_params = sensitive_sites_where_clause("전체", keyword, sources)
+        count_rows = conn.execute(
+            f"SELECT category, COUNT(*) FROM sensitive_sites_index WHERE {count_where_sql} GROUP BY category",
+            count_params,
+        ).fetchall()
+        category_counts = {str(category): int(count) for category, count in count_rows}
+        rows = conn.execute(
+            f"""
+            SELECT record_json
+            FROM sensitive_sites_index
+            WHERE {where_sql}
+            ORDER BY event_time DESC, site ASC
+            LIMIT ? OFFSET ?
+            """,
+            params + [int(limit), int(offset)],
+        ).fetchall()
+    records = []
+    for (raw_json,) in rows:
+        try:
+            record = json.loads(raw_json)
+            if isinstance(record, dict):
+                records.append(record)
+        except Exception as e:
+            log.warning(f"Sensitive Sites index record parse failed: {e}")
+    return {
+        "records": records, "total": int(total), "category_counts": category_counts,
+        "index_ready": True, "limit": int(limit), "offset": int(offset),
+    }
+
+
+SENSITIVE_FILE_CATEGORY_SPECS = [
+    ("이직 / 취업", [
+        "이력서", "resume", "curriculum vitae", "자기소개서", "자소서",
+        "포트폴리오", "portfolio", "경력기술서", "입사지원", "지원서",
+        "면접", "채용", "잡코리아", "사람인", "원티드", "wanted",
+        "linkedin", "링크드인", "cover letter",
+    ]),
+    ("결혼 / 웨딩 / 연애", [
+        "결혼", "웨딩", "wedding", "상견례", "청첩장", "예식", "예식장",
+        "스드메", "드레스", "혼수", "신혼", "신혼여행", "허니문",
+        "혼인", "예물", "예단", "커플사진", "가족사진", "웨딩사진",
+        "연애", "남친", "여친", "남자친구", "여자친구", "연인",
+        "소개팅", "프로포즈", "커플", "커플링", "데이트사진", "오빠",
+    ]),
+    ("개인 증빙 / 금융", [
+        "신분증", "주민등록증", "운전면허증", "여권", "가족관계증명서",
+        "주민등록등본", "주민등록초본", "인감증명서", "통장사본",
+        "계좌번호", "입금계좌", "입금내역", "거래내역", "잔액증명서",
+        "원천징수", "소득금액", "급여명세서", "연말정산", "건강보험",
+        "국민연금", "재직증명", "전세계약서", "월세계약서", "임대차계약서",
+    ]),
+    ("발주 / 주문 / 거래 문서", [
+        "발주서", "주문서", "거래명세서", "출고양식", "수기발주",
+        "공동구매", "매출내역", "invoice",
+    ]),
+    ("비용 / 영수증 / 정산", [
+        "영수증", "결제증빙", "비용정산", "법카", "접대비", "회식비", "receipt",
+    ]),
+    ("계약 / 법무 / 사업자 증빙", [
+        "계약서", "계약일반조건", "사업자등록증", "채권", "변제계획서",
+    ]),
+    ("제품 / 디자인 / 마케팅 자료", [
+        "상세페이지", "썸네일", "렌더링", "로고", "누끼", "데켓",
+        "택플로우", "TACTFLOW", "인플루언서", "시딩",
+        "유튜브", "마케팅", "쇼츠", "숏츠", "론칭", "콜라보",
+    ]),
+    ("메신저 수신 파일", [
+        "카카오톡 받은 파일", "kakaotalk", "kakaotalk download",
+        "네이트온 받은 파일", "nateon", "wechat", "viber", "whatsapp",
+        "telegram desktop", "messages/attachments", "xwechat_files",
+        "viberdownloads", "discord",
+    ]),
+    ("개인 사진 / 영상", [
+        "개인사진", "가족사진", "웨딩사진", "증명사진", "프로필사진",
+        "셀카", "셀피", "selfie", "여행사진", "앨범", "본식사진",
+        "스냅사진", "여권사진", "반명함",
+    ]),
+]
+
+
+SENSITIVE_FILE_CATEGORY_REGEX_SPECS = []
+
+
+def sensitive_row_text(row):
+    field_text = " ".join(str(row.get(k, "") or "") for k in (
+        "filename", "destination", "destination_type", "item_details",
+        "destinationDetails", "machine_name", "client_name", "event_id",
+    ))
+    return f"{field_text} {json.dumps(row, ensure_ascii=False, default=str)}".lower()
+
+
+def classify_sensitive_text(text, category_specs=SENSITIVE_FILE_CATEGORY_SPECS):
+    text = str(text or "").lower()
+    matched_categories = []
+    matched_keywords = []
+    for category, keywords in category_specs:
+        hits = [kw for kw in keywords if kw.lower() in text]
+        if hits:
+            matched_categories.append(category)
+            matched_keywords.extend(hits)
+    for category, patterns in SENSITIVE_FILE_CATEGORY_REGEX_SPECS:
+        hits = []
+        for pattern, label in patterns:
+            if re.search(pattern, text, re.IGNORECASE):
+                hits.append(label)
+        if hits:
+            matched_categories.append(category)
+            matched_keywords.extend(hits)
+    if not matched_categories:
+        return None
+    return {
+        "category": matched_categories[0],
+        "categories": matched_categories,
+        "keywords": sorted(set(matched_keywords), key=lambda x: x.lower()),
+    }
+
+
+def classify_sensitive_row(row, category_specs=SENSITIVE_FILE_CATEGORY_SPECS):
+    return classify_sensitive_text(sensitive_row_text(row), category_specs)
+
+
+def display_sensitive_file_name(path_text):
+    text = str(path_text or "None").strip()
+    if not text or text == "None":
+        return "None"
+    normalized = text.replace("\\", "/").rstrip("/")
+    return normalized.rsplit("/", 1)[-1] or text
+
+
+def resolve_sensitive_user_name(machine_name, client_name):
+    identity = resolve_identity_by_hostname(machine_name)
+    user_name = str(identity.get("user_name", "") or "").strip()
+    if user_name and user_name != "None":
+        return user_name
+    directory_info = get_directory_user_info(client_name)
+    directory_name = str(directory_info.get("name", "") or "").strip()
+    if directory_name:
+        return directory_name
+    org_name = get_org_user_name_by_user_id(client_name)
+    if org_name:
+        return org_name
+    return str(client_name or "None")
+
+
+def make_sensitive_record(row, category_specs=SENSITIVE_FILE_CATEGORY_SPECS):
+    classified = classify_sensitive_row(row, category_specs)
+    if not classified:
+        return None
+    machine_name = str(row.get("machine_name", "None") or "None")
+    client_name = str(row.get("client_name", "None") or "None")
+    dept_name, _ = get_dept_by_hostname(machine_name)
+    filename = str(row.get("filename", "None") or "None")
+    destination = str(row.get("destination", "None") or "None")
+    destination_detail = str(row.get("item_details") or row.get("destinationDetails") or "None")
+    return {
+        "row": row,
+        "source": "DLP",
+        "category": classified["category"],
+        "categories": classified["categories"],
+        "keywords": classified["keywords"],
+        "event_time": str(row.get("eventtimelocal", "") or ""),
+        "event": format_dlp_event_id(row.get("event_id", "None")),
+        "machine": machine_name,
+        "dept": dept_name,
+        "user": resolve_sensitive_user_name(machine_name, client_name),
+        "user_id": client_name,
+        "filename": filename,
+        "display_filename": display_sensitive_file_name(filename),
+        "destination": destination,
+        "destination_type": str(row.get("destination_type", "None") or "None"),
+        "destination_detail": destination_detail,
+        "filehash": str(row.get("filehash", "None") or "None"),
+    }
+
+
+def sensitive_record_search_text(record):
+    return " ".join(str(record.get(k, "") or "") for k in (
+        "source", "category", "keywords", "event_time", "event", "machine",
+        "dept", "user", "user_id", "filename", "display_filename",
+        "destination", "destination_type", "destination_detail", "filehash",
+        "mail_subject", "mail_sender", "mail_receiver", "mail_policy", "mail_attach_raw",
+    )).lower()
+
+
+MAILSCREEN_ATTACHMENT_EXTENSIONS = (
+    "docx", "doc", "xlsx", "xls", "pptx", "ppt", "jpeg", "jpg",
+    "pdf", "txt", "csv", "png", "heic", "gif", "bmp", "zip", "7z", "rar",
+    "alz", "egg", "ai", "psd", "mp4", "mov", "avi", "eml", "msg",
+)
+
+
+def clean_mailscreen_attachment_name(value):
+    text = str(value or "").strip()
+    if not text or text == "None":
+        return ""
+    text = re.sub(r"\s*\(\s*\d+\s+more\s*\)\s*$", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s*\(\s*[\d,.]+\s*(?:B|K|KB|M|MB|G|GB|T|TB)\s*\)\s*$", "", text, flags=re.IGNORECASE)
+    return text.strip(" ,;|")
+
+
+def extract_mailscreen_attachment_names(row):
+    attach_text = str(row.get("attach", "") or "").strip() if isinstance(row, dict) else ""
+    if not attach_text or attach_text == "None":
+        return []
+
+    ext_pattern = "|".join(re.escape(ext) for ext in MAILSCREEN_ATTACHMENT_EXTENSIONS)
+    pattern = re.compile(
+        rf"([^,;|\n]+?\.(?:{ext_pattern}))(?:\s*\([^)]*\))*",
+        re.IGNORECASE,
+    )
+    names = []
+    for match in pattern.finditer(attach_text):
+        name = clean_mailscreen_attachment_name(match.group(1))
+        if name and name not in names:
+            names.append(name)
+
+    if names:
+        return names
+
+    fallback = clean_mailscreen_attachment_name(attach_text)
+    return [fallback] if fallback else []
+
+
+def make_sensitive_mailscreen_record(row, attachment_name, category_specs=SENSITIVE_FILE_CATEGORY_SPECS):
+    if not isinstance(row, dict):
+        return None
+    row = enrich_mailscreen_sender_fields(row)
+    filename = clean_mailscreen_attachment_name(attachment_name)
+    if not filename:
+        return None
+
+    subject = str(row.get("subject", "") or "")
+    classified = classify_sensitive_text(f"{filename} {subject}", category_specs)
+    if not classified:
+        return None
+
+    sender_email = mailscreen_identity_text(row.get("sender_email")) or mailscreen_identity_text(row.get("sender"))
+    sender_name = mailscreen_identity_text(row.get("sender_name")) or sender_email or "None"
+    user_id = mailscreen_identity_text(row.get("sender_user_id")) or sender_email or "None"
+    dept_name = mailscreen_identity_text(row.get("sender_dept")) or mailscreen_identity_text(row.get("dept")) or "미분류"
+    receiver = mailscreen_identity_text(row.get("receiver_detail")) or mailscreen_identity_text(row.get("receiver")) or "None"
+    mail_process = str(row.get("mail_process", "") or "None")
+    send_result = str(row.get("send_result", "") or "None")
+    event = f"{mail_process}/{send_result}" if mail_process != "None" and send_result != "None" else (send_result or mail_process)
+
+    return {
+        "row": row,
+        "source": "Outbound Mail",
+        "category": classified["category"],
+        "categories": classified["categories"],
+        "keywords": classified["keywords"],
+        "event_time": str(row.get("date", "") or ""),
+        "event": event,
+        "machine": "None",
+        "dept": dept_name,
+        "user": sender_name,
+        "user_id": user_id,
+        "filename": filename,
+        "display_filename": display_sensitive_file_name(filename),
+        "destination": receiver,
+        "destination_type": "Outbound Mail Attachment",
+        "destination_detail": str(row.get("subject", "") or "None"),
+        "filehash": "None",
+        "mail_subject": str(row.get("subject", "") or "None"),
+        "mail_sender": sender_email or "None",
+        "mail_receiver": receiver,
+        "mail_size": str(row.get("size", "") or "None"),
+        "mail_policy": str(row.get("policy", "") or "None"),
+        "mail_process": mail_process,
+        "mail_send_result": send_result,
+        "mail_attach_raw": str(row.get("attach", "") or "None"),
+    }
+
+
+def build_sensitive_file_records(rows, category_specs=SENSITIVE_FILE_CATEGORY_SPECS, mailscreen_rows=None):
+    records = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        record = make_sensitive_record(row, category_specs)
+        if record:
+            records.append(record)
+
+    for row in mailscreen_rows or []:
+        if not isinstance(row, dict):
+            continue
+        for attachment_name in extract_mailscreen_attachment_names(row):
+            record = make_sensitive_mailscreen_record(row, attachment_name, category_specs)
+            if record:
+                records.append(record)
+
+    latest_by_file_owner = {}
+    for record in records:
+        dedupe_key = (
+            str(record.get("source", "")).strip().lower(),
+            str(record.get("display_filename", "")).strip().lower(),
+            str(record.get("dept", "")).strip().lower(),
+            str(record.get("user", "")).strip().lower(),
+        )
+        current = latest_by_file_owner.get(dedupe_key)
+        if current is None or str(record.get("event_time", "")) > str(current.get("event_time", "")):
+            latest_by_file_owner[dedupe_key] = record
+
+    records = list(latest_by_file_owner.values())
+    records.sort(key=lambda r: (r["category"], r["display_filename"].lower()))
+    records.sort(key=lambda r: r["event_time"], reverse=True)
+    for record in records:
+        record["search_text"] = sensitive_record_search_text(record)
+    return records
+
+
+SENSITIVE_FILES_INDEX_VERSION = "sensitive_files_v3"
+SENSITIVE_FILES_PAGE_LIMIT = 500
+
+
+def sensitive_files_index_sources(include_dlp=True, include_outbound=True):
+    sources = []
+    if include_dlp:
+        sources.append("DLP")
+    if include_outbound:
+        sources.append("Outbound Mail")
+    return sources
+
+
+def sensitive_files_dedupe_key(record):
+    return "|".join([
+        str(record.get("source", "")).strip().lower(),
+        str(record.get("display_filename", "")).strip().lower(),
+        str(record.get("dept", "")).strip().lower(),
+        str(record.get("user", "")).strip().lower(),
+    ])
+
+
+def load_app_cache_raw_rows_from_conn(conn, source, source_files=None):
+    params = [source]
+    where_sql = "source = ?"
+    source_file_values = list(source_files or [])
+    if source_file_values:
+        placeholders = ",".join("?" for _ in source_file_values)
+        where_sql += f" AND source_file IN ({placeholders})"
+        params.extend(source_file_values)
+    rows = conn.execute(
+        f"""
+        SELECT source_file, row_index, raw_json
+        FROM app_cache_records
+        WHERE {where_sql}
+        ORDER BY cache_date ASC, source_file ASC, row_index ASC
+        """,
+        params,
+    ).fetchall()
+    results = []
+    for source_file, row_index, raw_json in rows:
+        try:
+            row = json.loads(raw_json)
+            if isinstance(row, dict):
+                row["__source_file"] = source_file
+                row["__row_index"] = row_index
+                results.append(row)
+        except Exception as e:
+            log.warning(f"Sensitive index raw parse failed source={source}: {e}")
+    return results
+
+
+def sensitive_index_meta_version(conn, key):
+    row = conn.execute("SELECT value FROM app_cache_meta WHERE key = ?", (key,)).fetchone()
+    return row[0] if row else ""
+
+
+def should_full_rebuild_sensitive_index(conn, version_key, expected_version, changed_paths, removed_paths):
+    if changed_paths is None and removed_paths is None:
+        return True
+    return sensitive_index_meta_version(conn, version_key) != expected_version
+
+
+def delete_sensitive_index_paths(conn, table_name, changed_paths=None, removed_paths=None):
+    paths = sorted(set((changed_paths or []) + (removed_paths or [])))
+    if not paths:
+        return 0
+    placeholders = ",".join("?" for _ in paths)
+    cur = conn.execute(f"DELETE FROM {table_name} WHERE source_file IN ({placeholders})", paths)
+    return cur.rowcount if cur.rowcount is not None else 0
+
+
+def insert_sensitive_files_payload(conn, payload, replace_existing=True):
+    if not payload:
+        return 0
+    if replace_existing:
+        conn.executemany(
+            """
+            INSERT OR REPLACE INTO sensitive_files_index
+                (dedupe_key, source, category, categories, keywords, event_time,
+                 display_filename, user, user_id, dept, source_file, row_index, search_text, record_json, indexed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            payload,
+        )
+        return len(payload)
+
+    inserted = 0
+    for item in payload:
+        dedupe_key = item[0]
+        event_time = item[5]
+        existing = conn.execute(
+            "SELECT event_time FROM sensitive_files_index WHERE dedupe_key = ?",
+            (dedupe_key,),
+        ).fetchone()
+        if existing and str(existing[0] or "") > str(event_time or ""):
+            continue
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO sensitive_files_index
+                (dedupe_key, source, category, categories, keywords, event_time,
+                 display_filename, user, user_id, dept, source_file, row_index, search_text, record_json, indexed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            item,
+        )
+        inserted += 1
+    return inserted
+
+
+def rebuild_sensitive_files_index(conn, changed_paths=None, removed_paths=None, progress_cb=None):
+    start_ts = time.perf_counter()
+    full_rebuild = should_full_rebuild_sensitive_index(
+        conn,
+        "sensitive_files_index_version",
+        SENSITIVE_FILES_INDEX_VERSION,
+        changed_paths,
+        removed_paths,
+    )
+    target_paths = None if full_rebuild else list(changed_paths or [])
+    if progress_cb:
+        progress_cb("Sensitive Files 인덱스 생성중" if full_rebuild else "Sensitive Files 증분 인덱스 생성중")
+    log.info(
+        "Sensitive Files index start mode=%s changed=%d removed=%d",
+        "full" if full_rebuild else "incremental",
+        len(changed_paths or []),
+        len(removed_paths or []),
+    )
+
+    if full_rebuild:
+        dlp_rows = load_app_cache_raw_rows_from_conn(conn, "dlp")
+        mailscreen_rows = load_app_cache_raw_rows_from_conn(conn, "mailscreen")
+    else:
+        delete_count = delete_sensitive_index_paths(conn, "sensitive_files_index", changed_paths, removed_paths)
+        if not target_paths:
+            conn.execute(
+                "INSERT OR REPLACE INTO app_cache_meta(key, value) VALUES (?, ?)",
+                ("sensitive_files_index_version", SENSITIVE_FILES_INDEX_VERSION),
+            )
+            log.info("Sensitive Files index no changed files deleted=%d elapsed=%.2fs", delete_count, time.perf_counter() - start_ts)
+            return {
+                "sensitive_index_rows": conn.execute("SELECT COUNT(*) FROM sensitive_files_index").fetchone()[0],
+                "sensitive_index_dlp_rows": 0,
+                "sensitive_index_mailscreen_rows": 0,
+                "sensitive_indexed_at": sensitive_index_meta_version(conn, "sensitive_files_indexed_at"),
+            }
+        dlp_rows = load_app_cache_raw_rows_from_conn(conn, "dlp", target_paths)
+        mailscreen_rows = load_app_cache_raw_rows_from_conn(conn, "mailscreen", target_paths)
+        log.info("Sensitive Files index deleted changed/removed rows=%d", delete_count)
+
+    records = build_sensitive_file_records(dlp_rows, mailscreen_rows=mailscreen_rows)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    payload = []
+    for record in records:
+        record["search_text"] = record.get("search_text") or sensitive_record_search_text(record)
+        row = record.get("row") if isinstance(record.get("row"), dict) else {}
+        payload.append((
+            sensitive_files_dedupe_key(record),
+            str(record.get("source", "") or ""),
+            str(record.get("category", "") or ""),
+            json.dumps(record.get("categories", []) or [], ensure_ascii=False),
+            json.dumps(record.get("keywords", []) or [], ensure_ascii=False),
+            str(record.get("event_time", "") or ""),
+            str(record.get("display_filename", "") or ""),
+            str(record.get("user", "") or ""),
+            str(record.get("user_id", "") or ""),
+            str(record.get("dept", "") or ""),
+            str(row.get("__source_file", "") or ""),
+            int(row.get("__row_index", -1) if str(row.get("__row_index", "")).strip() else -1),
+            str(record.get("search_text", "") or "").lower(),
+            json.dumps(record, ensure_ascii=False, default=str),
+            now,
+        ))
+
+    if full_rebuild:
+        conn.execute("DELETE FROM sensitive_files_index")
+    inserted = insert_sensitive_files_payload(conn, payload, replace_existing=full_rebuild)
+    conn.execute(
+        "INSERT OR REPLACE INTO app_cache_meta(key, value) VALUES (?, ?)",
+        ("sensitive_files_index_version", SENSITIVE_FILES_INDEX_VERSION),
+    )
+    conn.execute(
+        "INSERT OR REPLACE INTO app_cache_meta(key, value) VALUES (?, ?)",
+        ("sensitive_files_indexed_at", now),
+    )
+    total_rows = conn.execute("SELECT COUNT(*) FROM sensitive_files_index").fetchone()[0]
+    log.info(
+        "Sensitive Files index done mode=%s dlp_rows=%d mailscreen_rows=%d records=%d inserted=%d total=%d elapsed=%.2fs",
+        "full" if full_rebuild else "incremental",
+        len(dlp_rows),
+        len(mailscreen_rows),
+        len(records),
+        inserted,
+        total_rows,
+        time.perf_counter() - start_ts,
+    )
+    return {
+        "sensitive_index_rows": total_rows,
+        "sensitive_index_dlp_rows": len(dlp_rows),
+        "sensitive_index_mailscreen_rows": len(mailscreen_rows),
+        "sensitive_indexed_at": now,
+    }
+
+def sensitive_files_index_ready(conn):
+    row = conn.execute(
+        "SELECT value FROM app_cache_meta WHERE key = ?",
+        ("sensitive_files_index_version",),
+    ).fetchone()
+    return bool(row and row[0] == SENSITIVE_FILES_INDEX_VERSION)
+
+
+def sensitive_files_where_clause(category="전체", keyword="", sources=None):
+    clauses = []
+    params = []
+    source_values = list(sources or [])
+    if source_values:
+        placeholders = ",".join("?" for _ in source_values)
+        clauses.append(f"source IN ({placeholders})")
+        params.extend(source_values)
+    else:
+        clauses.append("1 = 0")
+
+    if category and category != "전체":
+        clauses.append("category = ?")
+        params.append(category)
+
+    keyword = str(keyword or "").strip().lower()
+    if keyword:
+        clauses.append("search_text LIKE ?")
+        params.append(f"%{keyword}%")
+
+    return " AND ".join(clauses), params
+
+
+def sensitive_record_from_index_json(raw_json):
+    try:
+        record = json.loads(raw_json)
+        if isinstance(record, dict):
+            record["search_text"] = record.get("search_text") or sensitive_record_search_text(record)
+            return record
+    except Exception as e:
+        log.warning(f"Sensitive Files index record parse failed: {e}")
+    return None
+
+
+def query_sensitive_files_index(
+    category="전체",
+    keyword="",
+    sources=None,
+    limit=SENSITIVE_FILES_PAGE_LIMIT,
+    offset=0,
+):
+    with app_cache_connect() as conn:
+        if not sensitive_files_index_ready(conn):
+            return {
+                "records": [],
+                "total": 0,
+                "category_counts": {},
+                "index_ready": False,
+                "message": "Sensitive Files 인덱스가 없습니다. Config에서 Data Index를 먼저 실행하세요.",
+            }
+
+        if sources is None:
+            sources = ["DLP", "Outbound Mail"]
+        where_sql, params = sensitive_files_where_clause(category, keyword, sources)
+        total = conn.execute(
+            f"SELECT COUNT(*) FROM sensitive_files_index WHERE {where_sql}",
+            params,
+        ).fetchone()[0]
+
+        count_where_sql, count_params = sensitive_files_where_clause("전체", keyword, sources)
+        count_rows = conn.execute(
+            f"""
+            SELECT category, COUNT(*)
+            FROM sensitive_files_index
+            WHERE {count_where_sql}
+            GROUP BY category
+            """,
+            count_params,
+        ).fetchall()
+        category_counts = {str(category): int(count) for category, count in count_rows}
+
+        rows = conn.execute(
+            f"""
+            SELECT record_json
+            FROM sensitive_files_index
+            WHERE {where_sql}
+            ORDER BY event_time DESC, display_filename ASC
+            LIMIT ? OFFSET ?
+            """,
+            params + [int(limit), int(offset)],
+        ).fetchall()
+
+    records = []
+    for (raw_json,) in rows:
+        record = sensitive_record_from_index_json(raw_json)
+        if record:
+            records.append(record)
+
+    return {
+        "records": records,
+        "total": int(total),
+        "category_counts": category_counts,
+        "index_ready": True,
+        "limit": int(limit),
+        "offset": int(offset),
+    }
+
+
+SENSITIVE_SITE_CATEGORY_SPECS = [
+    ("AI 사이트", [
+        "chat.openai.com", "chatgpt.com", "openai.com", "platform.openai.com",
+        "api.openai.com", "auth.openai.com", "help.openai.com", "status.openai.com",
+        "cdn.openai.com", "oaiusercontent.com",
+        "chatgpt-async-webps-prod-eastus.oaiusercontent.com", "claude.ai",
+        "console.anthropic.com", "anthropic.com", "api.anthropic.com",
+        "docs.anthropic.com", "gemini.google.com", "aistudio.google.com",
+        "makersuite.google.com", "notebooklm.google.com", "bard.google.com",
+        "ai.google", "labs.google", "deepmind.google", "vertexai.google.com",
+        "colab.research.google.com", "firebase.studio", "idx.google.com",
+        "copilot.microsoft.com", "copilot.cloud.microsoft", "m365.cloud.microsoft",
+        "copilotstudio.microsoft.com", "copilot.github.com", "perplexity.ai",
+        "poe.com", "wrtn.ai", "deepseek.com", "chat.deepseek.com",
+        "api.deepseek.com", "grok.com", "x.ai", "grok.x.com", "meta.ai",
+        "ai.meta.com", "llama.meta.com", "character.ai", "janitorai.com",
+        "spicychat.ai", "crushon.ai", "candy.ai", "chai-research.com",
+        "chai.ml", "replika.com", "you.com", "phind.com", "komo.ai",
+        "andisearch.com", "iask.ai", "consensus.app", "elicit.com",
+        "scite.ai", "cursor.com", "windsurf.com", "codeium.com", "tabnine.com",
+        "lovable.dev", "bolt.new", "v0.dev", "sourcegraph.com", "cody.dev",
+        "continue.dev", "cline.bot", "devin.ai", "cognition.ai", "amazonq.aws",
+        "manus.im", "n8n.io", "make.com", "flowiseai.com", "langflow.org",
+        "dify.ai", "midjourney.com", "nijijourney.com", "leonardo.ai",
+        "ideogram.ai", "krea.ai", "dreamstudio.ai", "stability.ai", "clipdrop.co",
+        "firefly.adobe.com", "playgroundai.com", "getimg.ai", "nightcafe.studio",
+        "civitai.com", "runwayml.com", "runway.com", "pika.art", "suno.com",
+        "udio.com", "elevenlabs.io", "heygen.com", "synthesia.io", "descript.com",
+        "kapwing.com", "veed.io", "luma.ai", "haiper.ai", "chatpdf.com",
+        "humata.ai", "askyourpdf.com", "scispace.com", "typeset.io", "jenni.ai",
+        "quillbot.com", "grammarly.com", "wordtune.com", "paperpal.com", "copy.ai",
+        "jasper.ai", "writesonic.com", "chatsonic.com", "rytr.me", "anyword.com",
+        "notion.ai", "gamma.app", "tome.app", "beautiful.ai", "presentations.ai",
+        "plusdocs.com", "pitch.com", "slidesgo.com", "slidesai.io", "decktopus.com",
+        "otter.ai", "fireflies.ai", "fathom.video", "tldv.io", "read.ai",
+        "krisp.ai", "supernormal.com", "deepl.com", "papago.naver.com",
+        "translate.google.com", "clova-x.naver.com", "clova.ai", "hyperclova.naver.com",
+        "cue.search.naver.com", "daglo.ai", "lilys.ai", "askup.ai", "upstage.ai",
+        "solar.upstage.ai", "polarisoffice.com", "khanmigo.ai", "socratic.org",
+        "quizlet.com", "duolingo.com", "dataiku.com", "databricks.com",
+        "snowflake.com", "thoughtspot.com", "akkio.com", "polymersearch.com",
+    ]),
+    ("여행 / 숙박", [
+        "yanolja.com", "goodchoice.kr", "yeogi.com", "ddnayo.com", "tidesquare.com",
+        "tourvis.com", "myrealtrip.com", "triple.guide", "interpark.com",
+        "travel.interpark.com", "nol-universe.com", "agoda.com", "booking.com",
+        "hotels.com", "expedia.com", "trip.com", "ctrip.com", "trivago.com",
+        "kayak.com", "priceline.com", "travelocity.com", "orbitz.com",
+        "hotelcombined.com", "hotelscombined.com", "skyscanner.co.kr", "airbnb.com",
+        "vrbo.com", "hostelworld.com", "lottehotel.com", "shillahotels.com",
+        "josunhotel.com", "parnas.co.kr", "walkerhill.com", "hanwharesort.co.kr",
+        "sonohotelsresorts.com", "kensington.co.kr", "resom.co.kr", "elysian.co.kr",
+        "konjiamresort.co.kr", "phoenixhnr.co.kr", "high1.com", "marriott.com",
+        "hilton.com", "hyatt.com", "ihg.com", "accor.com", "all.accor.com",
+        "wyndhamhotels.com", "choicehotels.com", "bestwestern.com", "radissonhotels.com",
+        "fourseasons.com", "mandarinoriental.com", "shangri-la.com", "aman.com",
+        "kempinski.com",
+    ]),
+    ("개인 메일 / 웹메일", [
+        "gmail.com", "mail.google.com", "googlemail.com", "mail.naver.com",
+        "mail.daum.net", "hanmail.net", "mail.hanmail.net", "mail.kakao.com",
+        "outlook.live.com", "outlook.com", "hotmail.com", "live.com", "mail.live.com",
+        "mail.yahoo.com", "yahoo.com", "ymail.com", "rocketmail.com", "icloud.com",
+        "mail.icloud.com", "me.com", "mac.com", "proton.me", "mail.proton.me",
+        "protonmail.com", "pm.me", "tuta.com", "mail.tuta.com", "tutanota.com",
+        "tutanota.de", "tutamail.com", "tuta.io", "keemail.me", "mail.zoho.com",
+        "zohomail.com", "mail.aol.com", "aol.com", "gmx.com", "gmx.net",
+        "mail.gmx.com", "mail.gmx.net", "mail.com", "mail.yandex.com",
+        "mail.yandex.ru", "mail.qq.com", "foxmail.com", "mail.163.com",
+        "mail.126.com", "mail.yeah.net", "mail.sina.com", "mail.sina.com.cn",
+        "fastmail.com", "app.fastmail.com", "fastmail.fm", "mailfence.com",
+        "hushmail.com", "startmail.com", "runbox.com", "posteo.de", "mailbox.org",
+        "hey.com", "mail.nate.com", "empas.com", "korea.com", "dreamwiz.com",
+        "chol.com", "hanafos.com", "paran.com", "unitel.co.kr", "kornet.net",
+        "hitel.net",
+    ]),
+    ("클라우드 / 파일공유", [
+        "drive.google.com", "docs.google.com", "sheets.google.com", "slides.google.com",
+        "forms.google.com", "photos.google.com", "storage.googleapis.com",
+        "storage.cloud.google.com", "onedrive.live.com", "1drv.ms", "sharepoint.com",
+        "my.sharepoint.com", "onedrive.com", "office.live.com", "officeapps.live.com",
+        "dropbox.com", "dropboxusercontent.com", "dl.dropboxusercontent.com",
+        "dropboxstatic.com", "db.tt", "box.com", "app.box.com", "boxcloud.com",
+        "boxcdn.net", "drive.icloud.com", "icloud-content.com", "mybox.naver.com",
+        "cloud.naver.com", "drive.kakao.com", "sendy.co.kr", "wetransfer.com",
+        "we.tl", "mega.nz", "mega.io", "mega.co.nz", "mediafire.com",
+        "download.mediafire.com", "pcloud.com", "my.pcloud.com", "e.pcloud.link",
+        "u.pcloud.link", "sync.com", "cp.sync.com", "tresorit.com", "web.tresorit.com",
+        "tresorit.io", "internxt.com", "drive.internxt.com", "drive.proton.me",
+        "protondrive.com", "nordlocker.com", "web.nordlocker.com", "icedrive.net",
+        "drive.icedrive.net", "koofr.eu", "app.koofr.net", "jumpshare.com",
+        "hightail.com", "spaces.hightail.com", "filemail.com", "send-anywhere.com",
+        "fromsmash.com", "transfernow.net", "transferxl.com", "swisstransfer.com",
+        "wormhole.app", "file.io", "gofile.io", "pixeldrain.com", "catbox.moe",
+        "litterbox.catbox.moe", "krakenfiles.com", "bayfiles.com", "letsupload.io",
+        "userscloud.com", "uppit.com", "zippyshare.com", "4shared.com",
+        "4shared-china.com", "disk.yandex.com", "disk.yandex.ru", "yadi.sk",
+        "pan.baidu.com", "yun.baidu.com", "weiyun.com", "pan.qq.com",
+        "aliyundrive.com", "alipan.com", "cloud.163.com",
+    ]),
+    ("원격접속 / 파일전송 도구", [
+        "teamviewer.com", "anydesk.com", "remotedesktop.google.com",
+        "rustdesk.com", "parsec.app", "splashtop.com", "logmein.com", "gotomypc.com",
+        "realvnc.com", "vnc.com", "tightvnc.com", "ultravnc.com", "dwservice.net",
+        "assist.zoho.com", "awe-sun.com", "supremocontrol.com",
+        "getscreen.me", "meshcentral.com", "radmin.com", "mremoteng.org", "putty.org",
+        "winscp.net", "filezilla-project.org", "termius.com", "tailscale.com",
+        "zerotier.com", "ngrok.com", "cloudflared.com", "remote.it",
+    ]),
+    ("금융 / 가상자산", [
+        "kbstar.com", "obank.kbstar.com", "shinhan.com", "bank.shinhan.com",
+        "wooribank.com", "spib.wooribank.com", "hana.com", "kebhana.com",
+        "ibk.co.kr", "nonghyup.com", "nhbank.com", "sc.co.kr", "standardchartered.co.kr",
+        "citi.com", "citibank.co.kr", "kakaobank.com", "kbanknow.com", "tossbank.com",
+        "toss.im", "pay.naver.com", "kakaopay.com", "samsungcard.com",
+        "hyundaicard.com", "lottecard.co.kr", "bccard.com", "wooricard.com",
+        "hanacard.co.kr", "kbcard.com", "shinhansec.com", "miraeasset.com",
+        "samsungpop.com", "kiwoom.com", "nhqv.com", "kbsec.com", "koreainvestment.com",
+        "upbit.com", "bithumb.com", "coinone.co.kr", "korbit.co.kr", "gopax.co.kr",
+        "binance.com", "coinbase.com", "kraken.com", "crypto.com", "bybit.com",
+        "okx.com", "bitget.com", "kucoin.com", "gate.io", "mexc.com",
+        "metamask.io", "phantom.app", "trustwallet.com", "ledger.com", "trezor.io",
+    ]),
+    ("쇼핑 / 중고거래 / 개인거래", [
+        "coupang.com", "gmarket.co.kr", "auction.co.kr", "11st.co.kr", "ssg.com",
+        "emart.ssg.com", "lotteon.com", "shopping.naver.com", "smartstore.naver.com",
+        "brand.naver.com", "kream.co.kr", "musinsa.com", "ably.co.kr", "zigzag.kr",
+        "29cm.co.kr", "wconcept.co.kr", "kurly.com", "ohou.se", "todayhouse.com",
+        "interpark.com", "wemakeprice.com", "tmon.co.kr", "aliexpress.com",
+        "amazon.com", "ebay.com", "qoo10.com", "taobao.com", "tmall.com",
+        "1688.com", "jd.com", "daangn.com", "karrotmarket.com", "bunjang.co.kr",
+        "joongna.com", "hellomarket.com", "junggonara.co.kr",
+    ]),
+    ("채용 / 이직", [
+        "saramin.co.kr", "jobkorea.co.kr", "wanted.co.kr", "linkedin.com",
+        "rememberapp.co.kr", "career.co.kr", "incruit.com", "jobplanet.co.kr",
+        "blind.com", "teamblind.com", "rocketpunch.com", "jumpit.co.kr",
+        "programmers.co.kr", "jasoseol.com", "linkareer.com", "superookie.com",
+        "catch.co.kr", "job.incruit.com", "albamon.com", "alba.co.kr", "work.go.kr",
+        "job.alio.go.kr", "job.seoul.go.kr", "seouljobnow.co.kr", "rallit.com",
+        "zighang.com", "jobflex.com", "jobda.im", "ninehire.com", "greetinghr.com",
+        "apply.workable.com", "wantedlab.com", "jobs.lever.co", "greenhouse.io",
+        "boards.greenhouse.io", "wellfound.com", "angel.co", "stackoverflowjobs.com",
+        "remoteok.com", "weworkremotely.com", "remotive.com", "flexjobs.com",
+        "indeed.com", "glassdoor.com", "monster.com", "ziprecruiter.com", "dice.com",
+        "seek.com.au", "jobsdb.com", "efinancialcareers.com",
+    ]),
+    ("문서 변환 / PDF 도구", [
+        "ilovepdf.com", "smallpdf.com", "pdf24.org", "convertio.co",
+        "cloudconvert.com", "freeconvert.com", "remove.bg", "canva.com",
+        "figma.com", "photopea.com", "tinywow.com",
+    ]),
+    ("SNS / 커뮤니티", [
+        "instagram.com", "facebook.com", "threads.net", "x.com", "twitter.com",
+        "tiktok.com", "youtube.com", "reddit.com", "discord.com", "telegram.org",
+        "t.me", "medium.com", "tumblr.com", "pinterest.com", "snapchat.com",
+        "mastodon.social", "bsky.app", "linktr.ee", "beacons.ai", "open.kakao.com",
+        "pf.kakao.com", "talk.naver.com", "band.us", "line.me", "openchat.line.me",
+        "dcinside.com", "gall.dcinside.com", "theqoo.net", "instiz.net",
+        "fmkorea.com", "ruliweb.com", "clien.net", "ppomppu.co.kr", "82cook.com",
+        "mlbpark.donga.com", "humoruniv.com", "todayhumor.co.kr", "inven.co.kr",
+        "arca.live", "etoland.co.kr", "slrclub.com", "bobaedream.co.kr",
+        "quasarzone.com", "coolenjoy.net", "dogdrip.net", "ilbe.com",
+        "cafe.naver.com", "blog.naver.com", "section.blog.naver.com", "m.blog.naver.com",
+        "cafe.daum.net", "brunch.co.kr", "everytime.kr",
+    ]),
+]
+
+SENSITIVE_SITES_INDEX_VERSION = "sensitive_sites_v5"
+SENSITIVE_SITES_PAGE_LIMIT = 500
+
+
+def normalize_site_host(value):
+    host = _extract_report_hostname(value)
+    host = host.lower().strip().strip(".")
+    if host.startswith("www."):
+        return host[4:]
+    return host
+
+
+def sensitive_site_known_domains(category_specs=SENSITIVE_SITE_CATEGORY_SPECS):
+    domains = []
+    seen = set()
+    for _, patterns in category_specs:
+        for pattern in patterns:
+            domain = normalize_site_host(pattern)
+            if domain and domain not in seen:
+                domains.append(domain)
+                seen.add(domain)
+    return domains
+
+
+def extract_url_candidates_from_text(text, category_specs=SENSITIVE_SITE_CATEGORY_SPECS):
+    text = html.unescape(str(text or ""))
+    candidates = []
+    seen = set()
+
+    def add_candidate(value):
+        candidate = str(value or "").strip().rstrip(".,;")
+        host = normalize_site_host(candidate)
+        if not host or host in seen:
+            return
+        candidates.append(candidate)
+        seen.add(host)
+
+    for match in re.finditer(r"https?://[^\s<>'\")]+|www\.[A-Za-z0-9.-]+\.[A-Za-z]{2,}(?:/[^\s<>'\")]+)?", text, re.IGNORECASE):
+        add_candidate(match.group(0))
+
+    for match in MAILSCREEN_EMAIL_RE.finditer(text):
+        email_domain = match.group(0).rsplit("@", 1)[-1]
+        add_candidate(email_domain)
+
+    lower_text = text.lower()
+    for domain in sensitive_site_known_domains(category_specs):
+        pattern = rf"(?<![a-z0-9.-]){re.escape(domain.lower())}(?![a-z0-9.-])"
+        if re.search(pattern, lower_text):
+            add_candidate(domain)
+
+    return candidates
+
+
+def classify_sensitive_site(host, url="", category_specs=SENSITIVE_SITE_CATEGORY_SPECS):
+    normalized_host = normalize_site_host(host) or normalize_site_host(url)
+    matched_categories = []
+    matched_keywords = []
+    for category, patterns in category_specs:
+        hits = []
+        seen_needles = set()
+        for pattern in patterns:
+            needle = normalize_site_host(pattern)
+            if not needle or needle in seen_needles:
+                continue
+            if normalized_host == needle or normalized_host.endswith("." + needle):
+                hits.append(needle)
+                seen_needles.add(needle)
+        if hits:
+            matched_categories.append(category)
+            matched_keywords.extend(hits)
+    if not matched_categories:
+        return None
+    return {
+        "category": matched_categories[0],
+        "categories": matched_categories,
+        "keywords": sorted(set(matched_keywords), key=lambda x: x.lower()),
+    }
+
+
+def sensitive_site_search_text(record):
+    return " ".join(str(record.get(k, "") or "") for k in (
+        "source", "category", "keywords", "event_time", "event", "site", "url",
+        "dept", "user", "user_id", "machine", "destination", "subject", "sender",
+        "receiver", "policy",
+    )).lower()
+
+
+def make_sensitive_site_dlp_record(row, category_specs=SENSITIVE_SITE_CATEGORY_SPECS):
+    if not isinstance(row, dict):
+        return None
+    destination = str(row.get("destination", "") or "")
+    detail = str(row.get("item_details") or row.get("destinationDetails") or "")
+    site_candidates = [detail, destination]
+    selected_url = ""
+    selected_host = ""
+    classified = None
+    for candidate in site_candidates:
+        host = normalize_site_host(candidate)
+        if not host or host in {"local-file-path", "internal-file-server"}:
+            continue
+        classified = classify_sensitive_site(host, candidate, category_specs)
+        if classified:
+            selected_host = host
+            selected_url = candidate
+            break
+    if not classified:
+        return None
+    machine_name = str(row.get("machine_name", "None") or "None")
+    client_name = str(row.get("client_name", "None") or "None")
+    dept_name, _ = get_dept_by_hostname(machine_name)
+    return {
+        "row": row,
+        "source": "DLP",
+        "category": classified["category"],
+        "categories": classified["categories"],
+        "keywords": classified["keywords"],
+        "event_time": str(row.get("eventtimelocal", "") or ""),
+        "event": format_dlp_event_id(row.get("event_id", "None")),
+        "site": selected_host,
+        "url": selected_url or selected_host,
+        "destination": destination or "None",
+        "detail": detail or "None",
+        "machine": machine_name,
+        "dept": dept_name,
+        "user": resolve_sensitive_user_name(machine_name, client_name),
+        "user_id": client_name,
+        "filename": str(row.get("filename", "None") or "None"),
+        "filehash": str(row.get("filehash", "None") or "None"),
+    }
+
+
+def make_sensitive_site_mailscreen_records(row, category_specs=SENSITIVE_SITE_CATEGORY_SPECS):
+    if not isinstance(row, dict):
+        return []
+    row = enrich_mailscreen_sender_fields(row)
+    subject = str(row.get("subject", "") or "")
+    scan_text = " ".join(str(row.get(k, "") or "") for k in (
+        "subject", "receiver", "sender", "attach",
+    ))
+    candidates = extract_url_candidates_from_text(scan_text, category_specs)
+    if not candidates:
+        return []
+    sender_email = mailscreen_identity_text(row.get("sender_email")) or mailscreen_identity_text(row.get("sender"))
+    sender_name = mailscreen_identity_text(row.get("sender_name")) or sender_email or "None"
+    user_id = mailscreen_identity_text(row.get("sender_user_id")) or sender_email or "None"
+    dept_name = mailscreen_identity_text(row.get("sender_dept")) or mailscreen_identity_text(row.get("dept")) or "미분류"
+    receiver = mailscreen_identity_text(row.get("receiver_detail")) or mailscreen_identity_text(row.get("receiver")) or "None"
+    records = []
+    for candidate in candidates:
+        host = normalize_site_host(candidate)
+        if not host:
+            continue
+        classified = classify_sensitive_site(host, candidate, category_specs)
+        if not classified:
+            continue
+        mail_process = str(row.get("mail_process", "") or "None")
+        send_result = str(row.get("send_result", "") or "None")
+        event = f"{mail_process}/{send_result}" if mail_process != "None" and send_result != "None" else (send_result or mail_process)
+        records.append({
+            "row": row,
+            "source": "Outbound Mail",
+            "category": classified["category"],
+            "categories": classified["categories"],
+            "keywords": classified["keywords"],
+            "event_time": str(row.get("date", "") or ""),
+            "event": event,
+            "site": host,
+            "url": candidate,
+            "destination": receiver,
+            "detail": subject or "None",
+            "machine": "None",
+            "dept": dept_name,
+            "user": sender_name,
+            "user_id": user_id,
+            "subject": subject or "None",
+            "sender": sender_email or "None",
+            "receiver": receiver,
+            "policy": str(row.get("policy", "") or "None"),
+            "mail_process": mail_process,
+            "mail_send_result": send_result,
+        })
+    return records
+
+
+def build_sensitive_site_records(dlp_rows=None, mailscreen_rows=None):
+    records = []
+    for row in dlp_rows or []:
+        record = make_sensitive_site_dlp_record(row)
+        if record:
+            records.append(record)
+
+    latest = {}
+    for record in records:
+        dedupe_key = sensitive_sites_dedupe_key(record)
+        current = latest.get(dedupe_key)
+        if current is None or str(record.get("event_time", "")) > str(current.get("event_time", "")):
+            latest[dedupe_key] = record
+    records = list(latest.values())
+    records.sort(key=lambda r: (r.get("event_time", ""), r.get("site", "")), reverse=True)
+    for record in records:
+        record["search_text"] = sensitive_site_search_text(record)
+    return records
+
+
+def sensitive_sites_index_sources(include_dlp=True, include_outbound=False):
+    sources = []
+    if include_dlp:
+        sources.append("DLP")
+    return sources
+
+
+def sensitive_sites_dedupe_key(record):
+    return "|".join([
+        str(record.get("source", "")).strip().lower(),
+        str(record.get("site", "")).strip().lower(),
+        str(record.get("dept", "")).strip().lower(),
+        str(record.get("user", "")).strip().lower(),
+    ])
+
+
+def insert_sensitive_sites_payload(conn, payload, replace_existing=True):
+    if not payload:
+        return 0
+    if replace_existing:
+        conn.executemany(
+            """
+            INSERT OR REPLACE INTO sensitive_sites_index
+                (dedupe_key, source, category, categories, keywords, event_time,
+                 site, url, user, user_id, dept, source_file, row_index, search_text, record_json, indexed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            payload,
+        )
+        return len(payload)
+
+    inserted = 0
+    for item in payload:
+        dedupe_key = item[0]
+        event_time = item[5]
+        existing = conn.execute(
+            "SELECT event_time FROM sensitive_sites_index WHERE dedupe_key = ?",
+            (dedupe_key,),
+        ).fetchone()
+        if existing and str(existing[0] or "") > str(event_time or ""):
+            continue
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO sensitive_sites_index
+                (dedupe_key, source, category, categories, keywords, event_time,
+                 site, url, user, user_id, dept, source_file, row_index, search_text, record_json, indexed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            item,
+        )
+        inserted += 1
+    return inserted
+
+
+def rebuild_sensitive_sites_index(conn, changed_paths=None, removed_paths=None, progress_cb=None):
+    start_ts = time.perf_counter()
+    full_rebuild = should_full_rebuild_sensitive_index(
+        conn,
+        "sensitive_sites_index_version",
+        SENSITIVE_SITES_INDEX_VERSION,
+        changed_paths,
+        removed_paths,
+    )
+    target_paths = None if full_rebuild else list(changed_paths or [])
+    if progress_cb:
+        progress_cb("Sensitive Sites 인덱스 생성중" if full_rebuild else "Sensitive Sites 증분 인덱스 생성중")
+    log.info(
+        "Sensitive Sites index start mode=%s changed=%d removed=%d",
+        "full" if full_rebuild else "incremental",
+        len(changed_paths or []),
+        len(removed_paths or []),
+    )
+
+    if full_rebuild:
+        dlp_rows = load_app_cache_raw_rows_from_conn(conn, "dlp")
+        mailscreen_rows = []
+    else:
+        delete_count = delete_sensitive_index_paths(conn, "sensitive_sites_index", changed_paths, removed_paths)
+        if not target_paths:
+            conn.execute(
+                "INSERT OR REPLACE INTO app_cache_meta(key, value) VALUES (?, ?)",
+                ("sensitive_sites_index_version", SENSITIVE_SITES_INDEX_VERSION),
+            )
+            log.info("Sensitive Sites index no changed files deleted=%d elapsed=%.2fs", delete_count, time.perf_counter() - start_ts)
+            return {
+                "sensitive_sites_index_rows": conn.execute("SELECT COUNT(*) FROM sensitive_sites_index").fetchone()[0],
+                "sensitive_sites_indexed_at": sensitive_index_meta_version(conn, "sensitive_sites_indexed_at"),
+            }
+        dlp_rows = load_app_cache_raw_rows_from_conn(conn, "dlp", target_paths)
+        mailscreen_rows = []
+        log.info("Sensitive Sites index deleted changed/removed rows=%d", delete_count)
+
+    current = datetime.strptime(start_date, "%Y-%m-%d")
+    end = datetime.strptime(end_date, "%Y-%m-%d")
+
+    while current <= end:
+        date_str = current.strftime("%Y-%m-%d")
+        file_path = os.path.join(MAILSCREEN_DAY_DIR, f"mailscreen_mail_{date_str}.json")
+        if os.path.exists(file_path):
+            try:
+                payload = load_json(file_path)
+                if isinstance(payload, dict):
+                    items = payload.get("items", [])
+                    if isinstance(items, list):
+                        results.extend([enrich_mailscreen_sender_fields(item) for item in items if isinstance(item, dict)])
+            except Exception as e:
+                log.warning(f"Failed to load {file_path}: {e}")
+        current += timedelta(days=1)
+
+    log.info(f"Loaded MailScreen from {start_date} ~ {end_date} : {len(results)}")
+    return results
+
+
+# ======================================================
+# Core utilities / DLP display helpers
+# - Small formatting helpers shared by File tab, Timeline, export, and report.
+# - Later module target: modules/dlp/formatters.py
+# ======================================================
+def format_dlp_event_id(value):
+    event_id = str(value or "None")
+    mapping = {
+        "Content Threat Detected": "탐지됨",
+        "Content Threat Blocked": "차단",
+    }
+    return mapping.get(event_id.strip(), event_id)
+
+
+SENSITIVE_FILE_CATEGORY_SPECS = [
+    ("이직 / 취업", [
+        "이력서", "resume", "curriculum vitae", "자기소개서", "자소서",
+        "포트폴리오", "portfolio", "경력기술서", "입사지원", "지원서",
+        "면접", "채용", "잡코리아", "사람인", "원티드", "wanted",
+        "linkedin", "링크드인", "cover letter",
+    ]),
+    ("결혼 / 웨딩 / 연애", [
+        "결혼", "웨딩", "wedding", "상견례", "청첩장", "예식", "예식장",
+        "스드메", "드레스", "혼수", "신혼", "신혼여행", "허니문",
+        "혼인", "예물", "예단", "커플사진", "가족사진", "웨딩사진",
+        "연애", "남친", "여친", "남자친구", "여자친구", "연인",
+        "소개팅", "프로포즈", "커플", "커플링", "데이트사진", "오빠",
+    ]),
+    ("개인 증빙 / 금융", [
+        "신분증", "주민등록증", "운전면허증", "여권", "가족관계증명서",
+        "주민등록등본", "주민등록초본", "인감증명서", "통장사본",
+        "계좌번호", "입금계좌", "입금내역", "거래내역", "잔액증명서",
+        "원천징수", "소득금액", "급여명세서", "연말정산", "건강보험",
+        "국민연금", "재직증명", "전세계약서", "월세계약서", "임대차계약서",
+    ]),
+    ("발주 / 주문 / 거래 문서", [
+        "발주서", "주문서", "거래명세서", "출고양식", "수기발주",
+        "공동구매", "매출내역", "invoice",
+    ]),
+    ("비용 / 영수증 / 정산", [
+        "영수증", "결제증빙", "비용정산", "법카", "접대비", "회식비", "receipt",
+    ]),
+    ("계약 / 법무 / 사업자 증빙", [
+        "계약서", "계약일반조건", "사업자등록증", "채권", "변제계획서",
+    ]),
+    ("제품 / 디자인 / 마케팅 자료", [
+        "상세페이지", "썸네일", "렌더링", "로고", "누끼", "데켓",
+        "택플로우", "TACTFLOW", "인플루언서", "시딩",
+        "유튜브", "마케팅", "쇼츠", "숏츠", "론칭", "콜라보",
+    ]),
+    ("메신저 수신 파일", [
+        "카카오톡 받은 파일", "kakaotalk", "kakaotalk download",
+        "네이트온 받은 파일", "nateon", "wechat", "viber", "whatsapp",
+        "telegram desktop", "messages/attachments", "xwechat_files",
+        "viberdownloads", "discord",
+    ]),
+    ("개인 사진 / 영상", [
+        "개인사진", "가족사진", "웨딩사진", "증명사진", "프로필사진",
+        "셀카", "셀피", "selfie", "여행사진", "앨범", "본식사진",
+        "스냅사진", "여권사진", "반명함",
+    ]),
+]
+
+
+SENSITIVE_FILE_CATEGORY_REGEX_SPECS = []
+
+
+def sensitive_row_text(row):
+    field_text = " ".join(str(row.get(k, "") or "") for k in (
+        "filename", "destination", "destination_type", "item_details",
+        "destinationDetails", "machine_name", "client_name", "event_id",
+    ))
+    return f"{field_text} {json.dumps(row, ensure_ascii=False, default=str)}".lower()
+
+
+def classify_sensitive_text(text, category_specs=SENSITIVE_FILE_CATEGORY_SPECS):
+    text = str(text or "").lower()
+    matched_categories = []
+    matched_keywords = []
+    for category, keywords in category_specs:
+        hits = [kw for kw in keywords if kw.lower() in text]
+        if hits:
+            matched_categories.append(category)
+            matched_keywords.extend(hits)
+    for category, patterns in SENSITIVE_FILE_CATEGORY_REGEX_SPECS:
+        hits = []
+        for pattern, label in patterns:
+            if re.search(pattern, text, re.IGNORECASE):
+                hits.append(label)
+        if hits:
+            matched_categories.append(category)
+            matched_keywords.extend(hits)
+    if not matched_categories:
+        return None
+    return {
+        "category": matched_categories[0],
+        "categories": matched_categories,
+        "keywords": sorted(set(matched_keywords), key=lambda x: x.lower()),
+    }
+
+
+def classify_sensitive_row(row, category_specs=SENSITIVE_FILE_CATEGORY_SPECS):
+    return classify_sensitive_text(sensitive_row_text(row), category_specs)
+
+
+def display_sensitive_file_name(path_text):
+    text = str(path_text or "None").strip()
+    if not text or text == "None":
+        return "None"
+    normalized = text.replace("\\", "/").rstrip("/")
+    return normalized.rsplit("/", 1)[-1] or text
+
+
+def resolve_sensitive_user_name(machine_name, client_name):
+    identity = resolve_identity_by_hostname(machine_name)
+    user_name = str(identity.get("user_name", "") or "").strip()
+    if user_name and user_name != "None":
+        return user_name
+    directory_info = get_directory_user_info(client_name)
+    directory_name = str(directory_info.get("name", "") or "").strip()
+    if directory_name:
+        return directory_name
+    org_name = get_org_user_name_by_user_id(client_name)
+    if org_name:
+        return org_name
+    return str(client_name or "None")
+
+
+def make_sensitive_record(row, category_specs=SENSITIVE_FILE_CATEGORY_SPECS):
+    classified = classify_sensitive_row(row, category_specs)
+    if not classified:
+        return None
+    machine_name = str(row.get("machine_name", "None") or "None")
+    client_name = str(row.get("client_name", "None") or "None")
+    dept_name, _ = get_dept_by_hostname(machine_name)
+    filename = str(row.get("filename", "None") or "None")
+    destination = str(row.get("destination", "None") or "None")
+    destination_detail = str(row.get("item_details") or row.get("destinationDetails") or "None")
+    return {
+        "row": row,
+        "source": "DLP",
+        "category": classified["category"],
+        "categories": classified["categories"],
+        "keywords": classified["keywords"],
+        "event_time": str(row.get("eventtimelocal", "") or ""),
+        "event": format_dlp_event_id(row.get("event_id", "None")),
+        "machine": machine_name,
+        "dept": dept_name,
+        "user": resolve_sensitive_user_name(machine_name, client_name),
+        "user_id": client_name,
+        "filename": filename,
+        "display_filename": display_sensitive_file_name(filename),
+        "destination": destination,
+        "destination_type": str(row.get("destination_type", "None") or "None"),
+        "destination_detail": destination_detail,
+        "filehash": str(row.get("filehash", "None") or "None"),
+    }
+
+
+def sensitive_record_search_text(record):
+    return " ".join(str(record.get(k, "") or "") for k in (
+        "source", "category", "keywords", "event_time", "event", "machine",
+        "dept", "user", "user_id", "filename", "display_filename",
+        "destination", "destination_type", "destination_detail", "filehash",
+        "mail_subject", "mail_sender", "mail_receiver", "mail_policy", "mail_attach_raw",
+    )).lower()
+
+
+MAILSCREEN_ATTACHMENT_EXTENSIONS = (
+    "docx", "doc", "xlsx", "xls", "pptx", "ppt", "jpeg", "jpg",
+    "pdf", "txt", "csv", "png", "heic", "gif", "bmp", "zip", "7z", "rar",
+    "alz", "egg", "ai", "psd", "mp4", "mov", "avi", "eml", "msg",
+)
+
+
+def clean_mailscreen_attachment_name(value):
+    text = str(value or "").strip()
+    if not text or text == "None":
+        return ""
+    text = re.sub(r"\s*\(\s*\d+\s+more\s*\)\s*$", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s*\(\s*[\d,.]+\s*(?:B|K|KB|M|MB|G|GB|T|TB)\s*\)\s*$", "", text, flags=re.IGNORECASE)
+    return text.strip(" ,;|")
+
+
+def extract_mailscreen_attachment_names(row):
+    attach_text = str(row.get("attach", "") or "").strip() if isinstance(row, dict) else ""
+    if not attach_text or attach_text == "None":
+        return []
+
+    ext_pattern = "|".join(re.escape(ext) for ext in MAILSCREEN_ATTACHMENT_EXTENSIONS)
+    pattern = re.compile(
+        rf"([^,;|\n]+?\.(?:{ext_pattern}))(?:\s*\([^)]*\))*",
+        re.IGNORECASE,
+    )
+    names = []
+    for match in pattern.finditer(attach_text):
+        name = clean_mailscreen_attachment_name(match.group(1))
+        if name and name not in names:
+            names.append(name)
+
+    if names:
+        return names
+
+    fallback = clean_mailscreen_attachment_name(attach_text)
+    return [fallback] if fallback else []
+
+
+def make_sensitive_mailscreen_record(row, attachment_name, category_specs=SENSITIVE_FILE_CATEGORY_SPECS):
+    if not isinstance(row, dict):
+        return None
+    row = enrich_mailscreen_sender_fields(row)
+    filename = clean_mailscreen_attachment_name(attachment_name)
+    if not filename:
+        return None
+
+    subject = str(row.get("subject", "") or "")
+    classified = classify_sensitive_text(f"{filename} {subject}", category_specs)
+    if not classified:
+        return None
+
+    sender_email = mailscreen_identity_text(row.get("sender_email")) or mailscreen_identity_text(row.get("sender"))
+    sender_name = mailscreen_identity_text(row.get("sender_name")) or sender_email or "None"
+    user_id = mailscreen_identity_text(row.get("sender_user_id")) or sender_email or "None"
+    dept_name = mailscreen_identity_text(row.get("sender_dept")) or mailscreen_identity_text(row.get("dept")) or "미분류"
+    receiver = mailscreen_identity_text(row.get("receiver_detail")) or mailscreen_identity_text(row.get("receiver")) or "None"
+    mail_process = str(row.get("mail_process", "") or "None")
+    send_result = str(row.get("send_result", "") or "None")
+    event = f"{mail_process}/{send_result}" if mail_process != "None" and send_result != "None" else (send_result or mail_process)
+
+    return {
+        "row": row,
+        "source": "Outbound Mail",
+        "category": classified["category"],
+        "categories": classified["categories"],
+        "keywords": classified["keywords"],
+        "event_time": str(row.get("date", "") or ""),
+        "event": event,
+        "machine": "None",
+        "dept": dept_name,
+        "user": sender_name,
+        "user_id": user_id,
+        "filename": filename,
+        "display_filename": display_sensitive_file_name(filename),
+        "destination": receiver,
+        "destination_type": "Outbound Mail Attachment",
+        "destination_detail": str(row.get("subject", "") or "None"),
+        "filehash": "None",
+        "mail_subject": str(row.get("subject", "") or "None"),
+        "mail_sender": sender_email or "None",
+        "mail_receiver": receiver,
+        "mail_size": str(row.get("size", "") or "None"),
+        "mail_policy": str(row.get("policy", "") or "None"),
+        "mail_process": mail_process,
+        "mail_send_result": send_result,
+        "mail_attach_raw": str(row.get("attach", "") or "None"),
+    }
+
+
+def build_sensitive_file_records(rows, category_specs=SENSITIVE_FILE_CATEGORY_SPECS, mailscreen_rows=None):
+    records = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        record = make_sensitive_record(row, category_specs)
+        if record:
+            records.append(record)
+
+    for row in mailscreen_rows or []:
+        if not isinstance(row, dict):
+            continue
+        for attachment_name in extract_mailscreen_attachment_names(row):
+            record = make_sensitive_mailscreen_record(row, attachment_name, category_specs)
+            if record:
+                records.append(record)
+
+    latest_by_file_owner = {}
+    for record in records:
+        dedupe_key = (
+            str(record.get("source", "")).strip().lower(),
+            str(record.get("display_filename", "")).strip().lower(),
+            str(record.get("dept", "")).strip().lower(),
+            str(record.get("user", "")).strip().lower(),
+        )
+        current = latest_by_file_owner.get(dedupe_key)
+        if current is None or str(record.get("event_time", "")) > str(current.get("event_time", "")):
+            latest_by_file_owner[dedupe_key] = record
+
+    records = list(latest_by_file_owner.values())
+    records.sort(key=lambda r: (r["category"], r["display_filename"].lower()))
+    records.sort(key=lambda r: r["event_time"], reverse=True)
+    for record in records:
+        record["search_text"] = sensitive_record_search_text(record)
+    return records
+
+
+SENSITIVE_FILES_INDEX_VERSION = "sensitive_files_v3"
+SENSITIVE_FILES_PAGE_LIMIT = 500
+
+
+def sensitive_files_index_sources(include_dlp=True, include_outbound=True):
+    sources = []
+    if include_dlp:
+        sources.append("DLP")
+    if include_outbound:
+        sources.append("Outbound Mail")
+    return sources
+
+
+def sensitive_files_dedupe_key(record):
+    return "|".join([
+        str(record.get("source", "")).strip().lower(),
+        str(record.get("display_filename", "")).strip().lower(),
+        str(record.get("dept", "")).strip().lower(),
+        str(record.get("user", "")).strip().lower(),
+    ])
+
+
+def load_app_cache_raw_rows_from_conn(conn, source, source_files=None):
+    params = [source]
+    where_sql = "source = ?"
+    source_file_values = list(source_files or [])
+    if source_file_values:
+        placeholders = ",".join("?" for _ in source_file_values)
+        where_sql += f" AND source_file IN ({placeholders})"
+        params.extend(source_file_values)
+    rows = conn.execute(
+        f"""
+        SELECT source_file, row_index, raw_json
+        FROM app_cache_records
+        WHERE {where_sql}
+        ORDER BY cache_date ASC, source_file ASC, row_index ASC
+        """,
+        params,
+    ).fetchall()
+    results = []
+    for source_file, row_index, raw_json in rows:
+        try:
+            row = json.loads(raw_json)
+            if isinstance(row, dict):
+                row["__source_file"] = source_file
+                row["__row_index"] = row_index
+                results.append(row)
+        except Exception as e:
+            log.warning(f"Sensitive index raw parse failed source={source}: {e}")
+    return results
+
+
+def sensitive_index_meta_version(conn, key):
+    row = conn.execute("SELECT value FROM app_cache_meta WHERE key = ?", (key,)).fetchone()
+    return row[0] if row else ""
+
+
+def should_full_rebuild_sensitive_index(conn, version_key, expected_version, changed_paths, removed_paths):
+    if changed_paths is None and removed_paths is None:
+        return True
+    return sensitive_index_meta_version(conn, version_key) != expected_version
+
+
+def delete_sensitive_index_paths(conn, table_name, changed_paths=None, removed_paths=None):
+    paths = sorted(set((changed_paths or []) + (removed_paths or [])))
+    if not paths:
+        return 0
+    placeholders = ",".join("?" for _ in paths)
+    cur = conn.execute(f"DELETE FROM {table_name} WHERE source_file IN ({placeholders})", paths)
+    return cur.rowcount if cur.rowcount is not None else 0
+
+
+def insert_sensitive_files_payload(conn, payload, replace_existing=True):
+    if not payload:
+        return 0
+    if replace_existing:
+        conn.executemany(
+            """
+            INSERT OR REPLACE INTO sensitive_files_index
+                (dedupe_key, source, category, categories, keywords, event_time,
+                 display_filename, user, user_id, dept, source_file, row_index, search_text, record_json, indexed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            payload,
+        )
+        return len(payload)
+
+    inserted = 0
+    for item in payload:
+        dedupe_key = item[0]
+        event_time = item[5]
+        existing = conn.execute(
+            "SELECT event_time FROM sensitive_files_index WHERE dedupe_key = ?",
+            (dedupe_key,),
+        ).fetchone()
+        if existing and str(existing[0] or "") > str(event_time or ""):
+            continue
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO sensitive_files_index
+                (dedupe_key, source, category, categories, keywords, event_time,
+                 display_filename, user, user_id, dept, source_file, row_index, search_text, record_json, indexed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            item,
+        )
+        inserted += 1
+    return inserted
+
+
+def rebuild_sensitive_files_index(conn, changed_paths=None, removed_paths=None, progress_cb=None):
+    start_ts = time.perf_counter()
+    full_rebuild = should_full_rebuild_sensitive_index(
+        conn,
+        "sensitive_files_index_version",
+        SENSITIVE_FILES_INDEX_VERSION,
+        changed_paths,
+        removed_paths,
+    )
+    target_paths = None if full_rebuild else list(changed_paths or [])
+    if progress_cb:
+        progress_cb("Sensitive Files 인덱스 생성중" if full_rebuild else "Sensitive Files 증분 인덱스 생성중")
+    log.info(
+        "Sensitive Files index start mode=%s changed=%d removed=%d",
+        "full" if full_rebuild else "incremental",
+        len(changed_paths or []),
+        len(removed_paths or []),
+    )
+
+    if full_rebuild:
+        dlp_rows = load_app_cache_raw_rows_from_conn(conn, "dlp")
+        mailscreen_rows = load_app_cache_raw_rows_from_conn(conn, "mailscreen")
+    else:
+        delete_count = delete_sensitive_index_paths(conn, "sensitive_files_index", changed_paths, removed_paths)
+        if not target_paths:
+            conn.execute(
+                "INSERT OR REPLACE INTO app_cache_meta(key, value) VALUES (?, ?)",
+                ("sensitive_files_index_version", SENSITIVE_FILES_INDEX_VERSION),
+            )
+            log.info("Sensitive Files index no changed files deleted=%d elapsed=%.2fs", delete_count, time.perf_counter() - start_ts)
+            return {
+                "sensitive_index_rows": conn.execute("SELECT COUNT(*) FROM sensitive_files_index").fetchone()[0],
+                "sensitive_index_dlp_rows": 0,
+                "sensitive_index_mailscreen_rows": 0,
+                "sensitive_indexed_at": sensitive_index_meta_version(conn, "sensitive_files_indexed_at"),
+            }
+        dlp_rows = load_app_cache_raw_rows_from_conn(conn, "dlp", target_paths)
+        mailscreen_rows = load_app_cache_raw_rows_from_conn(conn, "mailscreen", target_paths)
+        log.info("Sensitive Files index deleted changed/removed rows=%d", delete_count)
+
+    records = build_sensitive_file_records(dlp_rows, mailscreen_rows=mailscreen_rows)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    payload = []
+    for record in records:
+        record["search_text"] = record.get("search_text") or sensitive_record_search_text(record)
+        row = record.get("row") if isinstance(record.get("row"), dict) else {}
+        payload.append((
+            sensitive_files_dedupe_key(record),
+            str(record.get("source", "") or ""),
+            str(record.get("category", "") or ""),
+            json.dumps(record.get("categories", []) or [], ensure_ascii=False),
+            json.dumps(record.get("keywords", []) or [], ensure_ascii=False),
+            str(record.get("event_time", "") or ""),
+            str(record.get("display_filename", "") or ""),
+            str(record.get("user", "") or ""),
+            str(record.get("user_id", "") or ""),
+            str(record.get("dept", "") or ""),
+            str(row.get("__source_file", "") or ""),
+            int(row.get("__row_index", -1) if str(row.get("__row_index", "")).strip() else -1),
+            str(record.get("search_text", "") or "").lower(),
+            json.dumps(record, ensure_ascii=False, default=str),
+            now,
+        ))
+
+    if full_rebuild:
+        conn.execute("DELETE FROM sensitive_files_index")
+    inserted = insert_sensitive_files_payload(conn, payload, replace_existing=full_rebuild)
+    conn.execute(
+        "INSERT OR REPLACE INTO app_cache_meta(key, value) VALUES (?, ?)",
+        ("sensitive_files_index_version", SENSITIVE_FILES_INDEX_VERSION),
+    )
+    conn.execute(
+        "INSERT OR REPLACE INTO app_cache_meta(key, value) VALUES (?, ?)",
+        ("sensitive_files_indexed_at", now),
+    )
+    total_rows = conn.execute("SELECT COUNT(*) FROM sensitive_files_index").fetchone()[0]
+    log.info(
+        "Sensitive Files index done mode=%s dlp_rows=%d mailscreen_rows=%d records=%d inserted=%d total=%d elapsed=%.2fs",
+        "full" if full_rebuild else "incremental",
+        len(dlp_rows),
+        len(mailscreen_rows),
+        len(records),
+        inserted,
+        total_rows,
+        time.perf_counter() - start_ts,
+    )
+    return {
+        "sensitive_index_rows": total_rows,
+        "sensitive_index_dlp_rows": len(dlp_rows),
+        "sensitive_index_mailscreen_rows": len(mailscreen_rows),
+        "sensitive_indexed_at": now,
+    }
+
+def sensitive_files_index_ready(conn):
+    row = conn.execute(
+        "SELECT value FROM app_cache_meta WHERE key = ?",
+        ("sensitive_files_index_version",),
+    ).fetchone()
+    return bool(row and row[0] == SENSITIVE_FILES_INDEX_VERSION)
+
+
+def sensitive_files_where_clause(category="전체", keyword="", sources=None):
+    clauses = []
+    params = []
+    source_values = list(sources or [])
+    if source_values:
+        placeholders = ",".join("?" for _ in source_values)
+        clauses.append(f"source IN ({placeholders})")
+        params.extend(source_values)
+    else:
+        clauses.append("1 = 0")
+
+    if category and category != "전체":
+        clauses.append("category = ?")
+        params.append(category)
+
+    keyword = str(keyword or "").strip().lower()
+    if keyword:
+        clauses.append("search_text LIKE ?")
+        params.append(f"%{keyword}%")
+
+    return " AND ".join(clauses), params
+
+
+def sensitive_record_from_index_json(raw_json):
+    try:
+        record = json.loads(raw_json)
+        if isinstance(record, dict):
+            record["search_text"] = record.get("search_text") or sensitive_record_search_text(record)
+            return record
+    except Exception as e:
+        log.warning(f"Sensitive Files index record parse failed: {e}")
+    return None
+
+
+def query_sensitive_files_index(
+    category="전체",
+    keyword="",
+    sources=None,
+    limit=SENSITIVE_FILES_PAGE_LIMIT,
+    offset=0,
+):
+    with app_cache_connect() as conn:
+        if not sensitive_files_index_ready(conn):
+            return {
+                "records": [],
+                "total": 0,
+                "category_counts": {},
+                "index_ready": False,
+                "message": "Sensitive Files 인덱스가 없습니다. Config에서 Data Index를 먼저 실행하세요.",
+            }
+
+        if sources is None:
+            sources = ["DLP", "Outbound Mail"]
+        where_sql, params = sensitive_files_where_clause(category, keyword, sources)
+        total = conn.execute(
+            f"SELECT COUNT(*) FROM sensitive_files_index WHERE {where_sql}",
+            params,
+        ).fetchone()[0]
+
+        count_where_sql, count_params = sensitive_files_where_clause("전체", keyword, sources)
+        count_rows = conn.execute(
+            f"""
+            SELECT category, COUNT(*)
+            FROM sensitive_files_index
+            WHERE {count_where_sql}
+            GROUP BY category
+            """,
+            count_params,
+        ).fetchall()
+        category_counts = {str(category): int(count) for category, count in count_rows}
+
+        rows = conn.execute(
+            f"""
+            SELECT record_json
+            FROM sensitive_files_index
+            WHERE {where_sql}
+            ORDER BY event_time DESC, display_filename ASC
+            LIMIT ? OFFSET ?
+            """,
+            params + [int(limit), int(offset)],
+        ).fetchall()
+
+    records = []
+    for (raw_json,) in rows:
+        record = sensitive_record_from_index_json(raw_json)
+        if record:
+            records.append(record)
+
+    return {
+        "records": records,
+        "total": int(total),
+        "category_counts": category_counts,
+        "index_ready": True,
+        "limit": int(limit),
+        "offset": int(offset),
+    }
+
+
+SENSITIVE_SITE_CATEGORY_SPECS = [
+    ("AI 사이트", [
+        "chat.openai.com", "chatgpt.com", "openai.com", "platform.openai.com",
+        "api.openai.com", "auth.openai.com", "help.openai.com", "status.openai.com",
+        "cdn.openai.com", "oaiusercontent.com",
+        "chatgpt-async-webps-prod-eastus.oaiusercontent.com", "claude.ai",
+        "console.anthropic.com", "anthropic.com", "api.anthropic.com",
+        "docs.anthropic.com", "gemini.google.com", "aistudio.google.com",
+        "makersuite.google.com", "notebooklm.google.com", "bard.google.com",
+        "ai.google", "labs.google", "deepmind.google", "vertexai.google.com",
+        "colab.research.google.com", "firebase.studio", "idx.google.com",
+        "copilot.microsoft.com", "copilot.cloud.microsoft", "m365.cloud.microsoft",
+        "copilotstudio.microsoft.com", "copilot.github.com", "perplexity.ai",
+        "poe.com", "wrtn.ai", "deepseek.com", "chat.deepseek.com",
+        "api.deepseek.com", "grok.com", "x.ai", "grok.x.com", "meta.ai",
+        "ai.meta.com", "llama.meta.com", "character.ai", "janitorai.com",
+        "spicychat.ai", "crushon.ai", "candy.ai", "chai-research.com",
+        "chai.ml", "replika.com", "you.com", "phind.com", "komo.ai",
+        "andisearch.com", "iask.ai", "consensus.app", "elicit.com",
+        "scite.ai", "cursor.com", "windsurf.com", "codeium.com", "tabnine.com",
+        "lovable.dev", "bolt.new", "v0.dev", "sourcegraph.com", "cody.dev",
+        "continue.dev", "cline.bot", "devin.ai", "cognition.ai", "amazonq.aws",
+        "manus.im", "n8n.io", "make.com", "flowiseai.com", "langflow.org",
+        "dify.ai", "midjourney.com", "nijijourney.com", "leonardo.ai",
+        "ideogram.ai", "krea.ai", "dreamstudio.ai", "stability.ai", "clipdrop.co",
+        "firefly.adobe.com", "playgroundai.com", "getimg.ai", "nightcafe.studio",
+        "civitai.com", "runwayml.com", "runway.com", "pika.art", "suno.com",
+        "udio.com", "elevenlabs.io", "heygen.com", "synthesia.io", "descript.com",
+        "kapwing.com", "veed.io", "luma.ai", "haiper.ai", "chatpdf.com",
+        "humata.ai", "askyourpdf.com", "scispace.com", "typeset.io", "jenni.ai",
+        "quillbot.com", "grammarly.com", "wordtune.com", "paperpal.com", "copy.ai",
+        "jasper.ai", "writesonic.com", "chatsonic.com", "rytr.me", "anyword.com",
+        "notion.ai", "gamma.app", "tome.app", "beautiful.ai", "presentations.ai",
+        "plusdocs.com", "pitch.com", "slidesgo.com", "slidesai.io", "decktopus.com",
+        "otter.ai", "fireflies.ai", "fathom.video", "tldv.io", "read.ai",
+        "krisp.ai", "supernormal.com", "deepl.com", "papago.naver.com",
+        "translate.google.com", "clova-x.naver.com", "clova.ai", "hyperclova.naver.com",
+        "cue.search.naver.com", "daglo.ai", "lilys.ai", "askup.ai", "upstage.ai",
+        "solar.upstage.ai", "polarisoffice.com", "khanmigo.ai", "socratic.org",
+        "quizlet.com", "duolingo.com", "dataiku.com", "databricks.com",
+        "snowflake.com", "thoughtspot.com", "akkio.com", "polymersearch.com",
+    ]),
+    ("여행 / 숙박", [
+        "yanolja.com", "goodchoice.kr", "yeogi.com", "ddnayo.com", "tidesquare.com",
+        "tourvis.com", "myrealtrip.com", "triple.guide", "interpark.com",
+        "travel.interpark.com", "nol-universe.com", "agoda.com", "booking.com",
+        "hotels.com", "expedia.com", "trip.com", "ctrip.com", "trivago.com",
+        "kayak.com", "priceline.com", "travelocity.com", "orbitz.com",
+        "hotelcombined.com", "hotelscombined.com", "skyscanner.co.kr", "airbnb.com",
+        "vrbo.com", "hostelworld.com", "lottehotel.com", "shillahotels.com",
+        "josunhotel.com", "parnas.co.kr", "walkerhill.com", "hanwharesort.co.kr",
+        "sonohotelsresorts.com", "kensington.co.kr", "resom.co.kr", "elysian.co.kr",
+        "konjiamresort.co.kr", "phoenixhnr.co.kr", "high1.com", "marriott.com",
+        "hilton.com", "hyatt.com", "ihg.com", "accor.com", "all.accor.com",
+        "wyndhamhotels.com", "choicehotels.com", "bestwestern.com", "radissonhotels.com",
+        "fourseasons.com", "mandarinoriental.com", "shangri-la.com", "aman.com",
+        "kempinski.com",
+    ]),
+    ("개인 메일 / 웹메일", [
+        "gmail.com", "mail.google.com", "googlemail.com", "mail.naver.com",
+        "mail.daum.net", "hanmail.net", "mail.hanmail.net", "mail.kakao.com",
+        "outlook.live.com", "outlook.com", "hotmail.com", "live.com", "mail.live.com",
+        "mail.yahoo.com", "yahoo.com", "ymail.com", "rocketmail.com", "icloud.com",
+        "mail.icloud.com", "me.com", "mac.com", "proton.me", "mail.proton.me",
+        "protonmail.com", "pm.me", "tuta.com", "mail.tuta.com", "tutanota.com",
+        "tutanota.de", "tutamail.com", "tuta.io", "keemail.me", "mail.zoho.com",
+        "zohomail.com", "mail.aol.com", "aol.com", "gmx.com", "gmx.net",
+        "mail.gmx.com", "mail.gmx.net", "mail.com", "mail.yandex.com",
+        "mail.yandex.ru", "mail.qq.com", "foxmail.com", "mail.163.com",
+        "mail.126.com", "mail.yeah.net", "mail.sina.com", "mail.sina.com.cn",
+        "fastmail.com", "app.fastmail.com", "fastmail.fm", "mailfence.com",
+        "hushmail.com", "startmail.com", "runbox.com", "posteo.de", "mailbox.org",
+        "hey.com", "mail.nate.com", "empas.com", "korea.com", "dreamwiz.com",
+        "chol.com", "hanafos.com", "paran.com", "unitel.co.kr", "kornet.net",
+        "hitel.net",
+    ]),
+    ("클라우드 / 파일공유", [
+        "drive.google.com", "docs.google.com", "sheets.google.com", "slides.google.com",
+        "forms.google.com", "photos.google.com", "storage.googleapis.com",
+        "storage.cloud.google.com", "onedrive.live.com", "1drv.ms", "sharepoint.com",
+        "my.sharepoint.com", "onedrive.com", "office.live.com", "officeapps.live.com",
+        "dropbox.com", "dropboxusercontent.com", "dl.dropboxusercontent.com",
+        "dropboxstatic.com", "db.tt", "box.com", "app.box.com", "boxcloud.com",
+        "boxcdn.net", "drive.icloud.com", "icloud-content.com", "mybox.naver.com",
+        "cloud.naver.com", "drive.kakao.com", "sendy.co.kr", "wetransfer.com",
+        "we.tl", "mega.nz", "mega.io", "mega.co.nz", "mediafire.com",
+        "download.mediafire.com", "pcloud.com", "my.pcloud.com", "e.pcloud.link",
+        "u.pcloud.link", "sync.com", "cp.sync.com", "tresorit.com", "web.tresorit.com",
+        "tresorit.io", "internxt.com", "drive.internxt.com", "drive.proton.me",
+        "protondrive.com", "nordlocker.com", "web.nordlocker.com", "icedrive.net",
+        "drive.icedrive.net", "koofr.eu", "app.koofr.net", "jumpshare.com",
+        "hightail.com", "spaces.hightail.com", "filemail.com", "send-anywhere.com",
+        "fromsmash.com", "transfernow.net", "transferxl.com", "swisstransfer.com",
+        "wormhole.app", "file.io", "gofile.io", "pixeldrain.com", "catbox.moe",
+        "litterbox.catbox.moe", "krakenfiles.com", "bayfiles.com", "letsupload.io",
+        "userscloud.com", "uppit.com", "zippyshare.com", "4shared.com",
+        "4shared-china.com", "disk.yandex.com", "disk.yandex.ru", "yadi.sk",
+        "pan.baidu.com", "yun.baidu.com", "weiyun.com", "pan.qq.com",
+        "aliyundrive.com", "alipan.com", "cloud.163.com",
+    ]),
+    ("원격접속 / 파일전송 도구", [
+        "teamviewer.com", "anydesk.com", "remotedesktop.google.com",
+        "rustdesk.com", "parsec.app", "splashtop.com", "logmein.com", "gotomypc.com",
+        "realvnc.com", "vnc.com", "tightvnc.com", "ultravnc.com", "dwservice.net",
+        "assist.zoho.com", "awe-sun.com", "supremocontrol.com",
+        "getscreen.me", "meshcentral.com", "radmin.com", "mremoteng.org", "putty.org",
+        "winscp.net", "filezilla-project.org", "termius.com", "tailscale.com",
+        "zerotier.com", "ngrok.com", "cloudflared.com", "remote.it",
+    ]),
+    ("금융 / 가상자산", [
+        "kbstar.com", "obank.kbstar.com", "shinhan.com", "bank.shinhan.com",
+        "wooribank.com", "spib.wooribank.com", "hana.com", "kebhana.com",
+        "ibk.co.kr", "nonghyup.com", "nhbank.com", "sc.co.kr", "standardchartered.co.kr",
+        "citi.com", "citibank.co.kr", "kakaobank.com", "kbanknow.com", "tossbank.com",
+        "toss.im", "pay.naver.com", "kakaopay.com", "samsungcard.com",
+        "hyundaicard.com", "lottecard.co.kr", "bccard.com", "wooricard.com",
+        "hanacard.co.kr", "kbcard.com", "shinhansec.com", "miraeasset.com",
+        "samsungpop.com", "kiwoom.com", "nhqv.com", "kbsec.com", "koreainvestment.com",
+        "upbit.com", "bithumb.com", "coinone.co.kr", "korbit.co.kr", "gopax.co.kr",
+        "binance.com", "coinbase.com", "kraken.com", "crypto.com", "bybit.com",
+        "okx.com", "bitget.com", "kucoin.com", "gate.io", "mexc.com",
+        "metamask.io", "phantom.app", "trustwallet.com", "ledger.com", "trezor.io",
+    ]),
+    ("쇼핑 / 중고거래 / 개인거래", [
+        "coupang.com", "gmarket.co.kr", "auction.co.kr", "11st.co.kr", "ssg.com",
+        "emart.ssg.com", "lotteon.com", "shopping.naver.com", "smartstore.naver.com",
+        "brand.naver.com", "kream.co.kr", "musinsa.com", "ably.co.kr", "zigzag.kr",
+        "29cm.co.kr", "wconcept.co.kr", "kurly.com", "ohou.se", "todayhouse.com",
+        "interpark.com", "wemakeprice.com", "tmon.co.kr", "aliexpress.com",
+        "amazon.com", "ebay.com", "qoo10.com", "taobao.com", "tmall.com",
+        "1688.com", "jd.com", "daangn.com", "karrotmarket.com", "bunjang.co.kr",
+        "joongna.com", "hellomarket.com", "junggonara.co.kr",
+    ]),
+    ("채용 / 이직", [
+        "saramin.co.kr", "jobkorea.co.kr", "wanted.co.kr", "linkedin.com",
+        "rememberapp.co.kr", "career.co.kr", "incruit.com", "jobplanet.co.kr",
+        "blind.com", "teamblind.com", "rocketpunch.com", "jumpit.co.kr",
+        "programmers.co.kr", "jasoseol.com", "linkareer.com", "superookie.com",
+        "catch.co.kr", "job.incruit.com", "albamon.com", "alba.co.kr", "work.go.kr",
+        "job.alio.go.kr", "job.seoul.go.kr", "seouljobnow.co.kr", "rallit.com",
+        "zighang.com", "jobflex.com", "jobda.im", "ninehire.com", "greetinghr.com",
+        "apply.workable.com", "wantedlab.com", "jobs.lever.co", "greenhouse.io",
+        "boards.greenhouse.io", "wellfound.com", "angel.co", "stackoverflowjobs.com",
+        "remoteok.com", "weworkremotely.com", "remotive.com", "flexjobs.com",
+        "indeed.com", "glassdoor.com", "monster.com", "ziprecruiter.com", "dice.com",
+        "seek.com.au", "jobsdb.com", "efinancialcareers.com",
+    ]),
+    ("문서 변환 / PDF 도구", [
+        "ilovepdf.com", "smallpdf.com", "pdf24.org", "convertio.co",
+        "cloudconvert.com", "freeconvert.com", "remove.bg", "canva.com",
+        "figma.com", "photopea.com", "tinywow.com",
+    ]),
+    ("SNS / 커뮤니티", [
+        "instagram.com", "facebook.com", "threads.net", "x.com", "twitter.com",
+        "tiktok.com", "youtube.com", "reddit.com", "discord.com", "telegram.org",
+        "t.me", "medium.com", "tumblr.com", "pinterest.com", "snapchat.com",
+        "mastodon.social", "bsky.app", "linktr.ee", "beacons.ai", "open.kakao.com",
+        "pf.kakao.com", "talk.naver.com", "band.us", "line.me", "openchat.line.me",
+        "dcinside.com", "gall.dcinside.com", "theqoo.net", "instiz.net",
+        "fmkorea.com", "ruliweb.com", "clien.net", "ppomppu.co.kr", "82cook.com",
+        "mlbpark.donga.com", "humoruniv.com", "todayhumor.co.kr", "inven.co.kr",
+        "arca.live", "etoland.co.kr", "slrclub.com", "bobaedream.co.kr",
+        "quasarzone.com", "coolenjoy.net", "dogdrip.net", "ilbe.com",
+        "cafe.naver.com", "blog.naver.com", "section.blog.naver.com", "m.blog.naver.com",
+        "cafe.daum.net", "brunch.co.kr", "everytime.kr",
+    ]),
+]
+
+SENSITIVE_SITES_INDEX_VERSION = "sensitive_sites_v5"
+SENSITIVE_SITES_PAGE_LIMIT = 500
+
+
+def normalize_site_host(value):
+    host = _extract_report_hostname(value)
+    host = host.lower().strip().strip(".")
+    if host.startswith("www."):
+        return host[4:]
+    return host
+
+
+def sensitive_site_known_domains(category_specs=SENSITIVE_SITE_CATEGORY_SPECS):
+    domains = []
+    seen = set()
+    for _, patterns in category_specs:
+        for pattern in patterns:
+            domain = normalize_site_host(pattern)
+            if domain and domain not in seen:
+                domains.append(domain)
+                seen.add(domain)
+    return domains
+
+
+def extract_url_candidates_from_text(text, category_specs=SENSITIVE_SITE_CATEGORY_SPECS):
+    text = html.unescape(str(text or ""))
+    candidates = []
+    seen = set()
+
+    def add_candidate(value):
+        candidate = str(value or "").strip().rstrip(".,;")
+        host = normalize_site_host(candidate)
+        if not host or host in seen:
+            return
+        candidates.append(candidate)
+        seen.add(host)
+
+    for match in re.finditer(r"https?://[^\s<>'\")]+|www\.[A-Za-z0-9.-]+\.[A-Za-z]{2,}(?:/[^\s<>'\")]+)?", text, re.IGNORECASE):
+        add_candidate(match.group(0))
+
+    for match in MAILSCREEN_EMAIL_RE.finditer(text):
+        email_domain = match.group(0).rsplit("@", 1)[-1]
+        add_candidate(email_domain)
+
+    lower_text = text.lower()
+    for domain in sensitive_site_known_domains(category_specs):
+        pattern = rf"(?<![a-z0-9.-]){re.escape(domain.lower())}(?![a-z0-9.-])"
+        if re.search(pattern, lower_text):
+            add_candidate(domain)
+
+    return candidates
+
+
+def classify_sensitive_site(host, url="", category_specs=SENSITIVE_SITE_CATEGORY_SPECS):
+    normalized_host = normalize_site_host(host) or normalize_site_host(url)
+    matched_categories = []
+    matched_keywords = []
+    for category, patterns in category_specs:
+        hits = []
+        seen_needles = set()
+        for pattern in patterns:
+            needle = normalize_site_host(pattern)
+            if not needle or needle in seen_needles:
+                continue
+            if normalized_host == needle or normalized_host.endswith("." + needle):
+                hits.append(needle)
+                seen_needles.add(needle)
+        if hits:
+            matched_categories.append(category)
+            matched_keywords.extend(hits)
+    if not matched_categories:
+        return None
+    return {
+        "category": matched_categories[0],
+        "categories": matched_categories,
+        "keywords": sorted(set(matched_keywords), key=lambda x: x.lower()),
+    }
+
+
+def sensitive_site_search_text(record):
+    return " ".join(str(record.get(k, "") or "") for k in (
+        "source", "category", "keywords", "event_time", "event", "site", "url",
+        "dept", "user", "user_id", "machine", "destination", "subject", "sender",
+        "receiver", "policy",
+    )).lower()
+
+
+def make_sensitive_site_dlp_record(row, category_specs=SENSITIVE_SITE_CATEGORY_SPECS):
+    if not isinstance(row, dict):
+        return None
+    destination = str(row.get("destination", "") or "")
+    detail = str(row.get("item_details") or row.get("destinationDetails") or "")
+    site_candidates = [detail, destination]
+    selected_url = ""
+    selected_host = ""
+    classified = None
+    for candidate in site_candidates:
+        host = normalize_site_host(candidate)
+        if not host or host in {"local-file-path", "internal-file-server"}:
+            continue
+        classified = classify_sensitive_site(host, candidate, category_specs)
+        if classified:
+            selected_host = host
+            selected_url = candidate
+            break
+    if not classified:
+        return None
+    machine_name = str(row.get("machine_name", "None") or "None")
+    client_name = str(row.get("client_name", "None") or "None")
+    dept_name, _ = get_dept_by_hostname(machine_name)
+    return {
+        "row": row,
+        "source": "DLP",
+        "category": classified["category"],
+        "categories": classified["categories"],
+        "keywords": classified["keywords"],
+        "event_time": str(row.get("eventtimelocal", "") or ""),
+        "event": format_dlp_event_id(row.get("event_id", "None")),
+        "site": selected_host,
+        "url": selected_url or selected_host,
+        "destination": destination or "None",
+        "detail": detail or "None",
+        "machine": machine_name,
+        "dept": dept_name,
+        "user": resolve_sensitive_user_name(machine_name, client_name),
+        "user_id": client_name,
+        "filename": str(row.get("filename", "None") or "None"),
+        "filehash": str(row.get("filehash", "None") or "None"),
+    }
+
+
+def make_sensitive_site_mailscreen_records(row, category_specs=SENSITIVE_SITE_CATEGORY_SPECS):
+    if not isinstance(row, dict):
+        return []
+    row = enrich_mailscreen_sender_fields(row)
+    subject = str(row.get("subject", "") or "")
+    scan_text = " ".join(str(row.get(k, "") or "") for k in (
+        "subject", "receiver", "sender", "attach",
+    ))
+    candidates = extract_url_candidates_from_text(scan_text, category_specs)
+    if not candidates:
+        return []
+    sender_email = mailscreen_identity_text(row.get("sender_email")) or mailscreen_identity_text(row.get("sender"))
+    sender_name = mailscreen_identity_text(row.get("sender_name")) or sender_email or "None"
+    user_id = mailscreen_identity_text(row.get("sender_user_id")) or sender_email or "None"
+    dept_name = mailscreen_identity_text(row.get("sender_dept")) or mailscreen_identity_text(row.get("dept")) or "미분류"
+    receiver = mailscreen_identity_text(row.get("receiver_detail")) or mailscreen_identity_text(row.get("receiver")) or "None"
+    records = []
+    for candidate in candidates:
+        host = normalize_site_host(candidate)
+        if not host:
+            continue
+        classified = classify_sensitive_site(host, candidate, category_specs)
+        if not classified:
+            continue
+        mail_process = str(row.get("mail_process", "") or "None")
+        send_result = str(row.get("send_result", "") or "None")
+        event = f"{mail_process}/{send_result}" if mail_process != "None" and send_result != "None" else (send_result or mail_process)
+        records.append({
+            "row": row,
+            "source": "Outbound Mail",
+            "category": classified["category"],
+            "categories": classified["categories"],
+            "keywords": classified["keywords"],
+            "event_time": str(row.get("date", "") or ""),
+            "event": event,
+            "site": host,
+            "url": candidate,
+            "destination": receiver,
+            "detail": subject or "None",
+            "machine": "None",
+            "dept": dept_name,
+            "user": sender_name,
+            "user_id": user_id,
+            "subject": subject or "None",
+            "sender": sender_email or "None",
+            "receiver": receiver,
+            "policy": str(row.get("policy", "") or "None"),
+            "mail_process": mail_process,
+            "mail_send_result": send_result,
+        })
+    return records
+
+
+def build_sensitive_site_records(dlp_rows=None, mailscreen_rows=None):
+    records = []
+    for row in dlp_rows or []:
+        record = make_sensitive_site_dlp_record(row)
+        if record:
+            records.append(record)
+
+    latest = {}
+    for record in records:
+        dedupe_key = sensitive_sites_dedupe_key(record)
+        current = latest.get(dedupe_key)
+        if current is None or str(record.get("event_time", "")) > str(current.get("event_time", "")):
+            latest[dedupe_key] = record
+    records = list(latest.values())
+    records.sort(key=lambda r: (r.get("event_time", ""), r.get("site", "")), reverse=True)
+    for record in records:
+        record["search_text"] = sensitive_site_search_text(record)
+    return records
+
+
 def sensitive_site_debug_text(value, limit=140):
     text = html.unescape(str(value or "")).replace("\n", " ").replace("\r", " ").strip()
     text = re.sub(r"\s+", " ", text)
