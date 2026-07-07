@@ -19430,9 +19430,11 @@ Command Line :
         export_left_layout = QVBoxLayout()
         export_left_layout.setSpacing(8)
         export_left_layout.setContentsMargins(0, 0, 0, 0)
+        export_left_layout.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         export_right_layout = QVBoxLayout()
         export_right_layout.setSpacing(8)
         export_right_layout.setContentsMargins(0, 0, 0, 0)
+        export_right_layout.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         export_columns.addLayout(export_left_layout, 3)
         export_columns.addLayout(export_right_layout, 2)
         export_layout.addLayout(export_columns)
@@ -19454,6 +19456,7 @@ Command Line :
         det_layout = QHBoxLayout()
         det_layout.setSpacing(8)
         det_layout.setContentsMargins(0, 0, 0, 0)
+        det_layout.setAlignment(Qt.AlignLeft)
 
         self.det_export_start_date = QDateEdit()
         self.det_export_start_time = QTimeEdit()
@@ -19476,11 +19479,11 @@ Command Line :
         for w in [self.det_export_start_date, self.det_export_start_time,
                   self.det_export_end_date, self.det_export_end_time]:
             prepare_export_control(w)
-        det_layout.addWidget(self.det_export_start_date, 1)
-        det_layout.addWidget(self.det_export_start_time, 1)
-        det_layout.addWidget(self.det_export_end_date, 1)
-        det_layout.addWidget(self.det_export_end_time, 1)
-        det_layout.addWidget(btn_det_export, 1)
+        det_layout.addWidget(self.det_export_start_date)
+        det_layout.addWidget(self.det_export_start_time)
+        det_layout.addWidget(self.det_export_end_date)
+        det_layout.addWidget(self.det_export_end_time)
+        det_layout.addWidget(btn_det_export)
 
         export_left_layout.addLayout(det_layout)
 
@@ -19488,6 +19491,7 @@ Command Line :
         xdr_layout = QHBoxLayout()
         xdr_layout.setSpacing(8)
         xdr_layout.setContentsMargins(0, 0, 0, 0)
+        xdr_layout.setAlignment(Qt.AlignLeft)
 
         self.xdr_export_start_date = QDateEdit()
         self.xdr_export_start_time = QTimeEdit()
@@ -19510,11 +19514,11 @@ Command Line :
         for w in [self.xdr_export_start_date, self.xdr_export_start_time,
                   self.xdr_export_end_date, self.xdr_export_end_time]:
             prepare_export_control(w)
-        xdr_layout.addWidget(self.xdr_export_start_date, 1)
-        xdr_layout.addWidget(self.xdr_export_start_time, 1)
-        xdr_layout.addWidget(self.xdr_export_end_date, 1)
-        xdr_layout.addWidget(self.xdr_export_end_time, 1)
-        xdr_layout.addWidget(btn_xdr_export, 1)
+        xdr_layout.addWidget(self.xdr_export_start_date)
+        xdr_layout.addWidget(self.xdr_export_start_time)
+        xdr_layout.addWidget(self.xdr_export_end_date)
+        xdr_layout.addWidget(self.xdr_export_end_time)
+        xdr_layout.addWidget(btn_xdr_export)
 
         export_left_layout.addLayout(xdr_layout)
 
@@ -19522,6 +19526,7 @@ Command Line :
         mail_layout = QHBoxLayout()
         mail_layout.setSpacing(8)
         mail_layout.setContentsMargins(0, 0, 0, 0)
+        mail_layout.setAlignment(Qt.AlignLeft)
 
         self.mail_export_start_date = QDateEdit()
         self.mail_export_start_time = QTimeEdit()
@@ -19544,11 +19549,11 @@ Command Line :
         for w in [self.mail_export_start_date, self.mail_export_start_time,
                   self.mail_export_end_date, self.mail_export_end_time]:
             prepare_export_control(w)
-        mail_layout.addWidget(self.mail_export_start_date, 1)
-        mail_layout.addWidget(self.mail_export_start_time, 1)
-        mail_layout.addWidget(self.mail_export_end_date, 1)
-        mail_layout.addWidget(self.mail_export_end_time, 1)
-        mail_layout.addWidget(btn_mail_export, 1)
+        mail_layout.addWidget(self.mail_export_start_date)
+        mail_layout.addWidget(self.mail_export_start_time)
+        mail_layout.addWidget(self.mail_export_end_date)
+        mail_layout.addWidget(self.mail_export_end_time)
+        mail_layout.addWidget(btn_mail_export)
 
         export_left_layout.addLayout(mail_layout)
 
@@ -19556,6 +19561,7 @@ Command Line :
         dlp_layout = QHBoxLayout()
         dlp_layout.setSpacing(8)
         dlp_layout.setContentsMargins(0, 0, 0, 0)
+        dlp_layout.setAlignment(Qt.AlignLeft)
 
         self.dlp_export_start_date = QDateEdit()
         self.dlp_export_start_time = QTimeEdit()
@@ -19579,11 +19585,11 @@ Command Line :
                   self.dlp_export_end_date, self.dlp_export_end_time]:
             prepare_export_control(w)
 
-        dlp_layout.addWidget(self.dlp_export_start_date, 1)
-        dlp_layout.addWidget(self.dlp_export_start_time, 1)
-        dlp_layout.addWidget(self.dlp_export_end_date, 1)
-        dlp_layout.addWidget(self.dlp_export_end_time, 1)
-        dlp_layout.addWidget(btn_dlp_export, 1)
+        dlp_layout.addWidget(self.dlp_export_start_date)
+        dlp_layout.addWidget(self.dlp_export_start_time)
+        dlp_layout.addWidget(self.dlp_export_end_date)
+        dlp_layout.addWidget(self.dlp_export_end_time)
+        dlp_layout.addWidget(btn_dlp_export)
 
         export_left_layout.addLayout(dlp_layout)
 
@@ -19591,6 +19597,7 @@ Command Line :
         mailscreen_layout = QHBoxLayout()
         mailscreen_layout.setSpacing(8)
         mailscreen_layout.setContentsMargins(0, 0, 0, 0)
+        mailscreen_layout.setAlignment(Qt.AlignLeft)
 
         self.mailscreen_export_start_date = QDateEdit()
         self.mailscreen_export_start_time = QTimeEdit()
@@ -19613,11 +19620,11 @@ Command Line :
         for w in [self.mailscreen_export_start_date, self.mailscreen_export_start_time,
                   self.mailscreen_export_end_date, self.mailscreen_export_end_time]:
             prepare_export_control(w)
-        mailscreen_layout.addWidget(self.mailscreen_export_start_date, 1)
-        mailscreen_layout.addWidget(self.mailscreen_export_start_time, 1)
-        mailscreen_layout.addWidget(self.mailscreen_export_end_date, 1)
-        mailscreen_layout.addWidget(self.mailscreen_export_end_time, 1)
-        mailscreen_layout.addWidget(btn_mailscreen_export, 1)
+        mailscreen_layout.addWidget(self.mailscreen_export_start_date)
+        mailscreen_layout.addWidget(self.mailscreen_export_start_time)
+        mailscreen_layout.addWidget(self.mailscreen_export_end_date)
+        mailscreen_layout.addWidget(self.mailscreen_export_end_time)
+        mailscreen_layout.addWidget(btn_mailscreen_export)
 
         export_left_layout.addLayout(mailscreen_layout)
 
@@ -19625,6 +19632,7 @@ Command Line :
             row_layout = QHBoxLayout()
             row_layout.setSpacing(8)
             row_layout.setContentsMargins(0, 0, 0, 0)
+            row_layout.setAlignment(Qt.AlignLeft)
             start_date = QDateEdit()
             start_time = QTimeEdit()
             end_date = QDateEdit()
@@ -19646,7 +19654,7 @@ Command Line :
             row_layout.addWidget(start_time)
             row_layout.addWidget(end_date)
             row_layout.addWidget(end_time)
-            row_layout.addWidget(btn, 1)
+            row_layout.addWidget(btn)
             return row_layout, start_date, start_time, end_date, end_time
 
         sensitive_files_row, self.sensitive_files_export_start_date, self.sensitive_files_export_start_time, self.sensitive_files_export_end_date, self.sensitive_files_export_end_time = make_sensitive_export_row(
@@ -19703,6 +19711,9 @@ Command Line :
         prepare_export_button(btn_report_exception)
 
         row = QHBoxLayout()
+        row.setSpacing(8)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setAlignment(Qt.AlignLeft)
         row.addWidget(self.report_start_date)
         row.addWidget(self.report_start_time)
         row.addWidget(self.report_end_date)
