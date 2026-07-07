@@ -19420,10 +19420,9 @@ Command Line :
 
         today = QDate.currentDate()
 
-        EXPORT_DATE_W = 116
-        EXPORT_TIME_W = 82
-        EXPORT_BTN_W = 180
-        DLP_MACHINE_W = 150
+        EXPORT_DATE_W = 134
+        EXPORT_TIME_W = 88
+        EXPORT_BTN_MIN_W = 170
 
         export_columns = QHBoxLayout()
         export_columns.setSpacing(14)
@@ -19434,8 +19433,8 @@ Command Line :
         export_right_layout = QVBoxLayout()
         export_right_layout.setSpacing(8)
         export_right_layout.setContentsMargins(0, 0, 0, 0)
-        export_columns.addLayout(export_left_layout, 2)
-        export_columns.addLayout(export_right_layout, 1)
+        export_columns.addLayout(export_left_layout, 3)
+        export_columns.addLayout(export_right_layout, 2)
         export_layout.addLayout(export_columns)
 
         def prepare_export_control(widget):
@@ -19444,8 +19443,12 @@ Command Line :
                 widget.setFixedWidth(EXPORT_DATE_W)
             elif isinstance(widget, QTimeEdit):
                 widget.setFixedWidth(EXPORT_TIME_W)
-            elif isinstance(widget, QLineEdit):
-                widget.setFixedWidth(DLP_MACHINE_W)
+
+        def prepare_export_button(button, style=btn_style):
+            button.setStyleSheet(style)
+            button.setMinimumHeight(38)
+            button.setMinimumWidth(EXPORT_BTN_MIN_W)
+            button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
         # Detection Export
         det_layout = QHBoxLayout()
@@ -19468,14 +19471,11 @@ Command Line :
 
         btn_det_export = QPushButton("Detection Excel")
         btn_det_export.clicked.connect(self.export_detection_excel)
-        btn_det_export.setStyleSheet(btn_style)
+        prepare_export_button(btn_det_export)
 
         for w in [self.det_export_start_date, self.det_export_start_time,
                   self.det_export_end_date, self.det_export_end_time]:
             prepare_export_control(w)
-        btn_det_export.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        btn_det_export.setMinimumHeight(38)
-
         det_layout.addWidget(self.det_export_start_date, 1)
         det_layout.addWidget(self.det_export_start_time, 1)
         det_layout.addWidget(self.det_export_end_date, 1)
@@ -19505,14 +19505,11 @@ Command Line :
 
         btn_xdr_export = QPushButton("Email XDR Excel")
         btn_xdr_export.clicked.connect(self.export_detection_xdr_excel)
-        btn_xdr_export.setStyleSheet(btn_style)
+        prepare_export_button(btn_xdr_export)
 
         for w in [self.xdr_export_start_date, self.xdr_export_start_time,
                   self.xdr_export_end_date, self.xdr_export_end_time]:
             prepare_export_control(w)
-        btn_xdr_export.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        btn_xdr_export.setMinimumHeight(38)
-
         xdr_layout.addWidget(self.xdr_export_start_date, 1)
         xdr_layout.addWidget(self.xdr_export_start_time, 1)
         xdr_layout.addWidget(self.xdr_export_end_date, 1)
@@ -19541,15 +19538,12 @@ Command Line :
         self.mail_export_end_time.setDisplayFormat("HH:mm:ss")
 
         btn_mail_export = QPushButton("Inbound Excel")
-        btn_mail_export.setStyleSheet(btn_style)
         btn_mail_export.clicked.connect(self.export_email_excel)
+        prepare_export_button(btn_mail_export)
 
         for w in [self.mail_export_start_date, self.mail_export_start_time,
                   self.mail_export_end_date, self.mail_export_end_time]:
             prepare_export_control(w)
-        btn_mail_export.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        btn_mail_export.setMinimumHeight(38)
-
         mail_layout.addWidget(self.mail_export_start_date, 1)
         mail_layout.addWidget(self.mail_export_start_time, 1)
         mail_layout.addWidget(self.mail_export_end_date, 1)
@@ -19568,9 +19562,6 @@ Command Line :
         self.dlp_export_end_date = QDateEdit()
         self.dlp_export_end_time = QTimeEdit()
 
-        self.dlp_export_machine_input = QLineEdit()
-        self.dlp_export_machine_input.setPlaceholderText("Machine Name")
-
         self.dlp_export_start_date.setDate(today.addDays(-6))
         self.dlp_export_end_date.setDate(today)
         self.dlp_export_start_date.setCalendarPopup(True)
@@ -19581,21 +19572,17 @@ Command Line :
         self.dlp_export_end_time.setDisplayFormat("HH:mm:ss")
 
         btn_dlp_export = QPushButton("DLP Excel")
-        btn_dlp_export.setStyleSheet(btn_style)
         btn_dlp_export.clicked.connect(self.export_dlp_excel)
+        prepare_export_button(btn_dlp_export)
 
         for w in [self.dlp_export_start_date, self.dlp_export_start_time,
-                  self.dlp_export_end_date, self.dlp_export_end_time,
-                  self.dlp_export_machine_input]:
+                  self.dlp_export_end_date, self.dlp_export_end_time]:
             prepare_export_control(w)
-        btn_dlp_export.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        btn_dlp_export.setMinimumHeight(38)
 
         dlp_layout.addWidget(self.dlp_export_start_date, 1)
         dlp_layout.addWidget(self.dlp_export_start_time, 1)
         dlp_layout.addWidget(self.dlp_export_end_date, 1)
         dlp_layout.addWidget(self.dlp_export_end_time, 1)
-        dlp_layout.addWidget(self.dlp_export_machine_input, 1)
         dlp_layout.addWidget(btn_dlp_export, 1)
 
         export_left_layout.addLayout(dlp_layout)
@@ -19619,22 +19606,17 @@ Command Line :
         self.mailscreen_export_start_time.setDisplayFormat("HH:mm:ss")
         self.mailscreen_export_end_time.setDisplayFormat("HH:mm:ss")
 
-        mailscreen_export_spacer = QLabel("")
         btn_mailscreen_export = QPushButton("Outbound Excel")
-        btn_mailscreen_export.setStyleSheet(btn_style)
         btn_mailscreen_export.clicked.connect(self.export_mailscreen_excel)
+        prepare_export_button(btn_mailscreen_export)
 
         for w in [self.mailscreen_export_start_date, self.mailscreen_export_start_time,
                   self.mailscreen_export_end_date, self.mailscreen_export_end_time]:
             prepare_export_control(w)
-        btn_mailscreen_export.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        btn_mailscreen_export.setMinimumHeight(38)
-
         mailscreen_layout.addWidget(self.mailscreen_export_start_date, 1)
         mailscreen_layout.addWidget(self.mailscreen_export_start_time, 1)
         mailscreen_layout.addWidget(self.mailscreen_export_end_date, 1)
         mailscreen_layout.addWidget(self.mailscreen_export_end_time, 1)
-        mailscreen_layout.addWidget(mailscreen_export_spacer, 1)
         mailscreen_layout.addWidget(btn_mailscreen_export, 1)
 
         export_left_layout.addLayout(mailscreen_layout)
@@ -19644,11 +19626,9 @@ Command Line :
         export_right_layout.addWidget(sensitive_title)
 
         def make_sensitive_export_row(button_text, click_handler):
-            wrapper = QVBoxLayout()
-            wrapper.setSpacing(6)
-            wrapper.setContentsMargins(0, 0, 0, 0)
-            dt_row = QHBoxLayout()
-            dt_row.setSpacing(6)
+            row_layout = QHBoxLayout()
+            row_layout.setSpacing(8)
+            row_layout.setContentsMargins(0, 0, 0, 0)
             start_date = QDateEdit()
             start_time = QTimeEdit()
             end_date = QDateEdit()
@@ -19663,18 +19643,15 @@ Command Line :
             end_time.setDisplayFormat("HH:mm:ss")
             for w in [start_date, start_time, end_date, end_time]:
                 prepare_export_control(w)
-            dt_row.addWidget(start_date)
-            dt_row.addWidget(start_time)
-            dt_row.addWidget(end_date)
-            dt_row.addWidget(end_time)
             btn = QPushButton(button_text)
-            btn.setStyleSheet(btn_style)
-            btn.setMinimumHeight(38)
-            btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             btn.clicked.connect(click_handler)
-            wrapper.addLayout(dt_row)
-            wrapper.addWidget(btn)
-            return wrapper, start_date, start_time, end_date, end_time
+            prepare_export_button(btn)
+            row_layout.addWidget(start_date)
+            row_layout.addWidget(start_time)
+            row_layout.addWidget(end_date)
+            row_layout.addWidget(end_time)
+            row_layout.addWidget(btn, 1)
+            return row_layout, start_date, start_time, end_date, end_time
 
         sensitive_files_row, self.sensitive_files_export_start_date, self.sensitive_files_export_start_time, self.sensitive_files_export_end_date, self.sensitive_files_export_end_time = make_sensitive_export_row(
             "Sensitive Files Excel",
@@ -19720,16 +19697,14 @@ Command Line :
         ]:
             prepare_export_control(w)
 
-        btn_report = QPushButton("Download Security Report (PDF)")
+        btn_report = QPushButton("Security Report PDF")
         self.btn_security_report = btn_report
         btn_report.clicked.connect(self.start_security_report_worker)
-        btn_report.setStyleSheet(btn_style)
-        btn_report.setMinimumHeight(38)
+        prepare_export_button(btn_report)
 
-        btn_report_exception = QPushButton("Report exception List")
+        btn_report_exception = QPushButton("Exception List")
         btn_report_exception.clicked.connect(self.open_report_exception_list_dialog)
-        btn_report_exception.setStyleSheet(secondary_btn_style)
-        btn_report_exception.setMinimumHeight(38)
+        prepare_export_button(btn_report_exception, secondary_btn_style)
 
         row = QHBoxLayout()
         row.addWidget(self.report_start_date)
@@ -21959,8 +21934,6 @@ Command Line :
             start_date = start_dt.strftime("%Y-%m-%d")
             end_date = end_dt.strftime("%Y-%m-%d")
 
-            machine_name_filter = self.dlp_export_machine_input.text().strip().lower()
-
             rows = load_dlp_by_range(start_date, end_date)
 
             filtered_rows = []
@@ -21977,11 +21950,6 @@ Command Line :
                     continue
 
                 machine_name = str(row.get("machine_name", "")).strip()
-                machine_name_key = machine_name.lower()
-
-                if machine_name_filter:
-                    if machine_name_key != machine_name_filter:
-                        continue
 
                 dept_name, dept_code = get_dept_by_hostname(machine_name)
 
@@ -22010,8 +21978,7 @@ Command Line :
 
             df = pd.DataFrame(filtered_rows)
 
-            suffix = machine_name_filter if machine_name_filter else "all"
-            file_name = f"dlp_export_{start_date}_{end_date}_{suffix}.xlsx"
+            file_name = f"dlp_export_{start_date}_{end_date}_all.xlsx"
             path = os.path.join(EXPORT_DIR, file_name)
             path = get_unique_path(path)
 
