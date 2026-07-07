@@ -1558,6 +1558,7 @@ def sync_app_cache_range(source, start_date, end_date, progress_cb=None):
     cfg = APP_CACHE_SOURCES[source]
     stats = {"indexed": 0, "skipped": 0, "rows": 0, "files": 0, "source": source}
     with app_cache_connect() as conn:
+        changed_paths = []
         for cache_date in iter_date_strings(start_date, end_date):
             filename = cfg.get("filename_template", "{date}{ext}").format(date=cache_date, ext=cfg["ext"])
             path = os.path.join(cfg["dir"], filename)
@@ -1570,7 +1571,33 @@ def sync_app_cache_range(source, start_date, end_date, progress_cb=None):
             if progress_cb:
                 progress_cb(f"SQLite 데이터 반영중 - {source} {cache_date}")
             stats["rows"] += sync_app_cache_file(conn, source, path, cache_date, cfg["format"])
+            changed_paths.append(path)
             stats["indexed"] += 1
+        if changed_paths:
+            log.info(
+                "App cache range changed source=%s changed=%d sensitive_rebuild=%s",
+                source,
+                len(changed_paths),
+                source in ("dlp", "mailscreen"),
+            )
+            if source in ("dlp", "mailscreen"):
+                stats.update(
+                    rebuild_sensitive_files_index(
+                        conn,
+                        changed_paths=changed_paths,
+                        removed_paths=[],
+                        progress_cb=progress_cb,
+                    )
+                )
+            if source == "dlp":
+                stats.update(
+                    rebuild_sensitive_sites_index(
+                        conn,
+                        changed_paths=changed_paths,
+                        removed_paths=[],
+                        progress_cb=progress_cb,
+                    )
+                )
         conn.commit()
     return stats
 
