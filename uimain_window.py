@@ -19420,9 +19420,9 @@ Command Line :
 
         today = QDate.currentDate()
 
-        EXPORT_DATE_W = 134
+        EXPORT_DATE_W = 156
         EXPORT_TIME_W = 88
-        EXPORT_BTN_MIN_W = 170
+        EXPORT_BTN_W = 190
 
         export_columns = QHBoxLayout()
         export_columns.setSpacing(14)
@@ -19447,8 +19447,8 @@ Command Line :
         def prepare_export_button(button, style=btn_style):
             button.setStyleSheet(style)
             button.setMinimumHeight(38)
-            button.setMinimumWidth(EXPORT_BTN_MIN_W)
-            button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            button.setFixedWidth(EXPORT_BTN_W)
+            button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
 
         # Detection Export
         det_layout = QHBoxLayout()
@@ -19621,10 +19621,6 @@ Command Line :
 
         export_left_layout.addLayout(mailscreen_layout)
 
-        sensitive_title = QLabel("Sensitive")
-        sensitive_title.setStyleSheet(f"color:{UI_THEME['accent_text']}; font-size:12px; font-weight:900;")
-        export_right_layout.addWidget(sensitive_title)
-
         def make_sensitive_export_row(button_text, click_handler):
             row_layout = QHBoxLayout()
             row_layout.setSpacing(8)
@@ -19704,7 +19700,7 @@ Command Line :
 
         btn_report_exception = QPushButton("Exception List")
         btn_report_exception.clicked.connect(self.open_report_exception_list_dialog)
-        prepare_export_button(btn_report_exception, secondary_btn_style)
+        prepare_export_button(btn_report_exception)
 
         row = QHBoxLayout()
         row.addWidget(self.report_start_date)
