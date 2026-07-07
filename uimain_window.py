@@ -19420,10 +19420,32 @@ Command Line :
 
         today = QDate.currentDate()
 
-        EXPORT_DATE_W = 140
-        EXPORT_TIME_W = 95
-        EXPORT_BTN_W = 230
-        DLP_MACHINE_W = 180
+        EXPORT_DATE_W = 116
+        EXPORT_TIME_W = 82
+        EXPORT_BTN_W = 180
+        DLP_MACHINE_W = 150
+
+        export_columns = QHBoxLayout()
+        export_columns.setSpacing(14)
+        export_columns.setContentsMargins(0, 0, 0, 0)
+        export_left_layout = QVBoxLayout()
+        export_left_layout.setSpacing(8)
+        export_left_layout.setContentsMargins(0, 0, 0, 0)
+        export_right_layout = QVBoxLayout()
+        export_right_layout.setSpacing(8)
+        export_right_layout.setContentsMargins(0, 0, 0, 0)
+        export_columns.addLayout(export_left_layout, 2)
+        export_columns.addLayout(export_right_layout, 1)
+        export_layout.addLayout(export_columns)
+
+        def prepare_export_control(widget):
+            self.prepare_form_control(widget, height=38)
+            if isinstance(widget, QDateEdit):
+                widget.setFixedWidth(EXPORT_DATE_W)
+            elif isinstance(widget, QTimeEdit):
+                widget.setFixedWidth(EXPORT_TIME_W)
+            elif isinstance(widget, QLineEdit):
+                widget.setFixedWidth(DLP_MACHINE_W)
 
         # Detection Export
         det_layout = QHBoxLayout()
@@ -19444,13 +19466,13 @@ Command Line :
         self.det_export_start_time.setDisplayFormat("HH:mm:ss")
         self.det_export_end_time.setDisplayFormat("HH:mm:ss")
 
-        btn_det_export = QPushButton("Download Detection - XDR Excel")
+        btn_det_export = QPushButton("Detection Excel")
         btn_det_export.clicked.connect(self.export_detection_excel)
         btn_det_export.setStyleSheet(btn_style)
 
         for w in [self.det_export_start_date, self.det_export_start_time,
                   self.det_export_end_date, self.det_export_end_time]:
-            self.prepare_form_control(w, height=38)
+            prepare_export_control(w)
         btn_det_export.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         btn_det_export.setMinimumHeight(38)
 
@@ -19460,7 +19482,7 @@ Command Line :
         det_layout.addWidget(self.det_export_end_time, 1)
         det_layout.addWidget(btn_det_export, 1)
 
-        export_layout.addLayout(det_layout)
+        export_left_layout.addLayout(det_layout)
 
         # Email - XDR Export
         xdr_layout = QHBoxLayout()
@@ -19481,13 +19503,13 @@ Command Line :
         self.xdr_export_start_time.setDisplayFormat("HH:mm:ss")
         self.xdr_export_end_time.setDisplayFormat("HH:mm:ss")
 
-        btn_xdr_export = QPushButton("Download Email - XDR Excel")
+        btn_xdr_export = QPushButton("Email XDR Excel")
         btn_xdr_export.clicked.connect(self.export_detection_xdr_excel)
         btn_xdr_export.setStyleSheet(btn_style)
 
         for w in [self.xdr_export_start_date, self.xdr_export_start_time,
                   self.xdr_export_end_date, self.xdr_export_end_time]:
-            self.prepare_form_control(w, height=38)
+            prepare_export_control(w)
         btn_xdr_export.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         btn_xdr_export.setMinimumHeight(38)
 
@@ -19497,7 +19519,7 @@ Command Line :
         xdr_layout.addWidget(self.xdr_export_end_time, 1)
         xdr_layout.addWidget(btn_xdr_export, 1)
 
-        export_layout.addLayout(xdr_layout)
+        export_left_layout.addLayout(xdr_layout)
 
         # Inbound Mail Export
         mail_layout = QHBoxLayout()
@@ -19518,13 +19540,13 @@ Command Line :
         self.mail_export_start_time.setDisplayFormat("HH:mm:ss")
         self.mail_export_end_time.setDisplayFormat("HH:mm:ss")
 
-        btn_mail_export = QPushButton("Download Inbound Mail Excel")
+        btn_mail_export = QPushButton("Inbound Excel")
         btn_mail_export.setStyleSheet(btn_style)
         btn_mail_export.clicked.connect(self.export_email_excel)
 
         for w in [self.mail_export_start_date, self.mail_export_start_time,
                   self.mail_export_end_date, self.mail_export_end_time]:
-            self.prepare_form_control(w, height=38)
+            prepare_export_control(w)
         btn_mail_export.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         btn_mail_export.setMinimumHeight(38)
 
@@ -19534,7 +19556,7 @@ Command Line :
         mail_layout.addWidget(self.mail_export_end_time, 1)
         mail_layout.addWidget(btn_mail_export, 1)
 
-        export_layout.addLayout(mail_layout)
+        export_left_layout.addLayout(mail_layout)
 
         # DLP Export
         dlp_layout = QHBoxLayout()
@@ -19558,14 +19580,14 @@ Command Line :
         self.dlp_export_start_time.setDisplayFormat("HH:mm:ss")
         self.dlp_export_end_time.setDisplayFormat("HH:mm:ss")
 
-        btn_dlp_export = QPushButton("Download DLP Excel")
+        btn_dlp_export = QPushButton("DLP Excel")
         btn_dlp_export.setStyleSheet(btn_style)
         btn_dlp_export.clicked.connect(self.export_dlp_excel)
 
         for w in [self.dlp_export_start_date, self.dlp_export_start_time,
                   self.dlp_export_end_date, self.dlp_export_end_time,
                   self.dlp_export_machine_input]:
-            self.prepare_form_control(w, height=38)
+            prepare_export_control(w)
         btn_dlp_export.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         btn_dlp_export.setMinimumHeight(38)
 
@@ -19576,7 +19598,7 @@ Command Line :
         dlp_layout.addWidget(self.dlp_export_machine_input, 1)
         dlp_layout.addWidget(btn_dlp_export, 1)
 
-        export_layout.addLayout(dlp_layout)
+        export_left_layout.addLayout(dlp_layout)
 
         # MailScreen Export
         mailscreen_layout = QHBoxLayout()
@@ -19598,13 +19620,13 @@ Command Line :
         self.mailscreen_export_end_time.setDisplayFormat("HH:mm:ss")
 
         mailscreen_export_spacer = QLabel("")
-        btn_mailscreen_export = QPushButton("Download Outbound Mail Excel")
+        btn_mailscreen_export = QPushButton("Outbound Excel")
         btn_mailscreen_export.setStyleSheet(btn_style)
         btn_mailscreen_export.clicked.connect(self.export_mailscreen_excel)
 
         for w in [self.mailscreen_export_start_date, self.mailscreen_export_start_time,
                   self.mailscreen_export_end_date, self.mailscreen_export_end_time]:
-            self.prepare_form_control(w, height=38)
+            prepare_export_control(w)
         btn_mailscreen_export.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         btn_mailscreen_export.setMinimumHeight(38)
 
@@ -19615,7 +19637,56 @@ Command Line :
         mailscreen_layout.addWidget(mailscreen_export_spacer, 1)
         mailscreen_layout.addWidget(btn_mailscreen_export, 1)
 
-        export_layout.addLayout(mailscreen_layout)
+        export_left_layout.addLayout(mailscreen_layout)
+
+        sensitive_title = QLabel("Sensitive")
+        sensitive_title.setStyleSheet(f"color:{UI_THEME['accent_text']}; font-size:12px; font-weight:900;")
+        export_right_layout.addWidget(sensitive_title)
+
+        def make_sensitive_export_row(button_text, click_handler):
+            wrapper = QVBoxLayout()
+            wrapper.setSpacing(6)
+            wrapper.setContentsMargins(0, 0, 0, 0)
+            dt_row = QHBoxLayout()
+            dt_row.setSpacing(6)
+            start_date = QDateEdit()
+            start_time = QTimeEdit()
+            end_date = QDateEdit()
+            end_time = QTimeEdit()
+            start_date.setDate(today.addDays(-6))
+            end_date.setDate(today)
+            start_date.setCalendarPopup(True)
+            end_date.setCalendarPopup(True)
+            start_time.setTime(QTime(0, 0, 0))
+            end_time.setTime(QTime(23, 59, 59))
+            start_time.setDisplayFormat("HH:mm:ss")
+            end_time.setDisplayFormat("HH:mm:ss")
+            for w in [start_date, start_time, end_date, end_time]:
+                prepare_export_control(w)
+            dt_row.addWidget(start_date)
+            dt_row.addWidget(start_time)
+            dt_row.addWidget(end_date)
+            dt_row.addWidget(end_time)
+            btn = QPushButton(button_text)
+            btn.setStyleSheet(btn_style)
+            btn.setMinimumHeight(38)
+            btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            btn.clicked.connect(click_handler)
+            wrapper.addLayout(dt_row)
+            wrapper.addWidget(btn)
+            return wrapper, start_date, start_time, end_date, end_time
+
+        sensitive_files_row, self.sensitive_files_export_start_date, self.sensitive_files_export_start_time, self.sensitive_files_export_end_date, self.sensitive_files_export_end_time = make_sensitive_export_row(
+            "Sensitive Files Excel",
+            self.export_sensitive_files_excel,
+        )
+        sensitive_sites_row, self.sensitive_sites_export_start_date, self.sensitive_sites_export_start_time, self.sensitive_sites_export_end_date, self.sensitive_sites_export_end_time = make_sensitive_export_row(
+            "Sensitive Sites Excel",
+            self.export_sensitive_sites_excel,
+        )
+        export_right_layout.addLayout(sensitive_files_row)
+        export_right_layout.addLayout(sensitive_sites_row)
+        export_right_layout.addStretch()
 
         layout.addWidget(export_card)
 
@@ -19647,7 +19718,7 @@ Command Line :
             self.report_end_date,
             self.report_end_time,
         ]:
-            self.prepare_form_control(w, height=38)
+            prepare_export_control(w)
 
         btn_report = QPushButton("Download Security Report (PDF)")
         self.btn_security_report = btn_report
@@ -21506,6 +21577,155 @@ Command Line :
             self.add_card_title(layout, title)
 
         return frame, layout
+
+    def sensitive_export_sheet_name(self, category, used_names):
+        base = re.sub(r"[\[\]\:\*\?\/\\]", "_", str(category or "기타")).strip()
+        base = re.sub(r"\s+", " ", base).replace(" / ", "_").replace("/", "_")
+        base = base[:31].strip(" _") or "기타"
+        name = base
+        suffix = 2
+        while name in used_names:
+            suffix_text = f"_{suffix}"
+            name = f"{base[:31 - len(suffix_text)]}{suffix_text}"
+            suffix += 1
+        used_names.add(name)
+        return name
+
+    def load_sensitive_export_records(self, table_name, version_key, expected_version, start_dt, end_dt, sources):
+        start_text = start_dt.strftime("%Y-%m-%d %H:%M:%S")
+        end_text = end_dt.strftime("%Y-%m-%d %H:%M:%S")
+        source_values = list(sources or [])
+        if not source_values:
+            return {}
+        placeholders = ",".join("?" for _ in source_values)
+        with app_cache_connect() as conn:
+            version_row = conn.execute("SELECT value FROM app_cache_meta WHERE key = ?", (version_key,)).fetchone()
+            if not version_row or version_row[0] != expected_version:
+                return None
+            rows = conn.execute(
+                f"""
+                SELECT category, record_json
+                FROM {table_name}
+                WHERE source IN ({placeholders})
+                  AND event_time >= ?
+                  AND event_time <= ?
+                ORDER BY category ASC, event_time DESC
+                """,
+                source_values + [start_text, end_text],
+            ).fetchall()
+        grouped = defaultdict(list)
+        for category, raw_json in rows:
+            try:
+                record = json.loads(raw_json)
+                if isinstance(record, dict):
+                    grouped[str(category or record.get("category") or "기타")].append(record)
+            except Exception as e:
+                log.warning("Sensitive export record parse failed table=%s: %s", table_name, e)
+        return dict(grouped)
+
+    def write_category_excel(self, path, grouped_rows, row_builder):
+        used_sheet_names = set()
+        with pd.ExcelWriter(path) as writer:
+            for category in sorted(grouped_rows.keys()):
+                records = grouped_rows.get(category) or []
+                if not records:
+                    continue
+                rows = [row_builder(record) for record in records]
+                sheet_name = self.sensitive_export_sheet_name(category, used_sheet_names)
+                pd.DataFrame(rows).to_excel(writer, sheet_name=sheet_name, index=False)
+
+    def export_sensitive_files_excel(self):
+        os.makedirs(EXPORT_DIR, exist_ok=True)
+        start_dt = combine_date_time(self.sensitive_files_export_start_date, self.sensitive_files_export_start_time)
+        end_dt = combine_date_time(self.sensitive_files_export_end_date, self.sensitive_files_export_end_time)
+        grouped = self.load_sensitive_export_records(
+            "sensitive_files_index",
+            "sensitive_files_index_version",
+            SENSITIVE_FILES_INDEX_VERSION,
+            start_dt,
+            end_dt,
+            ["DLP", "Outbound Mail"],
+        )
+        if grouped is None:
+            QMessageBox.information(self, "Sensitive Files Export", "Sensitive Files 인덱스가 없습니다. Data Index를 먼저 실행하세요.")
+            return
+        if not grouped:
+            QMessageBox.information(self, "Sensitive Files Export", "조건에 맞는 Sensitive Files 데이터가 없습니다.")
+            return
+
+        start = start_dt.strftime("%Y-%m-%d")
+        end = end_dt.strftime("%Y-%m-%d")
+        path = get_unique_path(os.path.join(EXPORT_DIR, f"sensitive_files_{start}_{end}.xlsx"))
+
+        def build_row(record):
+            return {
+                "시간": record.get("event_time", ""),
+                "분류": record.get("category", ""),
+                "탐지 키워드": ", ".join(record.get("keywords", []) or []),
+                "파일명": record.get("display_filename", ""),
+                "사용자": record.get("user", ""),
+                "User ID": record.get("user_id", ""),
+                "부서": record.get("dept", ""),
+                "출처": record.get("source", ""),
+                "이벤트": record.get("event", ""),
+                "경로/원본": record.get("filename") or record.get("mail_attach_raw", ""),
+                "대상": record.get("destination", ""),
+                "대상 유형": record.get("destination_type", ""),
+                "목적지 세부정보": record.get("destination_detail", ""),
+                "메일 제목": record.get("mail_subject", ""),
+                "발신자": record.get("mail_sender", ""),
+                "수신자": record.get("mail_receiver", ""),
+                "파일 해시": record.get("filehash", ""),
+                "RawData": json.dumps(record.get("row", {}), ensure_ascii=False, default=str),
+            }
+
+        self.write_category_excel(path, grouped, build_row)
+        QMessageBox.information(self, "Sensitive Files Export", f"Sensitive Files Excel 저장 완료\n{path}")
+
+    def export_sensitive_sites_excel(self):
+        os.makedirs(EXPORT_DIR, exist_ok=True)
+        start_dt = combine_date_time(self.sensitive_sites_export_start_date, self.sensitive_sites_export_start_time)
+        end_dt = combine_date_time(self.sensitive_sites_export_end_date, self.sensitive_sites_export_end_time)
+        grouped = self.load_sensitive_export_records(
+            "sensitive_sites_index",
+            "sensitive_sites_index_version",
+            SENSITIVE_SITES_INDEX_VERSION,
+            start_dt,
+            end_dt,
+            ["DLP"],
+        )
+        if grouped is None:
+            QMessageBox.information(self, "Sensitive Sites Export", "Sensitive Sites 인덱스가 없습니다. Data Index를 먼저 실행하세요.")
+            return
+        if not grouped:
+            QMessageBox.information(self, "Sensitive Sites Export", "조건에 맞는 Sensitive Sites 데이터가 없습니다.")
+            return
+
+        start = start_dt.strftime("%Y-%m-%d")
+        end = end_dt.strftime("%Y-%m-%d")
+        path = get_unique_path(os.path.join(EXPORT_DIR, f"sensitive_sites_{start}_{end}.xlsx"))
+
+        def build_row(record):
+            return {
+                "시간": record.get("event_time", ""),
+                "분류": record.get("category", ""),
+                "탐지 키워드": ", ".join(record.get("keywords", []) or []),
+                "사이트": record.get("site", ""),
+                "URL": record.get("url", ""),
+                "사용자": record.get("user", ""),
+                "User ID": record.get("user_id", ""),
+                "부서": record.get("dept", ""),
+                "출처": record.get("source", ""),
+                "이벤트": record.get("event", ""),
+                "대상": record.get("destination", ""),
+                "목적지 세부정보": record.get("destination_detail", ""),
+                "파일명": record.get("filename", ""),
+                "파일 해시": record.get("filehash", ""),
+                "RawData": json.dumps(record.get("row", {}), ensure_ascii=False, default=str),
+            }
+
+        self.write_category_excel(path, grouped, build_row)
+        QMessageBox.information(self, "Sensitive Sites Export", f"Sensitive Sites Excel 저장 완료\n{path}")
 
     def export_detection_excel(self):
         start_dt = combine_date_time(self.det_export_start_date, self.det_export_start_time)
