@@ -1515,9 +1515,25 @@ def app_cache_file_current(conn, path):
     return float(row[0] or 0) == float(stat.st_mtime) and int(row[1] or 0) == int(stat.st_size)
 
 
+def app_cache_file_row_count(conn, path):
+    row = conn.execute(
+        "SELECT rows FROM app_cache_files WHERE path = ?",
+        (path,),
+    ).fetchone()
+    if not row:
+        return None
+    try:
+        return int(row[0] or 0)
+    except Exception:
+        return None
+
+
 def app_cache_index_current(conn, source, path):
     if not app_cache_file_current(conn, path):
         return False
+    cached_rows = app_cache_file_row_count(conn, path)
+    if cached_rows == 0:
+        return True
     table_map = {
         "detections": "detection_events",
         "emails": "email_events",
