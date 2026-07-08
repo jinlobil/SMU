@@ -5834,26 +5834,31 @@ class DataIndexWorker(QThread):
             self.fail.emit(str(e))
 
 
-class DataVerifyWorker(QThread):
+class DataHealthCheckWorker(QThread):
     ok = pyqtSignal(dict)
     fail = pyqtSignal(str)
 
-    def __init__(self, check_type):
-        super().__init__()
-        self.check_type = check_type
+    def run(self):
+        try:
+            payload = run_data_health_check()
+            payload["check_type"] = "health"
+            self.ok.emit(payload)
+        except Exception as e:
+            log.exception("Data health check failed")
+            self.fail.emit(str(e))
+
+
+class UserMappingCheckWorker(QThread):
+    ok = pyqtSignal(dict)
+    fail = pyqtSignal(str)
 
     def run(self):
         try:
-            if self.check_type == "health":
-                payload = run_data_health_check()
-            elif self.check_type == "user_mapping":
-                payload = run_user_mapping_check()
-            else:
-                raise ValueError(f"Unknown Data Verify check: {self.check_type}")
-            payload["check_type"] = self.check_type
+            payload = run_user_mapping_check()
+            payload["check_type"] = "user_mapping"
             self.ok.emit(payload)
         except Exception as e:
-            log.exception("Data verify check failed")
+            log.exception("User mapping check failed")
             self.fail.emit(str(e))
 
 
@@ -5920,72 +5925,6 @@ class SensitiveSitesLoadWorker(QThread):
         except Exception as e:
             log.exception("Sensitive Sites cache load failed")
             self.fail.emit(str(e))
-
-
-class DlpAllCacheLoadWorker(QThread):
-    ok = pyqtSignal(object)
-    fail = pyqtSignal(str)
-
-    def __init__(self, category="전체", keyword="", sources=None, limit=SENSITIVE_FILES_PAGE_LIMIT, offset=0):
-        super().__init__()
-        self.category = category or "전체"
-        self.keyword = keyword or ""
-        self.sources = ["DLP", "Outbound Mail"] if sources is None else list(sources)
-        self.limit = limit
-        self.offset = offset
-
-    def run(self):
-        try:
-            payload = query_sensitive_files_index(
-                category=self.category,
-                keyword=self.keyword,
-                sources=self.sources,
-                limit=self.limit,
-                offset=self.offset,
-            )
-            self.ok.emit(payload)
-        except Exception as e:
-            log.exception("Sensitive Files cache load failed")
-            self.fail.emit(str(e))
-
-
-class SensitiveSitesLoadWorker(QThread):
-    ok = pyqtSignal(object)
-    fail = pyqtSignal(str)
-
-    def __init__(self, category="전체", keyword="", sources=None, limit=SENSITIVE_SITES_PAGE_LIMIT, offset=0):
-        super().__init__()
-        self.category = category or "전체"
-        self.keyword = keyword or ""
-        self.sources = ["DLP"] if sources is None else list(sources)
-        self.limit = limit
-        self.offset = offset
-
-    def run(self):
-        try:
-            log.info(
-                "Sensitive Sites worker start category=%s keyword=%r sources=%s limit=%d offset=%d",
-                self.category, self.keyword, self.sources, int(self.limit), int(self.offset),
-            )
-            payload = query_sensitive_sites_index(
-                category=self.category,
-                keyword=self.keyword,
-                sources=self.sources,
-                limit=self.limit,
-                offset=self.offset,
-            )
-            log.info(
-                "Sensitive Sites worker done total=%d returned=%d offset=%d index_ready=%s",
-                int(payload.get("total", 0) or 0),
-                len(payload.get("records", []) or []),
-                int(payload.get("offset", 0) or 0),
-                payload.get("index_ready"),
-            )
-            self.ok.emit(payload)
-        except Exception as e:
-            log.exception("Sensitive Sites cache load failed")
-            self.fail.emit(str(e))
-
 
 
 
@@ -19508,22 +19447,16 @@ Command Line :
         self.data_index_worker.start()
 
     def _on_data_index_progress(self, message):
-        self.lbl_index_status.setText(f"Status: {message}")
+        self.lbl_index_status.setText("Status: RUNNING")
         self.set_status(str(message), color="blue", spinning=True)
 
     def _on_data_index_ok(self, stats):
         self.btn_data_index.setEnabled(True)
         self._spin_timer.stop()
-        self.set_status("Data index OK", color="green", spinning=False)
+        self.set_status("Data index SUCCESS", color="green", spinning=False)
         built_at = stats.get("built_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-        self.lbl_index_last.setText(f"Last Build: {built_at}")
-        self.lbl_index_status.setText(
-            f"Status: OK (Data {int(stats.get('data_indexed', 0)):,} indexed / {int(stats.get('data_skipped', 0)):,} skipped, Timeline {int(stats.get('indexed', 0)):,} indexed / {int(stats.get('skipped', 0)):,} skipped, Sensitive Files {int(stats.get('sensitive_index_rows', 0)):,} records, Sensitive Sites {int(stats.get('sensitive_sites_index_rows', 0)):,} records)"
-        )
-        self.lbl_index_rows.setText(f"Data Rows: {int(stats.get('data_total_rows', stats.get('data_rows', 0))):,}")
-        self.lbl_index_events.setText(f"Timeline Events: {int(stats.get('events', 0)):,}")
-        self.lbl_index_tokens.setText(f"Search Tokens: {int(stats.get('tokens', 0)):,}")
-        self.lbl_index_files.setText(f"Cache Files: {int(stats.get('data_total_files', stats.get('files', 0))):,}")
+        self.lbl_index_last.setText(f"Last Check: {built_at}")
+        self.lbl_index_status.setText("Status: SUCCESS")
         self.sensitive_files_loaded = False
         self.sensitive_sites_loaded = False
         if self.current_logical_tab_name() == "Sensitive Files" and hasattr(self, "_refresh_sensitive_files"):
@@ -19539,59 +19472,67 @@ Command Line :
         self.btn_data_index.setEnabled(True)
         self._spin_timer.stop()
         self.set_status("Data index FAIL", color="red", spinning=False)
-        self.lbl_index_status.setText(f"Status: FAIL - {err}")
+        self.lbl_index_status.setText("Status: FAIL")
         self.auto_continue_after_index = False
         QMessageBox.critical(self, "Data Index 실패", err)
 
     def run_data_verify(self, check_type):
-        if getattr(self, "data_verify_worker", None) and self.data_verify_worker.isRunning():
-            self.set_status("Data verify running", color="blue", spinning=True)
+        if check_type == "health":
+            worker_attr = "data_health_check_worker"
+            button = self.btn_data_health_check
+            worker = DataHealthCheckWorker()
+            check_label = "Data Health Check"
+        else:
+            worker_attr = "user_mapping_check_worker"
+            button = self.btn_user_mapping_check
+            worker = UserMappingCheckWorker()
+            check_label = "User Mapping Check"
+
+        if getattr(self, worker_attr, None) and getattr(self, worker_attr).isRunning():
+            self.set_status(f"{check_label} running", color="blue", spinning=True)
             return
 
-        self.btn_data_health_check.setEnabled(False)
-        self.btn_user_mapping_check.setEnabled(False)
-        check_label = "Data Health Check" if check_type == "health" else "User Mapping Check"
-        self.lbl_verify_status.setText(f"Status: RUNNING - {check_label}")
-        self.lbl_verify_log.setText("Log: -")
+        button.setEnabled(False)
+        self.lbl_verify_status.setText("Status: RUNNING")
         self.set_status(check_label, color="blue", spinning=True)
-        self.data_verify_worker = DataVerifyWorker(check_type)
-        self.data_verify_worker.ok.connect(self._on_data_verify_ok)
-        self.data_verify_worker.fail.connect(self._on_data_verify_fail)
-        self.data_verify_worker.start()
+        worker.ok.connect(self._on_data_verify_ok)
+        worker.fail.connect(lambda err, ct=check_type: self._on_data_verify_fail(err, ct))
+        setattr(self, worker_attr, worker)
+        worker.start()
 
     def _on_data_verify_ok(self, payload):
-        self.btn_data_health_check.setEnabled(True)
-        self.btn_user_mapping_check.setEnabled(True)
+        check_type = payload.get("check_type", "")
+        if check_type == "health":
+            self.btn_data_health_check.setEnabled(True)
+            check_label = "Data Health Check"
+        else:
+            self.btn_user_mapping_check.setEnabled(True)
+            check_label = "User Mapping Check"
         self._spin_timer.stop()
         result = str(payload.get("result", "OK") or "OK")
-        check_type = payload.get("check_type", "")
-        check_label = "Data Health Check" if check_type == "health" else "User Mapping Check"
-        color = "green" if result == "OK" else ("orange" if result == "WARN" else "red")
-        self.set_status(f"{check_label} {result}", color=color, spinning=False)
+        success = result == "OK"
+        status_text = "SUCCESS" if success else "FAIL"
+        color = "green" if success else "red"
+        self.set_status(f"{check_label} {status_text}", color=color, spinning=False)
         self.lbl_verify_last.setText(f"Last Check: {payload.get('generated_at', datetime.now().strftime('%Y-%m-%d %H:%M:%S'))}")
-        if check_type == "health":
-            coverage = payload.get("coverage", {}) if isinstance(payload.get("coverage"), dict) else {}
-            self.lbl_verify_status.setText(
-                f"Status: {result} (missing {int(coverage.get('missing_keys', 0)):,}, stale {int(coverage.get('stale_keys', 0)):,})"
-            )
-        else:
-            summary = payload.get("summary", {}) if isinstance(payload.get("summary"), dict) else {}
-            self.lbl_verify_status.setText(
-                f"Status: {result} (FAIL {int(summary.get('fail', 0)):,}, WARN {int(summary.get('warn', 0)):,}, INFO {int(summary.get('info', 0)):,})"
-            )
-        self.lbl_verify_log.setText(f"Log: {payload.get('log_path', '-')}")
+        self.lbl_verify_status.setText(f"Status: {status_text}")
         QMessageBox.information(
             self,
             check_label,
             f"{check_label} 완료\n결과: {result}\n로그: {payload.get('log_path', '-')}\nJSON: {payload.get('json_path', '-')}",
         )
 
-    def _on_data_verify_fail(self, err):
-        self.btn_data_health_check.setEnabled(True)
-        self.btn_user_mapping_check.setEnabled(True)
+    def _on_data_verify_fail(self, err, check_type=None):
+        if check_type == "health":
+            self.btn_data_health_check.setEnabled(True)
+        elif check_type == "user_mapping":
+            self.btn_user_mapping_check.setEnabled(True)
+        else:
+            self.btn_data_health_check.setEnabled(True)
+            self.btn_user_mapping_check.setEnabled(True)
         self._spin_timer.stop()
         self.set_status("Data verify FAIL", color="red", spinning=False)
-        self.lbl_verify_status.setText(f"Status: FAIL - {err}")
+        self.lbl_verify_status.setText("Status: FAIL")
         QMessageBox.critical(self, "Data Verify 실패", err)
 
     def queue_auto_refresh_job(self, job_name):
@@ -19896,19 +19837,11 @@ Command Line :
         self.btn_data_index.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.btn_data_index.setStyleSheet(btn_style)
 
-        self.lbl_index_last = QLabel("Last Build: -")
+        self.lbl_index_last = QLabel("Last Check: -")
         self.lbl_index_status = QLabel("Status: -")
-        self.lbl_index_rows = QLabel("Data Rows: -")
-        self.lbl_index_events = QLabel("Timeline Events: -")
-        self.lbl_index_tokens = QLabel("Search Tokens: -")
-        self.lbl_index_files = QLabel("Cache Files: -")
         for label in [
             self.lbl_index_last,
             self.lbl_index_status,
-            self.lbl_index_rows,
-            self.lbl_index_events,
-            self.lbl_index_tokens,
-            self.lbl_index_files,
         ]:
             label.setWordWrap(True)
             label.setStyleSheet("color:#374151; font-size:13px; font-weight:600;")
@@ -19920,10 +19853,6 @@ Command Line :
         index_layout.addWidget(self.btn_data_index)
         index_layout.addWidget(self.lbl_index_last)
         index_layout.addWidget(self.lbl_index_status)
-        index_layout.addWidget(self.lbl_index_rows)
-        index_layout.addWidget(self.lbl_index_events)
-        index_layout.addWidget(self.lbl_index_tokens)
-        index_layout.addWidget(self.lbl_index_files)
         index_layout.addStretch()
         self.btn_data_index.clicked.connect(self.run_data_index)
 
@@ -19936,8 +19865,7 @@ Command Line :
             btn.setStyleSheet(btn_style)
         self.lbl_verify_status = QLabel("Status: -")
         self.lbl_verify_last = QLabel("Last Check: -")
-        self.lbl_verify_log = QLabel("Log: -")
-        for label in [self.lbl_verify_status, self.lbl_verify_last, self.lbl_verify_log]:
+        for label in [self.lbl_verify_status, self.lbl_verify_last]:
             label.setWordWrap(True)
             label.setStyleSheet("color:#374151; font-size:13px; font-weight:600;")
         verify_desc = QLabel("원본 캐시/파생 인덱스 정합성과 사용자/부서 매핑 이상 여부를 로그로 점검합니다.")
@@ -19948,7 +19876,6 @@ Command Line :
         verify_layout.addWidget(self.btn_user_mapping_check)
         verify_layout.addWidget(self.lbl_verify_last)
         verify_layout.addWidget(self.lbl_verify_status)
-        verify_layout.addWidget(self.lbl_verify_log)
         verify_layout.addStretch()
         self.btn_data_health_check.clicked.connect(lambda: self.run_data_verify("health"))
         self.btn_user_mapping_check.clicked.connect(lambda: self.run_data_verify("user_mapping"))
