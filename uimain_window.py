@@ -19449,8 +19449,8 @@ Command Line :
         def prepare_export_button(button, style=btn_style):
             button.setStyleSheet(style)
             button.setMinimumHeight(38)
-            button.setFixedWidth(EXPORT_BTN_W)
-            button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+            button.setMinimumWidth(EXPORT_BTN_W)
+            button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
         # Detection Export
         det_layout = QHBoxLayout()
