@@ -19435,8 +19435,8 @@ Command Line :
         export_right_layout.setSpacing(8)
         export_right_layout.setContentsMargins(0, 0, 0, 0)
         export_right_layout.setAlignment(Qt.AlignTop | Qt.AlignLeft)
-        export_columns.addLayout(export_left_layout, 3)
-        export_columns.addLayout(export_right_layout, 2)
+        export_columns.addLayout(export_left_layout, 1)
+        export_columns.addLayout(export_right_layout, 1)
         export_layout.addLayout(export_columns)
 
         def prepare_export_control(widget):
@@ -19705,10 +19705,14 @@ Command Line :
         self.btn_security_report = btn_report
         btn_report.clicked.connect(self.start_security_report_worker)
         prepare_export_button(btn_report)
+        btn_report.setFixedWidth(EXPORT_BTN_W)
+        btn_report.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
 
         btn_report_exception = QPushButton("Exception List")
         btn_report_exception.clicked.connect(self.open_report_exception_list_dialog)
         prepare_export_button(btn_report_exception)
+        btn_report_exception.setFixedWidth(EXPORT_BTN_W)
+        btn_report_exception.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
 
         row = QHBoxLayout()
         row.setSpacing(8)
