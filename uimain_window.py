@@ -5425,6 +5425,393 @@ def rebuild_timeline_index(progress_cb=None, force=False):
     return totals
 
 
+def write_verify_outputs(prefix, lines, payload):
+    os.makedirs(LOG_DIR, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_path = get_unique_path(os.path.join(LOG_DIR, f"{prefix}_{stamp}.log"))
+    json_path = get_unique_path(os.path.join(LOG_DIR, f"{prefix}_{stamp}.json"))
+    with open(log_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+        f.write("\n")
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2, default=str)
+    return log_path, json_path
+
+
+def run_data_health_check():
+    generated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with app_cache_connect() as conn:
+        dlp_total = conn.execute("SELECT COUNT(*) FROM dlp_events").fetchone()[0]
+        dlp_latest = conn.execute("SELECT MAX(event_time) FROM dlp_events").fetchone()[0] or ""
+        dlp_raw_total = conn.execute("SELECT COUNT(*) FROM app_cache_records WHERE source = 'dlp'").fetchone()[0]
+        index_total = conn.execute("SELECT COUNT(*) FROM sensitive_sites_index").fetchone()[0]
+        index_latest = conn.execute("SELECT MAX(event_time) FROM sensitive_sites_index").fetchone()[0] or ""
+        sites_version = sensitive_index_meta_version(conn, "sensitive_sites_index_version")
+        sites_indexed_at = sensitive_index_meta_version(conn, "sensitive_sites_indexed_at")
+
+        dlp_rows = load_app_cache_raw_rows_from_conn(conn, "dlp")
+        expected_records = build_sensitive_site_records(dlp_rows, [])
+        expected_by_key = {sensitive_sites_dedupe_key(record): record for record in expected_records}
+
+        actual_rows = conn.execute(
+            """
+            SELECT dedupe_key, event_time, site, category, source_file, row_index, record_json
+            FROM sensitive_sites_index
+            """
+        ).fetchall()
+
+    actual_by_key = {}
+    for dedupe_key, event_time, site, category, source_file, row_index, record_json in actual_rows:
+        record = {}
+        try:
+            record = json.loads(record_json) if record_json else {}
+        except Exception:
+            record = {}
+        actual_by_key[str(dedupe_key or "")] = {
+            "event_time": str(event_time or ""),
+            "site": str(site or ""),
+            "category": str(category or ""),
+            "source_file": str(source_file or ""),
+            "row_index": row_index,
+            "record": record,
+        }
+
+    missing = []
+    stale = []
+    for key, expected in expected_by_key.items():
+        actual = actual_by_key.get(key)
+        expected_time = str(expected.get("event_time", "") or "")
+        if not actual:
+            missing.append((key, expected))
+            continue
+        actual_time = str(actual.get("event_time", "") or "")
+        if expected_time and actual_time and actual_time < expected_time:
+            stale.append((key, expected, actual))
+
+    expected_latest = max((str(record.get("event_time", "") or "") for record in expected_records), default="")
+    freshness_issue = bool(expected_latest and index_latest and index_latest < expected_latest)
+    coverage_issue = bool(missing or stale)
+    result = "FAIL" if freshness_issue or coverage_issue else "OK"
+
+    expected_categories = Counter(str(r.get("category", "") or "기타") for r in expected_records)
+    actual_categories = Counter(v.get("category", "") or "기타" for v in actual_by_key.values())
+    category_rows = []
+    for category in sorted(set(expected_categories) | set(actual_categories)):
+        category_rows.append({
+            "category": category,
+            "expected": expected_categories.get(category, 0),
+            "actual": actual_categories.get(category, 0),
+            "diff": expected_categories.get(category, 0) - actual_categories.get(category, 0),
+        })
+
+    def site_sample(item):
+        key, expected = item[0], item[1]
+        row = expected.get("row") if isinstance(expected.get("row"), dict) else {}
+        return {
+            "key": key,
+            "event_time": expected.get("event_time", ""),
+            "site": expected.get("site", ""),
+            "category": expected.get("category", ""),
+            "user": expected.get("user", ""),
+            "dept": expected.get("dept", ""),
+            "source_file": row.get("__source_file", ""),
+            "row_index": row.get("__row_index", ""),
+            "destination": row.get("destination", ""),
+            "destination_detail": row.get("item_details") or row.get("destinationDetails") or "",
+        }
+
+    missing_samples = [site_sample(item) for item in missing[:30]]
+    stale_samples = []
+    for key, expected, actual in stale[:30]:
+        sample = site_sample((key, expected))
+        sample["actual_index_time"] = actual.get("event_time", "")
+        sample["actual_source_file"] = actual.get("source_file", "")
+        sample["actual_row_index"] = actual.get("row_index", "")
+        stale_samples.append(sample)
+
+    lines = [
+        "=" * 60,
+        "Data Health Check",
+        f"Generated At: {generated_at}",
+        f"DB Path: {APP_CACHE_DB_PATH}",
+        f"Result: {result}",
+        "=" * 60,
+        "",
+    ]
+    if result == "OK":
+        lines += [
+            "[결과]",
+            "DLP Raw 기준 Sensitive Sites 후보와 sensitive_sites_index가 현재 기준으로 일치합니다.",
+        ]
+    else:
+        lines += [
+            "[문제]",
+            f"DLP 사이트 후보 최신 시간은 {expected_latest or '없음'}이나 Sensitive Sites 인덱스 최신 시간은 {index_latest or '없음'}입니다.",
+            f"누락 후보 {len(missing):,}건, 오래된 인덱스 후보 {len(stale):,}건이 확인되었습니다.",
+            "",
+            "[가능 원인]",
+            "DLP 원본 캐시는 반영됐지만 sensitive_sites_index 재구성이 누락되었거나 일부 source_file/row_index가 인덱스에 반영되지 않았습니다.",
+            "",
+            "[권장 조치]",
+            "Sensitive Sites 인덱스만 재구성하고, 누락 샘플의 source_file/row_index가 증분 인덱싱 대상에 포함됐는지 확인하세요.",
+        ]
+    lines += [
+        "",
+        "[핵심 수치]",
+        f"app_cache_records DLP rows: {dlp_raw_total:,}",
+        f"dlp_events rows: {dlp_total:,}",
+        f"sensitive_sites_index rows: {index_total:,}",
+        f"DLP 전체 최신 시간: {dlp_latest or '없음'}",
+        f"DLP 사이트 후보 최신 시간: {expected_latest or '없음'}",
+        f"Sensitive Sites 인덱스 최신 시간: {index_latest or '없음'}",
+        f"Sensitive Sites indexed_at: {sites_indexed_at or '없음'}",
+        f"Sensitive Sites version: {sites_version or '없음'}",
+        "",
+        "[카테고리별 비교]",
+    ]
+    lines += [
+        f"{row['category']}: expected={row['expected']:,}, actual={row['actual']:,}, diff={row['diff']:,}"
+        for row in category_rows
+    ]
+    lines += ["", "[Missing Samples]"]
+    lines += [json.dumps(sample, ensure_ascii=False) for sample in missing_samples] or ["없음"]
+    lines += ["", "[Stale Samples]"]
+    lines += [json.dumps(sample, ensure_ascii=False) for sample in stale_samples] or ["없음"]
+
+    payload = {
+        "result": result,
+        "generated_at": generated_at,
+        "db_path": APP_CACHE_DB_PATH,
+        "freshness": {
+            "dlp_latest": dlp_latest,
+            "expected_site_latest": expected_latest,
+            "index_latest": index_latest,
+            "issue": freshness_issue,
+        },
+        "coverage": {
+            "expected_keys": len(expected_by_key),
+            "actual_keys": len(actual_by_key),
+            "missing_keys": len(missing),
+            "stale_keys": len(stale),
+            "issue": coverage_issue,
+        },
+        "meta": {
+            "dlp_raw_rows": dlp_raw_total,
+            "dlp_events": dlp_total,
+            "sensitive_sites_index_rows": index_total,
+            "sensitive_sites_indexed_at": sites_indexed_at,
+            "sensitive_sites_index_version": sites_version,
+        },
+        "category_coverage": category_rows,
+        "missing_samples": missing_samples,
+        "stale_samples": stale_samples,
+    }
+    log_path, json_path = write_verify_outputs("data_health_check", lines, payload)
+    payload["log_path"] = log_path
+    payload["json_path"] = json_path
+    return payload
+
+
+def run_user_mapping_check():
+    generated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    reload_all_data()
+    issues = []
+
+    def add_issue(severity, issue_type, message, **extra):
+        issues.append({
+            "severity": severity,
+            "type": issue_type,
+            "message": message,
+            **extra,
+        })
+
+    endpoint_by_host = defaultdict(list)
+    for ep in ENDPOINTS:
+        if not isinstance(ep, dict):
+            continue
+        hostname = str(ep.get("hostname", "") or "").strip()
+        if not hostname:
+            continue
+        person = ep.get("associatedPerson", {}) if isinstance(ep.get("associatedPerson"), dict) else {}
+        raw_name = str(person.get("name", "") or "").strip()
+        via_login = str(person.get("viaLogin", "") or "").strip()
+        user_id = via_login.split("\\")[-1] if "\\" in via_login else via_login
+        user_name = normalize_org_match_name(raw_name)
+        if is_shared_pc_name(user_name) or is_shared_pc_name(hostname):
+            user_name = "공용PC"
+        endpoint_by_host[normalize_name_key(hostname)].append({
+            "hostname": hostname,
+            "user_name": user_name,
+            "user_id": user_id,
+            "via_login": via_login,
+        })
+
+    for host_key, entries in endpoint_by_host.items():
+        unique_users = {
+            (normalize_name_key(e.get("user_name")), normalize_name_key(e.get("user_id")))
+            for e in entries
+            if e.get("user_name") or e.get("user_id")
+        }
+        if len(unique_users) > 1:
+            add_issue(
+                "FAIL",
+                "DUPLICATE_HOSTNAME_USERS",
+                "동일 hostname에 서로 다른 사용자가 매핑되어 있습니다.",
+                hostname=entries[0].get("hostname", ""),
+                users=entries,
+            )
+
+    name_candidates = defaultdict(list)
+    user_id_candidates = defaultdict(list)
+
+    for org in ORGS:
+        if not isinstance(org, dict):
+            continue
+        dept_code = str(org.get("deptCode", "") or "").strip()
+        dept_name = DEPT_MAP.get(dept_code, str(org.get("deptName", "") or "").strip()) or "미분류"
+        users = org.get("users", [])
+        if not isinstance(users, list):
+            continue
+        for user in users:
+            if isinstance(user, dict):
+                name = str(user.get("name", "") or "").strip()
+                user_id = str(user.get("id", "") or user.get("userId", "") or "").strip()
+            else:
+                name = str(user or "").strip()
+                user_id = ""
+            item = {"source": "org", "name": name, "user_id": user_id, "dept_name": dept_name, "dept_code": dept_code}
+            if name:
+                name_candidates[normalize_name_key(name)].append(item)
+            if user_id:
+                user_id_candidates[normalize_name_key(user_id)].append(item)
+
+    for user in USERS:
+        if not isinstance(user, dict):
+            continue
+        dept_name, dept_code = get_directory_user_dept(user)
+        item = {
+            "source": "directory",
+            "name": str(user.get("name", "") or "").strip(),
+            "user_id": str(user.get("exchangeLogin", "") or "").strip(),
+            "email": str(user.get("email", "") or "").strip(),
+            "dept_name": dept_name,
+            "dept_code": dept_code,
+        }
+        if item["name"]:
+            name_candidates[normalize_name_key(item["name"])].append(item)
+        if item["user_id"]:
+            user_id_candidates[normalize_name_key(item["user_id"])].append(item)
+
+    for name_key, candidates in name_candidates.items():
+        user_ids = {normalize_name_key(c.get("user_id")) for c in candidates if c.get("user_id")}
+        depts = {str(c.get("dept_name") or "") for c in candidates if c.get("dept_name")}
+        if len(user_ids) > 1 or len(depts) > 1:
+            add_issue(
+                "WARN",
+                "DUPLICATE_DISPLAY_NAME",
+                "동명이인 또는 이름 기준 부서 충돌 가능성이 있습니다.",
+                name_key=name_key,
+                candidates=candidates[:20],
+            )
+
+    for user_id_key, candidates in user_id_candidates.items():
+        names = {normalize_name_key(c.get("name")) for c in candidates if c.get("name")}
+        depts = {str(c.get("dept_name") or "") for c in candidates if c.get("dept_name")}
+        if len(names) > 1 or len(depts) > 1:
+            add_issue(
+                "FAIL" if len(depts) > 1 else "WARN",
+                "USER_ID_CONFLICT",
+                "동일 user_id가 서로 다른 이름 또는 부서로 매핑됩니다.",
+                user_id_key=user_id_key,
+                candidates=candidates[:20],
+            )
+
+    for host_key, entries in endpoint_by_host.items():
+        entry = entries[-1]
+        hostname = entry.get("hostname", "")
+        user_name = entry.get("user_name", "")
+        user_id = entry.get("user_id", "")
+        if user_name == "공용PC":
+            add_issue("INFO", "SHARED_PC", "공용PC로 분류된 호스트입니다.", hostname=hostname, user_id=user_id)
+            continue
+        dept_name, dept_code = get_dept_by_hostname(hostname)
+        org_by_name = USER_ORG_INDEX.get(normalize_name_key(user_name)) if user_name else None
+        org_by_id = USER_ORG_INDEX.get(normalize_name_key(user_id)) if user_id else None
+        directory_info = get_directory_user_info(user_id, user_name)
+        if (user_name or user_id) and (not dept_name or dept_name == "미분류"):
+            add_issue(
+                "FAIL",
+                "HOST_USER_WITHOUT_DEPT",
+                "호스트에는 사용자가 매핑되어 있으나 최종 부서가 미분류입니다.",
+                hostname=hostname,
+                endpoint_user_name=user_name,
+                endpoint_user_id=user_id,
+                org_match_by_name=org_by_name,
+                org_match_by_id=org_by_id,
+                directory_match=directory_info,
+                final_dept=dept_name or "미분류",
+                final_dept_code=dept_code,
+            )
+        if user_id and not org_by_id and not directory_info:
+            add_issue(
+                "WARN",
+                "ENDPOINT_USER_NOT_FOUND",
+                "Endpoint user_id가 조직도/Users API에서 확인되지 않습니다.",
+                hostname=hostname,
+                endpoint_user_name=user_name,
+                endpoint_user_id=user_id,
+            )
+
+    counts = Counter(issue["severity"] for issue in issues)
+    result = "FAIL" if counts.get("FAIL", 0) else ("WARN" if counts.get("WARN", 0) else "OK")
+    lines = [
+        "=" * 60,
+        "User Mapping Check",
+        f"Generated At: {generated_at}",
+        f"Result: {result}",
+        "=" * 60,
+        "",
+        "[요약]",
+        f"Endpoints: {len(ENDPOINTS):,}",
+        f"Hostname entries: {len(endpoint_by_host):,}",
+        f"Organization user keys: {len(USER_ORG_INDEX):,}",
+        f"Directory user keys: {len(DIRECTORY_USER_INDEX):,}",
+        f"Hostname dept mappings: {len(HOSTNAME_DEPT_MAP):,}",
+        f"FAIL: {counts.get('FAIL', 0):,}",
+        f"WARN: {counts.get('WARN', 0):,}",
+        f"INFO: {counts.get('INFO', 0):,}",
+        "",
+    ]
+    for severity in ("FAIL", "WARN", "INFO"):
+        selected = [issue for issue in issues if issue["severity"] == severity]
+        lines.append(f"[{severity}] {len(selected):,}건")
+        for issue in selected[:50]:
+            lines.append(json.dumps(issue, ensure_ascii=False, default=str))
+        if len(selected) > 50:
+            lines.append(f"... {len(selected) - 50:,}건 추가 생략")
+        lines.append("")
+
+    payload = {
+        "result": result,
+        "generated_at": generated_at,
+        "summary": {
+            "endpoints": len(ENDPOINTS),
+            "hostname_entries": len(endpoint_by_host),
+            "org_user_keys": len(USER_ORG_INDEX),
+            "directory_user_keys": len(DIRECTORY_USER_INDEX),
+            "hostname_dept_mappings": len(HOSTNAME_DEPT_MAP),
+            "fail": counts.get("FAIL", 0),
+            "warn": counts.get("WARN", 0),
+            "info": counts.get("INFO", 0),
+        },
+        "issues": issues,
+    }
+    log_path, json_path = write_verify_outputs("user_mapping_check", lines, payload)
+    payload["log_path"] = log_path
+    payload["json_path"] = json_path
+    return payload
+
+
 # ======================================================
 # Workers / data indexing
 # - Runs full/incremental SQLite app-cache indexing and Timeline token indexing off the UI thread.
@@ -5444,6 +5831,29 @@ class DataIndexWorker(QThread):
             self.ok.emit(stats)
         except Exception as e:
             log.exception("Data index rebuild failed")
+            self.fail.emit(str(e))
+
+
+class DataVerifyWorker(QThread):
+    ok = pyqtSignal(dict)
+    fail = pyqtSignal(str)
+
+    def __init__(self, check_type):
+        super().__init__()
+        self.check_type = check_type
+
+    def run(self):
+        try:
+            if self.check_type == "health":
+                payload = run_data_health_check()
+            elif self.check_type == "user_mapping":
+                payload = run_user_mapping_check()
+            else:
+                raise ValueError(f"Unknown Data Verify check: {self.check_type}")
+            payload["check_type"] = self.check_type
+            self.ok.emit(payload)
+        except Exception as e:
+            log.exception("Data verify check failed")
             self.fail.emit(str(e))
 
 
@@ -5510,6 +5920,72 @@ class SensitiveSitesLoadWorker(QThread):
         except Exception as e:
             log.exception("Sensitive Sites cache load failed")
             self.fail.emit(str(e))
+
+
+class DlpAllCacheLoadWorker(QThread):
+    ok = pyqtSignal(object)
+    fail = pyqtSignal(str)
+
+    def __init__(self, category="전체", keyword="", sources=None, limit=SENSITIVE_FILES_PAGE_LIMIT, offset=0):
+        super().__init__()
+        self.category = category or "전체"
+        self.keyword = keyword or ""
+        self.sources = ["DLP", "Outbound Mail"] if sources is None else list(sources)
+        self.limit = limit
+        self.offset = offset
+
+    def run(self):
+        try:
+            payload = query_sensitive_files_index(
+                category=self.category,
+                keyword=self.keyword,
+                sources=self.sources,
+                limit=self.limit,
+                offset=self.offset,
+            )
+            self.ok.emit(payload)
+        except Exception as e:
+            log.exception("Sensitive Files cache load failed")
+            self.fail.emit(str(e))
+
+
+class SensitiveSitesLoadWorker(QThread):
+    ok = pyqtSignal(object)
+    fail = pyqtSignal(str)
+
+    def __init__(self, category="전체", keyword="", sources=None, limit=SENSITIVE_SITES_PAGE_LIMIT, offset=0):
+        super().__init__()
+        self.category = category or "전체"
+        self.keyword = keyword or ""
+        self.sources = ["DLP"] if sources is None else list(sources)
+        self.limit = limit
+        self.offset = offset
+
+    def run(self):
+        try:
+            log.info(
+                "Sensitive Sites worker start category=%s keyword=%r sources=%s limit=%d offset=%d",
+                self.category, self.keyword, self.sources, int(self.limit), int(self.offset),
+            )
+            payload = query_sensitive_sites_index(
+                category=self.category,
+                keyword=self.keyword,
+                sources=self.sources,
+                limit=self.limit,
+                offset=self.offset,
+            )
+            log.info(
+                "Sensitive Sites worker done total=%d returned=%d offset=%d index_ready=%s",
+                int(payload.get("total", 0) or 0),
+                len(payload.get("records", []) or []),
+                int(payload.get("offset", 0) or 0),
+                payload.get("index_ready"),
+            )
+            self.ok.emit(payload)
+        except Exception as e:
+            log.exception("Sensitive Sites cache load failed")
+            self.fail.emit(str(e))
+
 
 
 
@@ -19067,6 +19543,57 @@ Command Line :
         self.auto_continue_after_index = False
         QMessageBox.critical(self, "Data Index 실패", err)
 
+    def run_data_verify(self, check_type):
+        if getattr(self, "data_verify_worker", None) and self.data_verify_worker.isRunning():
+            self.set_status("Data verify running", color="blue", spinning=True)
+            return
+
+        self.btn_data_health_check.setEnabled(False)
+        self.btn_user_mapping_check.setEnabled(False)
+        check_label = "Data Health Check" if check_type == "health" else "User Mapping Check"
+        self.lbl_verify_status.setText(f"Status: RUNNING - {check_label}")
+        self.lbl_verify_log.setText("Log: -")
+        self.set_status(check_label, color="blue", spinning=True)
+        self.data_verify_worker = DataVerifyWorker(check_type)
+        self.data_verify_worker.ok.connect(self._on_data_verify_ok)
+        self.data_verify_worker.fail.connect(self._on_data_verify_fail)
+        self.data_verify_worker.start()
+
+    def _on_data_verify_ok(self, payload):
+        self.btn_data_health_check.setEnabled(True)
+        self.btn_user_mapping_check.setEnabled(True)
+        self._spin_timer.stop()
+        result = str(payload.get("result", "OK") or "OK")
+        check_type = payload.get("check_type", "")
+        check_label = "Data Health Check" if check_type == "health" else "User Mapping Check"
+        color = "green" if result == "OK" else ("orange" if result == "WARN" else "red")
+        self.set_status(f"{check_label} {result}", color=color, spinning=False)
+        self.lbl_verify_last.setText(f"Last Check: {payload.get('generated_at', datetime.now().strftime('%Y-%m-%d %H:%M:%S'))}")
+        if check_type == "health":
+            coverage = payload.get("coverage", {}) if isinstance(payload.get("coverage"), dict) else {}
+            self.lbl_verify_status.setText(
+                f"Status: {result} (missing {int(coverage.get('missing_keys', 0)):,}, stale {int(coverage.get('stale_keys', 0)):,})"
+            )
+        else:
+            summary = payload.get("summary", {}) if isinstance(payload.get("summary"), dict) else {}
+            self.lbl_verify_status.setText(
+                f"Status: {result} (FAIL {int(summary.get('fail', 0)):,}, WARN {int(summary.get('warn', 0)):,}, INFO {int(summary.get('info', 0)):,})"
+            )
+        self.lbl_verify_log.setText(f"Log: {payload.get('log_path', '-')}")
+        QMessageBox.information(
+            self,
+            check_label,
+            f"{check_label} 완료\n결과: {result}\n로그: {payload.get('log_path', '-')}\nJSON: {payload.get('json_path', '-')}",
+        )
+
+    def _on_data_verify_fail(self, err):
+        self.btn_data_health_check.setEnabled(True)
+        self.btn_user_mapping_check.setEnabled(True)
+        self._spin_timer.stop()
+        self.set_status("Data verify FAIL", color="red", spinning=False)
+        self.lbl_verify_status.setText(f"Status: FAIL - {err}")
+        QMessageBox.critical(self, "Data Verify 실패", err)
+
     def queue_auto_refresh_job(self, job_name):
         pending = self.auto_pending
         if isinstance(pending, str):
@@ -19383,6 +19910,7 @@ Command Line :
             self.lbl_index_tokens,
             self.lbl_index_files,
         ]:
+            label.setWordWrap(True)
             label.setStyleSheet("color:#374151; font-size:13px; font-weight:600;")
 
         index_desc = QLabel("전체 캐시 데이터를 SQLite 조회/검색 인덱스로 준비하고, 변경/신규 파일만 증분 반영합니다.")
@@ -19399,6 +19927,32 @@ Command Line :
         index_layout.addStretch()
         self.btn_data_index.clicked.connect(self.run_data_index)
 
+        verify_card, verify_layout = self.make_card("Data Verify", legacy_title=True)
+        self.btn_data_health_check = QPushButton("Data Health Check")
+        self.btn_user_mapping_check = QPushButton("User Mapping Check")
+        for btn in [self.btn_data_health_check, self.btn_user_mapping_check]:
+            btn.setMinimumHeight(40)
+            btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            btn.setStyleSheet(btn_style)
+        self.lbl_verify_status = QLabel("Status: -")
+        self.lbl_verify_last = QLabel("Last Check: -")
+        self.lbl_verify_log = QLabel("Log: -")
+        for label in [self.lbl_verify_status, self.lbl_verify_last, self.lbl_verify_log]:
+            label.setWordWrap(True)
+            label.setStyleSheet("color:#374151; font-size:13px; font-weight:600;")
+        verify_desc = QLabel("원본 캐시/파생 인덱스 정합성과 사용자/부서 매핑 이상 여부를 로그로 점검합니다.")
+        verify_desc.setWordWrap(True)
+        verify_desc.setStyleSheet(f"color:{UI_THEME['text_muted']}; font-size:12px; font-weight:700;")
+        verify_layout.addWidget(verify_desc)
+        verify_layout.addWidget(self.btn_data_health_check)
+        verify_layout.addWidget(self.btn_user_mapping_check)
+        verify_layout.addWidget(self.lbl_verify_last)
+        verify_layout.addWidget(self.lbl_verify_status)
+        verify_layout.addWidget(self.lbl_verify_log)
+        verify_layout.addStretch()
+        self.btn_data_health_check.clicked.connect(lambda: self.run_data_verify("health"))
+        self.btn_user_mapping_check.clicked.connect(lambda: self.run_data_verify("user_mapping"))
+
         # Top card layout: Cache Data stays on the left; Auto Refresh and Index Data share the right side.
         top_row = QHBoxLayout()
         top_row.setContentsMargins(0, 0, 0, 0)
@@ -19406,8 +19960,13 @@ Command Line :
         right_top = QHBoxLayout()
         right_top.setContentsMargins(0, 0, 0, 0)
         right_top.setSpacing(12)
+        index_verify_row = QHBoxLayout()
+        index_verify_row.setContentsMargins(0, 0, 0, 0)
+        index_verify_row.setSpacing(12)
+        index_verify_row.addWidget(index_card, 1)
+        index_verify_row.addWidget(verify_card, 1)
         right_top.addWidget(auto_card, 1)
-        right_top.addWidget(index_card, 1)
+        right_top.addLayout(index_verify_row, 1)
         top_row.addWidget(cache_card, 1)
         top_row.addLayout(right_top, 1)
 
