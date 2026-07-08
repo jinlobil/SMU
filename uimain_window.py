@@ -5922,6 +5922,72 @@ class SensitiveSitesLoadWorker(QThread):
             self.fail.emit(str(e))
 
 
+class DlpAllCacheLoadWorker(QThread):
+    ok = pyqtSignal(object)
+    fail = pyqtSignal(str)
+
+    def __init__(self, category="전체", keyword="", sources=None, limit=SENSITIVE_FILES_PAGE_LIMIT, offset=0):
+        super().__init__()
+        self.category = category or "전체"
+        self.keyword = keyword or ""
+        self.sources = ["DLP", "Outbound Mail"] if sources is None else list(sources)
+        self.limit = limit
+        self.offset = offset
+
+    def run(self):
+        try:
+            payload = query_sensitive_files_index(
+                category=self.category,
+                keyword=self.keyword,
+                sources=self.sources,
+                limit=self.limit,
+                offset=self.offset,
+            )
+            self.ok.emit(payload)
+        except Exception as e:
+            log.exception("Sensitive Files cache load failed")
+            self.fail.emit(str(e))
+
+
+class SensitiveSitesLoadWorker(QThread):
+    ok = pyqtSignal(object)
+    fail = pyqtSignal(str)
+
+    def __init__(self, category="전체", keyword="", sources=None, limit=SENSITIVE_SITES_PAGE_LIMIT, offset=0):
+        super().__init__()
+        self.category = category or "전체"
+        self.keyword = keyword or ""
+        self.sources = ["DLP"] if sources is None else list(sources)
+        self.limit = limit
+        self.offset = offset
+
+    def run(self):
+        try:
+            log.info(
+                "Sensitive Sites worker start category=%s keyword=%r sources=%s limit=%d offset=%d",
+                self.category, self.keyword, self.sources, int(self.limit), int(self.offset),
+            )
+            payload = query_sensitive_sites_index(
+                category=self.category,
+                keyword=self.keyword,
+                sources=self.sources,
+                limit=self.limit,
+                offset=self.offset,
+            )
+            log.info(
+                "Sensitive Sites worker done total=%d returned=%d offset=%d index_ready=%s",
+                int(payload.get("total", 0) or 0),
+                len(payload.get("records", []) or []),
+                int(payload.get("offset", 0) or 0),
+                payload.get("index_ready"),
+            )
+            self.ok.emit(payload)
+        except Exception as e:
+            log.exception("Sensitive Sites cache load failed")
+            self.fail.emit(str(e))
+
+
+
 
 
 # ======================================================
