@@ -19422,7 +19422,7 @@ Command Line :
 
         EXPORT_DATE_W = 156
         EXPORT_TIME_W = 88
-        EXPORT_BTN_W = 190
+        EXPORT_BTN_W = 240
 
         export_columns = QHBoxLayout()
         export_columns.setSpacing(14)
