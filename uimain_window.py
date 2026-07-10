@@ -518,16 +518,15 @@ class SeatLayoutCanvas(QWidget):
         self.seats = []
         self.selected_seat_id = ""
         self.search_seat_ids = set()
+        self.image_scale = 1.0
+        self.image_offset = QPointF(0, 0)
         self.setMouseTracking(True)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
     def set_layout(self, pixmap, seats):
         self.pixmap = pixmap or QPixmap()
         self.seats = seats or []
-        if not self.pixmap.isNull():
-            self.setMinimumSize(self.pixmap.size())
-            self.resize(self.pixmap.size())
-        else:
-            self.setMinimumSize(980, 620)
+        self.setMinimumSize(980, 620)
         self.update()
 
     def set_selection(self, seat_id, search_ids=None):
@@ -540,8 +539,20 @@ class SeatLayoutCanvas(QWidget):
         painter.setRenderHint(QPainter.Antialiasing, True)
         painter.fillRect(self.rect(), QColor("#f8fafc"))
         if not self.pixmap.isNull():
-            painter.drawPixmap(0, 0, self.pixmap)
+            scale_x = self.width() / max(1, self.pixmap.width())
+            scale_y = self.height() / max(1, self.pixmap.height())
+            self.image_scale = min(scale_x, scale_y)
+            scaled_w = self.pixmap.width() * self.image_scale
+            scaled_h = self.pixmap.height() * self.image_scale
+            self.image_offset = QPointF(
+                max(0, (self.width() - scaled_w) / 2),
+                max(0, (self.height() - scaled_h) / 2),
+            )
+            target = QRectF(self.image_offset.x(), self.image_offset.y(), scaled_w, scaled_h)
+            painter.drawPixmap(target, self.pixmap, QRectF(self.pixmap.rect()))
         else:
+            self.image_scale = 1.0
+            self.image_offset = QPointF(0, 0)
             painter.setPen(QPen(QColor("#94a3b8"), 2, Qt.DashLine))
             painter.drawRect(12, 12, self.width() - 24, self.height() - 24)
             painter.setPen(QColor("#334155"))
@@ -552,10 +563,10 @@ class SeatLayoutCanvas(QWidget):
             )
 
         for seat in self.seats:
-            x = int(seat.get("x", 0))
-            y = int(seat.get("y", 0))
-            w = int(seat.get("w", 54))
-            h = int(seat.get("h", 22))
+            x = self.image_offset.x() + int(seat.get("x", 0)) * self.image_scale
+            y = self.image_offset.y() + int(seat.get("y", 0)) * self.image_scale
+            w = int(seat.get("w", 54)) * self.image_scale
+            h = int(seat.get("h", 22)) * self.image_scale
             seat_id = str(seat.get("seat_id", ""))
             name = str(seat.get("name") or seat.get("user_id") or seat.get("ip") or "공석")
             bg = QColor(str(seat.get("color") or "#FFF566"))
@@ -575,7 +586,10 @@ class SeatLayoutCanvas(QWidget):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
-            self.seatClicked.emit(event.pos().x(), event.pos().y())
+            image_x = int((event.pos().x() - self.image_offset.x()) / max(self.image_scale, 0.001))
+            image_y = int((event.pos().y() - self.image_offset.y()) / max(self.image_scale, 0.001))
+            if self.pixmap.isNull() or (0 <= image_x <= self.pixmap.width() and 0 <= image_y <= self.pixmap.height()):
+                self.seatClicked.emit(image_x, image_y)
         super().mousePressEvent(event)
 
 
@@ -17964,13 +17978,14 @@ Command Line :
         self.layout_user_floor_combo = QComboBox()
         self.layout_user_floor_combo.addItems(["18F", "19F"])
         self.layout_user_edit_mode = QCheckBox("편집 모드")
+        btn_add_person = QPushButton("좌석/사람 추가")
         btn_save = QPushButton("저장")
         btn_swap = QPushButton("선택 좌석과 자리교체")
         btn_delete = QPushButton("선택 좌석 삭제")
 
         for widget in [
             btn_search, btn_clear, self.layout_user_floor_combo, self.layout_user_edit_mode,
-            btn_swap, btn_delete, btn_save,
+            btn_add_person, btn_swap, btn_delete, btn_save,
         ]:
             top.addWidget(widget)
         layout.addLayout(top)
@@ -17979,14 +17994,14 @@ Command Line :
         self.layout_user_canvas = SeatLayoutCanvas()
         self.layout_user_canvas.seatClicked.connect(self.on_layout_user_canvas_clicked)
         scroll = QScrollArea()
-        scroll.setWidgetResizable(False)
+        scroll.setWidgetResizable(True)
         scroll.setWidget(self.layout_user_canvas)
         body.addWidget(scroll, 1)
 
         side = QVBoxLayout()
         self.layout_user_info = QTextEdit()
         self.layout_user_info.setReadOnly(True)
-        self.layout_user_info.setMinimumWidth(300)
+        self.layout_user_info.setFixedWidth(260)
         side.addWidget(QLabel("선택 좌석 정보"))
         side.addWidget(self.layout_user_info, 1)
         body.addLayout(side)
@@ -17996,6 +18011,7 @@ Command Line :
         btn_search.clicked.connect(self.search_layout_user_seat)
         btn_clear.clicked.connect(self.clear_layout_user_search)
         self.layout_user_floor_combo.currentTextChanged.connect(self.change_layout_user_floor)
+        btn_add_person.clicked.connect(self.start_layout_user_add_mode)
         btn_save.clicked.connect(self.save_layout_user_data)
         btn_swap.clicked.connect(self.swap_layout_user_selected_seat)
         btn_delete.clicked.connect(self.delete_layout_user_selected_seat)
@@ -18025,6 +18041,14 @@ Command Line :
         self.layout_user_current_floor = floor
         self.layout_user_selected_seat_id = ""
         self.refresh_layout_user_canvas()
+
+    def start_layout_user_add_mode(self):
+        self.layout_user_edit_mode.setChecked(True)
+        QMessageBox.information(
+            self,
+            "좌석/사람 추가",
+            "편집 모드가 켜졌습니다.\n배치도에서 사람을 넣을 자리를 클릭하면 좌석 정보 입력창이 열립니다.",
+        )
 
     def find_layout_user_seat_at(self, x, y):
         seats = self.current_layout_user_floor_data().setdefault("seats", [])
