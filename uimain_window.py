@@ -17982,6 +17982,9 @@ Command Line :
         self.layout_user_floor_combo = QComboBox()
         self.layout_user_floor_combo.addItems(["18F", "19F"])
         self.layout_user_edit_mode = QCheckBox("편집 모드")
+        self.layout_user_edit_mode.setMinimumWidth(96)
+        self.layout_user_edit_mode.setToolTip("켜면 좌석 추가/이동/삭제/크기 조정 버튼이 표시됩니다.")
+        self.layout_user_edit_mode.setStyleSheet(f"color: {UI_THEME['accent']}; font-weight: 800;")
         btn_add_person = QPushButton("좌석/사람 추가")
         btn_save = QPushButton("저장")
         btn_swap = QPushButton("선택 좌석과 자리교체")
@@ -18000,6 +18003,10 @@ Command Line :
             btn_left, btn_up, btn_down, btn_right, btn_smaller, btn_bigger, btn_save,
         ]:
             top.addWidget(widget)
+        self.layout_user_edit_controls = [
+            btn_add_person, btn_swap, btn_delete, btn_rename,
+            btn_left, btn_up, btn_down, btn_right, btn_smaller, btn_bigger, btn_save,
+        ]
         layout.addLayout(top)
 
         body = QHBoxLayout()
@@ -18034,9 +18041,15 @@ Command Line :
         btn_right.clicked.connect(lambda: self.move_layout_user_selected_seat(5, 0))
         btn_smaller.clicked.connect(lambda: self.resize_layout_user_selected_seat(-6, -3))
         btn_bigger.clicked.connect(lambda: self.resize_layout_user_selected_seat(6, 3))
+        self.layout_user_edit_mode.toggled.connect(self.set_layout_user_edit_controls_visible)
+        self.set_layout_user_edit_controls_visible(False)
 
         self.refresh_layout_user_canvas()
         return root
+
+    def set_layout_user_edit_controls_visible(self, visible):
+        for widget in getattr(self, "layout_user_edit_controls", []):
+            widget.setVisible(bool(visible))
 
     def current_layout_user_floor_data(self):
         return self.layout_user_data.setdefault("floors", {}).setdefault(
