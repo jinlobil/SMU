@@ -55,7 +55,7 @@ from PyQt5.QtWidgets import (
     QFrame, QDateEdit, QTimeEdit, QGroupBox, QColorDialog,
     QCheckBox, QSpinBox, QScrollArea, QSplitter,
     QDialog, QTextEdit, QShortcut, QFormLayout, QDialogButtonBox, QInputDialog,
-    QSizePolicy, QGraphicsDropShadowEffect, QGraphicsOpacityEffect, QAbstractSpinBox
+    QSizePolicy, QGraphicsDropShadowEffect, QGraphicsOpacityEffect, QAbstractSpinBox, QAbstractItemView
 )
 
 # =============================
@@ -18069,26 +18069,255 @@ Command Line :
                 return seat_id
             n += 1
 
+    def build_layout_user_candidates(self):
+        candidates = {}
+
+        def candidate_key(name="", user_id="", hostname="", email=""):
+            for value in (user_id, email, hostname, name):
+                key = normalize_name_key(value)
+                if key:
+                    return key
+            return ""
+
+        def merge_candidate(candidate):
+            key = candidate_key(
+                candidate.get("name"),
+                candidate.get("user_id"),
+                candidate.get("hostname"),
+                candidate.get("email"),
+            )
+            if not key:
+                return
+            current = candidates.setdefault(key, {
+                "name": "",
+                "user_id": "",
+                "email": "",
+                "hostname": "",
+                "ip": "",
+                "ips": [],
+                "dept": "",
+                "dept_code": "",
+                "source": "",
+            })
+            for field in ("name", "user_id", "email", "hostname", "dept", "dept_code"):
+                value = str(candidate.get(field, "") or "").strip()
+                if value and not current.get(field):
+                    current[field] = value
+            ips = candidate.get("ips")
+            if not isinstance(ips, list):
+                ips = [candidate.get("ip")] if candidate.get("ip") else []
+            for ip in ips:
+                ip = str(ip or "").strip()
+                if ip and ip not in current["ips"]:
+                    current["ips"].append(ip)
+            current["ip"] = ", ".join(current["ips"])
+            source = str(candidate.get("source", "") or "").strip()
+            if source and source not in current.get("source", ""):
+                current["source"] = " + ".join([s for s in [current.get("source", ""), source] if s])
+
+        for endpoint in ENDPOINTS:
+            if not isinstance(endpoint, dict):
+                continue
+            hostname = str(endpoint.get("hostname", "") or "").strip()
+            person = endpoint.get("associatedPerson", {}) if isinstance(endpoint.get("associatedPerson"), dict) else {}
+            raw_name = str(person.get("name", "") or "").strip()
+            via_login = str(person.get("viaLogin", "") or "").strip()
+            user_id = via_login.split("\\")[-1] if "\\" in via_login else via_login
+            name = normalize_org_match_name(raw_name)
+            if is_shared_pc_name(name) or is_shared_pc_name(hostname):
+                name = "공용PC"
+            ips = endpoint.get("ipv4Addresses", [])
+            if not isinstance(ips, list):
+                ips = []
+            dept_name, dept_code = get_dept_by_hostname(hostname)
+            directory_info = get_directory_user_info(user_id, name)
+            merge_candidate({
+                "name": directory_info.get("name") or name,
+                "user_id": directory_info.get("user_id") or user_id,
+                "email": directory_info.get("email", ""),
+                "hostname": hostname,
+                "ips": ips,
+                "dept": dept_name or directory_info.get("dept_name", ""),
+                "dept_code": dept_code or directory_info.get("dept_code", ""),
+                "source": "Endpoint",
+            })
+
+        for user in USERS:
+            if not isinstance(user, dict):
+                continue
+            source = user.get("source", {}) if isinstance(user.get("source"), dict) else {}
+            source_type = str(source.get("type", "") or "").strip()
+            if source_type and source_type != "activeDirectory":
+                continue
+            dept_name, dept_code = get_directory_user_dept(user)
+            merge_candidate({
+                "name": str(user.get("name", "") or "").strip(),
+                "user_id": str(user.get("exchangeLogin", "") or "").strip(),
+                "email": str(user.get("email", "") or "").strip(),
+                "dept": dept_name,
+                "dept_code": dept_code,
+                "source": "Directory",
+            })
+
+        for org in ORGS:
+            if not isinstance(org, dict):
+                continue
+            dept_code = str(org.get("deptCode", "") or "").strip()
+            dept_name = DEPT_MAP.get(dept_code, str(org.get("deptName", "") or "").strip()) or "미분류"
+            users = org.get("users", [])
+            if not isinstance(users, list):
+                continue
+            for user in users:
+                if isinstance(user, dict):
+                    name = str(user.get("name", "") or "").strip()
+                    user_id = str(user.get("id", "") or user.get("userId", "") or "").strip()
+                else:
+                    name = str(user or "").strip()
+                    user_id = ""
+                if not name or name.lower() == "none":
+                    continue
+                merge_candidate({
+                    "name": name,
+                    "user_id": user_id,
+                    "dept": dept_name,
+                    "dept_code": dept_code,
+                    "source": "Organization",
+                })
+
+        result = list(candidates.values())
+        result.sort(key=lambda item: (
+            str(item.get("name", "")),
+            str(item.get("dept", "")),
+            str(item.get("hostname", "")),
+        ))
+        return result
+
+    def apply_layout_user_candidate_to_seat(self, seat, candidate):
+        seat["name"] = str(candidate.get("name", "") or "").strip()
+        seat["user_id"] = str(candidate.get("user_id", "") or "").strip()
+        seat["ip"] = str(candidate.get("ip", "") or "").strip()
+        seat["hostname"] = str(candidate.get("hostname", "") or "").strip()
+        seat["dept"] = str(candidate.get("dept", "") or "").strip()
+        seat["dept_code"] = str(candidate.get("dept_code", "") or "").strip()
+        seat["email"] = str(candidate.get("email", "") or "").strip()
+        seat["source"] = str(candidate.get("source", "") or "").strip()
+
     def edit_layout_user_seat_dialog(self, seat):
         dialog = QDialog(self)
         dialog.setWindowTitle("좌석 정보 편집")
-        form = QFormLayout(dialog)
-        fields = {}
-        for key, label in [
-            ("seat_id", "Seat ID"), ("name", "이름"), ("user_id", "User ID"),
-            ("ip", "IP"), ("hostname", "Hostname"), ("dept", "부서"), ("color", "라벨 색상"),
-        ]:
-            edit = QLineEdit(str(seat.get(key, "") or ""))
-            fields[key] = edit
-            form.addRow(label, edit)
+        dialog.resize(820, 560)
+        root = QVBoxLayout(dialog)
+
+        form = QFormLayout()
+        seat_id_edit = QLineEdit(str(seat.get("seat_id", "") or ""))
+        color_edit = QLineEdit(str(seat.get("color", "") or "#FFF566"))
+        form.addRow("Seat ID", seat_id_edit)
+        form.addRow("라벨 색상", color_edit)
+        root.addLayout(form)
+
+        search = QLineEdit()
+        search.setPlaceholderText("이름 / User ID / IP / Hostname / 부서 검색 후 사용자를 선택하세요")
+        root.addWidget(search)
+
+        table = QTableWidget()
+        headers = ["이름", "User ID", "부서", "Hostname", "IP", "Email", "Source"]
+        table.setColumnCount(len(headers))
+        table.setHorizontalHeaderLabels(headers)
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        root.addWidget(table, 1)
+
+        detail = QTextEdit()
+        detail.setReadOnly(True)
+        detail.setFixedHeight(110)
+        root.addWidget(detail)
+
+        candidates = self.build_layout_user_candidates()
+        selected_candidate = {"value": None}
+
+        def candidate_text(candidate):
+            return " ".join(str(candidate.get(key, "") or "") for key in [
+                "name", "user_id", "dept", "dept_code", "hostname", "ip", "email", "source",
+            ]).lower()
+
+        def render_table():
+            keyword = search.text().strip().lower()
+            table.setSortingEnabled(False)
+            table.clearContents()
+            table.setRowCount(0)
+            for candidate in candidates:
+                if keyword and keyword not in candidate_text(candidate):
+                    continue
+                row = table.rowCount()
+                table.insertRow(row)
+                values = [
+                    candidate.get("name", ""),
+                    candidate.get("user_id", ""),
+                    candidate.get("dept", ""),
+                    candidate.get("hostname", ""),
+                    candidate.get("ip", ""),
+                    candidate.get("email", ""),
+                    candidate.get("source", ""),
+                ]
+                for col, value in enumerate(values):
+                    item = QTableWidgetItem(str(value or ""))
+                    item.setData(Qt.UserRole, candidate)
+                    table.setItem(row, col, item)
+            table.setSortingEnabled(True)
+
+        def update_detail(candidate=None):
+            if candidate is None:
+                detail.setPlainText("사용자 리스트에서 이름을 선택하면 IP / Hostname / 부서 정보가 자동으로 좌석에 저장됩니다.")
+                return
+            detail.setPlainText("\n".join([
+                f"이름: {candidate.get('name', '')}",
+                f"User ID: {candidate.get('user_id', '')}",
+                f"IP: {candidate.get('ip', '')}",
+                f"Hostname: {candidate.get('hostname', '')}",
+                f"부서: {candidate.get('dept', '')}",
+                f"Email: {candidate.get('email', '')}",
+                f"Source: {candidate.get('source', '')}",
+            ]))
+
+        def select_current_candidate():
+            items = table.selectedItems()
+            if not items:
+                selected_candidate["value"] = None
+                update_detail()
+                return
+            candidate = items[0].data(Qt.UserRole)
+            selected_candidate["value"] = candidate
+            update_detail(candidate)
+
+        search.textChanged.connect(render_table)
+        table.itemSelectionChanged.connect(select_current_candidate)
+        render_table()
+        update_detail()
+
+        existing_key = normalize_name_key(seat.get("user_id") or seat.get("name") or seat.get("hostname"))
+        if existing_key:
+            for row in range(table.rowCount()):
+                item = table.item(row, 0)
+                candidate = item.data(Qt.UserRole) if item else {}
+                values = [candidate.get("user_id"), candidate.get("name"), candidate.get("hostname"), candidate.get("email")]
+                if any(normalize_name_key(value) == existing_key for value in values):
+                    table.selectRow(row)
+                    break
+
         buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)
-        form.addRow(buttons)
+        root.addWidget(buttons)
         if dialog.exec_() != QDialog.Accepted:
             return False
-        for key, edit in fields.items():
-            seat[key] = edit.text().strip()
+        candidate = selected_candidate.get("value")
+        if not candidate:
+            QMessageBox.information(self, "좌석 정보 편집", "사용자 리스트에서 사용자를 선택하세요.")
+            return False
+        self.apply_layout_user_candidate_to_seat(seat, candidate)
+        seat["seat_id"] = seat_id_edit.text().strip()
+        seat["color"] = color_edit.text().strip()
         if not seat.get("seat_id"):
             seat["seat_id"] = self.next_layout_user_seat_id()
         if not seat.get("color"):
