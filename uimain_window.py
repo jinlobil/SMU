@@ -17996,16 +17996,20 @@ Command Line :
         btn_right = QPushButton("→")
         btn_smaller = QPushButton("크기 -")
         btn_bigger = QPushButton("크기 +")
+        btn_snap = QPushButton("스냅")
+        btn_sync = QPushButton("좌석 정보 동기화")
 
         for widget in [
             btn_search, btn_clear, self.layout_user_floor_combo, self.layout_user_edit_mode,
             btn_add_person, btn_swap, btn_delete, btn_rename,
-            btn_left, btn_up, btn_down, btn_right, btn_smaller, btn_bigger, btn_save,
+            btn_left, btn_up, btn_down, btn_right, btn_smaller, btn_bigger,
+            btn_snap, btn_sync, btn_save,
         ]:
             top.addWidget(widget)
         self.layout_user_edit_controls = [
             btn_add_person, btn_swap, btn_delete, btn_rename,
-            btn_left, btn_up, btn_down, btn_right, btn_smaller, btn_bigger, btn_save,
+            btn_left, btn_up, btn_down, btn_right, btn_smaller, btn_bigger,
+            btn_snap, btn_sync, btn_save,
         ]
         layout.addLayout(top)
 
@@ -18041,6 +18045,8 @@ Command Line :
         btn_right.clicked.connect(lambda: self.move_layout_user_selected_seat(5, 0))
         btn_smaller.clicked.connect(lambda: self.resize_layout_user_selected_seat(-6, -3))
         btn_bigger.clicked.connect(lambda: self.resize_layout_user_selected_seat(6, 3))
+        btn_snap.clicked.connect(self.snap_layout_user_selected_seat)
+        btn_sync.clicked.connect(self.sync_layout_user_seats)
         self.layout_user_edit_mode.toggled.connect(self.set_layout_user_edit_controls_visible)
         self.set_layout_user_edit_controls_visible(False)
 
@@ -18490,6 +18496,67 @@ Command Line :
         seat["h"] = max(12, min(50, int(seat.get("h", 16)) + dh))
         self.save_layout_user_data()
         self.refresh_layout_user_canvas()
+
+    def snap_layout_user_selected_seat(self, grid=5):
+        seat = self.selected_layout_user_seat()
+        if not seat:
+            QMessageBox.information(self, "좌석 스냅", "먼저 스냅할 좌석을 선택하세요.")
+            return
+        grid = max(1, int(grid or 5))
+        seat["x"] = round(int(seat.get("x", 0)) / grid) * grid
+        seat["y"] = round(int(seat.get("y", 0)) / grid) * grid
+        self.save_layout_user_data()
+        self.refresh_layout_user_canvas()
+
+    def sync_layout_user_seats(self):
+        reload_all_data()
+        candidates = self.build_layout_user_candidates()
+        candidate_index = {}
+        for candidate in candidates:
+            for key_field in ("user_id", "hostname", "email", "name"):
+                key = normalize_name_key(candidate.get(key_field))
+                if key and key not in candidate_index:
+                    candidate_index[key] = candidate
+
+        updated = 0
+        unmatched = 0
+        for floor_data in self.layout_user_data.get("floors", {}).values():
+            seats = floor_data.get("seats", [])
+            if not isinstance(seats, list):
+                continue
+            for seat in seats:
+                if not isinstance(seat, dict):
+                    continue
+                candidate = None
+                for key_field in ("user_id", "hostname", "email", "name"):
+                    key = normalize_name_key(seat.get(key_field))
+                    if key and key in candidate_index:
+                        candidate = candidate_index[key]
+                        break
+                if not candidate:
+                    unmatched += 1
+                    continue
+
+                # 좌표/크기/색상/표시 이름은 사용자가 맞춰둔 값을 유지하고,
+                # 최신 엔드포인트/유저/조직도 메타데이터만 갱신한다.
+                if not str(seat.get("name", "") or "").strip() and candidate.get("name"):
+                    seat["name"] = str(candidate.get("name", "") or "").strip()
+                seat["user_id"] = str(candidate.get("user_id", "") or "").strip()
+                seat["ip"] = str(candidate.get("ip", "") or "").strip()
+                seat["hostname"] = str(candidate.get("hostname", "") or "").strip()
+                seat["dept"] = str(candidate.get("dept", "") or "").strip()
+                seat["dept_code"] = str(candidate.get("dept_code", "") or "").strip()
+                seat["email"] = str(candidate.get("email", "") or "").strip()
+                seat["source"] = str(candidate.get("source", "") or "").strip()
+                updated += 1
+
+        self.save_layout_user_data()
+        self.refresh_layout_user_canvas()
+        QMessageBox.information(
+            self,
+            "좌석 정보 동기화",
+            f"좌석 정보 동기화 완료\n갱신: {updated:,}건\n매칭 실패: {unmatched:,}건",
+        )
 
     def rename_layout_user_selected_seat(self):
         seat = self.selected_layout_user_seat()
