@@ -580,9 +580,10 @@ class SeatLayoutCanvas(QWidget):
                 pen = QPen(QColor("#111827"), 1)
             painter.setPen(pen)
             painter.setBrush(bg)
-            painter.drawRoundedRect(x, y, w, h, 3, 3)
+            seat_rect = QRectF(x, y, w, h)
+            painter.drawRoundedRect(seat_rect, 3, 3)
             painter.setPen(QColor("#111827"))
-            painter.drawText(QRectF(x + 2, y + 1, w - 4, h - 2), Qt.AlignCenter, name)
+            painter.drawText(seat_rect.adjusted(2, 1, -2, -1), Qt.AlignCenter, name)
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
