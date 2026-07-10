@@ -565,8 +565,8 @@ class SeatLayoutCanvas(QWidget):
         for seat in self.seats:
             x = self.image_offset.x() + int(seat.get("x", 0)) * self.image_scale
             y = self.image_offset.y() + int(seat.get("y", 0)) * self.image_scale
-            w = int(seat.get("w", 54)) * self.image_scale
-            h = int(seat.get("h", 22)) * self.image_scale
+            w = int(seat.get("w", 42)) * self.image_scale
+            h = int(seat.get("h", 16)) * self.image_scale
             seat_id = str(seat.get("seat_id", ""))
             name = str(seat.get("name") or seat.get("user_id") or seat.get("ip") or "공석")
             bg = QColor(str(seat.get("color") or "#FFF566"))
@@ -582,6 +582,9 @@ class SeatLayoutCanvas(QWidget):
             painter.setBrush(bg)
             seat_rect = QRectF(x, y, w, h)
             painter.drawRoundedRect(seat_rect, 3, 3)
+            font = painter.font()
+            font.setPointSizeF(max(6.0, min(9.0, h * 0.42)))
+            painter.setFont(font)
             painter.setPen(QColor("#111827"))
             painter.drawText(seat_rect.adjusted(2, 1, -2, -1), Qt.AlignCenter, name)
 
@@ -17988,11 +17991,13 @@ Command Line :
         btn_up = QPushButton("↑")
         btn_down = QPushButton("↓")
         btn_right = QPushButton("→")
+        btn_smaller = QPushButton("크기 -")
+        btn_bigger = QPushButton("크기 +")
 
         for widget in [
             btn_search, btn_clear, self.layout_user_floor_combo, self.layout_user_edit_mode,
             btn_add_person, btn_swap, btn_delete, btn_rename,
-            btn_left, btn_up, btn_down, btn_right, btn_save,
+            btn_left, btn_up, btn_down, btn_right, btn_smaller, btn_bigger, btn_save,
         ]:
             top.addWidget(widget)
         layout.addLayout(top)
@@ -18027,6 +18032,8 @@ Command Line :
         btn_up.clicked.connect(lambda: self.move_layout_user_selected_seat(0, -5))
         btn_down.clicked.connect(lambda: self.move_layout_user_selected_seat(0, 5))
         btn_right.clicked.connect(lambda: self.move_layout_user_selected_seat(5, 0))
+        btn_smaller.clicked.connect(lambda: self.resize_layout_user_selected_seat(-6, -3))
+        btn_bigger.clicked.connect(lambda: self.resize_layout_user_selected_seat(6, 3))
 
         self.refresh_layout_user_canvas()
         return root
@@ -18066,7 +18073,7 @@ Command Line :
         seats = self.current_layout_user_floor_data().setdefault("seats", [])
         for seat in reversed(seats):
             sx, sy = int(seat.get("x", 0)), int(seat.get("y", 0))
-            sw, sh = int(seat.get("w", 54)), int(seat.get("h", 22))
+            sw, sh = int(seat.get("w", 42)), int(seat.get("h", 16))
             if sx <= x <= sx + sw and sy <= y <= sy + sh:
                 return seat
         return None
@@ -18353,10 +18360,10 @@ Command Line :
 
         seat = {
             "seat_id": self.next_layout_user_seat_id(),
-            "x": max(0, x - 27),
-            "y": max(0, y - 11),
-            "w": 54,
-            "h": 22,
+            "x": max(0, x - 21),
+            "y": max(0, y - 8),
+            "w": 42,
+            "h": 16,
             "name": "",
             "user_id": "",
             "ip": "",
@@ -18458,6 +18465,16 @@ Command Line :
             return
         seat["x"] = max(0, int(seat.get("x", 0)) + dx)
         seat["y"] = max(0, int(seat.get("y", 0)) + dy)
+        self.save_layout_user_data()
+        self.refresh_layout_user_canvas()
+
+    def resize_layout_user_selected_seat(self, dw, dh):
+        seat = self.selected_layout_user_seat()
+        if not seat:
+            QMessageBox.information(self, "라벨 크기", "먼저 크기를 조정할 좌석을 선택하세요.")
+            return
+        seat["w"] = max(28, min(120, int(seat.get("w", 42)) + dw))
+        seat["h"] = max(12, min(50, int(seat.get("h", 16)) + dh))
         self.save_layout_user_data()
         self.refresh_layout_user_canvas()
 
