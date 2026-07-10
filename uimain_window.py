@@ -54,8 +54,8 @@ from PyQt5.QtWidgets import (
     QLabel, QMessageBox, QComboBox,
     QFrame, QDateEdit, QTimeEdit, QGroupBox, QColorDialog,
     QCheckBox, QSpinBox, QScrollArea, QSplitter,
-    QDialog, QTextEdit, QShortcut,
-    QSizePolicy, QGraphicsDropShadowEffect, QGraphicsOpacityEffect, QAbstractSpinBox
+    QDialog, QTextEdit, QShortcut, QFormLayout, QDialogButtonBox, QInputDialog,
+    QSizePolicy, QGraphicsDropShadowEffect, QGraphicsOpacityEffect, QAbstractSpinBox, QAbstractItemView
 )
 
 # =============================
@@ -507,6 +507,94 @@ SEARCH_FIELD_W = 150
 SEARCH_MODE_W = 132
 SEARCH_BTN_W = 34
 SEARCH_ROW_H = 40
+
+
+class SeatLayoutCanvas(QWidget):
+    seatClicked = pyqtSignal(int, int)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.pixmap = QPixmap()
+        self.seats = []
+        self.selected_seat_id = ""
+        self.search_seat_ids = set()
+        self.image_scale = 1.0
+        self.image_offset = QPointF(0, 0)
+        self.setMouseTracking(True)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+    def set_layout(self, pixmap, seats):
+        self.pixmap = pixmap or QPixmap()
+        self.seats = seats or []
+        self.setMinimumSize(980, 620)
+        self.update()
+
+    def set_selection(self, seat_id, search_ids=None):
+        self.selected_seat_id = str(seat_id or "")
+        self.search_seat_ids = set(search_ids or [])
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.fillRect(self.rect(), QColor("#f8fafc"))
+        if not self.pixmap.isNull():
+            scale_x = self.width() / max(1, self.pixmap.width())
+            scale_y = self.height() / max(1, self.pixmap.height())
+            self.image_scale = min(scale_x, scale_y)
+            scaled_w = self.pixmap.width() * self.image_scale
+            scaled_h = self.pixmap.height() * self.image_scale
+            self.image_offset = QPointF(
+                max(0, (self.width() - scaled_w) / 2),
+                max(0, (self.height() - scaled_h) / 2),
+            )
+            target = QRectF(self.image_offset.x(), self.image_offset.y(), scaled_w, scaled_h)
+            painter.drawPixmap(target, self.pixmap, QRectF(self.pixmap.rect()))
+        else:
+            self.image_scale = 1.0
+            self.image_offset = QPointF(0, 0)
+            painter.setPen(QPen(QColor("#94a3b8"), 2, Qt.DashLine))
+            painter.drawRect(12, 12, self.width() - 24, self.height() - 24)
+            painter.setPen(QColor("#334155"))
+            painter.drawText(
+                self.rect(),
+                Qt.AlignCenter,
+                "env/layout/18f.png 또는 env/layout/19f.png 파일을 추가하세요.",
+            )
+
+        for seat in self.seats:
+            x = self.image_offset.x() + int(seat.get("x", 0)) * self.image_scale
+            y = self.image_offset.y() + int(seat.get("y", 0)) * self.image_scale
+            w = int(seat.get("w", 42)) * self.image_scale
+            h = int(seat.get("h", 16)) * self.image_scale
+            seat_id = str(seat.get("seat_id", ""))
+            name = str(seat.get("name") or seat.get("user_id") or seat.get("ip") or "공석")
+            bg = QColor(str(seat.get("color") or "#FFF566"))
+            if not bg.isValid():
+                bg = QColor("#FFF566")
+            if seat_id in self.search_seat_ids:
+                pen = QPen(QColor("#ef4444"), 4)
+            elif seat_id == self.selected_seat_id:
+                pen = QPen(QColor("#2563eb"), 3)
+            else:
+                pen = QPen(QColor("#111827"), 1)
+            painter.setPen(pen)
+            painter.setBrush(bg)
+            seat_rect = QRectF(x, y, w, h)
+            painter.drawRoundedRect(seat_rect, 3, 3)
+            font = painter.font()
+            font.setPointSizeF(max(6.0, min(9.0, h * 0.42)))
+            painter.setFont(font)
+            painter.setPen(QColor("#111827"))
+            painter.drawText(seat_rect.adjusted(2, 1, -2, -1), Qt.AlignCenter, name)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            image_x = int((event.pos().x() - self.image_offset.x()) / max(self.image_scale, 0.001))
+            image_y = int((event.pos().y() - self.image_offset.y()) / max(self.image_scale, 0.001))
+            if self.pixmap.isNull() or (0 <= image_x <= self.pixmap.width() and 0 <= image_y <= self.pixmap.height()):
+                self.seatClicked.emit(image_x, image_y)
+        super().mousePressEvent(event)
 
 
 # ======================================================
@@ -10293,6 +10381,9 @@ class MainWindow(QMainWindow):
             ("Endpoint", "Endpoint", self.tab_endpoint()),
             ("Organization", "Organization", self.tab_org()),
         ])
+        self.lab_tabs = add_group_tab("Lab", [
+            ("Layout - User", "Layout - User", self.tab_lab_layout_user()),
+        ])
         register_top_tab("Config", self.tab_config(), "Config")
 
         root = QWidget()
@@ -17837,6 +17928,582 @@ Command Line :
         return root
 
     # ==================================================
+    # Lab / Layout - User Tab
+    # ==================================================
+    def layout_user_data_path(self):
+        return os.path.join(ENV_DIR, "layout", "Layout_User.json")
+
+    def default_layout_user_data(self):
+        return {
+            "floors": {
+                "18F": {"image": os.path.join("env", "layout", "18f.png"), "seats": []},
+                "19F": {"image": os.path.join("env", "layout", "19f.png"), "seats": []},
+            }
+        }
+
+    def load_layout_user_data(self):
+        path = self.layout_user_data_path()
+        data = self.default_layout_user_data()
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    for floor, floor_data in loaded.get("floors", {}).items():
+                        if floor in data["floors"] and isinstance(floor_data, dict):
+                            data["floors"][floor].update(floor_data)
+            except Exception as e:
+                log.warning(f"Failed to load layout user data: {e}")
+        return data
+
+    def save_layout_user_data(self):
+        path = self.layout_user_data_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(self.layout_user_data, f, ensure_ascii=False, indent=2)
+
+    def tab_lab_layout_user(self):
+        root = QWidget()
+        layout = QVBoxLayout(root)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
+
+        self.layout_user_data = self.load_layout_user_data()
+        self.layout_user_current_floor = "18F"
+        self.layout_user_selected_seat_id = ""
+
+        top = QHBoxLayout()
+        self.layout_user_search = QLineEdit()
+        self.layout_user_search.setPlaceholderText("이름 / User ID / IP / Hostname / 좌석ID 검색")
+        top.addWidget(self.layout_user_search, 1)
+
+        btn_search = QPushButton("검색")
+        btn_clear = QPushButton("검색 초기화")
+        self.layout_user_floor_combo = QComboBox()
+        self.layout_user_floor_combo.addItems(["18F", "19F"])
+        self.layout_user_edit_mode = QCheckBox("편집 모드")
+        btn_add_person = QPushButton("좌석/사람 추가")
+        btn_save = QPushButton("저장")
+        btn_swap = QPushButton("선택 좌석과 자리교체")
+        btn_delete = QPushButton("선택 좌석 삭제")
+        btn_rename = QPushButton("이름 수정")
+        btn_left = QPushButton("←")
+        btn_up = QPushButton("↑")
+        btn_down = QPushButton("↓")
+        btn_right = QPushButton("→")
+        btn_smaller = QPushButton("크기 -")
+        btn_bigger = QPushButton("크기 +")
+
+        for widget in [
+            btn_search, btn_clear, self.layout_user_floor_combo, self.layout_user_edit_mode,
+            btn_add_person, btn_swap, btn_delete, btn_rename,
+            btn_left, btn_up, btn_down, btn_right, btn_smaller, btn_bigger, btn_save,
+        ]:
+            top.addWidget(widget)
+        layout.addLayout(top)
+
+        body = QHBoxLayout()
+        self.layout_user_canvas = SeatLayoutCanvas()
+        self.layout_user_canvas.seatClicked.connect(self.on_layout_user_canvas_clicked)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(self.layout_user_canvas)
+        body.addWidget(scroll, 1)
+
+        side = QVBoxLayout()
+        self.layout_user_info = QTextEdit()
+        self.layout_user_info.setReadOnly(True)
+        self.layout_user_info.setFixedWidth(260)
+        side.addWidget(QLabel("선택 좌석 정보"))
+        side.addWidget(self.layout_user_info, 1)
+        body.addLayout(side)
+        layout.addLayout(body, 1)
+
+        self.layout_user_search.returnPressed.connect(self.search_layout_user_seat)
+        btn_search.clicked.connect(self.search_layout_user_seat)
+        btn_clear.clicked.connect(self.clear_layout_user_search)
+        self.layout_user_floor_combo.currentTextChanged.connect(self.change_layout_user_floor)
+        btn_add_person.clicked.connect(self.start_layout_user_add_mode)
+        btn_save.clicked.connect(self.save_layout_user_data)
+        btn_swap.clicked.connect(self.swap_layout_user_selected_seat)
+        btn_delete.clicked.connect(self.delete_layout_user_selected_seat)
+        btn_rename.clicked.connect(self.rename_layout_user_selected_seat)
+        btn_left.clicked.connect(lambda: self.move_layout_user_selected_seat(-5, 0))
+        btn_up.clicked.connect(lambda: self.move_layout_user_selected_seat(0, -5))
+        btn_down.clicked.connect(lambda: self.move_layout_user_selected_seat(0, 5))
+        btn_right.clicked.connect(lambda: self.move_layout_user_selected_seat(5, 0))
+        btn_smaller.clicked.connect(lambda: self.resize_layout_user_selected_seat(-6, -3))
+        btn_bigger.clicked.connect(lambda: self.resize_layout_user_selected_seat(6, 3))
+
+        self.refresh_layout_user_canvas()
+        return root
+
+    def current_layout_user_floor_data(self):
+        return self.layout_user_data.setdefault("floors", {}).setdefault(
+            self.layout_user_current_floor,
+            {"image": os.path.join("env", "layout", f"{self.layout_user_current_floor.lower()}.png"), "seats": []},
+        )
+
+    def refresh_layout_user_canvas(self, search_ids=None):
+        floor_data = self.current_layout_user_floor_data()
+        image_path = floor_data.get("image") or os.path.join(
+            "env", "layout", f"{self.layout_user_current_floor.lower()}.png"
+        )
+        if not os.path.isabs(image_path):
+            image_path = os.path.join(BASE_DIR, image_path)
+        pixmap = QPixmap(image_path)
+        self.layout_user_canvas.set_layout(pixmap, floor_data.setdefault("seats", []))
+        self.layout_user_canvas.set_selection(self.layout_user_selected_seat_id, search_ids)
+        self.update_layout_user_info()
+
+    def change_layout_user_floor(self, floor):
+        self.layout_user_current_floor = floor
+        self.layout_user_selected_seat_id = ""
+        self.refresh_layout_user_canvas()
+
+    def start_layout_user_add_mode(self):
+        self.layout_user_edit_mode.setChecked(True)
+        QMessageBox.information(
+            self,
+            "좌석/사람 추가",
+            "편집 모드가 켜졌습니다.\n배치도에서 사람을 넣을 자리를 클릭하면 좌석 정보 입력창이 열립니다.",
+        )
+
+    def find_layout_user_seat_at(self, x, y):
+        seats = self.current_layout_user_floor_data().setdefault("seats", [])
+        for seat in reversed(seats):
+            sx, sy = int(seat.get("x", 0)), int(seat.get("y", 0))
+            sw, sh = int(seat.get("w", 42)), int(seat.get("h", 16))
+            if sx <= x <= sx + sw and sy <= y <= sy + sh:
+                return seat
+        return None
+
+    def next_layout_user_seat_id(self):
+        seats = self.current_layout_user_floor_data().setdefault("seats", [])
+        used = {str(s.get("seat_id", "")) for s in seats}
+        n = 1
+        while True:
+            seat_id = f"{self.layout_user_current_floor}-SEAT-{n:03d}"
+            if seat_id not in used:
+                return seat_id
+            n += 1
+
+    def build_layout_user_candidates(self):
+        candidates = {}
+
+        def candidate_key(name="", user_id="", hostname="", email=""):
+            for value in (user_id, email, hostname, name):
+                key = normalize_name_key(value)
+                if key:
+                    return key
+            return ""
+
+        def merge_candidate(candidate):
+            key = candidate_key(
+                candidate.get("name"),
+                candidate.get("user_id"),
+                candidate.get("hostname"),
+                candidate.get("email"),
+            )
+            if not key:
+                return
+            current = candidates.setdefault(key, {
+                "name": "",
+                "user_id": "",
+                "email": "",
+                "hostname": "",
+                "ip": "",
+                "ips": [],
+                "dept": "",
+                "dept_code": "",
+                "source": "",
+            })
+            for field in ("name", "user_id", "email", "hostname", "dept", "dept_code"):
+                value = str(candidate.get(field, "") or "").strip()
+                if value and not current.get(field):
+                    current[field] = value
+            ips = candidate.get("ips")
+            if not isinstance(ips, list):
+                ips = [candidate.get("ip")] if candidate.get("ip") else []
+            for ip in ips:
+                ip = str(ip or "").strip()
+                if ip and ip not in current["ips"]:
+                    current["ips"].append(ip)
+            current["ip"] = ", ".join(current["ips"])
+            source = str(candidate.get("source", "") or "").strip()
+            if source and source not in current.get("source", ""):
+                current["source"] = " + ".join([s for s in [current.get("source", ""), source] if s])
+
+        for endpoint in ENDPOINTS:
+            if not isinstance(endpoint, dict):
+                continue
+            hostname = str(endpoint.get("hostname", "") or "").strip()
+            person = endpoint.get("associatedPerson", {}) if isinstance(endpoint.get("associatedPerson"), dict) else {}
+            raw_name = str(person.get("name", "") or "").strip()
+            via_login = str(person.get("viaLogin", "") or "").strip()
+            user_id = via_login.split("\\")[-1] if "\\" in via_login else via_login
+            name = normalize_org_match_name(raw_name)
+            if is_shared_pc_name(name) or is_shared_pc_name(hostname):
+                name = "공용PC"
+            ips = endpoint.get("ipv4Addresses", [])
+            if not isinstance(ips, list):
+                ips = []
+            dept_name, dept_code = get_dept_by_hostname(hostname)
+            directory_info = get_directory_user_info(user_id, name)
+            merge_candidate({
+                "name": directory_info.get("name") or name,
+                "user_id": directory_info.get("user_id") or user_id,
+                "email": directory_info.get("email", ""),
+                "hostname": hostname,
+                "ips": ips,
+                "dept": dept_name or directory_info.get("dept_name", ""),
+                "dept_code": dept_code or directory_info.get("dept_code", ""),
+                "source": "Endpoint",
+            })
+
+        for user in USERS:
+            if not isinstance(user, dict):
+                continue
+            source = user.get("source", {}) if isinstance(user.get("source"), dict) else {}
+            source_type = str(source.get("type", "") or "").strip()
+            if source_type and source_type != "activeDirectory":
+                continue
+            dept_name, dept_code = get_directory_user_dept(user)
+            merge_candidate({
+                "name": str(user.get("name", "") or "").strip(),
+                "user_id": str(user.get("exchangeLogin", "") or "").strip(),
+                "email": str(user.get("email", "") or "").strip(),
+                "dept": dept_name,
+                "dept_code": dept_code,
+                "source": "Directory",
+            })
+
+        for org in ORGS:
+            if not isinstance(org, dict):
+                continue
+            dept_code = str(org.get("deptCode", "") or "").strip()
+            dept_name = DEPT_MAP.get(dept_code, str(org.get("deptName", "") or "").strip()) or "미분류"
+            users = org.get("users", [])
+            if not isinstance(users, list):
+                continue
+            for user in users:
+                if isinstance(user, dict):
+                    name = str(user.get("name", "") or "").strip()
+                    user_id = str(user.get("id", "") or user.get("userId", "") or "").strip()
+                else:
+                    name = str(user or "").strip()
+                    user_id = ""
+                if not name or name.lower() == "none":
+                    continue
+                merge_candidate({
+                    "name": name,
+                    "user_id": user_id,
+                    "dept": dept_name,
+                    "dept_code": dept_code,
+                    "source": "Organization",
+                })
+
+        result = list(candidates.values())
+        result.sort(key=lambda item: (
+            str(item.get("name", "")),
+            str(item.get("dept", "")),
+            str(item.get("hostname", "")),
+        ))
+        return result
+
+    def apply_layout_user_candidate_to_seat(self, seat, candidate):
+        seat["name"] = str(candidate.get("name", "") or "").strip()
+        seat["user_id"] = str(candidate.get("user_id", "") or "").strip()
+        seat["ip"] = str(candidate.get("ip", "") or "").strip()
+        seat["hostname"] = str(candidate.get("hostname", "") or "").strip()
+        seat["dept"] = str(candidate.get("dept", "") or "").strip()
+        seat["dept_code"] = str(candidate.get("dept_code", "") or "").strip()
+        seat["email"] = str(candidate.get("email", "") or "").strip()
+        seat["source"] = str(candidate.get("source", "") or "").strip()
+
+    def edit_layout_user_seat_dialog(self, seat):
+        dialog = QDialog(self)
+        dialog.setWindowTitle("좌석 정보 편집")
+        dialog.resize(820, 560)
+        root = QVBoxLayout(dialog)
+
+        form = QFormLayout()
+        seat_id_edit = QLineEdit(str(seat.get("seat_id", "") or ""))
+        color_edit = QLineEdit(str(seat.get("color", "") or "#FFF566"))
+        form.addRow("Seat ID", seat_id_edit)
+        form.addRow("라벨 색상", color_edit)
+        root.addLayout(form)
+
+        search = QLineEdit()
+        search.setPlaceholderText("이름 / User ID / IP / Hostname / 부서 검색 후 사용자를 선택하세요")
+        root.addWidget(search)
+
+        table = QTableWidget()
+        headers = ["이름", "User ID", "부서", "Hostname", "IP", "Email", "Source"]
+        table.setColumnCount(len(headers))
+        table.setHorizontalHeaderLabels(headers)
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        root.addWidget(table, 1)
+
+        detail = QTextEdit()
+        detail.setReadOnly(True)
+        detail.setFixedHeight(110)
+        root.addWidget(detail)
+
+        candidates = self.build_layout_user_candidates()
+        selected_candidate = {"value": None}
+
+        def candidate_text(candidate):
+            return " ".join(str(candidate.get(key, "") or "") for key in [
+                "name", "user_id", "dept", "dept_code", "hostname", "ip", "email", "source",
+            ]).lower()
+
+        def render_table():
+            keyword = search.text().strip().lower()
+            table.setSortingEnabled(False)
+            table.clearContents()
+            table.setRowCount(0)
+            for candidate in candidates:
+                if keyword and keyword not in candidate_text(candidate):
+                    continue
+                row = table.rowCount()
+                table.insertRow(row)
+                values = [
+                    candidate.get("name", ""),
+                    candidate.get("user_id", ""),
+                    candidate.get("dept", ""),
+                    candidate.get("hostname", ""),
+                    candidate.get("ip", ""),
+                    candidate.get("email", ""),
+                    candidate.get("source", ""),
+                ]
+                for col, value in enumerate(values):
+                    item = QTableWidgetItem(str(value or ""))
+                    item.setData(Qt.UserRole, candidate)
+                    table.setItem(row, col, item)
+            table.setSortingEnabled(True)
+
+        def update_detail(candidate=None):
+            if candidate is None:
+                detail.setPlainText("사용자 리스트에서 이름을 선택하면 IP / Hostname / 부서 정보가 자동으로 좌석에 저장됩니다.")
+                return
+            detail.setPlainText("\n".join([
+                f"이름: {candidate.get('name', '')}",
+                f"User ID: {candidate.get('user_id', '')}",
+                f"IP: {candidate.get('ip', '')}",
+                f"Hostname: {candidate.get('hostname', '')}",
+                f"부서: {candidate.get('dept', '')}",
+                f"Email: {candidate.get('email', '')}",
+                f"Source: {candidate.get('source', '')}",
+            ]))
+
+        def select_current_candidate():
+            items = table.selectedItems()
+            if not items:
+                selected_candidate["value"] = None
+                update_detail()
+                return
+            candidate = items[0].data(Qt.UserRole)
+            selected_candidate["value"] = candidate
+            update_detail(candidate)
+
+        search.textChanged.connect(render_table)
+        table.itemSelectionChanged.connect(select_current_candidate)
+        render_table()
+        update_detail()
+
+        existing_key = normalize_name_key(seat.get("user_id") or seat.get("name") or seat.get("hostname"))
+        if existing_key:
+            for row in range(table.rowCount()):
+                item = table.item(row, 0)
+                candidate = item.data(Qt.UserRole) if item else {}
+                values = [candidate.get("user_id"), candidate.get("name"), candidate.get("hostname"), candidate.get("email")]
+                if any(normalize_name_key(value) == existing_key for value in values):
+                    table.selectRow(row)
+                    break
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        root.addWidget(buttons)
+        if dialog.exec_() != QDialog.Accepted:
+            return False
+        candidate = selected_candidate.get("value")
+        if not candidate:
+            QMessageBox.information(self, "좌석 정보 편집", "사용자 리스트에서 사용자를 선택하세요.")
+            return False
+        self.apply_layout_user_candidate_to_seat(seat, candidate)
+        seat["seat_id"] = seat_id_edit.text().strip()
+        seat["color"] = color_edit.text().strip()
+        if not seat.get("seat_id"):
+            seat["seat_id"] = self.next_layout_user_seat_id()
+        if not seat.get("color"):
+            seat["color"] = "#FFF566"
+        return True
+
+    def on_layout_user_canvas_clicked(self, x, y):
+        seat = self.find_layout_user_seat_at(x, y)
+        if seat:
+            self.layout_user_selected_seat_id = str(seat.get("seat_id", ""))
+            if self.layout_user_edit_mode.isChecked():
+                if self.edit_layout_user_seat_dialog(seat):
+                    self.save_layout_user_data()
+            self.refresh_layout_user_canvas()
+            return
+
+        if not self.layout_user_edit_mode.isChecked():
+            self.layout_user_selected_seat_id = ""
+            self.refresh_layout_user_canvas()
+            return
+
+        seat = {
+            "seat_id": self.next_layout_user_seat_id(),
+            "x": max(0, x - 21),
+            "y": max(0, y - 8),
+            "w": 42,
+            "h": 16,
+            "name": "",
+            "user_id": "",
+            "ip": "",
+            "hostname": "",
+            "dept": "",
+            "color": "#FFF566",
+        }
+        if self.edit_layout_user_seat_dialog(seat):
+            self.current_layout_user_floor_data().setdefault("seats", []).append(seat)
+            self.layout_user_selected_seat_id = seat["seat_id"]
+            self.save_layout_user_data()
+        self.refresh_layout_user_canvas()
+
+    def update_layout_user_info(self):
+        selected = None
+        for seat in self.current_layout_user_floor_data().setdefault("seats", []):
+            if str(seat.get("seat_id", "")) == self.layout_user_selected_seat_id:
+                selected = seat
+                break
+        if not selected:
+            self.layout_user_info.setPlainText(
+                "좌석을 선택하세요. 편집 모드에서 빈 공간을 클릭하면 좌석을 등록할 수 있습니다."
+            )
+            return
+        lines = [
+            f"층: {self.layout_user_current_floor}",
+            f"Seat ID: {selected.get('seat_id', '')}",
+            f"이름: {selected.get('name', '')}",
+            f"User ID: {selected.get('user_id', '')}",
+            f"IP: {selected.get('ip', '')}",
+            f"Hostname: {selected.get('hostname', '')}",
+            f"부서: {selected.get('dept', '')}",
+            f"좌표: x={selected.get('x')} y={selected.get('y')} w={selected.get('w')} h={selected.get('h')}",
+        ]
+        self.layout_user_info.setPlainText("\n".join(lines))
+
+    def search_layout_user_seat(self):
+        keyword = self.layout_user_search.text().strip().lower()
+        if not keyword:
+            self.clear_layout_user_search()
+            return
+        matches = []
+        for floor, floor_data in self.layout_user_data.get("floors", {}).items():
+            for seat in floor_data.get("seats", []):
+                haystack = " ".join(
+                    str(seat.get(k, "") or "") for k in ["seat_id", "name", "user_id", "ip", "hostname", "dept"]
+                ).lower()
+                if keyword in haystack:
+                    matches.append((floor, seat))
+        if not matches:
+            QMessageBox.information(self, "검색 결과", "일치하는 좌석이 없습니다.")
+            self.refresh_layout_user_canvas()
+            return
+        floor, seat = matches[0]
+        self.layout_user_current_floor = floor
+        self.layout_user_floor_combo.setCurrentText(floor)
+        self.layout_user_selected_seat_id = str(seat.get("seat_id", ""))
+        search_ids = [str(s.get("seat_id", "")) for f, s in matches if f == floor]
+        self.refresh_layout_user_canvas(search_ids=search_ids)
+
+    def clear_layout_user_search(self):
+        self.layout_user_search.clear()
+        self.refresh_layout_user_canvas()
+
+    def swap_layout_user_selected_seat(self):
+        seats = self.current_layout_user_floor_data().setdefault("seats", [])
+        first = next((s for s in seats if str(s.get("seat_id", "")) == self.layout_user_selected_seat_id), None)
+        if not first:
+            QMessageBox.information(self, "자리교체", "먼저 기준 좌석을 선택하세요.")
+            return
+        seat_ids = [str(s.get("seat_id", "")) for s in seats if s is not first]
+        if not seat_ids:
+            QMessageBox.information(self, "자리교체", "교체할 다른 좌석이 없습니다.")
+            return
+        target_id, ok = QInputDialog.getItem(self, "자리교체", "교체할 좌석", seat_ids, 0, False)
+        if not ok or not target_id:
+            return
+        second = next((s for s in seats if str(s.get("seat_id", "")) == target_id), None)
+        if not second:
+            return
+        for key in ["name", "user_id", "ip", "hostname", "dept", "color"]:
+            first[key], second[key] = second.get(key, ""), first.get(key, "")
+        self.save_layout_user_data()
+        self.refresh_layout_user_canvas()
+
+    def selected_layout_user_seat(self):
+        return next(
+            (
+                seat for seat in self.current_layout_user_floor_data().setdefault("seats", [])
+                if str(seat.get("seat_id", "")) == self.layout_user_selected_seat_id
+            ),
+            None,
+        )
+
+    def move_layout_user_selected_seat(self, dx, dy):
+        seat = self.selected_layout_user_seat()
+        if not seat:
+            QMessageBox.information(self, "좌석 이동", "먼저 이동할 좌석을 선택하세요.")
+            return
+        seat["x"] = max(0, int(seat.get("x", 0)) + dx)
+        seat["y"] = max(0, int(seat.get("y", 0)) + dy)
+        self.save_layout_user_data()
+        self.refresh_layout_user_canvas()
+
+    def resize_layout_user_selected_seat(self, dw, dh):
+        seat = self.selected_layout_user_seat()
+        if not seat:
+            QMessageBox.information(self, "라벨 크기", "먼저 크기를 조정할 좌석을 선택하세요.")
+            return
+        seat["w"] = max(28, min(120, int(seat.get("w", 42)) + dw))
+        seat["h"] = max(12, min(50, int(seat.get("h", 16)) + dh))
+        self.save_layout_user_data()
+        self.refresh_layout_user_canvas()
+
+    def rename_layout_user_selected_seat(self):
+        seat = self.selected_layout_user_seat()
+        if not seat:
+            QMessageBox.information(self, "이름 수정", "먼저 이름을 수정할 좌석을 선택하세요.")
+            return
+        current_name = str(seat.get("name", "") or "")
+        new_name, ok = QInputDialog.getText(self, "이름 수정", "배치도에 표시할 이름", text=current_name)
+        if not ok:
+            return
+        new_name = new_name.strip()
+        if not new_name:
+            QMessageBox.information(self, "이름 수정", "이름은 비워둘 수 없습니다.")
+            return
+        seat["name"] = new_name
+        self.save_layout_user_data()
+        self.refresh_layout_user_canvas()
+
+    def delete_layout_user_selected_seat(self):
+        seats = self.current_layout_user_floor_data().setdefault("seats", [])
+        before = len(seats)
+        seats[:] = [s for s in seats if str(s.get("seat_id", "")) != self.layout_user_selected_seat_id]
+        if len(seats) != before:
+            self.layout_user_selected_seat_id = ""
+            self.save_layout_user_data()
+            self.refresh_layout_user_canvas()
+
     # Endpoint Tab
 
     # ==================================================
