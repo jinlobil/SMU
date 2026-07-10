@@ -54,7 +54,7 @@ from PyQt5.QtWidgets import (
     QLabel, QMessageBox, QComboBox,
     QFrame, QDateEdit, QTimeEdit, QGroupBox, QColorDialog,
     QCheckBox, QSpinBox, QScrollArea, QSplitter,
-    QDialog, QTextEdit, QShortcut,
+    QDialog, QTextEdit, QShortcut, QFormLayout, QDialogButtonBox, QInputDialog,
     QSizePolicy, QGraphicsDropShadowEffect, QGraphicsOpacityEffect, QAbstractSpinBox
 )
 
@@ -507,6 +507,90 @@ SEARCH_FIELD_W = 150
 SEARCH_MODE_W = 132
 SEARCH_BTN_W = 34
 SEARCH_ROW_H = 40
+
+
+class SeatLayoutCanvas(QWidget):
+    seatClicked = pyqtSignal(int, int)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.pixmap = QPixmap()
+        self.seats = []
+        self.selected_seat_id = ""
+        self.search_seat_ids = set()
+        self.image_scale = 1.0
+        self.image_offset = QPointF(0, 0)
+        self.setMouseTracking(True)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+    def set_layout(self, pixmap, seats):
+        self.pixmap = pixmap or QPixmap()
+        self.seats = seats or []
+        self.setMinimumSize(980, 620)
+        self.update()
+
+    def set_selection(self, seat_id, search_ids=None):
+        self.selected_seat_id = str(seat_id or "")
+        self.search_seat_ids = set(search_ids or [])
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.fillRect(self.rect(), QColor("#f8fafc"))
+        if not self.pixmap.isNull():
+            scale_x = self.width() / max(1, self.pixmap.width())
+            scale_y = self.height() / max(1, self.pixmap.height())
+            self.image_scale = min(scale_x, scale_y)
+            scaled_w = self.pixmap.width() * self.image_scale
+            scaled_h = self.pixmap.height() * self.image_scale
+            self.image_offset = QPointF(
+                max(0, (self.width() - scaled_w) / 2),
+                max(0, (self.height() - scaled_h) / 2),
+            )
+            target = QRectF(self.image_offset.x(), self.image_offset.y(), scaled_w, scaled_h)
+            painter.drawPixmap(target, self.pixmap, QRectF(self.pixmap.rect()))
+        else:
+            self.image_scale = 1.0
+            self.image_offset = QPointF(0, 0)
+            painter.setPen(QPen(QColor("#94a3b8"), 2, Qt.DashLine))
+            painter.drawRect(12, 12, self.width() - 24, self.height() - 24)
+            painter.setPen(QColor("#334155"))
+            painter.drawText(
+                self.rect(),
+                Qt.AlignCenter,
+                "env/layout/18f.png 또는 env/layout/19f.png 파일을 추가하세요.",
+            )
+
+        for seat in self.seats:
+            x = self.image_offset.x() + int(seat.get("x", 0)) * self.image_scale
+            y = self.image_offset.y() + int(seat.get("y", 0)) * self.image_scale
+            w = int(seat.get("w", 54)) * self.image_scale
+            h = int(seat.get("h", 22)) * self.image_scale
+            seat_id = str(seat.get("seat_id", ""))
+            name = str(seat.get("name") or seat.get("user_id") or seat.get("ip") or "공석")
+            bg = QColor(str(seat.get("color") or "#FFF566"))
+            if not bg.isValid():
+                bg = QColor("#FFF566")
+            if seat_id in self.search_seat_ids:
+                pen = QPen(QColor("#ef4444"), 4)
+            elif seat_id == self.selected_seat_id:
+                pen = QPen(QColor("#2563eb"), 3)
+            else:
+                pen = QPen(QColor("#111827"), 1)
+            painter.setPen(pen)
+            painter.setBrush(bg)
+            painter.drawRoundedRect(x, y, w, h, 3, 3)
+            painter.setPen(QColor("#111827"))
+            painter.drawText(QRectF(x + 2, y + 1, w - 4, h - 2), Qt.AlignCenter, name)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            image_x = int((event.pos().x() - self.image_offset.x()) / max(self.image_scale, 0.001))
+            image_y = int((event.pos().y() - self.image_offset.y()) / max(self.image_scale, 0.001))
+            if self.pixmap.isNull() or (0 <= image_x <= self.pixmap.width() and 0 <= image_y <= self.pixmap.height()):
+                self.seatClicked.emit(image_x, image_y)
+        super().mousePressEvent(event)
 
 
 # ======================================================
@@ -10293,6 +10377,9 @@ class MainWindow(QMainWindow):
             ("Endpoint", "Endpoint", self.tab_endpoint()),
             ("Organization", "Organization", self.tab_org()),
         ])
+        self.lab_tabs = add_group_tab("Lab", [
+            ("Layout - User", "Layout - User", self.tab_lab_layout_user()),
+        ])
         register_top_tab("Config", self.tab_config(), "Config")
 
         root = QWidget()
@@ -17837,6 +17924,292 @@ Command Line :
         return root
 
     # ==================================================
+    # Lab / Layout - User Tab
+    # ==================================================
+    def layout_user_data_path(self):
+        return os.path.join(ENV_DIR, "layout", "Layout_User.json")
+
+    def default_layout_user_data(self):
+        return {
+            "floors": {
+                "18F": {"image": os.path.join("env", "layout", "18f.png"), "seats": []},
+                "19F": {"image": os.path.join("env", "layout", "19f.png"), "seats": []},
+            }
+        }
+
+    def load_layout_user_data(self):
+        path = self.layout_user_data_path()
+        data = self.default_layout_user_data()
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    for floor, floor_data in loaded.get("floors", {}).items():
+                        if floor in data["floors"] and isinstance(floor_data, dict):
+                            data["floors"][floor].update(floor_data)
+            except Exception as e:
+                log.warning(f"Failed to load layout user data: {e}")
+        return data
+
+    def save_layout_user_data(self):
+        path = self.layout_user_data_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(self.layout_user_data, f, ensure_ascii=False, indent=2)
+
+    def tab_lab_layout_user(self):
+        root = QWidget()
+        layout = QVBoxLayout(root)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
+
+        self.layout_user_data = self.load_layout_user_data()
+        self.layout_user_current_floor = "18F"
+        self.layout_user_selected_seat_id = ""
+
+        top = QHBoxLayout()
+        self.layout_user_search = QLineEdit()
+        self.layout_user_search.setPlaceholderText("이름 / User ID / IP / Hostname / 좌석ID 검색")
+        top.addWidget(self.layout_user_search, 1)
+
+        btn_search = QPushButton("검색")
+        btn_clear = QPushButton("검색 초기화")
+        self.layout_user_floor_combo = QComboBox()
+        self.layout_user_floor_combo.addItems(["18F", "19F"])
+        self.layout_user_edit_mode = QCheckBox("편집 모드")
+        btn_add_person = QPushButton("좌석/사람 추가")
+        btn_save = QPushButton("저장")
+        btn_swap = QPushButton("선택 좌석과 자리교체")
+        btn_delete = QPushButton("선택 좌석 삭제")
+
+        for widget in [
+            btn_search, btn_clear, self.layout_user_floor_combo, self.layout_user_edit_mode,
+            btn_add_person, btn_swap, btn_delete, btn_save,
+        ]:
+            top.addWidget(widget)
+        layout.addLayout(top)
+
+        body = QHBoxLayout()
+        self.layout_user_canvas = SeatLayoutCanvas()
+        self.layout_user_canvas.seatClicked.connect(self.on_layout_user_canvas_clicked)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(self.layout_user_canvas)
+        body.addWidget(scroll, 1)
+
+        side = QVBoxLayout()
+        self.layout_user_info = QTextEdit()
+        self.layout_user_info.setReadOnly(True)
+        self.layout_user_info.setFixedWidth(260)
+        side.addWidget(QLabel("선택 좌석 정보"))
+        side.addWidget(self.layout_user_info, 1)
+        body.addLayout(side)
+        layout.addLayout(body, 1)
+
+        self.layout_user_search.returnPressed.connect(self.search_layout_user_seat)
+        btn_search.clicked.connect(self.search_layout_user_seat)
+        btn_clear.clicked.connect(self.clear_layout_user_search)
+        self.layout_user_floor_combo.currentTextChanged.connect(self.change_layout_user_floor)
+        btn_add_person.clicked.connect(self.start_layout_user_add_mode)
+        btn_save.clicked.connect(self.save_layout_user_data)
+        btn_swap.clicked.connect(self.swap_layout_user_selected_seat)
+        btn_delete.clicked.connect(self.delete_layout_user_selected_seat)
+
+        self.refresh_layout_user_canvas()
+        return root
+
+    def current_layout_user_floor_data(self):
+        return self.layout_user_data.setdefault("floors", {}).setdefault(
+            self.layout_user_current_floor,
+            {"image": os.path.join("env", "layout", f"{self.layout_user_current_floor.lower()}.png"), "seats": []},
+        )
+
+    def refresh_layout_user_canvas(self, search_ids=None):
+        floor_data = self.current_layout_user_floor_data()
+        image_path = floor_data.get("image") or os.path.join(
+            "env", "layout", f"{self.layout_user_current_floor.lower()}.png"
+        )
+        if not os.path.isabs(image_path):
+            image_path = os.path.join(BASE_DIR, image_path)
+        pixmap = QPixmap(image_path)
+        self.layout_user_canvas.set_layout(pixmap, floor_data.setdefault("seats", []))
+        self.layout_user_canvas.set_selection(self.layout_user_selected_seat_id, search_ids)
+        self.update_layout_user_info()
+
+    def change_layout_user_floor(self, floor):
+        self.layout_user_current_floor = floor
+        self.layout_user_selected_seat_id = ""
+        self.refresh_layout_user_canvas()
+
+    def start_layout_user_add_mode(self):
+        self.layout_user_edit_mode.setChecked(True)
+        QMessageBox.information(
+            self,
+            "좌석/사람 추가",
+            "편집 모드가 켜졌습니다.\n배치도에서 사람을 넣을 자리를 클릭하면 좌석 정보 입력창이 열립니다.",
+        )
+
+    def find_layout_user_seat_at(self, x, y):
+        seats = self.current_layout_user_floor_data().setdefault("seats", [])
+        for seat in reversed(seats):
+            sx, sy = int(seat.get("x", 0)), int(seat.get("y", 0))
+            sw, sh = int(seat.get("w", 54)), int(seat.get("h", 22))
+            if sx <= x <= sx + sw and sy <= y <= sy + sh:
+                return seat
+        return None
+
+    def next_layout_user_seat_id(self):
+        seats = self.current_layout_user_floor_data().setdefault("seats", [])
+        used = {str(s.get("seat_id", "")) for s in seats}
+        n = 1
+        while True:
+            seat_id = f"{self.layout_user_current_floor}-SEAT-{n:03d}"
+            if seat_id not in used:
+                return seat_id
+            n += 1
+
+    def edit_layout_user_seat_dialog(self, seat):
+        dialog = QDialog(self)
+        dialog.setWindowTitle("좌석 정보 편집")
+        form = QFormLayout(dialog)
+        fields = {}
+        for key, label in [
+            ("seat_id", "Seat ID"), ("name", "이름"), ("user_id", "User ID"),
+            ("ip", "IP"), ("hostname", "Hostname"), ("dept", "부서"), ("color", "라벨 색상"),
+        ]:
+            edit = QLineEdit(str(seat.get(key, "") or ""))
+            fields[key] = edit
+            form.addRow(label, edit)
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        form.addRow(buttons)
+        if dialog.exec_() != QDialog.Accepted:
+            return False
+        for key, edit in fields.items():
+            seat[key] = edit.text().strip()
+        if not seat.get("seat_id"):
+            seat["seat_id"] = self.next_layout_user_seat_id()
+        if not seat.get("color"):
+            seat["color"] = "#FFF566"
+        return True
+
+    def on_layout_user_canvas_clicked(self, x, y):
+        seat = self.find_layout_user_seat_at(x, y)
+        if seat:
+            self.layout_user_selected_seat_id = str(seat.get("seat_id", ""))
+            if self.layout_user_edit_mode.isChecked():
+                if self.edit_layout_user_seat_dialog(seat):
+                    self.save_layout_user_data()
+            self.refresh_layout_user_canvas()
+            return
+
+        if not self.layout_user_edit_mode.isChecked():
+            self.layout_user_selected_seat_id = ""
+            self.refresh_layout_user_canvas()
+            return
+
+        seat = {
+            "seat_id": self.next_layout_user_seat_id(),
+            "x": max(0, x - 27),
+            "y": max(0, y - 11),
+            "w": 54,
+            "h": 22,
+            "name": "",
+            "user_id": "",
+            "ip": "",
+            "hostname": "",
+            "dept": "",
+            "color": "#FFF566",
+        }
+        if self.edit_layout_user_seat_dialog(seat):
+            self.current_layout_user_floor_data().setdefault("seats", []).append(seat)
+            self.layout_user_selected_seat_id = seat["seat_id"]
+            self.save_layout_user_data()
+        self.refresh_layout_user_canvas()
+
+    def update_layout_user_info(self):
+        selected = None
+        for seat in self.current_layout_user_floor_data().setdefault("seats", []):
+            if str(seat.get("seat_id", "")) == self.layout_user_selected_seat_id:
+                selected = seat
+                break
+        if not selected:
+            self.layout_user_info.setPlainText(
+                "좌석을 선택하세요. 편집 모드에서 빈 공간을 클릭하면 좌석을 등록할 수 있습니다."
+            )
+            return
+        lines = [
+            f"층: {self.layout_user_current_floor}",
+            f"Seat ID: {selected.get('seat_id', '')}",
+            f"이름: {selected.get('name', '')}",
+            f"User ID: {selected.get('user_id', '')}",
+            f"IP: {selected.get('ip', '')}",
+            f"Hostname: {selected.get('hostname', '')}",
+            f"부서: {selected.get('dept', '')}",
+            f"좌표: x={selected.get('x')} y={selected.get('y')} w={selected.get('w')} h={selected.get('h')}",
+        ]
+        self.layout_user_info.setPlainText("\n".join(lines))
+
+    def search_layout_user_seat(self):
+        keyword = self.layout_user_search.text().strip().lower()
+        if not keyword:
+            self.clear_layout_user_search()
+            return
+        matches = []
+        for floor, floor_data in self.layout_user_data.get("floors", {}).items():
+            for seat in floor_data.get("seats", []):
+                haystack = " ".join(
+                    str(seat.get(k, "") or "") for k in ["seat_id", "name", "user_id", "ip", "hostname", "dept"]
+                ).lower()
+                if keyword in haystack:
+                    matches.append((floor, seat))
+        if not matches:
+            QMessageBox.information(self, "검색 결과", "일치하는 좌석이 없습니다.")
+            self.refresh_layout_user_canvas()
+            return
+        floor, seat = matches[0]
+        self.layout_user_current_floor = floor
+        self.layout_user_floor_combo.setCurrentText(floor)
+        self.layout_user_selected_seat_id = str(seat.get("seat_id", ""))
+        search_ids = [str(s.get("seat_id", "")) for f, s in matches if f == floor]
+        self.refresh_layout_user_canvas(search_ids=search_ids)
+
+    def clear_layout_user_search(self):
+        self.layout_user_search.clear()
+        self.refresh_layout_user_canvas()
+
+    def swap_layout_user_selected_seat(self):
+        seats = self.current_layout_user_floor_data().setdefault("seats", [])
+        first = next((s for s in seats if str(s.get("seat_id", "")) == self.layout_user_selected_seat_id), None)
+        if not first:
+            QMessageBox.information(self, "자리교체", "먼저 기준 좌석을 선택하세요.")
+            return
+        seat_ids = [str(s.get("seat_id", "")) for s in seats if s is not first]
+        if not seat_ids:
+            QMessageBox.information(self, "자리교체", "교체할 다른 좌석이 없습니다.")
+            return
+        target_id, ok = QInputDialog.getItem(self, "자리교체", "교체할 좌석", seat_ids, 0, False)
+        if not ok or not target_id:
+            return
+        second = next((s for s in seats if str(s.get("seat_id", "")) == target_id), None)
+        if not second:
+            return
+        for key in ["name", "user_id", "ip", "hostname", "dept", "color"]:
+            first[key], second[key] = second.get(key, ""), first.get(key, "")
+        self.save_layout_user_data()
+        self.refresh_layout_user_canvas()
+
+    def delete_layout_user_selected_seat(self):
+        seats = self.current_layout_user_floor_data().setdefault("seats", [])
+        before = len(seats)
+        seats[:] = [s for s in seats if str(s.get("seat_id", "")) != self.layout_user_selected_seat_id]
+        if len(seats) != before:
+            self.layout_user_selected_seat_id = ""
+            self.save_layout_user_data()
+            self.refresh_layout_user_canvas()
+
     # Endpoint Tab
 
     # ==================================================
