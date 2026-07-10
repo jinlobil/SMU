@@ -17983,10 +17983,16 @@ Command Line :
         btn_save = QPushButton("저장")
         btn_swap = QPushButton("선택 좌석과 자리교체")
         btn_delete = QPushButton("선택 좌석 삭제")
+        btn_rename = QPushButton("이름 수정")
+        btn_left = QPushButton("←")
+        btn_up = QPushButton("↑")
+        btn_down = QPushButton("↓")
+        btn_right = QPushButton("→")
 
         for widget in [
             btn_search, btn_clear, self.layout_user_floor_combo, self.layout_user_edit_mode,
-            btn_add_person, btn_swap, btn_delete, btn_save,
+            btn_add_person, btn_swap, btn_delete, btn_rename,
+            btn_left, btn_up, btn_down, btn_right, btn_save,
         ]:
             top.addWidget(widget)
         layout.addLayout(top)
@@ -18016,6 +18022,11 @@ Command Line :
         btn_save.clicked.connect(self.save_layout_user_data)
         btn_swap.clicked.connect(self.swap_layout_user_selected_seat)
         btn_delete.clicked.connect(self.delete_layout_user_selected_seat)
+        btn_rename.clicked.connect(self.rename_layout_user_selected_seat)
+        btn_left.clicked.connect(lambda: self.move_layout_user_selected_seat(-5, 0))
+        btn_up.clicked.connect(lambda: self.move_layout_user_selected_seat(0, -5))
+        btn_down.clicked.connect(lambda: self.move_layout_user_selected_seat(0, 5))
+        btn_right.clicked.connect(lambda: self.move_layout_user_selected_seat(5, 0))
 
         self.refresh_layout_user_canvas()
         return root
@@ -18428,6 +18439,42 @@ Command Line :
             return
         for key in ["name", "user_id", "ip", "hostname", "dept", "color"]:
             first[key], second[key] = second.get(key, ""), first.get(key, "")
+        self.save_layout_user_data()
+        self.refresh_layout_user_canvas()
+
+    def selected_layout_user_seat(self):
+        return next(
+            (
+                seat for seat in self.current_layout_user_floor_data().setdefault("seats", [])
+                if str(seat.get("seat_id", "")) == self.layout_user_selected_seat_id
+            ),
+            None,
+        )
+
+    def move_layout_user_selected_seat(self, dx, dy):
+        seat = self.selected_layout_user_seat()
+        if not seat:
+            QMessageBox.information(self, "좌석 이동", "먼저 이동할 좌석을 선택하세요.")
+            return
+        seat["x"] = max(0, int(seat.get("x", 0)) + dx)
+        seat["y"] = max(0, int(seat.get("y", 0)) + dy)
+        self.save_layout_user_data()
+        self.refresh_layout_user_canvas()
+
+    def rename_layout_user_selected_seat(self):
+        seat = self.selected_layout_user_seat()
+        if not seat:
+            QMessageBox.information(self, "이름 수정", "먼저 이름을 수정할 좌석을 선택하세요.")
+            return
+        current_name = str(seat.get("name", "") or "")
+        new_name, ok = QInputDialog.getText(self, "이름 수정", "배치도에 표시할 이름", text=current_name)
+        if not ok:
+            return
+        new_name = new_name.strip()
+        if not new_name:
+            QMessageBox.information(self, "이름 수정", "이름은 비워둘 수 없습니다.")
+            return
+        seat["name"] = new_name
         self.save_layout_user_data()
         self.refresh_layout_user_canvas()
 
