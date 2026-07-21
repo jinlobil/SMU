@@ -6,6 +6,7 @@ import os
 import sys
 import threading
 import time
+import types
 import urllib.request
 import webbrowser
 from pathlib import Path
@@ -32,10 +33,20 @@ def ensure_local_package(name: str) -> Path:
     package spec from its absolute path removes that ambient-path dependency.
     """
     package_dir = ROOT / name
+    if not package_dir.is_dir():
+        raise RuntimeError(f"Required SMU directory is missing: {package_dir}")
+    if name in sys.modules:
+        return package_dir
     init_file = package_dir / "__init__.py"
     if not init_file.is_file():
-        raise RuntimeError(f"Required SMU package is missing: {init_file}")
-    if name in sys.modules:
+        # Git/ZIP tools can omit an empty __init__.py.  Register a standards-
+        # compliant namespace package so the real modules remain importable.
+        module = types.ModuleType(name)
+        module.__file__ = None
+        module.__package__ = name
+        module.__path__ = [str(package_dir)]
+        module.__spec__ = importlib.util.spec_from_loader(name, loader=None, is_package=True)
+        sys.modules[name] = module
         return package_dir
     spec = importlib.util.spec_from_file_location(
         name,
@@ -83,7 +94,35 @@ def open_browser_when_ready(log: logging.Logger, attempts: int = 60) -> None:
     log.error("Server did not become ready. Review %s", LOG_PATH)
 
 
-def main() -> int:
+def load_web_app(log: logging.Logger):
+    for package_name in ("core", "modules"):
+        package_path = ensure_local_package(package_name)
+        marker = "regular" if (package_path / "__init__.py").is_file() else "namespace"
+        log.info("Local package ready: %s -> %s (%s)", package_name, package_path, marker)
+
+    # Import the deepest reused modules first.  This is an intentional startup
+    # audit: missing files or internal imports fail before a browser is opened.
+    from core.storage import sqlite_cache  # noqa: F401
+    from web_backend import theme_store  # noqa: F401
+    from web_backend.app import app
+
+    required_routes = {
+        "/api/health",
+        "/api/overview",
+        "/api/records/{source}",
+        "/api/theme",
+        "/api/jobs/reindex",
+        "/api/jobs/{job_id}",
+    }
+    available_routes = {getattr(route, "path", "") for route in app.routes}
+    missing_routes = required_routes - available_routes
+    if missing_routes:
+        raise RuntimeError(f"Web API startup audit failed; missing routes: {sorted(missing_routes)}")
+    log.info("Startup audit passed: %d required API routes", len(required_routes))
+    return app
+
+
+def main(check_only: bool = False) -> int:
     log = configure_logging()
     log.info("Starting SMU Web")
     log.info("Persistent log: %s", LOG_PATH)
@@ -94,11 +133,10 @@ def main() -> int:
 
     try:
         import uvicorn
-
-        for package_name in ("core", "modules"):
-            package_path = ensure_local_package(package_name)
-            log.info("Local package ready: %s -> %s", package_name, package_path)
-        from web_backend.app import app
+        app = load_web_app(log)
+        if check_only:
+            log.info("SMU Web preflight check completed successfully")
+            return 0
 
         browser_thread = threading.Thread(
             target=open_browser_when_ready,
@@ -124,4 +162,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(check_only="--check" in sys.argv[1:]))

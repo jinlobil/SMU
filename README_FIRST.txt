@@ -27,6 +27,9 @@ START_WEB.bat이 이 로그를 메모장으로 자동으로 열고 창을 닫지
 최신 설치기는 Python 가상환경에도 `smu_repository.pth`를 기록하고, 실행기는
 `core`와 `modules` 패키지를 절대 경로로 직접 등록하여 같은 오류를 이중으로
 방지합니다.
+빈 `__init__.py`가 ZIP에서 빠진 경우에는 namespace package로 자동 복구합니다.
+설치 마지막 5단계에서는 백엔드 내부 모듈과 필수 API 경로를 모두 import해
+검사한 뒤에만 실제 서버를 시작합니다.
 
 중요:
 INSTALL_WEB.bat과 START_WEB.bat이 폴더에 보이지 않는다면 이전 버전 ZIP입니다.

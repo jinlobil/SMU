@@ -17,6 +17,7 @@ class WindowsLauncherTests(unittest.TestCase):
         self.assertIn("npm --prefix web_frontend run build", script)
         self.assertIn(".venv\\Scripts\\python.exe", script)
         self.assertIn("smu_repository.pth", script)
+        self.assertIn("run_web.py --check", script)
         self.assert_ascii_batch("INSTALL_WEB.bat")
 
     def test_start_launcher_falls_back_to_installer(self):

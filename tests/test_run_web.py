@@ -1,5 +1,6 @@
 import logging
 import os
+import shutil
 import sys
 import tempfile
 import unittest
@@ -32,8 +33,48 @@ class RunWebTests(unittest.TestCase):
 
     def test_missing_local_package_has_actionable_error(self):
         with patch.object(run_web, "ROOT", Path("Z:/definitely-missing-smu")):
-            with self.assertRaisesRegex(RuntimeError, "Required SMU package is missing"):
+            with self.assertRaisesRegex(RuntimeError, "Required SMU directory is missing"):
                 run_web.ensure_local_package("core")
+
+    def test_empty_init_file_can_be_omitted_from_zip(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            package = root / "core"
+            package.mkdir()
+            (package / "example.py").write_text("VALUE = 42\n", encoding="utf-8")
+            original = sys.modules.pop("core", None)
+            try:
+                with patch.object(run_web, "ROOT", root):
+                    run_web.ensure_local_package("core")
+                    from core.example import VALUE
+
+                    self.assertEqual(VALUE, 42)
+                    self.assertEqual(list(sys.modules["core"].__path__), [str(package)])
+            finally:
+                for name in [key for key in sys.modules if key == "core" or key.startswith("core.")]:
+                    sys.modules.pop(name, None)
+                if original is not None:
+                    sys.modules["core"] = original
+
+    def test_reused_storage_tree_imports_without_any_package_markers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            shutil.copytree(run_web.ROOT / "core", root / "core", ignore=shutil.ignore_patterns("__init__.py", "__pycache__"))
+            shutil.copytree(run_web.ROOT / "modules", root / "modules", ignore=shutil.ignore_patterns("__init__.py", "__pycache__"))
+            saved = {name: module for name, module in sys.modules.items() if name == "core" or name == "modules" or name.startswith(("core.", "modules."))}
+            try:
+                for name in saved:
+                    sys.modules.pop(name, None)
+                with patch.object(run_web, "ROOT", root):
+                    run_web.ensure_local_package("core")
+                    run_web.ensure_local_package("modules")
+                    from core.storage import sqlite_cache
+
+                    self.assertEqual(sqlite_cache.APP_CACHE_SOURCES["detections"]["ext"], ".json")
+            finally:
+                for name in [key for key in sys.modules if key == "core" or key == "modules" or key.startswith(("core.", "modules."))]:
+                    sys.modules.pop(name, None)
+                sys.modules.update(saved)
 
     def test_missing_frontend_returns_error_and_writes_log(self):
         with tempfile.TemporaryDirectory() as directory:

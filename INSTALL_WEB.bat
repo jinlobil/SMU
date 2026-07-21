@@ -30,22 +30,25 @@ exit /b 0
 
 :install_smu
 if not exist ".venv\Scripts\python.exe" (
-    echo [1/4] Creating a private Python environment...
+    echo [1/5] Creating a private Python environment...
     python -m venv .venv || goto failed
 ) else (
-    echo [1/4] Using the existing Python environment.
+    echo [1/5] Using the existing Python environment.
 )
 
-echo [2/4] Installing Python web packages...
+echo [2/5] Installing Python web packages...
 ".venv\Scripts\python.exe" -m pip install --disable-pip-version-check -r requirements-web.txt || goto failed
 for /f "delims=" %%P in ('".venv\Scripts\python.exe" -c "import site; print(site.getsitepackages()[0])"') do set "SMU_SITE=%%P"
 >"%SMU_SITE%\smu_repository.pth" echo %CD%
 
-echo [3/4] Installing React packages...
+echo [3/5] Installing React packages...
 call npm --prefix web_frontend install || goto failed
 
-echo [4/4] Building the React interface...
+echo [4/5] Building the React interface...
 call npm --prefix web_frontend run build || goto failed
+
+echo [5/5] Checking the complete web application...
+".venv\Scripts\python.exe" run_web.py --check || goto failed
 
 echo.
 echo Setup completed. Starting SMU Web now.
