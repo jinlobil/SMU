@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 import logging
-import importlib.util
 import os
 import sys
 import threading
 import time
-import types
 import urllib.request
 import webbrowser
 from pathlib import Path
@@ -23,46 +21,6 @@ FRONTEND_INDEX = ROOT / "web_frontend" / "dist" / "index.html"
 LOG_DIR = ROOT / "logs"
 LOG_PATH = LOG_DIR / "web_server.log"
 URL = "http://127.0.0.1:8000"
-
-
-def ensure_local_package(name: str) -> Path:
-    """Register a repository package even when Windows ignores ``sys.path``.
-
-    Some Windows Python/launcher combinations observed in the field imported
-    ``run_web.py`` but still failed to resolve sibling packages.  Loading the
-    package spec from its absolute path removes that ambient-path dependency.
-    """
-    package_dir = ROOT / name
-    if not package_dir.is_dir():
-        raise RuntimeError(f"Required SMU directory is missing: {package_dir}")
-    if name in sys.modules:
-        return package_dir
-    init_file = package_dir / "__init__.py"
-    if not init_file.is_file():
-        # Git/ZIP tools can omit an empty __init__.py.  Register a standards-
-        # compliant namespace package so the real modules remain importable.
-        module = types.ModuleType(name)
-        module.__file__ = None
-        module.__package__ = name
-        module.__path__ = [str(package_dir)]
-        module.__spec__ = importlib.util.spec_from_loader(name, loader=None, is_package=True)
-        sys.modules[name] = module
-        return package_dir
-    spec = importlib.util.spec_from_file_location(
-        name,
-        init_file,
-        submodule_search_locations=[str(package_dir)],
-    )
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"Cannot load SMU package: {name}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    try:
-        spec.loader.exec_module(module)
-    except Exception:
-        sys.modules.pop(name, None)
-        raise
-    return package_dir
 
 
 def configure_logging() -> logging.Logger:
@@ -95,16 +53,12 @@ def open_browser_when_ready(log: logging.Logger, attempts: int = 60) -> None:
 
 
 def load_web_app(log: logging.Logger):
-    for package_name in ("core", "modules"):
-        package_path = ensure_local_package(package_name)
-        marker = "regular" if (package_path / "__init__.py").is_file() else "namespace"
-        log.info("Local package ready: %s -> %s (%s)", package_name, package_path, marker)
-
-    # Import the deepest reused modules first.  This is an intentional startup
-    # audit: missing files or internal imports fail before a browser is opened.
-    from core.storage import sqlite_cache  # noqa: F401
+    # Import every standalone backend layer before a browser is opened.
+    from web_backend import runtime_paths  # noqa: F401
+    from web_backend import storage  # noqa: F401
     from web_backend import theme_store  # noqa: F401
     from web_backend.app import app
+    from web_backend.release import RELEASE
 
     required_routes = {
         "/api/health",
@@ -118,7 +72,7 @@ def load_web_app(log: logging.Logger):
     missing_routes = required_routes - available_routes
     if missing_routes:
         raise RuntimeError(f"Web API startup audit failed; missing routes: {sorted(missing_routes)}")
-    log.info("Startup audit passed: %d required API routes", len(required_routes))
+    log.info("Startup audit passed: release=%s, %d required API routes", RELEASE, len(required_routes))
     return app
 
 
@@ -126,9 +80,14 @@ def main(check_only: bool = False) -> int:
     log = configure_logging()
     log.info("Starting SMU Web")
     log.info("Persistent log: %s", LOG_PATH)
-    if not FRONTEND_INDEX.exists():
-        log.error("Frontend build is missing: %s", FRONTEND_INDEX)
-        log.error("Run INSTALL_WEB.bat before starting the server.")
+    from web_backend.release import RELEASE, audit_bundle
+
+    log.info("Release: %s", RELEASE)
+    missing_files = audit_bundle(ROOT, require_build=True)
+    if missing_files:
+        for missing in missing_files:
+            log.error("Required release file is missing: %s", ROOT / missing)
+        log.error("Download a complete current ZIP and run INSTALL_WEB.bat.")
         return 2
 
     try:

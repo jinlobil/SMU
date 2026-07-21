@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from core.paths import COLOR_ENV_PATH
+from web_backend.runtime_paths import COLOR_ENV_PATH
 
 DEFAULTS = {
     "UI_Background": "#FFFFFF",
@@ -39,7 +39,7 @@ def _normalize(value: str, fallback: str) -> str:
     return value.upper() if HEX_COLOR.fullmatch(value) else fallback
 
 
-def load_color_env(path: str = COLOR_ENV_PATH) -> dict[str, str]:
+def load_color_env(path: str | Path = COLOR_ENV_PATH) -> dict[str, str]:
     values = dict(DEFAULTS)
     file_path = Path(path)
     if file_path.exists():
@@ -52,7 +52,7 @@ def load_color_env(path: str = COLOR_ENV_PATH) -> dict[str, str]:
     return values
 
 
-def save_color_env(config: dict[str, str], path: str = COLOR_ENV_PATH) -> None:
+def save_color_env(config: dict[str, str], path: str | Path = COLOR_ENV_PATH) -> None:
     file_path = Path(path)
     file_path.parent.mkdir(parents=True, exist_ok=True)
     keys = list(dict.fromkeys([*DEFAULTS, *config]))
@@ -63,7 +63,7 @@ def save_color_env(config: dict[str, str], path: str = COLOR_ENV_PATH) -> None:
     file_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def ensure_color_env_file(path: str = COLOR_ENV_PATH) -> dict[str, str]:
+def ensure_color_env_file(path: str | Path = COLOR_ENV_PATH) -> dict[str, str]:
     config = load_color_env(path)
     if not Path(path).exists():
         save_color_env(config, path)

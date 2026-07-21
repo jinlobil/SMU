@@ -14,8 +14,9 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from core.paths import BASE_DIR
-from core.storage.sqlite_cache import (
+from web_backend.runtime_paths import BASE_DIR
+from web_backend.release import RELEASE
+from web_backend.storage import (
     load_app_cache_single,
     load_dlp_by_range,
     load_emails_by_range,
@@ -26,7 +27,7 @@ from core.storage.sqlite_cache import (
 from web_backend.theme_store import ensure_color_env_file, save_color_env
 
 Source = Literal["detections", "xdr-email", "emails", "dlp", "endpoints", "organizations", "users"]
-DIST_DIR = Path(BASE_DIR) / "web_frontend" / "dist"
+DIST_DIR = BASE_DIR / "web_frontend" / "dist"
 log = logging.getLogger("smu.web.api")
 
 
@@ -74,7 +75,7 @@ def _text(row: dict[str, Any]) -> str:
 
 @app.get("/api/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "mode": "local", "version": app.version}
+    return {"status": "ok", "mode": "local", "version": app.version, "release": RELEASE}
 
 
 @app.get("/api/overview")
