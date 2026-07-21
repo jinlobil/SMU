@@ -14,6 +14,27 @@ class RunWebTests(unittest.TestCase):
         self.assertEqual(Path.cwd(), run_web.ROOT)
         self.assertEqual(Path(sys.path[0]), run_web.ROOT)
 
+    def test_local_package_bootstrap_does_not_depend_on_import_path(self):
+        original_module = sys.modules.pop("core", None)
+        original_path = list(sys.path)
+        try:
+            sys.path[:] = [entry for entry in sys.path if Path(entry or ".").resolve() != run_web.ROOT]
+            package_dir = run_web.ensure_local_package("core")
+            from core import paths
+
+            self.assertEqual(package_dir, run_web.ROOT / "core")
+            self.assertEqual(Path(paths.__file__).resolve(), run_web.ROOT / "core" / "paths.py")
+        finally:
+            sys.modules.pop("core", None)
+            if original_module is not None:
+                sys.modules["core"] = original_module
+            sys.path[:] = original_path
+
+    def test_missing_local_package_has_actionable_error(self):
+        with patch.object(run_web, "ROOT", Path("Z:/definitely-missing-smu")):
+            with self.assertRaisesRegex(RuntimeError, "Required SMU package is missing"):
+                run_web.ensure_local_package("core")
+
     def test_missing_frontend_returns_error_and_writes_log(self):
         with tempfile.TemporaryDirectory() as directory:
             log_path = Path(directory) / "web_server.log"

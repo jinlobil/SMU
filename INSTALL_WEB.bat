@@ -38,6 +38,8 @@ if not exist ".venv\Scripts\python.exe" (
 
 echo [2/4] Installing Python web packages...
 ".venv\Scripts\python.exe" -m pip install --disable-pip-version-check -r requirements-web.txt || goto failed
+for /f "delims=" %%P in ('".venv\Scripts\python.exe" -c "import site; print(site.getsitepackages()[0])"') do set "SMU_SITE=%%P"
+>"%SMU_SITE%\smu_repository.pth" echo %CD%
 
 echo [3/4] Installing React packages...
 call npm --prefix web_frontend install || goto failed

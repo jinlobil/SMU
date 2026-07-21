@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import importlib.util
 import os
 import sys
 import threading
@@ -21,6 +22,36 @@ FRONTEND_INDEX = ROOT / "web_frontend" / "dist" / "index.html"
 LOG_DIR = ROOT / "logs"
 LOG_PATH = LOG_DIR / "web_server.log"
 URL = "http://127.0.0.1:8000"
+
+
+def ensure_local_package(name: str) -> Path:
+    """Register a repository package even when Windows ignores ``sys.path``.
+
+    Some Windows Python/launcher combinations observed in the field imported
+    ``run_web.py`` but still failed to resolve sibling packages.  Loading the
+    package spec from its absolute path removes that ambient-path dependency.
+    """
+    package_dir = ROOT / name
+    init_file = package_dir / "__init__.py"
+    if not init_file.is_file():
+        raise RuntimeError(f"Required SMU package is missing: {init_file}")
+    if name in sys.modules:
+        return package_dir
+    spec = importlib.util.spec_from_file_location(
+        name,
+        init_file,
+        submodule_search_locations=[str(package_dir)],
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Cannot load SMU package: {name}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    try:
+        spec.loader.exec_module(module)
+    except Exception:
+        sys.modules.pop(name, None)
+        raise
+    return package_dir
 
 
 def configure_logging() -> logging.Logger:
@@ -63,6 +94,10 @@ def main() -> int:
 
     try:
         import uvicorn
+
+        for package_name in ("core", "modules"):
+            package_path = ensure_local_package(package_name)
+            log.info("Local package ready: %s -> %s", package_name, package_path)
         from web_backend.app import app
 
         browser_thread = threading.Thread(

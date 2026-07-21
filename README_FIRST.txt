@@ -24,6 +24,9 @@ START_WEB.bat이 이 로그를 메모장으로 자동으로 열고 창을 닫지
 로그에 `ModuleNotFoundError: No module named 'core'`가 나오면 이전 실행기의
 작업 폴더 문제입니다. 새 ZIP에서는 실행 위치와 관계없이 저장소 루트를 Python
 모듈 경로로 고정하므로 수정본의 START_WEB.bat을 다시 실행하세요.
+최신 설치기는 Python 가상환경에도 `smu_repository.pth`를 기록하고, 실행기는
+`core`와 `modules` 패키지를 절대 경로로 직접 등록하여 같은 오류를 이중으로
+방지합니다.
 
 중요:
 INSTALL_WEB.bat과 START_WEB.bat이 폴더에 보이지 않는다면 이전 버전 ZIP입니다.
