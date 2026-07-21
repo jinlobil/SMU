@@ -1,18 +1,17 @@
 @echo off
-setlocal
-chcp 65001 >nul
+setlocal EnableExtensions
 cd /d "%~dp0"
 title SMU Web
 
-if not exist ".venv\Scripts\python.exe" goto :setup
-if not exist "web_frontend\dist\index.html" goto :setup
+if not exist ".venv\Scripts\python.exe" goto setup
+if not exist "web_frontend\dist\index.html" goto setup
 
-echo SMU Web을 시작합니다.
-echo 브라우저가 자동으로 열리지 않으면 http://127.0.0.1:8000 을 여세요.
-echo 종료하려면 이 창에서 Ctrl+C를 누르세요.
+echo Starting SMU Web...
+echo If the browser does not open, visit http://127.0.0.1:8000
+echo Press Ctrl+C in this window to stop the server.
 ".venv\Scripts\python.exe" run_web.py
 exit /b %errorlevel%
 
 :setup
-echo 최초 설치가 필요하여 INSTALL_WEB.bat을 실행합니다.
+echo Initial setup is required. Starting INSTALL_WEB.bat...
 call "%~dp0INSTALL_WEB.bat"

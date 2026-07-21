@@ -7,6 +7,10 @@ SMU Web 실행 방법
 4. Node.js 설치가 끝나면 창을 닫고 INSTALL_WEB.bat을 다시 실행합니다.
 5. 설치가 모두 끝난 다음부터는 START_WEB.bat만 더블클릭합니다.
 
+설치 창에 "is not recognized as an internal or external command"가 여러 번
+나왔다면, 한글이 들어간 이전 설치 파일의 Windows 인코딩 문제입니다.
+새 ZIP을 다시 받은 뒤 영문 이름인 INSTALL_WEB.bat을 실행하세요.
+
 브라우저 주소: http://127.0.0.1:8000
 
 중요:

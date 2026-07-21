@@ -15,6 +15,11 @@
 > `main` ZIP을 받은 것입니다. 이번 PR이 병합된 후 다시 Download ZIP을
 > 하거나, GitHub 왼쪽 위 브랜치 메뉴에서 이번 PR 브랜치를 선택해 받으세요.
 
+> 설치창에 `is not recognized as an internal or external command`가 반복되면
+> 한글이 포함된 이전 배치 파일의 Windows 문자 인코딩 문제입니다. 새 ZIP의
+> **영문 파일 `INSTALL_WEB.bat`**을 실행하세요. 이 파일은 Windows 버전과
+> 코드 페이지에 상관없이 해석되도록 실행 내용 전체를 ASCII로 작성했습니다.
+
 최초 설치에는 **Python 3.11 이상**과 **Node.js LTS**가 필요합니다.
 `INSTALL_WEB.bat`은 Node.js가 없으면 Windows의 `winget`으로 LTS 버전을
 자동 설치합니다. 자동 설치 후 창을 닫고 `INSTALL_WEB.bat`을 한 번 더
