@@ -8,12 +8,19 @@
 2. **Download ZIP**을 누르고, 받은 ZIP 파일의 압축을 풉니다.
 3. 기존 SMU에서 사용하던 `env`와 `cache` 폴더가 따로 있다면 압축을 푼
    SMU 폴더 안에 그대로 복사합니다.
-4. 최초 한 번만 `SMU_WEB_설치_및_실행.bat`을 더블클릭합니다.
-5. 이후에는 `SMU_WEB_실행.bat`만 더블클릭합니다.
+4. 최초 한 번만 **`INSTALL_WEB.bat`**을 더블클릭합니다.
+5. 이후에는 **`START_WEB.bat`**만 더블클릭합니다.
 
-최초 설치에는 **Python 3.11 이상**과 **Node.js LTS**가 필요합니다. 설치
-파일은 전용 `.venv`를 만들고 Python/웹 패키지를 설치한 다음 React 화면을
-빌드하고 브라우저를 자동으로 엽니다. 평소 실행 주소는
+> ZIP 안에 `INSTALL_WEB.bat`과 `START_WEB.bat`이 보이지 않는다면 이전
+> `main` ZIP을 받은 것입니다. 이번 PR이 병합된 후 다시 Download ZIP을
+> 하거나, GitHub 왼쪽 위 브랜치 메뉴에서 이번 PR 브랜치를 선택해 받으세요.
+
+최초 설치에는 **Python 3.11 이상**과 **Node.js LTS**가 필요합니다.
+`INSTALL_WEB.bat`은 Node.js가 없으면 Windows의 `winget`으로 LTS 버전을
+자동 설치합니다. 자동 설치 후 창을 닫고 `INSTALL_WEB.bat`을 한 번 더
+실행하면 됩니다. `winget`도 없는 PC에서는 Node.js 한국어 다운로드 페이지를
+자동으로 열어 줍니다. 설치 파일은 전용 `.venv`를 만들고 Python/웹 패키지를
+설치한 다음 React 화면을 빌드하고 브라우저를 자동으로 엽니다. 평소 실행 주소는
 `http://127.0.0.1:8000`입니다.
 
 > `env` 폴더에는 API 연결 설정이 들어 있으므로 GitHub에 올리지 말고 기존
