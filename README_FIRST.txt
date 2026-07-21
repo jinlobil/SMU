@@ -11,6 +11,10 @@ SMU Web 실행 방법
 나왔다면, 한글이 들어간 이전 설치 파일의 Windows 인코딩 문제입니다.
 새 ZIP을 다시 받은 뒤 영문 이름인 INSTALL_WEB.bat을 실행하세요.
 
+설치 마지막에 framer-motion 또는 motion-dom의 "is not exported" 오류가
+나왔다면 이전 웹 패키지 조합 문제입니다. 새 ZIP을 받은 뒤 INSTALL_WEB.bat을
+다시 실행하면 해당 의존성을 사용하지 않는 새 화면으로 빌드됩니다.
+
 브라우저 주소: http://127.0.0.1:8000
 
 중요:

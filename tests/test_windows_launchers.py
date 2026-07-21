@@ -24,3 +24,10 @@ class WindowsLauncherTests(unittest.TestCase):
         self.assertIn("INSTALL_WEB.bat", script)
         self.assertIn("run_web.py", script)
         self.assert_ascii_batch("START_WEB.bat")
+
+    def test_frontend_has_no_fragile_motion_runtime_dependency(self):
+        package = (ROOT / "web_frontend" / "package.json").read_text(encoding="utf-8")
+        source = (ROOT / "web_frontend" / "src" / "main.tsx").read_text(encoding="utf-8")
+        self.assertNotIn("framer-motion", package)
+        self.assertNotIn("framer-motion", source)
+        self.assertNotIn("motion.", source)
