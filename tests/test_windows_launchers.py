@@ -23,7 +23,15 @@ class WindowsLauncherTests(unittest.TestCase):
         self.assertIn("web_frontend\\dist\\index.html", script)
         self.assertIn("INSTALL_WEB.bat", script)
         self.assertIn("run_web.py", script)
+        self.assertIn("logs\\web_server.log", script)
+        self.assertIn("notepad", script)
         self.assert_ascii_batch("START_WEB.bat")
+
+    def test_log_viewer_is_ascii_and_opens_persistent_log(self):
+        script = (ROOT / "SHOW_WEB_LOG.bat").read_text(encoding="utf-8")
+        self.assertIn("logs\\web_server.log", script)
+        self.assertIn("notepad", script)
+        self.assert_ascii_batch("SHOW_WEB_LOG.bat")
 
     def test_frontend_has_no_fragile_motion_runtime_dependency(self):
         package = (ROOT / "web_frontend" / "package.json").read_text(encoding="utf-8")

@@ -49,7 +49,16 @@ echo.
 echo Setup completed. Starting SMU Web now.
 echo Use START_WEB.bat next time.
 ".venv\Scripts\python.exe" run_web.py
-exit /b %errorlevel%
+if errorlevel 1 goto server_failed
+exit /b 0
+
+:server_failed
+echo.
+echo SMU Web stopped with an error.
+echo Opening the complete log in Notepad...
+if exist "%~dp0logs\web_server.log" start "" notepad "%~dp0logs\web_server.log"
+pause
+exit /b 1
 
 :no_python
 echo Python was not found or is not available on PATH.

@@ -17,6 +17,10 @@ SMU Web 실행 방법
 
 브라우저 주소: http://127.0.0.1:8000
 
+터미널 오류를 놓쳤다면 SHOW_WEB_LOG.bat을 더블클릭하세요.
+전체 오류는 logs\web_server.log에 계속 저장됩니다. 서버 시작이 실패하면
+START_WEB.bat이 이 로그를 메모장으로 자동으로 열고 창을 닫지 않습니다.
+
 중요:
 INSTALL_WEB.bat과 START_WEB.bat이 폴더에 보이지 않는다면 이전 버전 ZIP입니다.
 이번 변경이 main 브랜치에 병합된 뒤 GitHub에서 새 ZIP을 다시 받으세요.

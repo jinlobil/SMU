@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -26,6 +27,7 @@ from web_backend.theme_store import ensure_color_env_file, save_color_env
 
 Source = Literal["detections", "xdr-email", "emails", "dlp", "endpoints", "organizations", "users"]
 DIST_DIR = Path(BASE_DIR) / "web_frontend" / "dist"
+log = logging.getLogger("smu.web.api")
 
 
 class ThemeUpdate(BaseModel):
@@ -133,6 +135,7 @@ def _run_sync(job_id: str) -> None:
         result = sync_app_cache_all()
         state = JobState(id=job_id, status="completed", message="인덱싱 완료", result=result)
     except Exception as exc:  # background boundary: expose a stable job result
+        log.exception("Background reindex job %s failed", job_id)
         state = JobState(id=job_id, status="failed", message=str(exc))
     with _jobs_lock:
         _jobs[job_id] = state
