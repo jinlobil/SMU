@@ -1,4 +1,6 @@
 import logging
+import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,6 +10,10 @@ import run_web
 
 
 class RunWebTests(unittest.TestCase):
+    def test_launcher_anchors_imports_and_working_directory_to_repo(self):
+        self.assertEqual(Path.cwd(), run_web.ROOT)
+        self.assertEqual(Path(sys.path[0]), run_web.ROOT)
+
     def test_missing_frontend_returns_error_and_writes_log(self):
         with tempfile.TemporaryDirectory() as directory:
             log_path = Path(directory) / "web_server.log"

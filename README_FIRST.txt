@@ -21,6 +21,10 @@ SMU Web 실행 방법
 전체 오류는 logs\web_server.log에 계속 저장됩니다. 서버 시작이 실패하면
 START_WEB.bat이 이 로그를 메모장으로 자동으로 열고 창을 닫지 않습니다.
 
+로그에 `ModuleNotFoundError: No module named 'core'`가 나오면 이전 실행기의
+작업 폴더 문제입니다. 새 ZIP에서는 실행 위치와 관계없이 저장소 루트를 Python
+모듈 경로로 고정하므로 수정본의 START_WEB.bat을 다시 실행하세요.
+
 중요:
 INSTALL_WEB.bat과 START_WEB.bat이 폴더에 보이지 않는다면 이전 버전 ZIP입니다.
 이번 변경이 main 브랜치에 병합된 뒤 GitHub에서 새 ZIP을 다시 받으세요.

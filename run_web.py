@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import sys
 import threading
 import time
@@ -9,6 +10,13 @@ import webbrowser
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
+# Windows can launch a .bat file with System32 or another folder as the process
+# working directory.  Make application imports independent of that directory.
+os.chdir(ROOT)
+root_text = str(ROOT)
+if root_text in sys.path:
+    sys.path.remove(root_text)
+sys.path.insert(0, root_text)
 FRONTEND_INDEX = ROOT / "web_frontend" / "dist" / "index.html"
 LOG_DIR = ROOT / "logs"
 LOG_PATH = LOG_DIR / "web_server.log"
@@ -55,6 +63,7 @@ def main() -> int:
 
     try:
         import uvicorn
+        from web_backend.app import app
 
         browser_thread = threading.Thread(
             target=open_browser_when_ready,
@@ -64,7 +73,7 @@ def main() -> int:
         )
         browser_thread.start()
         uvicorn.run(
-            "web_backend.app:app",
+            app,
             host="127.0.0.1",
             port=8000,
             reload=False,
