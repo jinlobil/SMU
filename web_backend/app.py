@@ -22,7 +22,7 @@ from core.storage.sqlite_cache import (
     load_xdr_email_detections_by_range,
     sync_app_cache_all,
 )
-from core.theme import ensure_color_env_file, save_color_env
+from web_backend.theme_store import ensure_color_env_file, save_color_env
 
 Source = Literal["detections", "xdr-email", "emails", "dlp", "endpoints", "organizations", "users"]
 DIST_DIR = Path(BASE_DIR) / "web_frontend" / "dist"

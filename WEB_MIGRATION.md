@@ -1,4 +1,26 @@
-# SMU local web application
+# SMU 로컬 웹 실행 방법
+
+## 사용자가 다운로드하고 실행할 파일
+
+1. 이 변경사항이 `main`에 병합된 뒤 GitHub 저장소 오른쪽 위의 **Code**
+   버튼을 누릅니다. 병합 전 시험하려면 왼쪽 위 브랜치 선택에서 이 PR의
+   브랜치를 선택합니다.
+2. **Download ZIP**을 누르고, 받은 ZIP 파일의 압축을 풉니다.
+3. 기존 SMU에서 사용하던 `env`와 `cache` 폴더가 따로 있다면 압축을 푼
+   SMU 폴더 안에 그대로 복사합니다.
+4. 최초 한 번만 `SMU_WEB_설치_및_실행.bat`을 더블클릭합니다.
+5. 이후에는 `SMU_WEB_실행.bat`만 더블클릭합니다.
+
+최초 설치에는 **Python 3.11 이상**과 **Node.js LTS**가 필요합니다. 설치
+파일은 전용 `.venv`를 만들고 Python/웹 패키지를 설치한 다음 React 화면을
+빌드하고 브라우저를 자동으로 엽니다. 평소 실행 주소는
+`http://127.0.0.1:8000`입니다.
+
+> `env` 폴더에는 API 연결 설정이 들어 있으므로 GitHub에 올리지 말고 기존
+> PC에서만 복사해서 사용하세요. 기존 데이터까지 유지하려면 `cache` 폴더도
+> 함께 복사하세요.
+
+## 개발자 참고
 
 The web application is a local-only replacement shell for the PyQt UI. Existing
 JSON/JSONL caches, SQLite read models, theme files, and Python business logic are
