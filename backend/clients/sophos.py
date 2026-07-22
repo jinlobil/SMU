@@ -2,6 +2,8 @@ import os
 import json
 import urllib.parse
 import urllib.request
+import urllib.error
+import time
 from pathlib import Path
 from typing import Any
 
@@ -96,3 +98,41 @@ class SophosClient:
                 users = [dict(user, name=user.get("name", "None")) if isinstance(user, dict) else {"name": str(user)} for user in raw_users]
             output.append({"deptCode": code, "deptName": department_names.get(code, code), "users": users})
         return output, self.fetch_users()
+
+    def fetch_detections(self, from_timestamp: str, to_timestamp: str, progress=lambda _message: None) -> list[dict[str, Any]]:
+        self.authenticate()
+        query_url = f"{self.base_url}/detections/v1/queries/detections"
+        body = json.dumps({"from": from_timestamp, "to": to_timestamp, "sort": [{"field": "time", "direction": "desc"}]}).encode("utf-8")
+        request = urllib.request.Request(query_url, data=body, headers={**self.headers(), "Content-Type": "application/json"}, method="POST")
+        query_id = str(self.request_json(request).get("id", ""))
+        if not query_id: raise RuntimeError("Sophos detections query id missing")
+        results = []; page = 1; total_pages = None
+        while total_pages is None or page <= total_pages:
+            progress(f"Detection 페이지 {page} 조회 중")
+            url = f"{query_url}/{query_id}/results?{urllib.parse.urlencode({'page': page, 'pageSize': 200})}"
+            try:
+                payload = self.request_json(urllib.request.Request(url, headers=self.headers()))
+            except urllib.error.HTTPError as exc:
+                if exc.code in {202, 400, 429}:
+                    time.sleep(10 if exc.code == 429 else 5); continue
+                raise
+            pages = payload.get("pages") if isinstance(payload.get("pages"), dict) else {}
+            total_pages = int(pages.get("total", 1) or 1)
+            items = payload.get("items", [])
+            if isinstance(items, list): results.extend(item for item in items if isinstance(item, dict))
+            page += 1
+        return results
+
+    def fetch_inbound_emails(self, from_timestamp: str, to_timestamp: str, progress=lambda _message: None) -> list[dict[str, Any]]:
+        self.authenticate(); url = f"{self.base_url}/email/v1/quarantine/messages/search"; output = []; next_key = ""; page = 1
+        while True:
+            progress(f"Inbound Mail 페이지 {page} 조회 중")
+            payload_body: dict[str, Any] = {"beginDate": from_timestamp, "endDate": to_timestamp, "pageSize": 100}
+            if next_key: payload_body["pageFromKey"] = next_key
+            request = urllib.request.Request(url, data=json.dumps(payload_body).encode("utf-8"), headers={**self.headers(), "Content-Type": "application/json"}, method="POST")
+            payload = self.request_json(request); items = payload.get("items", [])
+            if isinstance(items, list): output.extend(item for item in items if isinstance(item, dict))
+            next_key = str((payload.get("pages") or {}).get("nextKey") or "")
+            if not next_key: break
+            page += 1
+        return output

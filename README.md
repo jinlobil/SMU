@@ -91,3 +91,5 @@ Python의 `>>>`만 표시된다면 정상 실행이 아닙니다. Windows CMD가
 - `Outbound Mail`은 `cache/mailscreen/mailscreen_mail_YYYY-MM-DD.json`을 읽고 메일 처리, 전송 결과, 발신자, 수신자, 정책과 첨부 정보를 표시합니다.
 - `File`은 `cache/dlp/YYYY-MM-DD.jsonl`을 읽고 이벤트, 컴퓨터/부서, IP, 소스·대상, 파일 크기와 해시를 표시합니다.
 - Outbound Mail과 File은 조건별 `포함`·`제외` AND 검색, 정렬, 페이지 이동, Raw Detail을 지원합니다.
+- Detection - XDR과 Email - XDR의 `Sophos 기간 새로고침`은 선택 기간의 Detection API를 백그라운드로 수집해 `cache/detections`에 KST 날짜별 저장합니다.
+- Inbound Mail의 기간 새로고침은 Sophos 격리 메일 API를 수집해 `cache/emails`에 KST 날짜별 저장하며, 완료 후 현재 화면이 자동 갱신됩니다.

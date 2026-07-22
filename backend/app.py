@@ -158,8 +158,16 @@ def list_organizations(
 
 
 @app.post("/api/jobs/refresh/{target}", status_code=202)
-def start_refresh(target: str) -> dict:
+def start_refresh(target: str, payload: dict | None = Body(default=None)) -> dict:
+    payload = payload or {}
     tasks = {"endpoints": refresh_service.refresh_endpoints, "organizations": refresh_service.refresh_organizations}
+    if target in {"detections", "inbound"}:
+        try:
+            start = date.fromisoformat(str(payload.get("start", ""))); end = date.fromisoformat(str(payload.get("end", "")))
+            if start > end: raise ValueError("start date must not be after end date")
+        except ValueError as exc:
+            request_id = str(uuid.uuid4()); return error_response(request_id, "INVALID_REFRESH_RANGE", str(exc), 400)
+        tasks[target] = (lambda progress: refresh_service.refresh_detections(start, end, progress)) if target == "detections" else (lambda progress: refresh_service.refresh_inbound(start, end, progress))
     task = tasks.get(target)
     if task is None:
         request_id = str(uuid.uuid4())
