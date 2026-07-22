@@ -16,6 +16,7 @@ from backend.services.organizations import OrganizationService
 from backend.services.jobs import JobManager
 from backend.services.refresh import RefreshService
 from backend.services.detections import DetectionService
+from backend.services.email_security import EmailSecurityService
 
 
 configure_logging()
@@ -25,6 +26,7 @@ organization_service = OrganizationService(PROJECT_ROOT)
 refresh_service = RefreshService(PROJECT_ROOT)
 job_manager = JobManager()
 detection_service = DetectionService(PROJECT_ROOT)
+email_security_service = EmailSecurityService(PROJECT_ROOT)
 
 app = FastAPI(
     title="SMU Local Web API",
@@ -200,6 +202,26 @@ def get_detection(event_id: str, start: date, end: date) -> dict:
     if data is None:
         request_id = str(uuid.uuid4())
         return error_response(request_id, "DETECTION_NOT_FOUND", f"Detection not found: {event_id}", 404)
+    return {"success": True, "data": data}
+
+
+@app.get("/api/email-security/{kind}")
+def list_email_security(kind: str, start: date, end: date, conditions: str = "[]", page: int = Query(default=1, ge=1), page_size: int = Query(default=50, alias="pageSize", ge=10, le=200), sort: str = "time", direction: str = "desc") -> dict:
+    try:
+        parsed = json.loads(conditions)
+        if not isinstance(parsed, list): raise ValueError("conditions must be a list")
+        data = email_security_service.list_records(kind, start, end, parsed, page, page_size, sort, direction)
+    except (ValueError, json.JSONDecodeError) as exc:
+        request_id = str(uuid.uuid4()); log.error("Email security query rejected request_id=%s error=%s", request_id, exc)
+        return error_response(request_id, "INVALID_EMAIL_SECURITY_QUERY", str(exc), 400)
+    return {"success": True, "data": data}
+
+
+@app.get("/api/email-security/{kind}/{record_id}")
+def get_email_security(kind: str, record_id: str, start: date, end: date) -> dict:
+    data = email_security_service.get_record(kind, record_id, start, end)
+    if data is None:
+        request_id = str(uuid.uuid4()); return error_response(request_id, "EMAIL_SECURITY_RECORD_NOT_FOUND", "Record not found", 404)
     return {"success": True, "data": data}
 
 

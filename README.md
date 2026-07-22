@@ -70,7 +70,7 @@ Python의 `>>>`만 표시된다면 정상 실행이 아닙니다. Windows CMD가
 
 `start_local.bat`은 백엔드 의존성 누락도 검사하고 필요한 경우 자동 설치를 다시 실행합니다.
 
-아직 구현되지 않은 상위 메뉴는 클릭하면 `마이그레이션 진행 예정` 안내가 표시되는 것이 정상입니다. 다음 단계에서는 Email - XDR과 Detection 수동 새로고침을 연결합니다.
+아직 구현되지 않은 메뉴는 클릭하면 `마이그레이션 진행 예정` 안내가 표시되는 것이 정상입니다. 다음 단계에서는 Outbound Mail, File/DLP와 Detection·Inbound 수동 새로고침을 함께 연결합니다.
 
 ### Endpoint 컨텍스트 메뉴와 상세 정보
 
@@ -85,4 +85,6 @@ Python의 `>>>`만 표시된다면 정상 실행이 아닙니다. Windows CMD가
 - Endpoint 센서 데이터만 표시하며 Time, Hostname, Dept, Username, Private/Public IP, File, SHA256, Rule, Lineage를 기존 화면과 동일하게 구성합니다.
 - 검색 조건은 여러 줄을 추가할 수 있고 모든 입력 조건을 AND로 적용합니다.
 - 행을 더블클릭하면 해당 Detection의 Raw Detail을 필요할 때만 조회합니다.
-- 아직 Email - XDR, Inbound Mail, Outbound Mail, File은 진행 예정 안내가 표시됩니다.
+- `Email - XDR`은 같은 Detection 일별 캐시에서 Email 센서 및 XDR 메일 룰을 분리해 Mailbox, 사용자, 발신자, IOC와 SHA256을 표시합니다.
+- `Inbound Mail`은 `cache/emails/YYYY-MM-DD.json`에서 수신자별 행을 만들고 From, To, CC, Subject, Reason, Sender IP를 표시합니다.
+- 두 화면 모두 기간 조회, AND 다중검색, 정렬, 페이지 이동과 Raw Detail을 지원합니다. 아직 Outbound Mail과 File은 진행 예정입니다.
