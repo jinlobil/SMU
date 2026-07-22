@@ -42,6 +42,8 @@ Python의 `>>>`만 표시된다면 정상 실행이 아닙니다. Windows CMD가
 - FastAPI 상태 확인 API: `GET /api/health`
 - Endpoint 조회 API: `GET /api/endpoints`
 - Endpoint 검색, 정렬, 페이지 이동 웹 화면
+- Organization 조회 API: `GET /api/organizations`
+- Asset 하위 메뉴와 Organization 검색, 정렬, 페이지 이동 화면
 - 요청별 ID와 영구 오류 로그
 - React/TypeScript 연결 상태 화면
 - 백엔드와 프론트엔드를 함께 감시하는 로컬 실행기
@@ -54,4 +56,13 @@ Python의 `>>>`만 표시된다면 정상 실행이 아닙니다. Windows CMD가
 4. 표 머리글을 누르면 오름차순·내림차순 정렬이 변경되어야 합니다.
 5. 데이터가 50개를 넘으면 `이전`과 `다음` 버튼으로 페이지를 이동할 수 있어야 합니다.
 
-캐시가 없으면 오류로 종료하지 않고 `아직 Endpoint 캐시가 없습니다` 안내가 표시됩니다. 다음 단계에서는 Organization 화면과 Endpoint 수동 새로고침 Job API를 연결합니다.
+캐시가 없으면 오류로 종료하지 않고 `아직 Endpoint 캐시가 없습니다` 안내가 표시됩니다.
+
+### Organization 화면 확인
+
+1. `Asset` 아래의 `Organization`을 선택합니다.
+2. `cache/user_groups.json`의 부서별 사용자가 한 행씩 표시되어야 합니다.
+3. 전체, DeptCode, DeptName, User 검색과 표 머리글 정렬이 동작해야 합니다.
+4. `env/User_group_env.txt`에 부서 코드 매핑이 있으면 매핑된 부서명이 표시되어야 합니다.
+
+다른 상위 메뉴는 아직 데이터 화면이 구현되지 않았으며, 클릭하면 `마이그레이션 진행 예정` 안내가 표시되는 것이 정상입니다. 다음 단계에서는 Endpoint·Organization 수동 새로고침 Job API와 IP 컨텍스트 메뉴를 연결합니다.

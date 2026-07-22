@@ -10,11 +10,13 @@ from backend.config import WEB_ERROR_LOG
 from backend.config import PROJECT_ROOT
 from backend.logging_config import configure_logging
 from backend.services.endpoints import EndpointService
+from backend.services.organizations import OrganizationService
 
 
 configure_logging()
 log = logging.getLogger("smu.web")
 endpoint_service = EndpointService(PROJECT_ROOT)
+organization_service = OrganizationService(PROJECT_ROOT)
 
 app = FastAPI(
     title="SMU Local Web API",
@@ -113,6 +115,24 @@ def list_endpoints(
         request_id = str(uuid.uuid4())
         log.error("Endpoint query rejected request_id=%s error=%s", request_id, exc)
         return error_response(request_id, "INVALID_ENDPOINT_QUERY", str(exc), 400)
+    return {"success": True, "data": data}
+
+
+@app.get("/api/organizations")
+def list_organizations(
+    query: str = "",
+    field: str = "all",
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, alias="pageSize", ge=10, le=200),
+    sort: str = "deptCode",
+    direction: str = "asc",
+) -> dict:
+    try:
+        data = organization_service.list_organizations(query, field, page, page_size, sort, direction)
+    except ValueError as exc:
+        request_id = str(uuid.uuid4())
+        log.error("Organization query rejected request_id=%s error=%s", request_id, exc)
+        return error_response(request_id, "INVALID_ORGANIZATION_QUERY", str(exc), 400)
     return {"success": True, "data": data}
 
 

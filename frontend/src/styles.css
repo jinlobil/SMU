@@ -11,6 +11,9 @@ nav { display: grid; gap: 5px; padding-top: 24px; }
 nav button { border: 0; border-radius: 10px; padding: 12px 14px; display: flex; justify-content: space-between; color: #adc0da; background: transparent; text-align: left; cursor: pointer; }
 nav button:hover { background: rgba(255,255,255,.07); color: white; }
 nav button.active { color: white; background: #0863e2; box-shadow: 0 8px 20px rgba(0,79,190,.35); }
+.subnav { display: grid; gap: 3px; margin: 6px 0 8px 16px; padding-left: 12px; border-left: 1px solid rgba(255,255,255,.16); }
+.subnav button { padding: 8px 10px; color: #8fa8c7; font-size: 12px; }
+.subnav button.selected { color: #fff; background: rgba(255,255,255,.09); }
 .connection { margin-top: auto; padding: 12px; font-size: 12px; color: #9fb4ce; display: flex; align-items: center; gap: 9px; }
 .connection i { width: 8px; height: 8px; border-radius: 50%; background: #f59e0b; }
 .connection.ok i { background: #2dd4a3; box-shadow: 0 0 0 4px rgba(45,212,163,.13); }
@@ -48,4 +51,6 @@ tbody tr:hover { background: #f8fbff; }.hostname { color: #075fc9; font-weight: 
 .pagination div { display: flex; align-items: center; gap: 10px; }.pagination b { min-width: 64px; color: #34455b; text-align: center; }
 .pagination button { padding: 7px 12px; border: 1px solid #cfdae7; border-radius: 7px; color: #40536b; background: white; cursor: pointer; }
 .pagination button:disabled { opacity: .4; cursor: default; }
+.pending-page { max-width: 700px; margin: 18vh auto; padding: 46px; border: 1px solid #dfe8f3; border-radius: 18px; background: #fff; text-align: center; box-shadow: 0 12px 36px rgba(25,54,93,.07); }
+.pending-page span { color: #0863e2; font-size: 12px; font-weight: 800; letter-spacing: .1em; }.pending-page h1 { margin: 12px 0; }.pending-page p { color: #718096; line-height: 1.7; }
 @media (max-width: 1200px) { .content { padding: 28px 24px; }.search-box { min-width: 360px; } }
