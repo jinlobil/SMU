@@ -1,0 +1,35 @@
+import { useEffect, useState } from "react";
+
+
+type Row = Record<string, string> & { id: string };
+type Condition = { field: string; query: string };
+type Config = { kind: "xdr" | "inbound"; title: string; columns: [string, string][]; fields: [string, string][]; defaultSort: string; description: string };
+const configs: Record<"xdr" | "inbound", Config> = {
+  xdr: { kind: "xdr", title: "Email - XDR", defaultSort: "time", description: "Sophos Email XDR 탐지 이벤트", columns: [["time", "Time"], ["rule", "Rule"], ["mailbox", "Mailbox"], ["userId", "User ID"], ["user", "User"], ["dept", "Dept"], ["from", "From"], ["to", "To"], ["subject", "Subject"], ["senderIp", "Sender IP"], ["ioc", "IOC"], ["iocSha256", "IOC SHA256"], ["detail", "Detail"]], fields: [] },
+  inbound: { kind: "inbound", title: "Inbound Mail", defaultSort: "received", description: "Sophos 격리 수신 메일", columns: [["received", "Received"], ["from", "From"], ["to", "To"], ["cc", "CC"], ["subject", "Subject"], ["reason", "Reason"], ["senderIp", "Sender IP"]], fields: [] },
+};
+configs.xdr.fields = [["all", "ALL"], ...configs.xdr.columns, ["rawData", "RawData"]]; configs.inbound.fields = [["all", "ALL"], ...configs.inbound.columns, ["rawData", "RawData"]];
+const localDate = (offset = 0) => { const value = new Date(); value.setDate(value.getDate() + offset); return value.toISOString().slice(0, 10); };
+
+export function EmailSecurityPage({ kind }: { kind: "xdr" | "inbound" }) {
+  const config = configs[kind]; const [start, setStart] = useState(localDate(-6)); const [end, setEnd] = useState(localDate());
+  const [conditions, setConditions] = useState<Condition[]>([{ field: "all", query: "" }]); const [rows, setRows] = useState<Row[]>([]); const [total, setTotal] = useState(0); const [totalPages, setTotalPages] = useState(1); const [files, setFiles] = useState<string[]>([]);
+  const [page, setPage] = useState(1); const [sort, setSort] = useState(config.defaultSort); const [direction, setDirection] = useState<"asc" | "desc">("desc"); const [loading, setLoading] = useState(true); const [error, setError] = useState(""); const [detail, setDetail] = useState<Record<string, unknown> | null>(null);
+
+  useEffect(() => { setSort(config.defaultSort); setConditions([{ field: "all", query: "" }]); setPage(1); }, [kind, config.defaultSort]);
+  useEffect(() => { const controller = new AbortController(); const timer = window.setTimeout(() => {
+    setLoading(true); setError(""); const active = conditions.filter((condition) => condition.query.trim()); const params = new URLSearchParams({ start, end, conditions: JSON.stringify(active), page: String(page), pageSize: "50", sort, direction });
+    fetch(`/api/email-security/${kind}?${params}`, { signal: controller.signal }).then(async (response) => { const payload = await response.json(); if (!response.ok) throw new Error(payload?.error?.message || `HTTP ${response.status}`); return payload; }).then((payload) => { setRows(payload.data.items); setTotal(payload.data.pagination.total); setTotalPages(payload.data.pagination.totalPages); setFiles(payload.data.source.files); }).catch((reason: unknown) => { if ((reason as Error).name !== "AbortError") setError(String(reason)); }).finally(() => setLoading(false));
+  }, 300); return () => { clearTimeout(timer); controller.abort(); }; }, [kind, start, end, conditions, page, sort, direction]);
+  const update = (index: number, patch: Partial<Condition>) => { setConditions((current) => current.map((condition, position) => position === index ? { ...condition, ...patch } : condition)); setPage(1); };
+  const changeSort = (field: string) => { if (sort === field) setDirection(direction === "asc" ? "desc" : "asc"); else { setSort(field); setDirection("asc"); } setPage(1); };
+  const openDetail = async (row: Row) => { try { const response = await fetch(`/api/email-security/${kind}/${row.id}?start=${start}&end=${end}`); const payload = await response.json(); if (!response.ok) throw new Error(payload?.error?.message || `HTTP ${response.status}`); setDetail(payload.data.raw); } catch (reason) { setError(String(reason)); } };
+
+  return <><header className="topbar"><div><p className="breadcrumb">Detection / {config.title}</p><h1>{config.title}</h1></div><div className="date-range"><label>시작<input type="date" value={start} onChange={(event) => setStart(event.target.value)} /></label><span>~</span><label>종료<input type="date" value={end} onChange={(event) => setEnd(event.target.value)} /></label></div></header>
+    <section className="summary-grid"><article><span>조회 결과</span><strong>{total.toLocaleString()}</strong><small>{config.description}</small></article><article><span>조회 기간</span><strong className="range-value">{start}<b>~</b>{end}</strong><small>한국 시간 기준</small></article><article><span>캐시 파일</span><strong>{files.length}</strong><small>조회 기간 내 일별 파일</small></article></section>
+    <section className="panel"><div className="detection-tools"><div><h2>AND 다중 검색</h2><p>모든 검색 조건을 만족하는 데이터만 표시합니다.</p></div><button onClick={() => setConditions((current) => [...current, { field: "all", query: "" }])}>+ 조건 추가</button></div><div className="condition-list">{conditions.map((condition, index) => <div className="condition-row" key={index}><select value={condition.field} onChange={(event) => update(index, { field: event.target.value })}>{config.fields.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select><input value={condition.query} onChange={(event) => update(index, { query: event.target.value })} placeholder="검색어 입력..." />{conditions.length > 1 && <button onClick={() => setConditions((current) => current.filter((_, position) => position !== index))}>−</button>}</div>)}</div>
+      {error && <div className="error-banner">조회 오류: {error}</div>}<div className="table-wrap detection-table"><table><thead><tr>{config.columns.map(([field, label]) => <th key={field}><button className="sort-button" onClick={() => changeSort(field)}>{label}<span>{sort === field ? direction === "asc" ? "↑" : "↓" : "↕"}</span></button></th>)}</tr></thead><tbody>{loading ? <tr><td colSpan={config.columns.length} className="state-cell">데이터를 조회하는 중입니다...</td></tr> : rows.length === 0 ? <tr><td colSpan={config.columns.length} className="state-cell">조건에 일치하는 데이터가 없습니다.</td></tr> : rows.map((row) => <tr key={row.id} onDoubleClick={() => openDetail(row)}>{config.columns.map(([field]) => <td key={field}>{row[field]}</td>)}</tr>)}</tbody></table></div>
+      <footer className="pagination"><span>총 {total.toLocaleString()}개 · 더블클릭: Raw Detail</span><div><button disabled={page <= 1} onClick={() => setPage(page - 1)}>이전</button><b>{page} / {totalPages}</b><button disabled={page >= totalPages} onClick={() => setPage(page + 1)}>다음</button></div></footer></section>
+    {detail && <div className="modal-backdrop" onMouseDown={() => setDetail(null)}><section className="detail-modal" onMouseDown={(event) => event.stopPropagation()}><header><div><span>{config.title} Raw Detail</span><h2>Security Event</h2></div><button onClick={() => setDetail(null)}>×</button></header><pre>{JSON.stringify(detail, null, 2)}</pre></section></div>}
+  </>;
+}
