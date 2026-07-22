@@ -17,6 +17,7 @@ from backend.services.jobs import JobManager
 from backend.services.refresh import RefreshService
 from backend.services.detections import DetectionService
 from backend.services.email_security import EmailSecurityService
+from backend.services.transfers import TransferService
 
 
 configure_logging()
@@ -27,6 +28,7 @@ refresh_service = RefreshService(PROJECT_ROOT)
 job_manager = JobManager()
 detection_service = DetectionService(PROJECT_ROOT)
 email_security_service = EmailSecurityService(PROJECT_ROOT)
+transfer_service = TransferService(PROJECT_ROOT)
 
 app = FastAPI(
     title="SMU Local Web API",
@@ -222,6 +224,26 @@ def get_email_security(kind: str, record_id: str, start: date, end: date) -> dic
     data = email_security_service.get_record(kind, record_id, start, end)
     if data is None:
         request_id = str(uuid.uuid4()); return error_response(request_id, "EMAIL_SECURITY_RECORD_NOT_FOUND", "Record not found", 404)
+    return {"success": True, "data": data}
+
+
+@app.get("/api/transfers/{kind}")
+def list_transfers(kind: str, start: date, end: date, conditions: str = "[]", page: int = Query(default=1, ge=1), page_size: int = Query(default=50, alias="pageSize", ge=10, le=200), sort: str = "date", direction: str = "desc") -> dict:
+    try:
+        parsed = json.loads(conditions)
+        if not isinstance(parsed, list): raise ValueError("conditions must be a list")
+        data = transfer_service.list_records(kind, start, end, parsed, page, page_size, sort, direction)
+    except (ValueError, json.JSONDecodeError) as exc:
+        request_id = str(uuid.uuid4()); log.error("Transfer query rejected request_id=%s error=%s", request_id, exc)
+        return error_response(request_id, "INVALID_TRANSFER_QUERY", str(exc), 400)
+    return {"success": True, "data": data}
+
+
+@app.get("/api/transfers/{kind}/{record_id}")
+def get_transfer(kind: str, record_id: str, start: date, end: date) -> dict:
+    data = transfer_service.get_record(kind, record_id, start, end)
+    if data is None:
+        request_id = str(uuid.uuid4()); return error_response(request_id, "TRANSFER_RECORD_NOT_FOUND", "Record not found", 404)
     return {"success": True, "data": data}
 
 

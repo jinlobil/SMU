@@ -3,9 +3,10 @@ import { EndpointPage } from "./pages/EndpointPage";
 import { OrganizationPage } from "./pages/OrganizationPage";
 import { DetectionPage } from "./pages/DetectionPage";
 import { EmailSecurityPage } from "./pages/EmailSecurityPage";
+import { TransferPage } from "./pages/TransferPage";
 
 
-type View = "endpoint" | "organization" | "detectionEndpoint" | "emailXdr" | "inbound" | "pending";
+type View = "endpoint" | "organization" | "detectionEndpoint" | "emailXdr" | "inbound" | "outbound" | "dlp" | "pending";
 const menus = ["Dashboard", "Detection", "Forensics", "Response", "Asset", "Lab", "Config"];
 
 export function App() {
@@ -41,7 +42,8 @@ export function App() {
             <button className={view === "detectionEndpoint" ? "selected" : ""} onClick={() => setView("detectionEndpoint")}>Detection - XDR</button>
             <button className={view === "emailXdr" ? "selected" : ""} onClick={() => setView("emailXdr")}>Email - XDR</button>
             <button className={view === "inbound" ? "selected" : ""} onClick={() => setView("inbound")}>Inbound Mail</button>
-            {['Outbound Mail', 'File'].map((name) => <button key={name} onClick={() => setView("pending")}>{name}</button>)}
+            <button className={view === "outbound" ? "selected" : ""} onClick={() => setView("outbound")}>Outbound Mail</button>
+            <button className={view === "dlp" ? "selected" : ""} onClick={() => setView("dlp")}>File</button>
           </div>}
         </div>)}</nav>
         <div className={`connection ${health}`}><i />{health === "ok" ? "백엔드 연결됨" : health === "error" ? "연결 오류" : "연결 확인 중"}</div>
@@ -52,7 +54,9 @@ export function App() {
         {view === "detectionEndpoint" && <DetectionPage />}
         {view === "emailXdr" && <EmailSecurityPage kind="xdr" />}
         {view === "inbound" && <EmailSecurityPage kind="inbound" />}
-        {view === "pending" && <section className="pending-page"><span>마이그레이션 진행 예정</span><h1>{activeMenu}</h1><p>이 화면은 아직 이전 중입니다. 현재 Asset 전체와 Detection - XDR, Email - XDR, Inbound Mail을 사용할 수 있습니다.</p></section>}
+        {view === "outbound" && <TransferPage kind="outbound" />}
+        {view === "dlp" && <TransferPage kind="dlp" />}
+        {view === "pending" && <section className="pending-page"><span>마이그레이션 진행 예정</span><h1>{activeMenu}</h1><p>이 화면은 아직 이전 중입니다. 현재 Asset과 Detection 그룹 전체를 사용할 수 있습니다.</p></section>}
       </main>
     </div>
   );
