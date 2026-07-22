@@ -2,16 +2,19 @@ import logging
 import time
 import uuid
 
-from fastapi import FastAPI, Request
+from fastapi import Body, FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from backend.config import WEB_ERROR_LOG
+from backend.config import PROJECT_ROOT
 from backend.logging_config import configure_logging
+from backend.services.endpoints import EndpointService
 
 
 configure_logging()
 log = logging.getLogger("smu.web")
+endpoint_service = EndpointService(PROJECT_ROOT)
 
 app = FastAPI(
     title="SMU Local Web API",
@@ -94,3 +97,32 @@ def health() -> dict:
         },
     }
 
+
+@app.get("/api/endpoints")
+def list_endpoints(
+    query: str = "",
+    field: str = "all",
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, alias="pageSize", ge=10, le=200),
+    sort: str = "hostname",
+    direction: str = "asc",
+) -> dict:
+    try:
+        data = endpoint_service.list_endpoints(query, field, page, page_size, sort, direction)
+    except ValueError as exc:
+        request_id = str(uuid.uuid4())
+        log.error("Endpoint query rejected request_id=%s error=%s", request_id, exc)
+        return error_response(request_id, "INVALID_ENDPOINT_QUERY", str(exc), 400)
+    return {"success": True, "data": data}
+
+
+@app.post("/api/client-errors", status_code=204)
+def save_client_error(payload: dict = Body()) -> None:
+    log.error(
+        "Frontend error message=%s source=%s line=%s column=%s stack=%s",
+        str(payload.get("message", ""))[:2000],
+        str(payload.get("source", ""))[:1000],
+        payload.get("line"),
+        payload.get("column"),
+        str(payload.get("stack", ""))[:8000],
+    )
