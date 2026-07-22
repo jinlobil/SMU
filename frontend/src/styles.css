@@ -1,0 +1,59 @@
+:root { font-family: Inter, Pretendard, "Noto Sans KR", system-ui, sans-serif; color: #14233b; background: #f4f7fb; font-synthesis: none; }
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 1100px; min-height: 100vh; }
+button, input, select { font: inherit; }
+.app { display: grid; grid-template-columns: 238px 1fr; min-height: 100vh; }
+.sidebar { position: fixed; inset: 0 auto 0 0; width: 238px; padding: 28px 18px; color: #dbe8fa; background: linear-gradient(180deg, #0b1b32, #102b4e); display: flex; flex-direction: column; }
+.brand { padding: 0 12px 28px; display: flex; align-items: baseline; gap: 9px; border-bottom: 1px solid rgba(255,255,255,.1); }
+.brand span { color: #6aa9ff; font-size: 13px; font-weight: 900; letter-spacing: .15em; }
+.brand strong { color: #fff; font-size: 20px; }
+nav { display: grid; gap: 5px; padding-top: 24px; }
+nav button { border: 0; border-radius: 10px; padding: 12px 14px; display: flex; justify-content: space-between; color: #adc0da; background: transparent; text-align: left; cursor: pointer; }
+nav button:hover { background: rgba(255,255,255,.07); color: white; }
+nav button.active { color: white; background: #0863e2; box-shadow: 0 8px 20px rgba(0,79,190,.35); }
+.subnav { display: grid; gap: 3px; margin: 6px 0 8px 16px; padding-left: 12px; border-left: 1px solid rgba(255,255,255,.16); }
+.subnav button { padding: 8px 10px; color: #8fa8c7; font-size: 12px; }
+.subnav button.selected { color: #fff; background: rgba(255,255,255,.09); }
+.connection { margin-top: auto; padding: 12px; font-size: 12px; color: #9fb4ce; display: flex; align-items: center; gap: 9px; }
+.connection i { width: 8px; height: 8px; border-radius: 50%; background: #f59e0b; }
+.connection.ok i { background: #2dd4a3; box-shadow: 0 0 0 4px rgba(45,212,163,.13); }
+.connection.error i { background: #fb7185; }
+.content { grid-column: 2; padding: 34px 42px 60px; max-width: 1680px; width: 100%; }
+.topbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 28px; }
+.breadcrumb { margin: 0 0 5px; color: #718096; font-size: 13px; }
+h1 { margin: 0; font-size: 32px; letter-spacing: -.035em; }
+.status-pill { padding: 9px 14px; border: 1px solid #cfe0fb; border-radius: 999px; color: #0863e2; background: #eef5ff; font-size: 12px; font-weight: 700; }
+.refresh-area { display: flex; align-items: center; gap: 10px; min-height: 38px; color: #64748b; font-size: 12px; }
+.refresh-button { padding: 9px 15px; border: 1px solid #0863e2; border-radius: 9px; color: white; background: #0863e2; font-size: 12px; font-weight: 800; cursor: pointer; box-shadow: 0 5px 14px rgba(8,99,226,.2); }
+.refresh-button:disabled { opacity: .65; cursor: wait; }.refresh-success { color: #059669; font-weight: 700; }.refresh-error { color: #c2413a; font-weight: 700; }
+.summary-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-bottom: 20px; }
+.summary-grid article { padding: 20px 22px; border: 1px solid #e1eaf5; border-radius: 14px; background: #fff; box-shadow: 0 5px 18px rgba(25,54,93,.04); }
+.summary-grid span, .summary-grid small { display: block; color: #718096; font-size: 12px; }
+.summary-grid strong { display: block; margin: 8px 0 4px; font-size: 26px; }
+.summary-grid strong.good { color: #059669; }.summary-grid strong.warn { color: #dc6b24; }
+.panel { overflow: hidden; border: 1px solid #dfe8f3; border-radius: 16px; background: white; box-shadow: 0 8px 30px rgba(25,54,93,.05); }
+.panel-head { padding: 22px 24px; display: flex; align-items: center; justify-content: space-between; gap: 24px; border-bottom: 1px solid #e8eef5; }
+.panel h2 { margin: 0 0 5px; font-size: 18px; }.panel-head p { margin: 0; color: #718096; font-size: 12px; }
+.search-box { display: flex; min-width: 430px; }
+.search-box select, .search-box input { height: 39px; border: 1px solid #cfdceb; outline: none; background: #fff; }
+.search-box select { width: 118px; padding: 0 10px; border-radius: 9px 0 0 9px; color: #41536b; }
+.search-box input { flex: 1; padding: 0 13px; border-left: 0; border-radius: 0 9px 9px 0; }
+.search-box input:focus { border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,.1); }
+.error-banner, .empty-banner { margin: 16px 24px 0; padding: 12px 14px; border-radius: 9px; font-size: 13px; }
+.error-banner { color: #b42318; background: #fff0ef; }.empty-banner { color: #8a5417; background: #fff7e8; }
+.table-wrap { overflow-x: auto; min-height: 370px; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th { padding: 13px 16px; color: #63748a; background: #f7f9fc; border-bottom: 1px solid #dfe7f0; text-align: left; white-space: nowrap; }
+.sort-button { padding: 0; display: flex; align-items: center; gap: 7px; border: 0; color: inherit; background: transparent; font-weight: 700; cursor: pointer; }
+.sort-button span { color: #94a3b8; font-size: 11px; }
+td { padding: 13px 16px; color: #34455b; border-bottom: 1px solid #edf1f6; white-space: nowrap; }
+tbody tr:hover { background: #f8fbff; }.hostname { color: #075fc9; font-weight: 700; }
+.dept { padding: 4px 8px; border-radius: 6px; color: #315f98; background: #edf5ff; }
+.state-cell { height: 300px; color: #7b8798; text-align: center; }
+.pagination { padding: 15px 22px; display: flex; justify-content: space-between; align-items: center; color: #718096; font-size: 12px; border-top: 1px solid #e8eef5; }
+.pagination div { display: flex; align-items: center; gap: 10px; }.pagination b { min-width: 64px; color: #34455b; text-align: center; }
+.pagination button { padding: 7px 12px; border: 1px solid #cfdae7; border-radius: 7px; color: #40536b; background: white; cursor: pointer; }
+.pagination button:disabled { opacity: .4; cursor: default; }
+.pending-page { max-width: 700px; margin: 18vh auto; padding: 46px; border: 1px solid #dfe8f3; border-radius: 18px; background: #fff; text-align: center; box-shadow: 0 12px 36px rgba(25,54,93,.07); }
+.pending-page span { color: #0863e2; font-size: 12px; font-weight: 800; letter-spacing: .1em; }.pending-page h1 { margin: 12px 0; }.pending-page p { color: #718096; line-height: 1.7; }
+@media (max-width: 1200px) { .content { padding: 28px 24px; }.search-box { min-width: 360px; } }
