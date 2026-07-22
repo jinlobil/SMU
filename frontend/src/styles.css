@@ -23,6 +23,9 @@ nav button.active { color: white; background: #0863e2; box-shadow: 0 8px 20px rg
 .breadcrumb { margin: 0 0 5px; color: #718096; font-size: 13px; }
 h1 { margin: 0; font-size: 32px; letter-spacing: -.035em; }
 .status-pill { padding: 9px 14px; border: 1px solid #cfe0fb; border-radius: 999px; color: #0863e2; background: #eef5ff; font-size: 12px; font-weight: 700; }
+.refresh-area { display: flex; align-items: center; gap: 10px; min-height: 38px; color: #64748b; font-size: 12px; }
+.refresh-button { padding: 9px 15px; border: 1px solid #0863e2; border-radius: 9px; color: white; background: #0863e2; font-size: 12px; font-weight: 800; cursor: pointer; box-shadow: 0 5px 14px rgba(8,99,226,.2); }
+.refresh-button:disabled { opacity: .65; cursor: wait; }.refresh-success { color: #059669; font-weight: 700; }.refresh-error { color: #c2413a; font-weight: 700; }
 .summary-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-bottom: 20px; }
 .summary-grid article { padding: 20px 22px; border: 1px solid #e1eaf5; border-radius: 14px; background: #fff; box-shadow: 0 5px 18px rgba(25,54,93,.04); }
 .summary-grid span, .summary-grid small { display: block; color: #718096; font-size: 12px; }

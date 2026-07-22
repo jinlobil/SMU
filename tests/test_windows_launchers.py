@@ -11,6 +11,7 @@ def test_start_launcher_uses_explicit_virtualenv_python() -> None:
     assert '"%~dp0.venv\\Scripts\\python.exe" "%~dp0run_local.py"' in script
     assert "python run_local.py" not in script
     assert "bootstrap.log" in script
+    assert 'import fastapi,uvicorn' in script
     assert "pause" in script.lower()
     assert all(byte < 128 for byte in raw)
     assert b"\r\n" in raw

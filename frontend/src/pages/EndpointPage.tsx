@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { RefreshButton } from "../components/RefreshButton";
 
 
 type Endpoint = { hostname: string; userId: string; user: string; dept: string; ip: string; lastSeen: string };
@@ -17,6 +18,7 @@ export function EndpointPage() {
   const [direction, setDirection] = useState<"asc" | "desc">("asc");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -32,13 +34,13 @@ export function EndpointPage() {
       }).catch((reason: unknown) => { if ((reason as Error).name !== "AbortError") setError(String(reason)); }).finally(() => setLoading(false));
     }, 250);
     return () => { window.clearTimeout(timer); controller.abort(); };
-  }, [query, field, page, sort, direction]);
+  }, [query, field, page, sort, direction, reloadKey]);
 
   const changeSort = (name: keyof Endpoint) => { if (sort === name) setDirection(direction === "asc" ? "desc" : "asc"); else { setSort(name); setDirection("asc"); } setPage(1); };
   const header = (label: string, name: keyof Endpoint) => <button className="sort-button" onClick={() => changeSort(name)}>{label}<span>{sort === name ? (direction === "asc" ? "↑" : "↓") : "↕"}</span></button>;
 
   return <>
-    <header className="topbar"><div><p className="breadcrumb">Asset / Endpoint</p><h1>Endpoint</h1></div><div className="status-pill">실시간 캐시 조회</div></header>
+    <header className="topbar"><div><p className="breadcrumb">Asset / Endpoint</p><h1>Endpoint</h1></div><RefreshButton target="endpoints" onComplete={() => setReloadKey((key) => key + 1)} /></header>
     <section className="summary-grid"><article><span>조회 결과</span><strong>{total.toLocaleString()}</strong><small>검색 조건에 일치하는 엔드포인트</small></article><article><span>데이터 소스</span><strong className={sourceExists ? "good" : "warn"}>{sourceExists ? "정상" : "없음"}</strong><small>cache/endpoints.json</small></article><article><span>표시 중</span><strong>{items.length}</strong><small>페이지당 최대 50개</small></article></section>
     <section className="panel"><div className="panel-head"><div><h2>Endpoint 목록</h2><p>Hostname, 사용자, 부서, IP 기준으로 검색할 수 있습니다.</p></div><div className="search-box"><select value={field} onChange={(event) => { setField(event.target.value); setPage(1); }}>{searchFields.map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select><input value={query} onChange={(event) => { setQuery(event.target.value); setPage(1); }} placeholder="검색어 입력..." /></div></div>
       {error && <div className="error-banner">조회 오류: {error}</div>}{!sourceExists && !error && <div className="empty-banner">아직 Endpoint 캐시가 없습니다. 기존 앱에서 Endpoint 새로고침을 한 번 실행해주세요.</div>}

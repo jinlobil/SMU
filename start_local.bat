@@ -13,6 +13,8 @@ echo.
 if not exist "%~dp0run_local.py" goto missing_launcher
 if not exist "%~dp0.venv\Scripts\python.exe" goto run_setup
 if not exist "%~dp0frontend\node_modules" goto run_setup
+"%~dp0.venv\Scripts\python.exe" -c "import fastapi,uvicorn" >nul 2>&1
+if errorlevel 1 goto run_setup
 goto launch
 
 :run_setup

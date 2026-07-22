@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { RefreshButton } from "../components/RefreshButton";
 
 
 type OrganizationRow = { deptCode: string; deptName: string; user: string };
@@ -11,6 +12,7 @@ export function OrganizationPage() {
   const [total, setTotal] = useState(0); const [totalPages, setTotalPages] = useState(1); const [departments, setDepartments] = useState(0);
   const [sourceExists, setSourceExists] = useState(true); const [sort, setSort] = useState<keyof OrganizationRow>("deptCode"); const [direction, setDirection] = useState<"asc" | "desc">("asc");
   const [loading, setLoading] = useState(true); const [error, setError] = useState("");
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     const controller = new AbortController(); const timer = window.setTimeout(() => {
@@ -19,12 +21,12 @@ export function OrganizationPage() {
         setItems(payload.data.items); setTotal(payload.data.pagination.total); setTotalPages(payload.data.pagination.totalPages); setDepartments(payload.data.summary.departments); setSourceExists(payload.data.source.exists);
       }).catch((reason: unknown) => { if ((reason as Error).name !== "AbortError") setError(String(reason)); }).finally(() => setLoading(false));
     }, 250); return () => { window.clearTimeout(timer); controller.abort(); };
-  }, [query, field, page, sort, direction]);
+  }, [query, field, page, sort, direction, reloadKey]);
 
   const changeSort = (name: keyof OrganizationRow) => { if (sort === name) setDirection(direction === "asc" ? "desc" : "asc"); else { setSort(name); setDirection("asc"); } setPage(1); };
   const header = (label: string, name: keyof OrganizationRow) => <button className="sort-button" onClick={() => changeSort(name)}>{label}<span>{sort === name ? (direction === "asc" ? "↑" : "↓") : "↕"}</span></button>;
 
-  return <><header className="topbar"><div><p className="breadcrumb">Asset / Organization</p><h1>Organization</h1></div><div className="status-pill">조직 캐시 조회</div></header>
+  return <><header className="topbar"><div><p className="breadcrumb">Asset / Organization</p><h1>Organization</h1></div><RefreshButton target="organizations" onComplete={() => setReloadKey((key) => key + 1)} /></header>
     <section className="summary-grid"><article><span>부서</span><strong>{departments.toLocaleString()}</strong><small>검색 결과의 고유 부서</small></article><article><span>사용자</span><strong>{total.toLocaleString()}</strong><small>검색 조건에 일치하는 사용자</small></article><article><span>데이터 소스</span><strong className={sourceExists ? "good" : "warn"}>{sourceExists ? "정상" : "없음"}</strong><small>cache/user_groups.json</small></article></section>
     <section className="panel"><div className="panel-head"><div><h2>Organization 목록</h2><p>부서 코드, 부서명, 사용자 기준으로 검색할 수 있습니다.</p></div><div className="search-box"><select value={field} onChange={(event) => { setField(event.target.value); setPage(1); }}>{searchFields.map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select><input value={query} onChange={(event) => { setQuery(event.target.value); setPage(1); }} placeholder="검색어 입력..." /></div></div>
       {error && <div className="error-banner">조회 오류: {error}</div>}{!sourceExists && !error && <div className="empty-banner">아직 Organization 캐시가 없습니다. 기존 앱에서 Organization 새로고침을 한 번 실행해주세요.</div>}

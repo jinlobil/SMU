@@ -44,6 +44,7 @@ Python의 `>>>`만 표시된다면 정상 실행이 아닙니다. Windows CMD가
 - Endpoint 검색, 정렬, 페이지 이동 웹 화면
 - Organization 조회 API: `GET /api/organizations`
 - Asset 하위 메뉴와 Organization 검색, 정렬, 페이지 이동 화면
+- Endpoint·Organization Sophos 백그라운드 새로고침 Job API와 진행 상태
 - 요청별 ID와 영구 오류 로그
 - React/TypeScript 연결 상태 화면
 - 백엔드와 프론트엔드를 함께 감시하는 로컬 실행기
@@ -65,4 +66,8 @@ Python의 `>>>`만 표시된다면 정상 실행이 아닙니다. Windows CMD가
 3. 전체, DeptCode, DeptName, User 검색과 표 머리글 정렬이 동작해야 합니다.
 4. `env/User_group_env.txt`에 부서 코드 매핑이 있으면 매핑된 부서명이 표시되어야 합니다.
 
-다른 상위 메뉴는 아직 데이터 화면이 구현되지 않았으며, 클릭하면 `마이그레이션 진행 예정` 안내가 표시되는 것이 정상입니다. 다음 단계에서는 Endpoint·Organization 수동 새로고침 Job API와 IP 컨텍스트 메뉴를 연결합니다.
+각 Asset 화면의 `Sophos 새로고침` 버튼은 백그라운드 작업을 생성합니다. Endpoint는 `cache/endpoints.json`, Organization은 `cache/user_groups.json`과 `cache/users.json`을 안전하게 교체하며, 완료되면 화면이 자동으로 다시 조회됩니다. 실패하면 버튼 옆에 오류 안내가 표시되고 상세 예외는 `runtime/logs/web_errors.log`에 저장됩니다.
+
+`start_local.bat`은 백엔드 의존성 누락도 검사하고 필요한 경우 자동 설치를 다시 실행합니다.
+
+다른 상위 메뉴는 아직 데이터 화면이 구현되지 않았으며, 클릭하면 `마이그레이션 진행 예정` 안내가 표시되는 것이 정상입니다. 다음 단계에서는 Endpoint IP 컨텍스트 메뉴와 Detection 화면을 연결합니다.

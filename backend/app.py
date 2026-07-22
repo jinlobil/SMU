@@ -11,12 +11,16 @@ from backend.config import PROJECT_ROOT
 from backend.logging_config import configure_logging
 from backend.services.endpoints import EndpointService
 from backend.services.organizations import OrganizationService
+from backend.services.jobs import JobManager
+from backend.services.refresh import RefreshService
 
 
 configure_logging()
 log = logging.getLogger("smu.web")
 endpoint_service = EndpointService(PROJECT_ROOT)
 organization_service = OrganizationService(PROJECT_ROOT)
+refresh_service = RefreshService(PROJECT_ROOT)
+job_manager = JobManager()
 
 app = FastAPI(
     title="SMU Local Web API",
@@ -134,6 +138,25 @@ def list_organizations(
         log.error("Organization query rejected request_id=%s error=%s", request_id, exc)
         return error_response(request_id, "INVALID_ORGANIZATION_QUERY", str(exc), 400)
     return {"success": True, "data": data}
+
+
+@app.post("/api/jobs/refresh/{target}", status_code=202)
+def start_refresh(target: str) -> dict:
+    tasks = {"endpoints": refresh_service.refresh_endpoints, "organizations": refresh_service.refresh_organizations}
+    task = tasks.get(target)
+    if task is None:
+        request_id = str(uuid.uuid4())
+        return error_response(request_id, "UNKNOWN_REFRESH_TARGET", f"Unknown refresh target: {target}", 404)
+    return {"success": True, "data": job_manager.create(f"refresh-{target}", task)}
+
+
+@app.get("/api/jobs/{job_id}")
+def get_job(job_id: str) -> dict:
+    job = job_manager.get(job_id)
+    if job is None:
+        request_id = str(uuid.uuid4())
+        return error_response(request_id, "JOB_NOT_FOUND", f"Job not found: {job_id}", 404)
+    return {"success": True, "data": job}
 
 
 @app.post("/api/client-errors", status_code=204)
