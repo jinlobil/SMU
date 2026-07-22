@@ -3,6 +3,9 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
+import urllib.request
+import webbrowser
 from pathlib import Path
 
 
@@ -41,6 +44,21 @@ def start_process(name: str, command: list[str], cwd: Path) -> subprocess.Popen[
     return process
 
 
+def open_browser_when_ready() -> None:
+    """Open the UI only after Vite is actually accepting requests."""
+    url = "http://127.0.0.1:5173"
+    for _ in range(60):
+        try:
+            with urllib.request.urlopen(url, timeout=1) as response:
+                if response.status == 200:
+                    write_line(f"Frontend ready: {url}")
+                    webbrowser.open(url)
+                    return
+        except OSError:
+            time.sleep(0.5)
+    write_line(f"WARNING Frontend did not become ready within 30 seconds: {url}")
+
+
 def hold_terminal() -> None:
     message = f"오류 내용이 저장되었습니다: {LAUNCH_LOG}"
     write_line(message)
@@ -51,7 +69,8 @@ def hold_terminal() -> None:
 def main() -> int:
     processes: list[tuple[str, subprocess.Popen[str]]] = []
     try:
-        if shutil.which("npm") is None:
+        npm_command = shutil.which("npm")
+        if npm_command is None:
             raise RuntimeError("npm을 찾을 수 없습니다. Node.js를 설치해주세요.")
 
         backend = start_process(
@@ -59,9 +78,12 @@ def main() -> int:
             [sys.executable, "-m", "uvicorn", "backend.app:app", "--host", "127.0.0.1", "--port", "8765"],
             ROOT,
         )
-        frontend = start_process("frontend", ["npm", "run", "dev"], ROOT / "frontend")
+        frontend = start_process("frontend", [npm_command, "run", "dev"], ROOT / "frontend")
         processes.extend([("backend", backend), ("frontend", frontend)])
-        write_line("SMU local web started: http://127.0.0.1:5173")
+        write_line(f"Launcher log: {LAUNCH_LOG}")
+        write_line(f"Backend error log: {LOG_DIR / 'web_errors.log'}")
+        write_line("Starting SMU local web. The browser will open when it is ready.")
+        threading.Thread(target=open_browser_when_ready, daemon=True).start()
 
         while True:
             for name, process in processes:
@@ -84,4 +106,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
