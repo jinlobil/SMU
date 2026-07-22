@@ -27,6 +27,7 @@ def test_endpoint_list_matches_legacy_fields_and_search(tmp_path: Path) -> None:
 
     assert result["pagination"]["total"] == 1
     assert result["items"] == [{
+        "id": "endpoint-0",
         "hostname": "PC-001",
         "userId": "hong",
         "user": "홍길동",
@@ -52,3 +53,15 @@ def test_endpoint_list_paginates_and_sorts(tmp_path: Path) -> None:
 
     assert result["pagination"] == {"page": 2, "pageSize": 2, "total": 3, "totalPages": 2}
     assert [row["hostname"] for row in result["items"]] == ["PC-C"]
+
+
+def test_endpoint_detail_returns_summary_and_raw_cache_row(tmp_path: Path) -> None:
+    write_json(tmp_path / "cache" / "endpoints.json", [{
+        "id": "endpoint-id", "hostname": "PC-DETAIL", "health": {"overall": "good"},
+    }])
+
+    result = EndpointService(tmp_path).get_endpoint("endpoint-id")
+
+    assert result is not None
+    assert result["summary"]["hostname"] == "PC-DETAIL"
+    assert result["raw"]["health"] == {"overall": "good"}

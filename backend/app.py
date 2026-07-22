@@ -122,6 +122,15 @@ def list_endpoints(
     return {"success": True, "data": data}
 
 
+@app.get("/api/endpoints/{endpoint_id}")
+def get_endpoint(endpoint_id: str) -> dict:
+    data = endpoint_service.get_endpoint(endpoint_id)
+    if data is None:
+        request_id = str(uuid.uuid4())
+        return error_response(request_id, "ENDPOINT_NOT_FOUND", f"Endpoint not found: {endpoint_id}", 404)
+    return {"success": True, "data": data}
+
+
 @app.get("/api/organizations")
 def list_organizations(
     query: str = "",

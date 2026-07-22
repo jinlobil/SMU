@@ -124,7 +124,7 @@ class EndpointService:
         directory_index = build_directory_index(load_json_list(self.cache_dir / "users.json"), dept_names)
         return org_index, directory_index, exceptions
 
-    def _row(self, endpoint: dict[str, Any], context: tuple[dict[str, dict[str, str]], dict[str, dict[str, str]], dict[str, str]]) -> dict[str, str]:
+    def _row(self, endpoint: dict[str, Any], context: tuple[dict[str, dict[str, str]], dict[str, dict[str, str]], dict[str, str]], fallback_id: str = "") -> dict[str, str]:
         org_index, directory_index, exceptions = context
         hostname = str(endpoint.get("hostname", "None") or "None")
         person = endpoint.get("associatedPerson") if isinstance(endpoint.get("associatedPerson"), dict) else {}
@@ -146,6 +146,7 @@ class EndpointService:
                 break
 
         return {
+            "id": str(endpoint.get("id", "") or fallback_id or hostname),
             "hostname": hostname,
             "userId": user_id or "None",
             "user": user,
@@ -171,7 +172,7 @@ class EndpointService:
             raise ValueError(f"Unsupported sort direction: {direction}")
 
         context = self._department_context()
-        rows = [self._row(endpoint, context) for endpoint in load_json_list(self.endpoints_path)]
+        rows = [self._row(endpoint, context, f"endpoint-{index}") for index, endpoint in enumerate(load_json_list(self.endpoints_path))]
         keyword = query.strip().lower()
         if keyword:
             fields = ("hostname", "userId", "user", "dept", "ip") if field == "all" else (field,)
@@ -193,3 +194,14 @@ class EndpointService:
                 "exists": self.endpoints_path.exists(),
             },
         }
+
+    def get_endpoint(self, endpoint_id: str) -> dict[str, Any] | None:
+        endpoints = load_json_list(self.endpoints_path)
+        context = self._department_context()
+        for index, endpoint in enumerate(endpoints):
+            fallback_id = f"endpoint-{index}"
+            candidate_id = str(endpoint.get("id", "") or fallback_id or endpoint.get("hostname", ""))
+            if candidate_id != endpoint_id:
+                continue
+            return {"summary": self._row(endpoint, context, fallback_id), "raw": endpoint}
+        return None
