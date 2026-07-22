@@ -1,0 +1,19 @@
+:root {
+  font-family: Inter, Pretendard, system-ui, sans-serif;
+  color: #132238;
+  background: #eef4fb;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 320px; min-height: 100vh; }
+.shell { max-width: 960px; margin: 0 auto; padding: 12vh 28px; }
+.eyebrow { color: #0863e2; font-weight: 800; letter-spacing: .14em; }
+h1 { margin: 8px 0; font-size: clamp(40px, 7vw, 72px); letter-spacing: -.05em; }
+header > p:last-child { color: #5b6b80; font-size: 18px; }
+.status { margin-top: 48px; display: flex; gap: 16px; align-items: center; padding: 22px; border: 1px solid #d8e8ff; border-radius: 18px; background: white; box-shadow: 0 18px 50px rgba(8, 52, 112, .08); }
+.status .dot { width: 14px; height: 14px; border-radius: 50%; background: #f59e0b; box-shadow: 0 0 0 6px #fef3c7; }
+.status.ok .dot { background: #10b981; box-shadow: 0 0 0 6px #d1fae5; }
+.status.error .dot { background: #ef4444; box-shadow: 0 0 0 6px #fee2e2; }
+.status strong, .status small { display: block; }
+.status small { color: #6b7280; margin-top: 5px; }
+
