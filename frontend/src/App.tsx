@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { EndpointPage } from "./pages/EndpointPage";
 import { OrganizationPage } from "./pages/OrganizationPage";
+import { DetectionPage } from "./pages/DetectionPage";
 
 
-type View = "endpoint" | "organization" | "pending";
+type View = "endpoint" | "organization" | "detectionEndpoint" | "pending";
 const menus = ["Dashboard", "Detection", "Forensics", "Response", "Asset", "Lab", "Config"];
 
 export function App() {
@@ -20,8 +21,9 @@ export function App() {
 
   const selectMenu = (menu: string) => {
     setActiveMenu(menu);
-    if (menu !== "Asset") setView("pending");
-    else if (view === "pending") setView("endpoint");
+    if (menu === "Asset") setView("endpoint");
+    else if (menu === "Detection") setView("detectionEndpoint");
+    else setView("pending");
   };
 
   return (
@@ -34,13 +36,18 @@ export function App() {
             <button className={view === "endpoint" ? "selected" : ""} onClick={() => setView("endpoint")}>Endpoint</button>
             <button className={view === "organization" ? "selected" : ""} onClick={() => setView("organization")}>Organization</button>
           </div>}
+          {menu === "Detection" && activeMenu === "Detection" && <div className="subnav">
+            <button className={view === "detectionEndpoint" ? "selected" : ""} onClick={() => setView("detectionEndpoint")}>Detection - XDR</button>
+            {['Email - XDR', 'Inbound Mail', 'Outbound Mail', 'File'].map((name) => <button key={name} onClick={() => setView("pending")}>{name}</button>)}
+          </div>}
         </div>)}</nav>
         <div className={`connection ${health}`}><i />{health === "ok" ? "백엔드 연결됨" : health === "error" ? "연결 오류" : "연결 확인 중"}</div>
       </aside>
       <main className="content">
         {view === "endpoint" && <EndpointPage />}
         {view === "organization" && <OrganizationPage />}
-        {view === "pending" && <section className="pending-page"><span>마이그레이션 진행 예정</span><h1>{activeMenu}</h1><p>이 메뉴는 아직 기존 PyQt 기능을 웹으로 옮기는 중입니다. 현재 Asset의 Endpoint와 Organization을 사용할 수 있습니다.</p></section>}
+        {view === "detectionEndpoint" && <DetectionPage />}
+        {view === "pending" && <section className="pending-page"><span>마이그레이션 진행 예정</span><h1>{activeMenu}</h1><p>이 화면은 아직 기존 PyQt 기능을 웹으로 옮기는 중입니다. 현재 Asset의 Endpoint·Organization과 Detection - XDR을 사용할 수 있습니다.</p></section>}
       </main>
     </div>
   );

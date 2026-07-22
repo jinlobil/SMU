@@ -1,6 +1,8 @@
 import logging
+import json
 import time
 import uuid
+from datetime import date
 
 from fastapi import Body, FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
@@ -13,6 +15,7 @@ from backend.services.endpoints import EndpointService
 from backend.services.organizations import OrganizationService
 from backend.services.jobs import JobManager
 from backend.services.refresh import RefreshService
+from backend.services.detections import DetectionService
 
 
 configure_logging()
@@ -21,6 +24,7 @@ endpoint_service = EndpointService(PROJECT_ROOT)
 organization_service = OrganizationService(PROJECT_ROOT)
 refresh_service = RefreshService(PROJECT_ROOT)
 job_manager = JobManager()
+detection_service = DetectionService(PROJECT_ROOT)
 
 app = FastAPI(
     title="SMU Local Web API",
@@ -166,6 +170,37 @@ def get_job(job_id: str) -> dict:
         request_id = str(uuid.uuid4())
         return error_response(request_id, "JOB_NOT_FOUND", f"Job not found: {job_id}", 404)
     return {"success": True, "data": job}
+
+
+@app.get("/api/detections")
+def list_detections(
+    start: date,
+    end: date,
+    conditions: str = "[]",
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, alias="pageSize", ge=10, le=200),
+    sort: str = "time",
+    direction: str = "desc",
+) -> dict:
+    try:
+        parsed_conditions = json.loads(conditions)
+        if not isinstance(parsed_conditions, list):
+            raise ValueError("conditions must be a JSON list")
+        data = detection_service.list_detections(start, end, parsed_conditions, page, page_size, sort, direction)
+    except (ValueError, json.JSONDecodeError) as exc:
+        request_id = str(uuid.uuid4())
+        log.error("Detection query rejected request_id=%s error=%s", request_id, exc)
+        return error_response(request_id, "INVALID_DETECTION_QUERY", str(exc), 400)
+    return {"success": True, "data": data}
+
+
+@app.get("/api/detections/{event_id}")
+def get_detection(event_id: str, start: date, end: date) -> dict:
+    data = detection_service.get_detection(event_id, start, end)
+    if data is None:
+        request_id = str(uuid.uuid4())
+        return error_response(request_id, "DETECTION_NOT_FOUND", f"Detection not found: {event_id}", 404)
+    return {"success": True, "data": data}
 
 
 @app.post("/api/client-errors", status_code=204)
