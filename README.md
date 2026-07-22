@@ -25,7 +25,7 @@
 3. 브라우저가 자동으로 열리고 `Python 백엔드 연결 완료`가 표시됩니다.
 4. `http://127.0.0.1:8765/api/health`에 접속하면 `status`가 `ok`로 표시됩니다.
 
-Python의 `>>>`만 표시된다면 정상 실행이 아닙니다. 반드시 `start_local.bat`을 실행하고, 계속 발생하면 `runtime/logs/bootstrap.log`와 명령 프롬프트 화면을 전달해주세요.
+Python의 `>>>`만 표시된다면 정상 실행이 아닙니다. Windows CMD가 UTF-8 BAT 내용을 잘못 해석하는 경우를 방지하기 위해 실행 BAT는 ASCII와 Windows CRLF 형식만 사용합니다. 반드시 새 `start_local.bat`을 실행하고, 계속 발생하면 `runtime/logs/bootstrap.log`와 명령 프롬프트 화면을 전달해주세요.
 
 ### 오류 발생 시 전달할 파일
 
