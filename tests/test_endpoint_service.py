@@ -33,8 +33,25 @@ def test_endpoint_list_matches_legacy_fields_and_search(tmp_path: Path) -> None:
         "user": "홍길동",
         "dept": "Security",
         "ip": "10.0.0.7",
+        "ztna": "미설치",
         "lastSeen": "2026-07-22 08:30:00",
     }]
+
+
+def test_endpoint_list_translates_ztna_product_status(tmp_path: Path) -> None:
+    write_json(tmp_path / "cache" / "endpoints.json", [
+        {"hostname": "INSTALLED", "assignedProducts": [{"code": "ztna", "status": "installed"}]},
+        {"hostname": "NOT-INSTALLED", "assignedProducts": [{"code": "ztna", "status": "notInstalled"}]},
+        {"hostname": "NO-ZTNA"},
+    ])
+
+    result = EndpointService(tmp_path).list_endpoints(sort="hostname")
+
+    assert {row["hostname"]: row["ztna"] for row in result["items"]} == {
+        "INSTALLED": "설치",
+        "NOT-INSTALLED": "미설치",
+        "NO-ZTNA": "미설치",
+    }
 
 
 def test_endpoint_list_reports_missing_cache(tmp_path: Path) -> None:

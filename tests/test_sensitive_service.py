@@ -1,4 +1,5 @@
 import json
+import sqlite3
 from pathlib import Path
 
 from backend.services.sensitive import SensitiveService
@@ -19,3 +20,22 @@ def test_sensitive_service_loads_complete_legacy_category_specs(tmp_path: Path):
     service = SensitiveService(tmp_path)
     assert service.file_categories == {"Custom": ["needle"]}
     assert service.site_categories == {"Site": ["example.com"]}
+
+
+def test_sensitive_service_uses_existing_sqlite_index(tmp_path: Path):
+    database = tmp_path / "cache/index/app_cache.db"
+    database.parent.mkdir(parents=True)
+    with sqlite3.connect(database) as connection:
+        connection.execute("""CREATE TABLE sensitive_files_index (
+            dedupe_key TEXT PRIMARY KEY, source TEXT, category TEXT, event_time TEXT,
+            search_text TEXT, record_json TEXT)""")
+        record = {"row": {"filename": "resume.pdf"}, "source": "DLP", "category": "이직 / 취업", "keywords": ["resume"], "event_time": "2026-07-22 10:00:00", "event": "Upload", "user": "hong", "dept": "보안팀", "filename": "C:/resume.pdf", "display_filename": "resume.pdf"}
+        connection.execute(
+            "INSERT INTO sensitive_files_index VALUES (?,?,?,?,?,?)",
+            ("record-1", "DLP", "이직 / 취업", record["event_time"], "resume.pdf hong", json.dumps(record)),
+        )
+
+    result = SensitiveService(tmp_path).query("files", "전체", "resume", {"DLP"}, 0, 500)
+
+    assert result["source"] == "sqlite-index"
+    assert result["items"][0]["name"] == "resume.pdf"

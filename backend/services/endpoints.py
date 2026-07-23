@@ -5,8 +5,8 @@ from pathlib import Path
 from typing import Any
 
 
-SEARCH_FIELDS = {"all", "hostname", "userId", "user", "dept", "ip"}
-SORT_FIELDS = {"hostname", "userId", "user", "dept", "ip", "lastSeen"}
+SEARCH_FIELDS = {"all", "hostname", "userId", "user", "dept", "ip", "ztna"}
+SORT_FIELDS = {"hostname", "userId", "user", "dept", "ip", "ztna", "lastSeen"}
 
 
 def load_json_list(path: Path) -> list[dict[str, Any]]:
@@ -133,6 +133,16 @@ class EndpointService:
         user_id = via_login.split("\\")[-1] if "\\" in via_login else via_login
         ips = endpoint.get("ipv4Addresses", [])
         ip_text = ", ".join(str(ip) for ip in ips) if isinstance(ips, list) and ips else "None"
+        products = endpoint.get("assignedProducts", [])
+        ztna_product = next(
+            (
+                product
+                for product in products
+                if isinstance(product, dict) and str(product.get("code", "")).lower() == "ztna"
+            ),
+            None,
+        ) if isinstance(products, list) else None
+        ztna = "설치" if ztna_product and str(ztna_product.get("status", "")).lower() == "installed" else "미설치"
 
         match_name = normalize_org_name(user)
         dept_info = org_index.get(normalize_key(match_name)) or org_index.get(normalize_key(user_id))
@@ -152,6 +162,7 @@ class EndpointService:
             "user": user,
             "dept": dept,
             "ip": ip_text,
+            "ztna": ztna,
             "lastSeen": kst_time(endpoint.get("lastSeenAt")),
         }
 
@@ -175,7 +186,7 @@ class EndpointService:
         rows = [self._row(endpoint, context, f"endpoint-{index}") for index, endpoint in enumerate(load_json_list(self.endpoints_path))]
         keyword = query.strip().lower()
         if keyword:
-            fields = ("hostname", "userId", "user", "dept", "ip") if field == "all" else (field,)
+            fields = ("hostname", "userId", "user", "dept", "ip", "ztna") if field == "all" else (field,)
             rows = [row for row in rows if any(keyword in row[name].lower() for name in fields)]
 
         rows.sort(key=lambda row: (row[sort].lower(), row["hostname"].lower()), reverse=direction == "desc")

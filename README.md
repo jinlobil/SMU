@@ -56,6 +56,7 @@ Python의 `>>>`만 표시된다면 정상 실행이 아닙니다. Windows CMD가
 3. 검색 조건을 선택하고 검색어를 입력하면 250ms 후 결과가 갱신되어야 합니다.
 4. 표 머리글을 누르면 오름차순·내림차순 정렬이 변경되어야 합니다.
 5. 데이터가 50개를 넘으면 `이전`과 `다음` 버튼으로 페이지를 이동할 수 있어야 합니다.
+6. `ZTNA` 열은 `assignedProducts`의 `code=ztna` 상태가 `installed`이면 `설치`, `notInstalled`이거나 항목이 없으면 `미설치`로 표시합니다.
 
 캐시가 없으면 오류로 종료하지 않고 `아직 Endpoint 캐시가 없습니다` 안내가 표시됩니다.
 
@@ -102,3 +103,5 @@ Python의 `>>>`만 표시된다면 정상 실행이 아닙니다. Windows CMD가
 - Sensitive Files는 DLP 파일 경로와 Outbound 첨부파일을 키워드 분류하고 분류·파일명·사용자·부서별 탐색 및 Raw Detail을 제공합니다.
 - Sensitive Sites는 DLP 목적지/상세정보에서 도메인을 추출해 클라우드, 원격접속, 금융, 채용, 문서 변환, SNS 분류로 제공합니다.
 - 민감 파일·사이트 분류표는 `uimain_window.py`의 전체 `SENSITIVE_*_CATEGORY_SPECS`를 AST로 안전하게 읽어 기존 분류와 키워드를 빠짐없이 재사용합니다.
+- 웹 백엔드는 기존 앱의 `cache/index/timeline_index.db`와 `cache/index/app_cache.db`가 있으면 Timeline과 Sensitive Files/Sites를 SQLite 인덱스에서 바로 조회합니다.
+- 인덱스 파일 또는 해당 테이블이 없을 때만 호환성을 위해 원본 캐시를 직접 검색하며, 화면에는 `인덱스 검색` 또는 `캐시 직접 검색`이 표시됩니다. 검색이 느리고 `캐시 직접 검색`으로 표시되면 기존 앱 Config의 `Data Index`를 먼저 실행해주세요.

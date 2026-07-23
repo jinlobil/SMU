@@ -1,6 +1,8 @@
 import ast
 import hashlib
+import json
 import re
+import sqlite3
 from collections import Counter
 from datetime import date
 from pathlib import Path
@@ -61,6 +63,107 @@ class SensitiveService:
         self.file_categories = legacy_specs(project_root, "SENSITIVE_FILE_CATEGORY_SPECS", FILE_CATEGORIES)
         self.site_categories = legacy_specs(project_root, "SENSITIVE_SITE_CATEGORY_SPECS", SITE_CATEGORIES)
 
+    @property
+    def index_path(self) -> Path:
+        return self.project_root / "cache" / "index" / "app_cache.db"
+
+    def _query_index(self, kind: str, category: str, keyword: str, sources: set[str], offset: int, limit: int) -> dict[str, Any] | None:
+        if not self.index_path.exists():
+            return None
+        table = "sensitive_files_index" if kind == "files" else "sensitive_sites_index" if kind == "sites" else ""
+        if not table:
+            raise ValueError(f"Unsupported sensitive kind: {kind}")
+        clauses = []
+        params: list[Any] = []
+        if sources:
+            clauses.append(f"source IN ({','.join('?' for _ in sources)})")
+            params.extend(sorted(sources))
+        else:
+            clauses.append("0 = 1")
+        if category and category != "전체":
+            clauses.append("category = ?")
+            params.append(category)
+        if keyword.strip():
+            clauses.append("search_text LIKE ?")
+            params.append(f"%{keyword.strip().lower()}%")
+        where = " AND ".join(clauses) if clauses else "1 = 1"
+        count_clauses = [clause for clause in clauses if clause != "category = ?"]
+        count_params = list(params)
+        if category and category != "전체":
+            category_index = count_params.index(category)
+            count_params.pop(category_index)
+        count_where = " AND ".join(count_clauses) if count_clauses else "1 = 1"
+        try:
+            with sqlite3.connect(self.index_path) as connection:
+                table_exists = connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+                ).fetchone()
+                if not table_exists:
+                    return None
+                total = int(connection.execute(f"SELECT COUNT(*) FROM {table} WHERE {where}", params).fetchone()[0])
+                count_rows = connection.execute(
+                    f"SELECT category, COUNT(*) FROM {table} WHERE {count_where} GROUP BY category",
+                    count_params,
+                ).fetchall()
+                rows = connection.execute(
+                    f"SELECT dedupe_key, record_json FROM {table} WHERE {where} ORDER BY event_time DESC LIMIT ? OFFSET ?",
+                    [*params, limit, offset],
+                ).fetchall()
+        except sqlite3.Error:
+            return None
+        items = []
+        for record_id, raw_json in rows:
+            try:
+                record = json.loads(raw_json)
+            except (TypeError, json.JSONDecodeError):
+                continue
+            raw = record.get("row") if isinstance(record.get("row"), dict) else record
+            item = {
+                "id": f"{kind[:-1]}-{record_id}",
+                "source": str(record.get("source", "None")),
+                "category": str(record.get("category", "None")),
+                "keywords": record.get("keywords", []),
+                "user": str(record.get("user", "None")),
+                "dept": str(record.get("dept", "미분류")),
+                "time": str(record.get("event_time", "")),
+                "event": str(record.get("event", "None")),
+                "raw": raw,
+            }
+            if kind == "files":
+                item.update(name=str(record.get("display_filename") or record.get("filename") or "None"), path=str(record.get("filename", "None")))
+            else:
+                item.update(site=str(record.get("site", "None")), url=str(record.get("url") or record.get("destination") or "None"))
+            items.append(item)
+        return {
+            "items": [{key: value for key, value in item.items() if key != "raw"} for item in items],
+            "total": total,
+            "offset": offset,
+            "limit": limit,
+            "categoryCounts": {str(name): int(count) for name, count in count_rows},
+            "source": "sqlite-index",
+        }
+
+    def _index_detail(self, kind: str, record_id: str) -> dict[str, Any] | None:
+        if not self.index_path.exists():
+            return None
+        table = "sensitive_files_index" if kind == "files" else "sensitive_sites_index" if kind == "sites" else ""
+        if not table:
+            raise ValueError(f"Unsupported sensitive kind: {kind}")
+        prefix = f"{kind[:-1]}-"
+        key = record_id[len(prefix):] if record_id.startswith(prefix) else record_id
+        try:
+            with sqlite3.connect(self.index_path) as connection:
+                row = connection.execute(f"SELECT record_json FROM {table} WHERE dedupe_key = ?", (key,)).fetchone()
+        except sqlite3.Error:
+            return None
+        if not row:
+            return None
+        try:
+            record = json.loads(row[0])
+        except (TypeError, json.JSONDecodeError):
+            return None
+        return {"id": record_id, "raw": record.get("row", record), **record}
+
     @staticmethod
     def classify(text: str, specs: dict[str, list[str]]) -> tuple[str, list[str]] | None:
         lowered = text.lower()
@@ -120,6 +223,9 @@ class SensitiveService:
         return output
 
     def query(self, kind: str, category: str, keyword: str, sources: set[str], offset: int, limit: int) -> dict[str, Any]:
+        indexed = self._query_index(kind, category, keyword, sources, offset, limit)
+        if indexed is not None:
+            return indexed
         records = self.file_records(sources) if kind == "files" else self.site_records() if kind == "sites" else None
         if records is None:
             raise ValueError(f"Unsupported sensitive kind: {kind}")
@@ -132,9 +238,13 @@ class SensitiveService:
         records.sort(key=lambda record: record["time"], reverse=True)
         total = len(records)
         public = [{key: value for key, value in record.items() if key != "raw"} for record in records[offset:offset + limit]]
-        return {"items": public, "total": total, "offset": offset, "limit": limit, "categoryCounts": dict(counts)}
+        return {"items": public, "total": total, "offset": offset, "limit": limit, "categoryCounts": dict(counts), "source": "cache-scan"}
 
     def detail(self, kind: str, record_id: str, sources: set[str]) -> dict[str, Any] | None:
+        if record_id.startswith(f"{kind[:-1]}-"):
+            indexed = self._index_detail(kind, record_id)
+            if indexed is not None:
+                return indexed
         if kind == "files":
             records = self.file_records(sources)
         elif kind == "sites":
