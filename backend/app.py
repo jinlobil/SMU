@@ -1,4 +1,5 @@
 import logging
+import csv
 import json
 import time
 import uuid
@@ -6,7 +7,7 @@ from datetime import date
 
 from fastapi import Body, FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from backend.config import WEB_ERROR_LOG
 from backend.config import PROJECT_ROOT
@@ -22,6 +23,8 @@ from backend.services.timeline import TimelineService
 from backend.services.sensitive import SensitiveService
 from backend.services.dashboard import DashboardService
 from backend.services.firewall import FirewallService
+from backend.services.easy_query import EasyQueryService
+from backend.services.layout import LayoutService
 
 
 configure_logging()
@@ -37,6 +40,8 @@ timeline_service = TimelineService(PROJECT_ROOT)
 sensitive_service = SensitiveService(PROJECT_ROOT)
 dashboard_service = DashboardService(PROJECT_ROOT)
 firewall_service = FirewallService(PROJECT_ROOT)
+easy_query_service = EasyQueryService(PROJECT_ROOT)
+layout_service = LayoutService(PROJECT_ROOT)
 try:
     dashboard_service.warm_default()
 except Exception:
@@ -159,6 +164,95 @@ def start_firewall_job(payload: dict = Body()) -> dict:
         request_id = str(uuid.uuid4())
         return error_response(request_id, "INVALID_FIREWALL_REQUEST", str(exc), 400)
     return {"success": True, "data": job_manager.create(f"firewall-{action.lower()}", task)}
+
+
+@app.get("/api/easy-query/configuration")
+def easy_query_configuration() -> dict:
+    return {"success": True, "data": {"historyQueries": easy_query_service.history_queries()}}
+
+
+@app.get("/api/easy-query/sessions")
+def easy_query_sessions() -> dict:
+    return {"success": True, "data": {"sessions": easy_query_service.sessions()}}
+
+
+@app.delete("/api/easy-query/sessions/{session_id}")
+def delete_easy_query_session(session_id: str) -> dict:
+    if not easy_query_service.delete(session_id):
+        return error_response(str(uuid.uuid4()), "SESSION_NOT_FOUND", "Session not found", 404)
+    return {"success": True}
+
+
+@app.post("/api/jobs/easy-query", status_code=202)
+def start_easy_query(payload: dict = Body()) -> dict:
+    mode = str(payload.get("mode", "Live"))
+    if mode == "Live":
+        task = lambda progress: easy_query_service.run_live(str(payload.get("endpoint", "")), str(payload.get("queryType", "Process")), str(payload.get("keyword", "")), progress)
+    elif mode == "History":
+        task = lambda progress: easy_query_service.run_history(str(payload.get("queryId", "")), str(payload.get("endpointId", "")), str(payload.get("start", "")), str(payload.get("end", "")), payload.get("variables", {}), progress)
+    else:
+        return error_response(str(uuid.uuid4()), "INVALID_EASY_QUERY", "mode must be Live or History", 400)
+    return {"success": True, "data": job_manager.create(f"easy-query-{mode.lower()}", task)}
+
+
+@app.get("/api/layout")
+def get_layout() -> dict:
+    return {"success": True, "data": {"layout": layout_service.load(), "candidates": layout_service.candidates()}}
+
+
+@app.put("/api/layout")
+def save_layout(payload: dict = Body()) -> dict:
+    try:
+        data = layout_service.save(payload)
+    except ValueError as exc:
+        return error_response(str(uuid.uuid4()), "INVALID_LAYOUT", str(exc), 400)
+    return {"success": True, "data": {"layout": data}}
+
+
+@app.get("/api/layout/image/{floor}")
+def get_layout_image(floor: str):
+    path = layout_service.image(floor)
+    if not path.exists():
+        return error_response(str(uuid.uuid4()), "LAYOUT_IMAGE_NOT_FOUND", str(path), 404)
+    return FileResponse(path)
+
+
+@app.get("/api/config/status")
+def config_status() -> dict:
+    sources = {}
+    for name, relative in {"endpoints": "cache/endpoints.json", "organizations": "cache/user_groups.json", "detections": "cache/detections", "inbound": "cache/emails", "outbound": "cache/mailscreen", "dlp": "cache/dlp"}.items():
+        path = PROJECT_ROOT / relative
+        files = [path] if path.is_file() else list(path.glob("*")) if path.is_dir() else []
+        sources[name] = {"exists": bool(files), "files": len(files), "bytes": sum(file.stat().st_size for file in files if file.is_file()), "latest": max((file.stat().st_mtime for file in files), default=None)}
+    indexes = {}
+    for name, relative in {"app": "cache/index/app_cache.db", "timeline": "cache/index/timeline_index.db", "dashboard": "cache/index/web_dashboard_summary.json"}.items():
+        path = PROJECT_ROOT / relative
+        indexes[name] = {"exists": path.exists(), "bytes": path.stat().st_size if path.exists() else 0}
+    return {"success": True, "data": {"sources": sources, "indexes": indexes, "logs": str(PROJECT_ROOT / "runtime/logs")}}
+
+
+@app.get("/api/config/export/{kind}")
+def export_config_data(kind: str, start: date, end: date):
+    collectors = {
+        "detections": detection_service._events,
+        "xdr": email_security_service._collect_xdr,
+        "inbound": email_security_service._collect_inbound,
+        "outbound": transfer_service._collect_outbound,
+        "dlp": transfer_service._collect_dlp,
+    }
+    collector = collectors.get(kind)
+    if collector is None:
+        return error_response(str(uuid.uuid4()), "INVALID_EXPORT", "Unknown export type", 400)
+    rows = [row for _record_id, _raw, row in collector(start, end)[0]]
+    export_dir = PROJECT_ROOT / "exports"
+    export_dir.mkdir(parents=True, exist_ok=True)
+    path = export_dir / f"{kind}_{start}_{end}.csv"
+    columns = list(dict.fromkeys(key for row in rows for key in row))
+    with path.open("w", encoding="utf-8-sig", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=columns)
+        writer.writeheader()
+        writer.writerows(rows)
+    return FileResponse(path, filename=path.name, media_type="text/csv")
 
 
 @app.get("/api/endpoints")

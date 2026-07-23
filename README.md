@@ -77,7 +77,7 @@ Dashboard 기본 7일 범위는 백엔드 준비 단계에서 미리 집계해 `
 
 `start_local.bat`은 백엔드 의존성 누락도 검사하고 필요한 경우 자동 설치를 다시 실행합니다.
 
-아직 구현되지 않은 Response의 Easy Query, Lab, Config 메뉴는 클릭하면 `마이그레이션 진행 예정` 안내가 표시되는 것이 정상입니다. Dashboard, Asset, Detection, Forensics와 Response의 Firewall 화면은 현재 웹 화면에서 사용할 수 있습니다.
+Dashboard, Detection, Forensics, Response, Asset, Lab, Config의 모든 상위 메뉴와 기존 하위 메뉴가 웹 화면에 연결되어 있습니다.
 
 ### Response / Firewall
 
@@ -85,6 +85,25 @@ Dashboard 기본 7일 범위는 백엔드 준비 단계에서 미리 집계해 `
 - IP 또는 DOMAIN을 한 줄에 하나씩 입력하고 대상 Firewall을 선택해 `AIDR_` 객체와 기존 차단 그룹 멤버를 생성합니다.
 - 실제 변경 전 브라우저 확인 창을 표시하며 작업은 백그라운드 Job으로 실행됩니다. SUCCESS, EXISTS, FAIL 결과와 Raw Response를 확인할 수 있습니다.
 - 선택한 Firewall의 IP/FQDN 그룹 멤버 조회, 성공 결과 복사, 입력 검증을 지원합니다. 실행 실패 상세는 `runtime/logs/web_errors.log`에 저장됩니다.
+
+### Response / Easy Query
+
+- Live 모드에서 Process, Service, Scheduled Task, Installed Program, Network Connection, File Search 쿼리를 Endpoint 대상으로 실행합니다.
+- History 모드는 `Query/Queries.txt`의 Saved Query와 변수를 사용하며 모든 작업은 백그라운드 Job으로 실행됩니다.
+- Query 결과는 `cache/live_discover` 세션으로 저장되고 세션 목록, 동적 결과 컬럼, 상세보기, 삭제를 지원합니다.
+
+### Lab / Layout - User
+
+- `env/layout/Layout_User.json`과 18F/19F 배치도 이미지를 사용합니다.
+- Endpoint와 Directory 캐시에서 좌석 후보를 만들며 검색, 층 전환, 좌석 선택/추가/이동/삭제/저장을 지원합니다.
+- 저장은 임시 파일을 거친 원자적 교체 방식으로 처리합니다.
+
+### Config
+
+- Detection/Inbound 기간 새로고침과 Endpoint/Organization/User 새로고침 Job을 실행하고 진행 상태를 표시합니다.
+- Endpoint, Organization, Detection, Inbound, Outbound, DLP 캐시의 파일 수·용량과 App/Timeline/Dashboard 인덱스 상태를 확인합니다.
+- 런처 및 백엔드 오류/요청 로그 경로를 화면에서 바로 확인할 수 있습니다.
+- 선택 기간의 Detection, Email-XDR, Inbound, Outbound, DLP 결과를 Excel 호환 UTF-8 CSV로 내보냅니다.
 
 ### Endpoint 컨텍스트 메뉴와 상세 정보
 
