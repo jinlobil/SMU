@@ -70,7 +70,7 @@ Python의 `>>>`만 표시된다면 정상 실행이 아닙니다. Windows CMD가
 
 `start_local.bat`은 백엔드 의존성 누락도 검사하고 필요한 경우 자동 설치를 다시 실행합니다.
 
-아직 구현되지 않은 메뉴는 클릭하면 `마이그레이션 진행 예정` 안내가 표시되는 것이 정상입니다. 다음 단계에서는 Detection 그룹의 기간 새로고침 Job과 Forensics 기능을 연결합니다.
+아직 구현되지 않은 Dashboard, Response, Lab, Config 메뉴는 클릭하면 `마이그레이션 진행 예정` 안내가 표시되는 것이 정상입니다. Asset, Detection, Forensics 메뉴는 현재 웹 화면에서 사용할 수 있습니다.
 
 ### Endpoint 컨텍스트 메뉴와 상세 정보
 
@@ -99,3 +99,6 @@ Python의 `>>>`만 표시된다면 정상 실행이 아닙니다. Windows CMD가
 - Timeline은 날짜 선택 없이 Detection, Email-XDR, Inbound, Outbound, File/DLP 전체 캐시를 통합 검색합니다.
 - 사용자명, User ID, 메일, Hostname과 별도 키워드를 조합하고 검색할 소스를 선택할 수 있습니다.
 - 결과는 분 단위·소스·이벤트로 그룹화해 250개씩 표시하며 카드를 클릭하면 그룹 상세 이벤트 표가 열립니다.
+- Sensitive Files는 DLP 파일 경로와 Outbound 첨부파일을 키워드 분류하고 분류·파일명·사용자·부서별 탐색 및 Raw Detail을 제공합니다.
+- Sensitive Sites는 DLP 목적지/상세정보에서 도메인을 추출해 클라우드, 원격접속, 금융, 채용, 문서 변환, SNS 분류로 제공합니다.
+- 민감 파일·사이트 분류표는 `uimain_window.py`의 전체 `SENSITIVE_*_CATEGORY_SPECS`를 AST로 안전하게 읽어 기존 분류와 키워드를 빠짐없이 재사용합니다.

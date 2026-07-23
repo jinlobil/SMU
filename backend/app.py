@@ -19,6 +19,7 @@ from backend.services.detections import DetectionService
 from backend.services.email_security import EmailSecurityService
 from backend.services.transfers import TransferService
 from backend.services.timeline import TimelineService
+from backend.services.sensitive import SensitiveService
 
 
 configure_logging()
@@ -31,6 +32,7 @@ detection_service = DetectionService(PROJECT_ROOT)
 email_security_service = EmailSecurityService(PROJECT_ROOT)
 transfer_service = TransferService(PROJECT_ROOT)
 timeline_service = TimelineService(PROJECT_ROOT)
+sensitive_service = SensitiveService(PROJECT_ROOT)
 
 app = FastAPI(
     title="SMU Local Web API",
@@ -268,6 +270,27 @@ def search_timeline(user: str = "", keyword: str = "", sources: str = "Detection
     except ValueError as exc:
         request_id = str(uuid.uuid4()); log.error("Timeline query rejected request_id=%s error=%s", request_id, exc)
         return error_response(request_id, "INVALID_TIMELINE_QUERY", str(exc), 400)
+    return {"success": True, "data": data}
+
+
+@app.get("/api/sensitive/{kind}")
+def list_sensitive(kind: str, category: str = "전체", keyword: str = "", sources: str = "DLP,Outbound Mail", offset: int = Query(default=0, ge=0), limit: int = Query(default=500, ge=1, le=1000)) -> dict:
+    try:
+        data = sensitive_service.query(kind, category, keyword, {source.strip() for source in sources.split(",") if source.strip()}, offset, limit)
+    except ValueError as exc:
+        request_id = str(uuid.uuid4()); return error_response(request_id, "INVALID_SENSITIVE_QUERY", str(exc), 400)
+    return {"success": True, "data": data}
+
+
+@app.get("/api/sensitive/{kind}/{record_id}")
+def get_sensitive(kind: str, record_id: str, sources: str = "DLP,Outbound Mail") -> dict:
+    try:
+        data = sensitive_service.detail(kind, record_id, {source.strip() for source in sources.split(",") if source.strip()})
+    except ValueError as exc:
+        request_id = str(uuid.uuid4())
+        return error_response(request_id, "INVALID_SENSITIVE_QUERY", str(exc), 400)
+    if data is None:
+        request_id = str(uuid.uuid4()); return error_response(request_id, "SENSITIVE_RECORD_NOT_FOUND", "Record not found", 404)
     return {"success": True, "data": data}
 
 
