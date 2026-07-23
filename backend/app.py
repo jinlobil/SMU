@@ -18,6 +18,7 @@ from backend.services.refresh import RefreshService
 from backend.services.detections import DetectionService
 from backend.services.email_security import EmailSecurityService
 from backend.services.transfers import TransferService
+from backend.services.timeline import TimelineService
 
 
 configure_logging()
@@ -29,6 +30,7 @@ job_manager = JobManager()
 detection_service = DetectionService(PROJECT_ROOT)
 email_security_service = EmailSecurityService(PROJECT_ROOT)
 transfer_service = TransferService(PROJECT_ROOT)
+timeline_service = TimelineService(PROJECT_ROOT)
 
 app = FastAPI(
     title="SMU Local Web API",
@@ -252,6 +254,20 @@ def get_transfer(kind: str, record_id: str, start: date, end: date) -> dict:
     data = transfer_service.get_record(kind, record_id, start, end)
     if data is None:
         request_id = str(uuid.uuid4()); return error_response(request_id, "TRANSFER_RECORD_NOT_FOUND", "Record not found", 404)
+    return {"success": True, "data": data}
+
+
+@app.get("/api/timeline")
+def search_timeline(user: str = "", keyword: str = "", sources: str = "Detection,XDR,Email,Outbound Mail,File", offset: int = Query(default=0, ge=0), limit: int = Query(default=250, ge=1, le=500)) -> dict:
+    if not user.strip() and not keyword.strip():
+        request_id = str(uuid.uuid4()); return error_response(request_id, "TIMELINE_SEARCH_REQUIRED", "User or keyword is required", 400)
+    try:
+        selected_sources = {source.strip() for source in sources.split(",") if source.strip()}
+        if not selected_sources: raise ValueError("At least one source is required")
+        data = timeline_service.search(user, keyword, selected_sources, offset, limit)
+    except ValueError as exc:
+        request_id = str(uuid.uuid4()); log.error("Timeline query rejected request_id=%s error=%s", request_id, exc)
+        return error_response(request_id, "INVALID_TIMELINE_QUERY", str(exc), 400)
     return {"success": True, "data": data}
 
 

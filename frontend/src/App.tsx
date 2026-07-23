@@ -4,9 +4,10 @@ import { OrganizationPage } from "./pages/OrganizationPage";
 import { DetectionPage } from "./pages/DetectionPage";
 import { EmailSecurityPage } from "./pages/EmailSecurityPage";
 import { TransferPage } from "./pages/TransferPage";
+import { TimelinePage } from "./pages/TimelinePage";
 
 
-type View = "endpoint" | "organization" | "detectionEndpoint" | "emailXdr" | "inbound" | "outbound" | "dlp" | "pending";
+type View = "endpoint" | "organization" | "detectionEndpoint" | "emailXdr" | "inbound" | "outbound" | "dlp" | "timeline" | "pending";
 const menus = ["Dashboard", "Detection", "Forensics", "Response", "Asset", "Lab", "Config"];
 
 export function App() {
@@ -25,6 +26,7 @@ export function App() {
     setActiveMenu(menu);
     if (menu === "Asset") setView("endpoint");
     else if (menu === "Detection") setView("detectionEndpoint");
+    else if (menu === "Forensics") setView("timeline");
     else setView("pending");
   };
 
@@ -45,6 +47,10 @@ export function App() {
             <button className={view === "outbound" ? "selected" : ""} onClick={() => setView("outbound")}>Outbound Mail</button>
             <button className={view === "dlp" ? "selected" : ""} onClick={() => setView("dlp")}>File</button>
           </div>}
+          {menu === "Forensics" && activeMenu === "Forensics" && <div className="subnav">
+            <button className={view === "timeline" ? "selected" : ""} onClick={() => setView("timeline")}>Timeline</button>
+            <button onClick={() => setView("pending")}>Sensitive Files</button><button onClick={() => setView("pending")}>Sensitive Sites</button>
+          </div>}
         </div>)}</nav>
         <div className={`connection ${health}`}><i />{health === "ok" ? "백엔드 연결됨" : health === "error" ? "연결 오류" : "연결 확인 중"}</div>
       </aside>
@@ -56,6 +62,7 @@ export function App() {
         {view === "inbound" && <EmailSecurityPage kind="inbound" />}
         {view === "outbound" && <TransferPage kind="outbound" />}
         {view === "dlp" && <TransferPage kind="dlp" />}
+        {view === "timeline" && <TimelinePage />}
         {view === "pending" && <section className="pending-page"><span>마이그레이션 진행 예정</span><h1>{activeMenu}</h1><p>이 화면은 아직 이전 중입니다. 현재 Asset과 Detection 그룹 전체를 사용할 수 있습니다.</p></section>}
       </main>
     </div>

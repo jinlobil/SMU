@@ -93,3 +93,9 @@ Python의 `>>>`만 표시된다면 정상 실행이 아닙니다. Windows CMD가
 - Outbound Mail과 File은 조건별 `포함`·`제외` AND 검색, 정렬, 페이지 이동, Raw Detail을 지원합니다.
 - Detection - XDR과 Email - XDR의 `Sophos 기간 새로고침`은 선택 기간의 Detection API를 백그라운드로 수집해 `cache/detections`에 KST 날짜별 저장합니다.
 - Inbound Mail의 기간 새로고침은 Sophos 격리 메일 API를 수집해 `cache/emails`에 KST 날짜별 저장하며, 완료 후 현재 화면이 자동 갱신됩니다.
+
+### Forensics / Timeline
+
+- Timeline은 날짜 선택 없이 Detection, Email-XDR, Inbound, Outbound, File/DLP 전체 캐시를 통합 검색합니다.
+- 사용자명, User ID, 메일, Hostname과 별도 키워드를 조합하고 검색할 소스를 선택할 수 있습니다.
+- 결과는 분 단위·소스·이벤트로 그룹화해 250개씩 표시하며 카드를 클릭하면 그룹 상세 이벤트 표가 열립니다.
