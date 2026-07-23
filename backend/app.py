@@ -35,6 +35,10 @@ transfer_service = TransferService(PROJECT_ROOT)
 timeline_service = TimelineService(PROJECT_ROOT)
 sensitive_service = SensitiveService(PROJECT_ROOT)
 dashboard_service = DashboardService(PROJECT_ROOT)
+try:
+    dashboard_service.warm_default()
+except Exception:
+    log.exception("Dashboard startup pre-aggregation failed; the API will retry on demand")
 
 app = FastAPI(
     title="SMU Local Web API",
@@ -119,8 +123,13 @@ def health() -> dict:
 
 
 @app.get("/api/dashboard")
-def get_dashboard(days: int = Query(default=7, ge=1, le=31)) -> dict:
-    return {"success": True, "data": dashboard_service.summary(days)}
+def get_dashboard(start: date | None = None, end: date | None = None, refresh: bool = False) -> dict:
+    try:
+        data = dashboard_service.summary(start, end, refresh)
+    except ValueError as exc:
+        request_id = str(uuid.uuid4())
+        return error_response(request_id, "INVALID_DASHBOARD_RANGE", str(exc), 400)
+    return {"success": True, "data": data}
 
 
 @app.get("/api/endpoints")

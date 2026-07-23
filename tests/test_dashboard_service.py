@@ -1,4 +1,5 @@
 import json
+from datetime import date
 from pathlib import Path
 
 from backend.services.dashboard import DashboardService
@@ -24,3 +25,19 @@ def test_dashboard_summarizes_assets_and_recent_detection(tmp_path: Path) -> Non
     assert result["organization"] == {"departments": 1, "users": 1}
     assert result["totals"]["Detection - XDR"] == 1
     assert result["top"]["hosts"] == [("PC-1", 1)]
+    assert result["cache"] == "freshly-aggregated"
+
+    cached = DashboardService(tmp_path).summary()
+    assert cached["cache"] == "pre-aggregated"
+
+
+def test_dashboard_accepts_explicit_date_range(tmp_path: Path) -> None:
+    write_json(tmp_path / "cache/detections/2026-07-01.json", [])
+
+    result = DashboardService(tmp_path).summary(
+        start=date(2026, 7, 1),
+        end=date(2026, 7, 3),
+    )
+
+    assert result["range"] == {"start": "2026-07-01", "end": "2026-07-03"}
+    assert result["trend"]["dates"] == ["2026-07-01", "2026-07-02", "2026-07-03"]

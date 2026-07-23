@@ -49,8 +49,11 @@ Python의 `>>>`만 표시된다면 정상 실행이 아닙니다. Windows CMD가
 - React/TypeScript 연결 상태 화면
 - 백엔드와 프론트엔드를 함께 감시하는 로컬 실행기
 - 최근 7일 위협 추이, Endpoint/Organization 현황, Top File/Hash/Hostname/Rule/Sender IP를 보여주는 Dashboard
+- Dashboard 날짜 범위 적용, 직전 기간·전년 대비, Folder Usage, 소스 표시 전환과 Detection/Email/File 요약
 
 런처는 `/api/health`가 실제 응답할 때까지 기다린 후에만 Vite를 시작합니다. 따라서 정상 실행에서는 Vite의 `/api/health` 또는 `/api/endpoints` 프록시 `ECONNREFUSED` 메시지가 발생하지 않습니다.
+
+Dashboard 기본 7일 범위는 백엔드 준비 단계에서 미리 집계해 `cache/index/web_dashboard_summary.json`에 저장합니다. 같은 캐시 상태와 날짜 범위로 Dashboard를 다시 열면 원본 파일을 재집계하지 않고 저장된 집계 결과를 즉시 반환합니다. 날짜 범위를 변경해 `적용`하면 해당 범위는 최초 한 번 집계되고 이후 같은 범위는 재사용됩니다.
 
 ### Endpoint 화면 확인
 
