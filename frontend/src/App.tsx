@@ -7,9 +7,10 @@ import { TransferPage } from "./pages/TransferPage";
 import { TimelinePage } from "./pages/TimelinePage";
 import { SensitivePage } from "./pages/SensitivePage";
 import { DashboardPage } from "./pages/DashboardPage";
+import { FirewallPage } from "./pages/FirewallPage";
 
 
-type View = "dashboard" | "endpoint" | "organization" | "detectionEndpoint" | "emailXdr" | "inbound" | "outbound" | "dlp" | "timeline" | "sensitiveFiles" | "sensitiveSites" | "pending";
+type View = "dashboard" | "endpoint" | "organization" | "detectionEndpoint" | "emailXdr" | "inbound" | "outbound" | "dlp" | "timeline" | "sensitiveFiles" | "sensitiveSites" | "firewall" | "pending";
 const menus = ["Dashboard", "Detection", "Forensics", "Response", "Asset", "Lab", "Config"];
 
 export function App() {
@@ -30,6 +31,7 @@ export function App() {
     else if (menu === "Asset") setView("endpoint");
     else if (menu === "Detection") setView("detectionEndpoint");
     else if (menu === "Forensics") setView("timeline");
+    else if (menu === "Response") setView("firewall");
     else setView("pending");
   };
 
@@ -54,6 +56,10 @@ export function App() {
             <button className={view === "timeline" ? "selected" : ""} onClick={() => setView("timeline")}>Timeline</button>
             <button className={view === "sensitiveFiles" ? "selected" : ""} onClick={() => setView("sensitiveFiles")}>Sensitive Files</button><button className={view === "sensitiveSites" ? "selected" : ""} onClick={() => setView("sensitiveSites")}>Sensitive Sites</button>
           </div>}
+          {menu === "Response" && activeMenu === "Response" && <div className="subnav">
+            <button className={view === "firewall" ? "selected" : ""} onClick={() => setView("firewall")}>Firewall</button>
+            <button onClick={() => setView("pending")}>Easy Query</button>
+          </div>}
         </div>)}</nav>
         <div className={`connection ${health}`}><i />{health === "ok" ? "백엔드 연결됨" : health === "error" ? "연결 오류" : "연결 확인 중"}</div>
       </aside>
@@ -69,6 +75,7 @@ export function App() {
         {view === "timeline" && <TimelinePage />}
         {view === "sensitiveFiles" && <SensitivePage kind="files" />}
         {view === "sensitiveSites" && <SensitivePage kind="sites" />}
+        {view === "firewall" && <FirewallPage />}
         {view === "pending" && <section className="pending-page"><span>마이그레이션 진행 예정</span><h1>{activeMenu}</h1><p>이 화면은 아직 이전 중입니다. 현재 Dashboard, Asset, Detection, Forensics 그룹을 사용할 수 있습니다.</p></section>}
       </main>
     </div>

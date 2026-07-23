@@ -77,7 +77,14 @@ Dashboard 기본 7일 범위는 백엔드 준비 단계에서 미리 집계해 `
 
 `start_local.bat`은 백엔드 의존성 누락도 검사하고 필요한 경우 자동 설치를 다시 실행합니다.
 
-아직 구현되지 않은 Response, Lab, Config 메뉴는 클릭하면 `마이그레이션 진행 예정` 안내가 표시되는 것이 정상입니다. Dashboard, Asset, Detection, Forensics 메뉴는 현재 웹 화면에서 사용할 수 있습니다.
+아직 구현되지 않은 Response의 Easy Query, Lab, Config 메뉴는 클릭하면 `마이그레이션 진행 예정` 안내가 표시되는 것이 정상입니다. Dashboard, Asset, Detection, Forensics와 Response의 Firewall 화면은 현재 웹 화면에서 사용할 수 있습니다.
+
+### Response / Firewall
+
+- `env/Firewall_env.txt`의 Cloud, Seoul, Icheon, Anseong 설정 여부를 표시하며 비밀번호와 사용자명은 브라우저로 전송하지 않습니다.
+- IP 또는 DOMAIN을 한 줄에 하나씩 입력하고 대상 Firewall을 선택해 `AIDR_` 객체와 기존 차단 그룹 멤버를 생성합니다.
+- 실제 변경 전 브라우저 확인 창을 표시하며 작업은 백그라운드 Job으로 실행됩니다. SUCCESS, EXISTS, FAIL 결과와 Raw Response를 확인할 수 있습니다.
+- 선택한 Firewall의 IP/FQDN 그룹 멤버 조회, 성공 결과 복사, 입력 검증을 지원합니다. 실행 실패 상세는 `runtime/logs/web_errors.log`에 저장됩니다.
 
 ### Endpoint 컨텍스트 메뉴와 상세 정보
 

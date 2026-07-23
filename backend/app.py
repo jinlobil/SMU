@@ -21,6 +21,7 @@ from backend.services.transfers import TransferService
 from backend.services.timeline import TimelineService
 from backend.services.sensitive import SensitiveService
 from backend.services.dashboard import DashboardService
+from backend.services.firewall import FirewallService
 
 
 configure_logging()
@@ -35,6 +36,7 @@ transfer_service = TransferService(PROJECT_ROOT)
 timeline_service = TimelineService(PROJECT_ROOT)
 sensitive_service = SensitiveService(PROJECT_ROOT)
 dashboard_service = DashboardService(PROJECT_ROOT)
+firewall_service = FirewallService(PROJECT_ROOT)
 try:
     dashboard_service.warm_default()
 except Exception:
@@ -130,6 +132,33 @@ def get_dashboard(start: date | None = None, end: date | None = None, refresh: b
         request_id = str(uuid.uuid4())
         return error_response(request_id, "INVALID_DASHBOARD_RANGE", str(exc), 400)
     return {"success": True, "data": data}
+
+
+@app.get("/api/firewall/configuration")
+def get_firewall_configuration() -> dict:
+    return {"success": True, "data": {"firewalls": firewall_service.public_configurations()}}
+
+
+@app.post("/api/jobs/firewall", status_code=202)
+def start_firewall_job(payload: dict = Body()) -> dict:
+    action = str(payload.get("action", "create")).lower()
+    mode = str(payload.get("mode", "IP")).upper()
+    firewalls = payload.get("firewalls", [])
+    targets = payload.get("targets", [])
+    try:
+        if action == "create":
+            firewall_service.targets(mode, targets)
+            firewall_service.selected(firewalls, mode)
+            task = lambda progress: firewall_service.execute(mode, targets, firewalls, progress)
+        elif action == "groups":
+            firewall_service.selected(firewalls, mode)
+            task = lambda progress: firewall_service.groups(mode, firewalls, progress)
+        else:
+            raise ValueError("action must be create or groups")
+    except ValueError as exc:
+        request_id = str(uuid.uuid4())
+        return error_response(request_id, "INVALID_FIREWALL_REQUEST", str(exc), 400)
+    return {"success": True, "data": job_manager.create(f"firewall-{action.lower()}", task)}
 
 
 @app.get("/api/endpoints")
