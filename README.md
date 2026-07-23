@@ -20,7 +20,7 @@
 
 ### 정상 실행 시 확인할 내용
 
-1. 명령 프롬프트에 `Starting backend`, `Starting frontend`가 표시됩니다.
+1. 명령 프롬프트에 `Starting backend`와 `Backend ready`가 먼저 표시된 뒤 `Starting frontend`가 표시됩니다.
 2. `Frontend ready: http://127.0.0.1:5173`이 표시됩니다.
 3. 브라우저가 자동으로 열리고 `Python 백엔드 연결 완료`가 표시됩니다.
 4. `http://127.0.0.1:8765/api/health`에 접속하면 `status`가 `ok`로 표시됩니다.
@@ -48,6 +48,9 @@ Python의 `>>>`만 표시된다면 정상 실행이 아닙니다. Windows CMD가
 - 요청별 ID와 영구 오류 로그
 - React/TypeScript 연결 상태 화면
 - 백엔드와 프론트엔드를 함께 감시하는 로컬 실행기
+- 최근 7일 위협 추이, Endpoint/Organization 현황, Top File/Hash/Hostname/Rule/Sender IP를 보여주는 Dashboard
+
+런처는 `/api/health`가 실제 응답할 때까지 기다린 후에만 Vite를 시작합니다. 따라서 정상 실행에서는 Vite의 `/api/health` 또는 `/api/endpoints` 프록시 `ECONNREFUSED` 메시지가 발생하지 않습니다.
 
 ### Endpoint 화면 확인
 
@@ -71,7 +74,7 @@ Python의 `>>>`만 표시된다면 정상 실행이 아닙니다. Windows CMD가
 
 `start_local.bat`은 백엔드 의존성 누락도 검사하고 필요한 경우 자동 설치를 다시 실행합니다.
 
-아직 구현되지 않은 Dashboard, Response, Lab, Config 메뉴는 클릭하면 `마이그레이션 진행 예정` 안내가 표시되는 것이 정상입니다. Asset, Detection, Forensics 메뉴는 현재 웹 화면에서 사용할 수 있습니다.
+아직 구현되지 않은 Response, Lab, Config 메뉴는 클릭하면 `마이그레이션 진행 예정` 안내가 표시되는 것이 정상입니다. Dashboard, Asset, Detection, Forensics 메뉴는 현재 웹 화면에서 사용할 수 있습니다.
 
 ### Endpoint 컨텍스트 메뉴와 상세 정보
 

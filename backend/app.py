@@ -20,6 +20,7 @@ from backend.services.email_security import EmailSecurityService
 from backend.services.transfers import TransferService
 from backend.services.timeline import TimelineService
 from backend.services.sensitive import SensitiveService
+from backend.services.dashboard import DashboardService
 
 
 configure_logging()
@@ -33,6 +34,7 @@ email_security_service = EmailSecurityService(PROJECT_ROOT)
 transfer_service = TransferService(PROJECT_ROOT)
 timeline_service = TimelineService(PROJECT_ROOT)
 sensitive_service = SensitiveService(PROJECT_ROOT)
+dashboard_service = DashboardService(PROJECT_ROOT)
 
 app = FastAPI(
     title="SMU Local Web API",
@@ -114,6 +116,11 @@ def health() -> dict:
             "errorLog": str(WEB_ERROR_LOG),
         },
     }
+
+
+@app.get("/api/dashboard")
+def get_dashboard(days: int = Query(default=7, ge=1, le=31)) -> dict:
+    return {"success": True, "data": dashboard_service.summary(days)}
 
 
 @app.get("/api/endpoints")

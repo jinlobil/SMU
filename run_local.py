@@ -44,19 +44,29 @@ def start_process(name: str, command: list[str], cwd: Path) -> subprocess.Popen[
     return process
 
 
-def open_browser_when_ready() -> None:
-    """Open the UI only after Vite is actually accepting requests."""
-    url = "http://127.0.0.1:5173"
-    for _ in range(60):
+def wait_for_service(url: str, process: subprocess.Popen[str], name: str, attempts: int = 60) -> bool:
+    """Wait for an HTTP service while also detecting an early process exit."""
+    for _ in range(attempts):
+        return_code = process.poll()
+        if return_code is not None:
+            raise RuntimeError(f"{name} process exited during startup: code={return_code}")
         try:
             with urllib.request.urlopen(url, timeout=1) as response:
                 if response.status == 200:
-                    write_line(f"Frontend ready: {url}")
-                    webbrowser.open(url)
-                    return
+                    write_line(f"{name.capitalize()} ready: {url}")
+                    return True
         except OSError:
             time.sleep(0.5)
-    write_line(f"WARNING Frontend did not become ready within 30 seconds: {url}")
+    return False
+
+
+def open_browser_when_ready(frontend: subprocess.Popen[str]) -> None:
+    """Open the UI only after both the backend and Vite are accepting requests."""
+    url = "http://127.0.0.1:5173"
+    if wait_for_service(url, frontend, "frontend"):
+        webbrowser.open(url)
+    else:
+        write_line(f"WARNING Frontend did not become ready within 30 seconds: {url}")
 
 
 def hold_terminal() -> None:
@@ -78,12 +88,18 @@ def main() -> int:
             [sys.executable, "-m", "uvicorn", "backend.app:app", "--host", "127.0.0.1", "--port", "8765"],
             ROOT,
         )
+        processes.append(("backend", backend))
+        backend_url = "http://127.0.0.1:8765/api/health"
+        write_line("Waiting for backend before starting frontend...")
+        if not wait_for_service(backend_url, backend, "backend"):
+            raise RuntimeError(f"Backend did not become ready within 30 seconds: {backend_url}")
+
         frontend = start_process("frontend", [npm_command, "run", "dev"], ROOT / "frontend")
-        processes.extend([("backend", backend), ("frontend", frontend)])
+        processes.append(("frontend", frontend))
         write_line(f"Launcher log: {LAUNCH_LOG}")
         write_line(f"Backend error log: {LOG_DIR / 'web_errors.log'}")
         write_line("Starting SMU local web. The browser will open when it is ready.")
-        threading.Thread(target=open_browser_when_ready, daemon=True).start()
+        threading.Thread(target=open_browser_when_ready, args=(frontend,), daemon=True).start()
 
         while True:
             for name, process in processes:
