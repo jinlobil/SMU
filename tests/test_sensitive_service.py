@@ -39,3 +39,16 @@ def test_sensitive_service_uses_existing_sqlite_index(tmp_path: Path):
 
     assert result["source"] == "sqlite-index"
     assert result["items"][0]["name"] == "resume.pdf"
+
+
+def test_sensitive_results_support_100_item_pages(tmp_path: Path):
+    service = SensitiveService(tmp_path)
+    records = [{"id": f"file-{index}", "source": "DLP", "category": "문서", "time": f"2026-07-24 10:{index % 60:02d}:00", "name": f"file-{index}.pdf", "raw": {}} for index in range(205)]
+    service.file_records = lambda _sources: records
+
+    first = service.query("files", "전체", "", {"DLP"}, 0, 100)
+    third = service.query("files", "전체", "", {"DLP"}, 200, 100)
+
+    assert first["total"] == 205
+    assert len(first["items"]) == 100
+    assert len(third["items"]) == 5
