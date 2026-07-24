@@ -474,7 +474,7 @@ def search_timeline(user: str = "", keyword: str = "", sources: str = "Detection
 
 
 @app.get("/api/sensitive/{kind}")
-def list_sensitive(kind: str, category: str = "전체", keyword: str = "", sources: str = "DLP,Outbound Mail", offset: int = Query(default=0, ge=0), limit: int = Query(default=100, ge=1, le=1000)) -> dict:
+def list_sensitive(kind: str, category: str = "전체", keyword: str = "", sources: str = "DLP,Outbound Mail", offset: int = Query(default=0, ge=0), limit: int = Query(default=50, ge=1, le=1000)) -> dict:
     try:
         data = sensitive_service.query(kind, category, keyword, {source.strip() for source in sources.split(",") if source.strip()}, offset, limit)
     except ValueError as exc:

@@ -14,6 +14,9 @@ class ThemeService:
     if "=" in line and not line.lstrip().startswith("#"):
      k,v=line.split("=",1)
      if k.strip() in result and HEX.fullmatch(v.strip()):result[k.strip()]=v.strip()
+  legacy_blue={"#0863e2","#054fb8","#075fc9","#007fc7","#0088e2","#0568e5"}
+  for key in ("Primary_Blue","Primary_Blue_Dark","Card_Title_Text","Table_Header_Text","Table_Selection_Text"):
+   if result[key].lower() in legacy_blue:result[key]=DEFAULT_THEME[key]
   return result
  def save(self,data):
   result=dict(DEFAULT_THEME)
