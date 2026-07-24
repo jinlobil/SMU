@@ -25,6 +25,8 @@ from backend.services.dashboard import DashboardService
 from backend.services.firewall import FirewallService
 from backend.services.easy_query import EasyQueryService
 from backend.services.layout import LayoutService
+from backend.services.settings import SchedulerService, ThemeService
+from backend.services.report import ReportService
 
 
 configure_logging()
@@ -42,6 +44,9 @@ dashboard_service = DashboardService(PROJECT_ROOT)
 firewall_service = FirewallService(PROJECT_ROOT)
 easy_query_service = EasyQueryService(PROJECT_ROOT)
 layout_service = LayoutService(PROJECT_ROOT)
+theme_service = ThemeService(PROJECT_ROOT)
+scheduler_service = SchedulerService(PROJECT_ROOT, refresh_service)
+report_service = ReportService(PROJECT_ROOT)
 try:
     dashboard_service.warm_default()
 except Exception:
@@ -229,6 +234,49 @@ def config_status() -> dict:
         path = PROJECT_ROOT / relative
         indexes[name] = {"exists": path.exists(), "bytes": path.stat().st_size if path.exists() else 0}
     return {"success": True, "data": {"sources": sources, "indexes": indexes, "logs": str(PROJECT_ROOT / "runtime/logs")}}
+
+
+@app.get("/api/config/scheduler")
+def get_scheduler() -> dict:
+    return {"success": True, "data": scheduler_service.get()}
+
+
+@app.put("/api/config/scheduler")
+def save_scheduler(payload: dict = Body()) -> dict:
+    return {"success": True, "data": scheduler_service.save(payload)}
+
+
+@app.get("/api/config/theme")
+def get_theme() -> dict:
+    return {"success": True, "data": theme_service.load()}
+
+
+@app.put("/api/config/theme")
+def save_theme(payload: dict = Body()) -> dict:
+    try:
+        data = theme_service.save(payload)
+    except ValueError as exc:
+        return error_response(str(uuid.uuid4()), "INVALID_THEME", str(exc), 400)
+    return {"success": True, "data": data}
+
+
+@app.post("/api/jobs/report", status_code=202)
+def start_report(payload: dict = Body()) -> dict:
+    try:
+        start, end = date.fromisoformat(str(payload.get("start", ""))), date.fromisoformat(str(payload.get("end", "")))
+        if start > end:
+            raise ValueError("start date must not be after end date")
+    except ValueError as exc:
+        return error_response(str(uuid.uuid4()), "INVALID_REPORT_RANGE", str(exc), 400)
+    return {"success": True, "data": job_manager.create("security-report", lambda progress: report_service.build(start, end, progress))}
+
+
+@app.get("/api/config/report/{filename}")
+def download_report(filename: str):
+    path = PROJECT_ROOT / "reports" / Path(filename).name
+    if not path.exists():
+        return error_response(str(uuid.uuid4()), "REPORT_NOT_FOUND", "Report not found", 404)
+    return FileResponse(path, filename=path.name, media_type="application/pdf")
 
 
 @app.get("/api/config/export/{kind}")

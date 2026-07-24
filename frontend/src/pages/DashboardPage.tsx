@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 type Pair = [string, number];
 type SummaryRow = [string, Pair[]];
 type Dashboard = { range: { start: string; end: string }; endpoints: { pc: number; server: number; total: number }; organization: { departments: number; users: number }; folderUsage: Record<string, number>; totals: Record<string, number>; comparison: Record<string, { previous: number | null; year: number | null }>; trend: { dates: string[]; series: Record<string, number[]> }; top: { files: Pair[]; hashes: Pair[]; hosts: Pair[]; rules: Pair[]; senders: Pair[] }; summary: Record<string, SummaryRow[]>; cache: string };
-const colors: Record<string, string> = { "Detection - XDR": "#0863e2", "Email - XDR": "#18b6df", "Inbound Mail": "#16a394", "Outbound Mail": "#e83e8c", File: "#ef9400" };
+const colors: Record<string, string> = { "Detection - XDR": "var(--trend-detection)", "Email - XDR": "var(--trend-xdr)", "Inbound Mail": "var(--trend-email)", "Outbound Mail": "var(--trend-outbound)", File: "var(--trend-file)" };
 let dashboardSnapshot: Dashboard | null = null;
 const summaryTitles: Record<string, string> = { detection: "Detection - XDR Summary", xdr: "Email - XDR Summary", inbound: "Inbound Mail Summary", file: "File Summary" };
 

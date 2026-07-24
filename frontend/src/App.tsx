@@ -22,6 +22,24 @@ export function App() {
   const [view, setView] = useState<View>("endpoint");
 
   useEffect(() => {
+    fetch("/api/config/theme").then((response) => response.json()).then((payload) => {
+      const theme = payload.data || {};
+      const root = document.documentElement;
+      root.style.setProperty("--accent", theme.Primary_Blue);
+      root.style.setProperty("--accent-dark", theme.Primary_Blue_Dark);
+      root.style.setProperty("--app-bg", theme.UI_Background);
+      root.style.setProperty("--surface", theme.UI_Surface);
+      root.style.setProperty("--card-border", theme.Card_Border);
+      root.style.setProperty("--card-title", theme.Card_Title_Text);
+      root.style.setProperty("--table-head-bg", theme.Table_Header_Background);
+      root.style.setProperty("--table-head-text", theme.Table_Header_Text);
+      root.style.setProperty("--trend-detection", theme.Threat_trend_Detection);
+      root.style.setProperty("--trend-xdr", theme.Threat_trend_Detection_XDR);
+      root.style.setProperty("--trend-email", theme.Threat_trend_Email);
+      root.style.setProperty("--trend-outbound", theme.Threat_trend_Outbound_Mail);
+      root.style.setProperty("--trend-file", theme.Threat_trend_File);
+      window.dispatchEvent(new CustomEvent("smu-theme", { detail: theme }));
+    }).catch(() => undefined);
     fetch("/api/health").then((response) => {
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       setHealth("ok");
