@@ -3,7 +3,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
-DEFAULT_THEME={"Primary_Blue":"#0863e2","Primary_Blue_Dark":"#054fb8","UI_Background":"#ffffff","UI_Surface":"#ffffff","Card_Border":"#dfe8f3","Card_Title_Text":"#075fc9","Table_Header_Background":"#f7f9fc","Table_Header_Text":"#63748a","Table_Selection_Background":"#edf5ff","Table_Selection_Text":"#075fc9","Status_Success_Text":"#16a34a","Status_Fail_Text":"#dc2626","Threat_trend_Detection":"#0863e2","Threat_trend_Detection_XDR":"#18b6df","Threat_trend_Email":"#16a394","Threat_trend_Outbound_Mail":"#e83e8c","Threat_trend_File":"#ef9400"}
+DEFAULT_THEME={"Primary_Blue":"#ff4d8d","Primary_Blue_Dark":"#7c3aed","UI_Background":"#120b20","UI_Surface":"#211238","Card_Border":"#4c2864","Card_Title_Text":"#ffb347","Table_Header_Background":"#2c1746","Table_Header_Text":"#e4d4f2","Table_Selection_Background":"#3b1c55","Table_Selection_Text":"#ffffff","Status_Success_Text":"#41e6a1","Status_Fail_Text":"#ff5f79","Threat_trend_Detection":"#ff4d8d","Threat_trend_Detection_XDR":"#ff8a3d","Threat_trend_Email":"#30d5c8","Threat_trend_Outbound_Mail":"#c45cff","Threat_trend_File":"#ffd166"}
 HEX=re.compile(r"^#[0-9a-fA-F]{6}$")
 class ThemeService:
  def __init__(self,root:Path):self.path=root/"env/Color_env.txt"
