@@ -1,0 +1,145 @@
+# SMU Local Web Migration
+
+기존 PyQt 애플리케이션을 Python 백엔드와 React/TypeScript 프론트엔드로 단계적으로 이전합니다.
+
+## Windows에서 처음 실행
+
+1. Python 3와 Node.js LTS를 설치합니다.
+2. `start_local.bat`을 더블클릭합니다.
+3. 첫 실행이면 Python 가상환경과 필요한 패키지를 자동으로 설치합니다.
+4. 정상적으로 준비되면 `http://127.0.0.1:5173`이 브라우저에서 자동으로 열립니다.
+
+설치만 다시 실행하려면 `setup_local.bat`을 사용합니다. 설치 상세 출력은 `runtime/logs/setup.log`에 저장됩니다.
+
+## 실행
+
+- Windows: `start_local.bat`
+- Linux/macOS: `./start_local.sh`
+
+실행 중 출력은 화면과 `runtime/logs/launcher.log`에 동시에 저장됩니다. 백엔드에서 처리되지 않은 오류는 `runtime/logs/web_errors.log`에 요청 ID와 함께 저장됩니다. 실행 프로세스가 비정상 종료되면 실행 스크립트는 오류 경로를 표시하고 터미널을 즉시 닫지 않습니다.
+
+### 정상 실행 시 확인할 내용
+
+1. 명령 프롬프트에 `Starting backend`와 `Backend ready`가 먼저 표시된 뒤 `Starting frontend`가 표시됩니다.
+2. `Frontend ready: http://127.0.0.1:5173`이 표시됩니다.
+3. 브라우저가 자동으로 열리고 `Python 백엔드 연결 완료`가 표시됩니다.
+4. `http://127.0.0.1:8765/api/health`에 접속하면 `status`가 `ok`로 표시됩니다.
+
+Python의 `>>>`만 표시된다면 정상 실행이 아닙니다. Windows CMD가 UTF-8 BAT 내용을 잘못 해석하는 경우를 방지하기 위해 실행 BAT는 ASCII와 Windows CRLF 형식만 사용합니다. 반드시 새 `start_local.bat`을 실행하고, 계속 발생하면 `runtime/logs/bootstrap.log`와 명령 프롬프트 화면을 전달해주세요.
+
+### 오류 발생 시 전달할 파일
+
+- 실행 또는 프로세스 오류: `runtime/logs/launcher.log`
+- 최초 설치 오류: `runtime/logs/setup.log`
+- BAT 실행 위치 및 시작 오류: `runtime/logs/bootstrap.log`
+- 백엔드 API 오류: `runtime/logs/web_errors.log`
+- 백엔드 전체 요청 기록: `runtime/logs/web_app.log`
+
+프론트엔드에서 처리되지 않은 JavaScript 오류도 `/api/client-errors`를 통해 백엔드의 `web_errors.log`에 자동 저장됩니다.
+
+## 현재 범위
+
+- FastAPI 상태 확인 API: `GET /api/health`
+- Endpoint 조회 API: `GET /api/endpoints`
+- Endpoint 검색, 정렬, 페이지 이동 웹 화면
+- Organization 조회 API: `GET /api/organizations`
+- Asset 하위 메뉴와 Organization 검색, 정렬, 페이지 이동 화면
+- Endpoint·Organization Sophos 백그라운드 새로고침 Job API와 진행 상태
+- 요청별 ID와 영구 오류 로그
+- React/TypeScript 연결 상태 화면
+- 백엔드와 프론트엔드를 함께 감시하는 로컬 실행기
+- 최근 7일 위협 추이, Endpoint/Organization 현황, Top File/Hash/Hostname/Rule/Sender IP를 보여주는 Dashboard
+- Dashboard 날짜 범위 적용, 직전 기간·전년 대비, Folder Usage, 소스 표시 전환과 Detection/Email/File 요약
+
+런처는 `/api/health`가 실제 응답할 때까지 기다린 후에만 Vite를 시작합니다. 따라서 정상 실행에서는 Vite의 `/api/health` 또는 `/api/endpoints` 프록시 `ECONNREFUSED` 메시지가 발생하지 않습니다.
+
+Dashboard 기본 7일 범위는 백엔드 준비 단계에서 미리 집계해 `cache/index/web_dashboard_summary.json`에 저장합니다. 같은 캐시 상태와 날짜 범위로 Dashboard를 다시 열면 원본 파일을 재집계하지 않고 저장된 집계 결과를 즉시 반환합니다. 날짜 범위를 변경해 `적용`하면 해당 범위는 최초 한 번 집계되고 이후 같은 범위는 재사용됩니다.
+
+### Endpoint 화면 확인
+
+1. 기존 데스크톱 앱과 동일한 프로젝트 경로의 `cache/endpoints.json`을 사용합니다.
+2. 왼쪽 메뉴에서 `Asset`이 선택되고 `Endpoint` 목록이 표시되어야 합니다.
+3. 검색 조건을 선택하고 검색어를 입력하면 250ms 후 결과가 갱신되어야 합니다.
+4. 표 머리글을 누르면 오름차순·내림차순 정렬이 변경되어야 합니다.
+5. 데이터가 50개를 넘으면 `이전`과 `다음` 버튼으로 페이지를 이동할 수 있어야 합니다.
+6. `ZTNA` 열은 `assignedProducts`의 `code=ztna` 상태가 `installed`이면 `설치`, `notInstalled`이거나 항목이 없으면 `미설치`로 표시합니다.
+
+캐시가 없으면 오류로 종료하지 않고 `아직 Endpoint 캐시가 없습니다` 안내가 표시됩니다.
+
+### Organization 화면 확인
+
+1. `Asset` 아래의 `Organization`을 선택합니다.
+2. `cache/user_groups.json`의 부서별 사용자가 한 행씩 표시되어야 합니다.
+3. 전체, DeptCode, DeptName, User 검색과 표 머리글 정렬이 동작해야 합니다.
+4. `env/User_group_env.txt`에 부서 코드 매핑이 있으면 매핑된 부서명이 표시되어야 합니다.
+
+각 Asset 화면의 `Sophos 새로고침` 버튼은 백그라운드 작업을 생성합니다. Endpoint는 `cache/endpoints.json`, Organization은 `cache/user_groups.json`과 `cache/users.json`을 안전하게 교체하며, 완료되면 화면이 자동으로 다시 조회됩니다. 실패하면 버튼 옆에 오류 안내가 표시되고 상세 예외는 `runtime/logs/web_errors.log`에 저장됩니다.
+
+`start_local.bat`은 백엔드 의존성 누락도 검사하고 필요한 경우 자동 설치를 다시 실행합니다.
+
+Dashboard, Detection, Forensics, Response, Asset, Lab, Config의 모든 상위 메뉴와 기존 하위 메뉴가 웹 화면에 연결되어 있습니다.
+
+### Response / Firewall
+
+- `env/Firewall_env.txt`의 Cloud, Seoul, Icheon, Anseong 설정 여부를 표시하며 비밀번호와 사용자명은 브라우저로 전송하지 않습니다.
+- IP 또는 DOMAIN을 한 줄에 하나씩 입력하고 대상 Firewall을 선택해 `AIDR_` 객체와 기존 차단 그룹 멤버를 생성합니다.
+- 실제 변경 전 브라우저 확인 창을 표시하며 작업은 백그라운드 Job으로 실행됩니다. SUCCESS, EXISTS, FAIL 결과와 Raw Response를 확인할 수 있습니다.
+- 선택한 Firewall의 IP/FQDN 그룹 멤버 조회, 성공 결과 복사, 입력 검증을 지원합니다. 실행 실패 상세는 `runtime/logs/web_errors.log`에 저장됩니다.
+
+### Response / Easy Query
+
+- Live 모드에서 Process, Service, Scheduled Task, Installed Program, Network Connection, File Search 쿼리를 Endpoint 대상으로 실행합니다.
+- History 모드는 `Query/Queries.txt`의 Saved Query와 변수를 사용하며 모든 작업은 백그라운드 Job으로 실행됩니다.
+- Query 결과는 `cache/live_discover` 세션으로 저장되고 세션 목록, 동적 결과 컬럼, 상세보기, 삭제를 지원합니다.
+
+### Lab / Layout - User
+
+- `env/layout/Layout_User.json`과 18F/19F 배치도 이미지를 사용합니다.
+- Endpoint와 Directory 캐시에서 좌석 후보를 만들며 검색, 층 전환, 좌석 선택/추가/이동/삭제/저장을 지원합니다.
+- 저장은 임시 파일을 거친 원자적 교체 방식으로 처리합니다.
+
+### Config
+
+- Detection/Inbound 기간 새로고침과 Endpoint/Organization/User 새로고침 Job을 실행하고 진행 상태를 표시합니다.
+- Auto Refresh Scheduler는 사용 여부, 1~1440분 간격, Detection/Inbound/DLP/Outbound 대상을 저장하며 백엔드에서 화면과 독립적으로 실행됩니다.
+- Detection/Inbound 기간, DLP/Outbound 일자, Endpoint/Organization/User 개별 수집을 지원합니다.
+- Endpoint, Organization, Detection, Inbound, Outbound, DLP 캐시의 파일 수·용량과 App/Timeline/Dashboard 인덱스 상태를 확인하고 `전체 캐시 데이터 인덱싱`으로 검색용 SQLite 인덱스를 원자적으로 재생성합니다.
+- Dashboard 추세 그래프는 네온 곡선·영역 애니메이션을 사용하며 날짜 열에 마우스를 올리면 해당 날짜의 Detection, Email-XDR, Inbound, Outbound, File 카운트를 한 번에 표시합니다.
+- 런처 및 백엔드 오류/요청 로그 경로를 화면에서 바로 확인할 수 있습니다.
+- 선택 기간의 Detection, Email-XDR, Inbound, Outbound, DLP 결과를 Excel 호환 UTF-8 CSV로 내보냅니다.
+- 선택 기간의 Endpoint/Organization/보안 이벤트 집계와 Top Analysis를 `reports/security_report_*.pdf` 보안 보고서로 생성합니다.
+- 기본 UI는 다크 퍼플 배경과 핑크·오렌지 네온 강조색을 사용하며, `env/Color_env.txt`의 앱 배경, 카드, 강조색, 테이블, 상태 및 Threat Trend 색상을 Color Picker로 변경할 수 있습니다.
+- Layout - User 배치도는 원본 이미지 비율을 브라우저 가용 폭에 맞추고 동일 배율을 좌석 좌표·크기에 적용하므로 내부 스크롤 없이 이미지와 이름표가 함께 축소됩니다.
+
+### Endpoint 컨텍스트 메뉴와 상세 정보
+
+- IP 셀을 마우스 오른쪽 버튼으로 누르면 각 IP의 `복사`, `VirusTotal` 버튼과 `View Raw Detail`이 표시됩니다.
+- 한 셀에 IP가 여러 개면 IP별로 분리된 작업 버튼이 표시됩니다.
+- Endpoint 행을 더블클릭해도 Raw Detail 창이 열립니다.
+- 상세 데이터는 `GET /api/endpoints/{endpointId}`에서 현재 캐시 행을 가져오므로 브라우저 목록 응답에 전체 Raw 데이터를 포함하지 않습니다.
+
+### Detection - XDR 화면
+
+- `Detection > Detection - XDR`에서 `cache/detections/YYYY-MM-DD.json` 일별 캐시를 기간별로 조회합니다.
+- Endpoint 센서 데이터만 표시하며 Time, Hostname, Dept, Username, Private/Public IP, File, SHA256, Rule, Lineage를 기존 화면과 동일하게 구성합니다.
+- 검색 조건은 여러 줄을 추가할 수 있고 모든 입력 조건을 AND로 적용합니다.
+- 행을 더블클릭하면 해당 Detection의 Raw Detail을 필요할 때만 조회합니다.
+- `Email - XDR`은 같은 Detection 일별 캐시에서 Email 센서 및 XDR 메일 룰을 분리해 Mailbox, 사용자, 발신자, IOC와 SHA256을 표시합니다.
+- `Inbound Mail`은 `cache/emails/YYYY-MM-DD.json`에서 수신자별 행을 만들고 From, To, CC, Subject, Reason, Sender IP를 표시합니다.
+- 두 화면 모두 기간 조회, AND 다중검색, 정렬, 페이지 이동과 Raw Detail을 지원합니다.
+- `Outbound Mail`은 `cache/mailscreen/mailscreen_mail_YYYY-MM-DD.json`을 읽고 메일 처리, 전송 결과, 발신자, 수신자, 정책과 첨부 정보를 표시합니다.
+- `File`은 `cache/dlp/YYYY-MM-DD.jsonl`을 읽고 이벤트, 컴퓨터/부서, IP, 소스·대상, 파일 크기와 해시를 표시합니다.
+- Outbound Mail과 File은 조건별 `포함`·`제외` AND 검색, 정렬, 페이지 이동, Raw Detail을 지원합니다.
+- Detection - XDR과 Email - XDR의 `Sophos 기간 새로고침`은 선택 기간의 Detection API를 백그라운드로 수집해 `cache/detections`에 KST 날짜별 저장합니다.
+- Inbound Mail의 기간 새로고침은 Sophos 격리 메일 API를 수집해 `cache/emails`에 KST 날짜별 저장하며, 완료 후 현재 화면이 자동 갱신됩니다.
+
+### Forensics / Timeline
+
+- Timeline은 날짜 선택 없이 Detection, Email-XDR, Inbound, Outbound, File/DLP 전체 캐시를 통합 검색합니다.
+- 사용자명, User ID, 메일, Hostname과 별도 키워드를 조합하고 검색할 소스를 선택할 수 있습니다.
+- 결과는 분 단위·소스·이벤트로 그룹화해 250개씩 표시하며 카드를 클릭하면 그룹 상세 이벤트 표가 열립니다.
+- Sensitive Files는 DLP 파일 경로와 Outbound 첨부파일을 키워드 분류하고 분류·파일명·사용자·부서별 탐색 및 Raw Detail을 제공합니다.
+- Sensitive Sites는 DLP 목적지/상세정보에서 도메인을 추출해 클라우드, 원격접속, 금융, 채용, 문서 변환, SNS 분류로 제공합니다.
+- 민감 파일·사이트 분류표는 `uimain_window.py`의 전체 `SENSITIVE_*_CATEGORY_SPECS`를 AST로 안전하게 읽어 기존 분류와 키워드를 빠짐없이 재사용합니다.
+- 웹 백엔드는 기존 앱의 `cache/index/timeline_index.db`와 `cache/index/app_cache.db`가 있으면 Timeline과 Sensitive Files/Sites를 SQLite 인덱스에서 바로 조회합니다.
+- 인덱스 파일 또는 해당 테이블이 없을 때만 호환성을 위해 원본 캐시를 직접 검색하며, 화면에는 `인덱스 검색` 또는 `캐시 직접 검색`이 표시됩니다. 검색이 느리고 `캐시 직접 검색`으로 표시되면 기존 앱 Config의 `Data Index`를 먼저 실행해주세요.
