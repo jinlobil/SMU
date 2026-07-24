@@ -100,3 +100,27 @@ tbody tr:hover { background: #f8fbff; }.hostname { color: #075fc9; font-weight: 
 .layout-body { grid-template-columns:minmax(0,1fr) 280px; align-items:start; }.seat-canvas { width:100%; min-width:0; min-height:0; overflow:hidden; line-height:0; background:#fff; }.seat-canvas > img { display:block; width:100%; height:auto; user-select:none; pointer-events:none; }.seat-canvas button { padding:0; line-height:1; }.seat-canvas button.selected { outline-color:var(--accent); }
 .panel,.config-card,.dash-card,.category-list,.sensitive-detail { background:var(--surface); border-color:var(--card-border); }.config-card h2,.dash-card h2 { color:var(--card-title); }.config-card button,.load-more { color:var(--accent); }.hostname { color:var(--accent); } th { background:var(--table-head-bg); color:var(--table-head-text); }
 .scheduler-enable { font-weight:800; color:var(--accent); }.config-card > label { display:flex; align-items:center; justify-content:space-between; gap:10px; font-size:11px; }.config-card input[type=number] { width:90px; height:32px; border:1px solid #cfdae7; border-radius:7px; }.scheduler-targets { display:grid; grid-template-columns:1fr 1fr; gap:7px; }.scheduler-targets label { padding:7px; border:1px solid var(--card-border); border-radius:7px; font-size:10px; }.theme-card { grid-row:span 2; }.theme-colors { display:grid; grid-template-columns:1fr 1fr; gap:6px; }.theme-colors label { padding:6px 8px; display:grid; grid-template-columns:1fr 34px 62px; align-items:center; gap:5px; border:1px solid var(--card-border); border-radius:7px; font-size:9px; }.theme-colors input { width:32px; height:25px; padding:0; border:0; }.theme-colors code { color:#64748b; font-size:8px; }.config-card .report-button { color:#fff; background:var(--accent); font-weight:800; }
+/* White-first local web theme: blue is reserved for actions and state. */
+:root { --app-bg:#fff; }
+body { background:#fff; }
+.sidebar { color:#254363; background:#fff; border-right:1px solid #dbe8f8; box-shadow:8px 0 28px rgba(35,91,154,.06); }
+.brand { border-bottom-color:#dce8f5; }.brand strong { color:#102846; }.brand span { color:var(--accent); }
+nav button { color:#496884; } nav button:hover { color:var(--accent); background:#edf5ff; } nav button.active { color:#fff; background:var(--accent); box-shadow:0 8px 20px rgba(8,99,226,.2); }
+.subnav { border-left-color:#dce8f5; }.subnav button { color:#6c8198; }.subnav button.selected { color:var(--accent); background:#edf5ff; }.connection { color:#627a93; }
+.content { background:linear-gradient(180deg,#fff 0,#fbfdff 100%); }
+.panel,.config-card,.dash-card { box-shadow:0 10px 30px rgba(19,91,170,.07); }
+.config-grid { grid-template-columns:repeat(2,minmax(0,1fr)); align-items:stretch; gap:18px; }
+.config-card { min-height:260px; padding:20px; border-color:#dce9f8; border-radius:18px; }
+.cache-data-card,.scheduler-card { min-height:390px; }
+.theme-card { grid-row:auto; }
+.refresh-row { display:grid; grid-template-columns:minmax(0,1.5fr) minmax(190px,1fr); gap:8px; align-items:center; }
+.refresh-row > input { height:34px; padding:0 8px; border:1px solid #cfdae7; border-radius:7px; }
+.collector-buttons { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-top:2px; }
+.config-card .primary-action { color:#fff; border-color:var(--accent); background:var(--accent); font-weight:800; }
+.trend-wave { stroke-dasharray:1800; stroke-dashoffset:1800; filter:drop-shadow(0 4px 5px rgba(8,99,226,.14)); animation:draw-wave 1.15s cubic-bezier(.2,.7,.2,1) forwards; }
+.trend-area { opacity:0; animation:area-rise .8s .45s ease-out forwards; }
+.trend-point { cursor:crosshair; }.trend-point > circle:nth-child(2) { transition:r .2s ease,filter .2s ease; }.trend-point:hover > circle:nth-child(2) { r:7px; filter:drop-shadow(0 0 7px currentColor); }
+.trend-tooltip { opacity:0; pointer-events:none; transform-box:fill-box; transform-origin:center bottom; transition:opacity .18s ease,scale .18s ease; scale:.82; }.trend-point:hover .trend-tooltip { opacity:1; scale:1; }
+.trend-tooltip rect { fill:#102846; stroke:#6aa9ff; stroke-width:1; filter:drop-shadow(0 6px 8px rgba(16,40,70,.2)); }.trend-tooltip text { fill:#fff; font-size:9px; font-weight:700; text-anchor:middle; }
+@keyframes draw-wave { to { stroke-dashoffset:0; } } @keyframes area-rise { from { opacity:0; transform:translateY(7px); } to { opacity:1; transform:translateY(0); } }
+@media (prefers-reduced-motion:reduce) { .trend-wave,.trend-area { animation:none; stroke-dashoffset:0; opacity:1; } }

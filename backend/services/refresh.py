@@ -37,6 +37,24 @@ class RefreshService:
         self.save_json_atomic(self.cache_dir / "users.json", users)
         return {"groups": len(groups), "users": len(users)}
 
+    def refresh_users(self, progress: Callable[[str], None]) -> dict:
+        progress("Sophos 인증 및 사용자 조회 중")
+        client = self.client_factory(self.env_dir / "Sophos_env.txt")
+        client.authenticate()
+        users = client.fetch_users()
+        self.save_json_atomic(self.cache_dir / "users.json", users)
+        return {"users": len(users)}
+
+    def refresh_dlp(self, day: date, progress: Callable[[str], None]) -> dict:
+        from backend.clients.legacy_collectors import DlpClient
+        progress(f"DLP {day.isoformat()} 인증 및 수집 중")
+        return DlpClient(progress_cb=progress).refresh_dlp_day(day.isoformat())
+
+    def refresh_outbound(self, day: date, progress: Callable[[str], None]) -> dict:
+        from backend.clients.legacy_collectors import MailScreenClient
+        progress(f"Outbound Mail {day.isoformat()} 인증 및 수집 중")
+        return MailScreenClient(progress_cb=progress).refresh_mail_day(day.isoformat())
+
     @staticmethod
     def utc_range(start: date, end: date) -> tuple[str, str]:
         kst = timezone(timedelta(hours=9))

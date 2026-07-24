@@ -27,6 +27,7 @@ from backend.services.easy_query import EasyQueryService
 from backend.services.layout import LayoutService
 from backend.services.settings import SchedulerService, ThemeService
 from backend.services.report import ReportService
+from backend.services.indexing import IndexService
 
 
 configure_logging()
@@ -47,6 +48,7 @@ layout_service = LayoutService(PROJECT_ROOT)
 theme_service = ThemeService(PROJECT_ROOT)
 scheduler_service = SchedulerService(PROJECT_ROOT, refresh_service)
 report_service = ReportService(PROJECT_ROOT)
+index_service = IndexService(PROJECT_ROOT)
 try:
     dashboard_service.warm_default()
 except Exception:
@@ -351,7 +353,7 @@ def list_organizations(
 @app.post("/api/jobs/refresh/{target}", status_code=202)
 def start_refresh(target: str, payload: dict | None = Body(default=None)) -> dict:
     payload = payload or {}
-    tasks = {"endpoints": refresh_service.refresh_endpoints, "organizations": refresh_service.refresh_organizations}
+    tasks = {"endpoints": refresh_service.refresh_endpoints, "organizations": refresh_service.refresh_organizations, "users": refresh_service.refresh_users}
     if target in {"detections", "inbound"}:
         try:
             start = date.fromisoformat(str(payload.get("start", ""))); end = date.fromisoformat(str(payload.get("end", "")))
@@ -359,11 +361,22 @@ def start_refresh(target: str, payload: dict | None = Body(default=None)) -> dic
         except ValueError as exc:
             request_id = str(uuid.uuid4()); return error_response(request_id, "INVALID_REFRESH_RANGE", str(exc), 400)
         tasks[target] = (lambda progress: refresh_service.refresh_detections(start, end, progress)) if target == "detections" else (lambda progress: refresh_service.refresh_inbound(start, end, progress))
+    if target in {"dlp", "outbound"}:
+        try:
+            day = date.fromisoformat(str(payload.get("date", "")))
+        except ValueError as exc:
+            request_id = str(uuid.uuid4()); return error_response(request_id, "INVALID_REFRESH_DATE", str(exc), 400)
+        tasks[target] = (lambda progress: refresh_service.refresh_dlp(day, progress)) if target == "dlp" else (lambda progress: refresh_service.refresh_outbound(day, progress))
     task = tasks.get(target)
     if task is None:
         request_id = str(uuid.uuid4())
         return error_response(request_id, "UNKNOWN_REFRESH_TARGET", f"Unknown refresh target: {target}", 404)
     return {"success": True, "data": job_manager.create(f"refresh-{target}", task)}
+
+
+@app.post("/api/jobs/index", status_code=202)
+def rebuild_indexes() -> dict:
+    return {"success": True, "data": job_manager.create("rebuild-all-indexes", index_service.rebuild_all)}
 
 
 @app.get("/api/jobs/{job_id}")
