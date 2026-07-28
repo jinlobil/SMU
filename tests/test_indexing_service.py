@@ -39,3 +39,17 @@ def test_rebuild_removes_abandoned_legacy_temp_database(tmp_path):
 
     assert not stale.exists()
     assert any("임시 파일 정리" in message for message in messages)
+
+
+def test_sensitive_index_defensively_deduplicates_semantic_site_key(tmp_path):
+    service = IndexService(tmp_path)
+    records = [
+        {"id": "site-new", "source": "DLP", "category": "SNS", "time": "2026-07-28", "site": "instagram.com", "dept": " 마케팅 ", "user": "kim", "raw": {}},
+        {"id": "site-old", "source": "DLP", "category": "SNS", "time": "2026-07-27", "site": "instagram.com", "dept": "마케팅", "user": "kim", "raw": {}},
+    ]
+
+    service._build_sensitive([], records)
+
+    with sqlite3.connect(tmp_path / "cache/index/app_cache.db") as db:
+        row = db.execute("SELECT COUNT(*), MAX(event_time) FROM sensitive_sites_index").fetchone()
+    assert row == (1, "2026-07-28")

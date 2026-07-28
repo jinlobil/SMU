@@ -88,3 +88,25 @@ def test_sensitive_sites_keep_only_latest_duplicate_for_same_owner(tmp_path: Pat
     assert len(records) == 1
     assert records[0]["id"].startswith("site-new-")
     assert records[0]["time"] == "2026-07-28 10:00:00"
+
+
+def test_outbound_without_attachment_is_not_a_sensitive_file(tmp_path: Path):
+    service = SensitiveService(tmp_path)
+    service._transfer_records = lambda kind: [("mail-1", {"attach": "", "subject": "채권 안내"}, {
+        "attachment": "None", "subject": "채권 안내", "senderName": "kim", "dept": "법무팀",
+        "date": "2026-07-28 10:00:00", "sendResult": "성공",
+    })] if kind == "outbound" else []
+
+    assert service.file_records({"Outbound Mail"}) == []
+
+
+def test_outbound_attachment_parser_creates_only_actual_files(tmp_path: Path):
+    service = SensitiveService(tmp_path)
+    service._transfer_records = lambda kind: [("mail-1", {}, {
+        "attachment": "계약서.pdf (1.1 MB), resume.docx (20 KB)", "subject": "첨부 송부",
+        "senderName": "kim", "dept": "법무팀", "date": "2026-07-28 10:00:00", "sendResult": "성공",
+    })] if kind == "outbound" else []
+
+    names = {record["name"] for record in service.file_records({"Outbound Mail"})}
+
+    assert names == {"계약서.pdf", "resume.docx"}

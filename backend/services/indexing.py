@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Callable
 
 from backend.services.dashboard import DashboardService
-from backend.services.sensitive import SensitiveService
+from backend.services.sensitive import SensitiveService, normalized_identity
 from backend.services.timeline import ALL_SOURCES, TimelineService
 
 
@@ -57,20 +57,33 @@ class IndexService:
                 progress(f"이전 임시 파일 정리 보류: {name} ({error})")
 
     def _build_sensitive(self, files: list[dict], sites: list[dict]) -> Path:
+        self.directory.mkdir(parents=True, exist_ok=True)
         final = self.directory / "app_cache.db"
         with self._connect(final) as db:
             for table, records in (("sensitive_files_index", files), ("sensitive_sites_index", sites)):
+                latest_records: dict[str, dict] = {}
+                for record in records:
+                    key = self._sensitive_key(table, record)
+                    if key not in latest_records or str(record.get("time", "")) > str(latest_records[key].get("time", "")):
+                        latest_records[key] = record
                 staging = f"{table}_web_next"
                 db.execute(f"DROP TABLE IF EXISTS {staging}")
                 db.execute(f"CREATE TABLE {staging} (dedupe_key TEXT PRIMARY KEY, source TEXT, category TEXT, event_time TEXT, search_text TEXT, record_json TEXT)")
                 db.executemany(
                     f"INSERT OR REPLACE INTO {staging} VALUES (?,?,?,?,?,?)",
-                    [(r["id"], r["source"], r["category"], r["time"], json.dumps(r, ensure_ascii=False).lower(), json.dumps({**r, "row": r.get("raw", r)}, ensure_ascii=False)) for r in records],
+                    [(key, r["source"], r["category"], r["time"], json.dumps(r, ensure_ascii=False).lower(), json.dumps({**r, "row": r.get("raw", r)}, ensure_ascii=False)) for key, r in latest_records.items()],
                 )
                 db.execute(f"DROP TABLE IF EXISTS {table}")
                 db.execute(f"ALTER TABLE {staging} RENAME TO {table}")
                 db.execute(f"CREATE INDEX idx_web_{table}_filter ON {table}(source, category, event_time DESC)")
         return final
+
+    @staticmethod
+    def _sensitive_key(table: str, record: dict) -> str:
+        """Use the same semantic primary key as the desktop indexes."""
+        subject = record.get("name") if table == "sensitive_files_index" else record.get("site")
+        return "|".join((normalized_identity(record.get("source")), normalized_identity(subject),
+                         normalized_identity(record.get("dept")), normalized_identity(record.get("user"))))
 
     def _build_timeline(self, events: list[dict]) -> Path:
         final = self.directory / "timeline_index.db"

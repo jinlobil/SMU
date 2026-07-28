@@ -28,6 +28,31 @@ SITE_CATEGORIES = {
     "SNS / 커뮤니티": ["instagram.com", "facebook.com", "x.com", "twitter.com", "tiktok.com", "discord.com", "telegram.org"],
 }
 URL_PATTERN = re.compile(r"(?:https?://)?(?:www\.)?([a-z0-9.-]+\.[a-z]{2,})(?:[/\w?&=.%+#:@~-]*)?", re.IGNORECASE)
+MAILSCREEN_ATTACHMENT_EXTENSIONS = (
+    "docx", "doc", "xlsx", "xls", "pptx", "ppt", "jpeg", "jpg", "pdf", "txt", "csv",
+    "png", "heic", "gif", "bmp", "zip", "7z", "rar", "alz", "egg", "ai", "psd", "mp4",
+    "mov", "avi", "eml", "msg",
+)
+
+
+def normalized_identity(value: Any) -> str:
+    """Normalize values used by the desktop sensitive-data dedupe rules."""
+    return " ".join(str(value or "").split()).casefold()
+
+
+def extract_attachment_names(value: Any) -> list[str]:
+    """Port the desktop MailScreen attachment parser; an empty field is not a file."""
+    text = str(value or "").strip()
+    if not text or text.casefold() == "none":
+        return []
+    extensions = "|".join(re.escape(extension) for extension in MAILSCREEN_ATTACHMENT_EXTENSIONS)
+    pattern = re.compile(rf"([^,;|\n]+?\.(?:{extensions}))(?:\s*\([^)]*\))*", re.IGNORECASE)
+    names: list[str] = []
+    for match in pattern.finditer(text):
+        name = re.sub(r"\s*\(\s*[\d,.]+\s*(?:B|K|KB|M|MB|G|GB|T|TB)\s*\)\s*$", "", match.group(1), flags=re.IGNORECASE).strip(" ,;|")
+        if name and name not in names:
+            names.append(name)
+    return names
 
 
 def legacy_specs(project_root: Path, variable_name: str, fallback: dict[str, list[str]]) -> dict[str, list[str]]:
@@ -165,8 +190,9 @@ class SensitiveService:
         try:
             with sqlite3.connect(self.index_path) as connection:
                 row = connection.execute(
-                    f"SELECT record_json FROM {table} WHERE dedupe_key IN ({','.join('?' for _ in keys)}) LIMIT 1",
-                    keys,
+                    f"SELECT record_json FROM {table} WHERE dedupe_key IN ({','.join('?' for _ in keys)}) "
+                    "OR json_extract(record_json, '$.id') = ? LIMIT 1",
+                    (*keys, record_id),
                 ).fetchone()
         except sqlite3.Error:
             return None
@@ -214,16 +240,22 @@ class SensitiveService:
             if source not in sources:
                 continue
             for record_id, raw, row in self._transfer_records(kind):
-                value = row["source"] if kind == "dlp" else row["attachment"]
-                classified = self.classify(f"{value} {raw}", self.file_categories)
-                if not classified:
-                    continue
-                category, hits = classified
-                name = str(value).replace("\\", "/").rstrip("/").rsplit("/", 1)[-1] or "None"
-                item = {"id": f"file-{record_id}", "source": source, "name": name, "category": category, "keywords": hits, "user": row["username"] if kind == "dlp" else row["senderName"], "dept": row["dept"], "time": row["time"] if kind == "dlp" else row["date"], "path": value, "event": row["event"] if kind == "dlp" else row["sendResult"], "raw": raw}
-                key = (source.lower(), name.strip().lower(), str(item["dept"]).strip().lower(), str(item["user"]).strip().lower())
-                if key not in latest or str(item["time"]) > str(latest[key]["time"]):
-                    latest[key] = item
+                values = [row["source"]] if kind == "dlp" else extract_attachment_names(row["attachment"])
+                for value in values:
+                    # A DLP row without a filename and a MailScreen row without
+                    # an attachment are events, but they are not sensitive files.
+                    if not str(value or "").strip() or normalized_identity(value) == "none":
+                        continue
+                    scan_text = f"{value} {raw}" if kind == "dlp" else f"{value} {row['subject']}"
+                    classified = self.classify(scan_text, self.file_categories)
+                    if not classified:
+                        continue
+                    category, hits = classified
+                    name = str(value).replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+                    item = {"id": f"file-{record_id}-{hashlib.sha1(name.encode()).hexdigest()[:8]}", "source": source, "name": name, "category": category, "keywords": hits, "user": row["username"] if kind == "dlp" else row["senderName"], "dept": row["dept"], "time": row["time"] if kind == "dlp" else row["date"], "path": value, "event": row["event"] if kind == "dlp" else row["sendResult"], "raw": raw}
+                    key = (normalized_identity(source), normalized_identity(name), normalized_identity(item["dept"]), normalized_identity(item["user"]))
+                    if key not in latest or str(item["time"]) > str(latest[key]["time"]):
+                        latest[key] = item
         return list(latest.values())
 
     def site_records(self) -> list[dict[str, Any]]:
@@ -239,7 +271,7 @@ class SensitiveService:
                 item = {"id": f"site-{record_id}-{hashlib.sha1(host.encode()).hexdigest()[:8]}", "source": "DLP", "site": host, "url": row["destination"], "category": category, "keywords": hits, "user": row["username"], "dept": row["dept"], "time": row["time"], "machine": row["computer"], "event": row["event"], "raw": raw}
                 # Match the desktop behavior: one latest row per
                 # source/site/department/user rather than one row per event.
-                key = ("dlp", host.strip().lower(), str(item["dept"]).strip().lower(), str(item["user"]).strip().lower())
+                key = ("dlp", normalized_identity(host), normalized_identity(item["dept"]), normalized_identity(item["user"]))
                 if key not in latest or str(item["time"]) > str(latest[key]["time"]):
                     latest[key] = item
         return list(latest.values())
