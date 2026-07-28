@@ -8,6 +8,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+from backend.services.endpoints import load_json_list, normalize_key
 from backend.services.transfers import TransferService
 
 
@@ -234,8 +235,49 @@ class SensitiveService:
         collector = self.transfers._collect_dlp if kind == "dlp" else self.transfers._collect_outbound
         return collector(*bounds)[0]
 
+    def _user_name_index(self) -> dict[str, str]:
+        """Build the legacy-style login/e-mail/person ID to display-name map."""
+        index: dict[str, str] = {}
+
+        def add(name: Any, *aliases: Any) -> None:
+            display = str(name or "").strip()
+            if not display or normalized_identity(display) == "none":
+                return
+            for alias in (display, *aliases):
+                text = str(alias or "").strip()
+                variants = (text, text.split("\\")[-1], text.split("@", 1)[0])
+                for variant in variants:
+                    key = normalize_key(variant)
+                    if key and (key not in index or re.search(r"[가-힣]", display)):
+                        index[key] = display
+
+        for endpoint in load_json_list(self.project_root / "cache" / "endpoints.json"):
+            person = endpoint.get("associatedPerson") if isinstance(endpoint.get("associatedPerson"), dict) else {}
+            add(person.get("name"), person.get("id"), person.get("viaLogin"))
+        for user in load_json_list(self.project_root / "cache" / "users.json"):
+            add(user.get("name"), user.get("id"), user.get("userId"), user.get("exchangeLogin"), user.get("email"))
+        for department in load_json_list(self.project_root / "cache" / "user_groups.json"):
+            users = department.get("users", [])
+            if not isinstance(users, list):
+                continue
+            for user in users:
+                if isinstance(user, dict):
+                    add(user.get("name"), user.get("id"), user.get("userId"), user.get("email"), user.get("login"))
+        return index
+
+    @staticmethod
+    def _display_user(index: dict[str, str], fallback: Any, *aliases: Any) -> str:
+        for value in (fallback, *aliases):
+            text = str(value or "").strip()
+            for variant in (text, text.split("\\")[-1], text.split("@", 1)[0]):
+                mapped = index.get(normalize_key(variant))
+                if mapped:
+                    return mapped
+        return str(fallback or next((alias for alias in aliases if alias), "None"))
+
     def file_records(self, sources: set[str]) -> list[dict[str, Any]]:
         latest: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+        user_names = self._user_name_index()
         for source, kind in (("DLP", "dlp"), ("Outbound Mail", "outbound")):
             if source not in sources:
                 continue
@@ -252,7 +294,10 @@ class SensitiveService:
                         continue
                     category, hits = classified
                     name = str(value).replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
-                    item = {"id": f"file-{record_id}-{hashlib.sha1(name.encode()).hexdigest()[:8]}", "source": source, "name": name, "category": category, "keywords": hits, "user": row["username"] if kind == "dlp" else row["senderName"], "dept": row["dept"], "time": row["time"] if kind == "dlp" else row["date"], "path": value, "event": row["event"] if kind == "dlp" else row["sendResult"], "raw": raw}
+                    raw_aliases = (raw.get("client_name"),) if kind == "dlp" else (row.get("senderEmail"), raw.get("sender_email"), raw.get("sender_user_id"), raw.get("sender"))
+                    fallback_user = row["username"] if kind == "dlp" else row["senderName"]
+                    user = self._display_user(user_names, fallback_user, *raw_aliases)
+                    item = {"id": f"file-{record_id}-{hashlib.sha1(name.encode()).hexdigest()[:8]}", "source": source, "name": name, "category": category, "keywords": hits, "user": user, "dept": row["dept"], "time": row["time"] if kind == "dlp" else row["date"], "path": value, "event": row["event"] if kind == "dlp" else row["sendResult"], "raw": raw}
                     key = (normalized_identity(source), normalized_identity(name), normalized_identity(item["dept"]), normalized_identity(item["user"]))
                     if key not in latest or str(item["time"]) > str(latest[key]["time"]):
                         latest[key] = item
@@ -260,6 +305,7 @@ class SensitiveService:
 
     def site_records(self) -> list[dict[str, Any]]:
         latest: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+        user_names = self._user_name_index()
         for record_id, raw, row in self._transfer_records("dlp"):
             text = " ".join([row["destination"], row["destinationDetail"], str(raw)])
             hosts = {match.group(1).lower().strip(".") for match in URL_PATTERN.finditer(text)}
@@ -268,7 +314,8 @@ class SensitiveService:
                 if not classified:
                     continue
                 category, hits = classified
-                item = {"id": f"site-{record_id}-{hashlib.sha1(host.encode()).hexdigest()[:8]}", "source": "DLP", "site": host, "url": row["destination"], "category": category, "keywords": hits, "user": row["username"], "dept": row["dept"], "time": row["time"], "machine": row["computer"], "event": row["event"], "raw": raw}
+                user = self._display_user(user_names, row["username"], raw.get("client_name"))
+                item = {"id": f"site-{record_id}-{hashlib.sha1(host.encode()).hexdigest()[:8]}", "source": "DLP", "site": host, "url": row["destination"], "category": category, "keywords": hits, "user": user, "dept": row["dept"], "time": row["time"], "machine": row["computer"], "event": row["event"], "raw": raw}
                 # Match the desktop behavior: one latest row per
                 # source/site/department/user rather than one row per event.
                 key = ("dlp", normalized_identity(host), normalized_identity(item["dept"]), normalized_identity(item["user"]))

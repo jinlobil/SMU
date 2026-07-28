@@ -14,12 +14,14 @@ import { ConfigPage } from "./pages/ConfigPage";
 
 
 type View = "dashboard" | "endpoint" | "organization" | "detectionEndpoint" | "emailXdr" | "inbound" | "outbound" | "dlp" | "timeline" | "sensitiveFiles" | "sensitiveSites" | "firewall" | "easyQuery" | "layout" | "config";
+type DetectionFilter = { field: string; query: string; start?: string; end?: string };
 const menus = ["Dashboard", "Detection", "Forensics", "Response", "Asset", "Lab", "Config"];
 
 export function App() {
   const [health, setHealth] = useState<"loading" | "ok" | "error">("loading");
   const [activeMenu, setActiveMenu] = useState("Asset");
   const [view, setView] = useState<View>("endpoint");
+  const [detectionFilter, setDetectionFilter] = useState<DetectionFilter | null>(null);
 
   useEffect(() => {
     fetch("/api/config/theme").then((response) => response.json()).then((payload) => {
@@ -50,11 +52,16 @@ export function App() {
     setActiveMenu(menu);
     if (menu === "Dashboard") setView("dashboard");
     else if (menu === "Asset") setView("endpoint");
-    else if (menu === "Detection") setView("detectionEndpoint");
+    else if (menu === "Detection") { setDetectionFilter(null); setView("detectionEndpoint"); }
     else if (menu === "Forensics") setView("timeline");
     else if (menu === "Response") setView("firewall");
     else if (menu === "Lab") setView("layout");
     else setView("config");
+  };
+  const openDetection = (filter: DetectionFilter) => {
+    setDetectionFilter(filter);
+    setActiveMenu("Detection");
+    setView("detectionEndpoint");
   };
 
   return (
@@ -68,7 +75,7 @@ export function App() {
             <button className={view === "organization" ? "selected" : ""} onClick={() => setView("organization")}>Organization</button>
           </div>}
           {menu === "Detection" && activeMenu === "Detection" && <div className="subnav">
-            <button className={view === "detectionEndpoint" ? "selected" : ""} onClick={() => setView("detectionEndpoint")}>Detection - XDR</button>
+            <button className={view === "detectionEndpoint" ? "selected" : ""} onClick={() => { setDetectionFilter(null); setView("detectionEndpoint"); }}>Detection - XDR</button>
             <button className={view === "emailXdr" ? "selected" : ""} onClick={() => setView("emailXdr")}>Email - XDR</button>
             <button className={view === "inbound" ? "selected" : ""} onClick={() => setView("inbound")}>Inbound Mail</button>
             <button className={view === "outbound" ? "selected" : ""} onClick={() => setView("outbound")}>Outbound Mail</button>
@@ -87,10 +94,10 @@ export function App() {
         <div className={`connection ${health}`}><i />{health === "ok" ? "백엔드 연결됨" : health === "error" ? "연결 오류" : "연결 확인 중"}</div>
       </aside>
       <main className="content">
-        {view === "dashboard" && <DashboardPage />}
+        {view === "dashboard" && <DashboardPage onOpenDetection={openDetection} />}
         {view === "endpoint" && <EndpointPage />}
         {view === "organization" && <OrganizationPage />}
-        {view === "detectionEndpoint" && <DetectionPage />}
+        {view === "detectionEndpoint" && <DetectionPage initialFilter={detectionFilter} />}
         {view === "emailXdr" && <EmailSecurityPage kind="xdr" />}
         {view === "inbound" && <EmailSecurityPage kind="inbound" />}
         {view === "outbound" && <TransferPage kind="outbound" />}

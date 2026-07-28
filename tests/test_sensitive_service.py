@@ -110,3 +110,18 @@ def test_outbound_attachment_parser_creates_only_actual_files(tmp_path: Path):
     names = {record["name"] for record in service.file_records({"Outbound Mail"})}
 
     assert names == {"계약서.pdf", "resume.docx"}
+
+
+def test_sensitive_records_map_login_ids_to_korean_display_names(tmp_path: Path):
+    endpoints = tmp_path / "cache/endpoints.json"
+    endpoints.parent.mkdir(parents=True)
+    endpoints.write_text(json.dumps([{"associatedPerson": {"name": "이수민", "viaLogin": "LOCKNLOCK\\sumin.lee", "id": "person-1"}}]), encoding="utf-8")
+    service = SensitiveService(tmp_path)
+    service._transfer_records = lambda kind: [("dlp-1", {"client_name": "sumin.lee"}, {
+        "source": "C:/계약서.pdf", "username": "sumin.lee", "dept": "수발주파트", "time": "2026-07-28",
+        "event": "탐지", "destination": "None", "destinationDetail": "None", "computer": "PC1",
+    })] if kind == "dlp" else []
+
+    records = service.file_records({"DLP"})
+
+    assert records[0]["user"] == "이수민"

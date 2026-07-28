@@ -9,9 +9,9 @@ const fields = [["all", "ALL"], ["hostname", "Hostname"], ["dept", "Dept"], ["us
 const columns: [keyof Detection, string][] = [["time", "Time"], ["hostname", "Hostname"], ["dept", "Dept"], ["username", "Username"], ["privateIp", "Private IP"], ["publicIp", "Public IP"], ["file", "File"], ["sha256", "SHA256"], ["rule", "Rule"], ["lineage", "Lineage"]];
 const localDate = (offset = 0) => { const value = new Date(); value.setDate(value.getDate() + offset); return value.toISOString().slice(0, 10); };
 
-export function DetectionPage() {
-  const [start, setStart] = useState(localDate(-6)); const [end, setEnd] = useState(localDate());
-  const [conditions, setConditions] = useState<Condition[]>([{ field: "all", query: "" }]);
+export function DetectionPage({ initialFilter }: { initialFilter?: { field: string; query: string; start?: string; end?: string } | null }) {
+  const [start, setStart] = useState(initialFilter?.start || localDate(-6)); const [end, setEnd] = useState(initialFilter?.end || localDate());
+  const [conditions, setConditions] = useState<Condition[]>([{ field: initialFilter?.field || "all", query: initialFilter?.query || "" }]);
   const [items, setItems] = useState<Detection[]>([]); const [total, setTotal] = useState(0); const [totalPages, setTotalPages] = useState(1); const [files, setFiles] = useState<string[]>([]);
   const [page, setPage] = useState(1); const [sort, setSort] = useState<keyof Detection>("time"); const [direction, setDirection] = useState<"asc" | "desc">("desc");
   const [loading, setLoading] = useState(true); const [error, setError] = useState(""); const [detail, setDetail] = useState<Record<string, unknown> | null>(null);
