@@ -26,6 +26,7 @@ class IndexService:
 
     def rebuild_all(self, progress: Callable[[str], None]) -> dict:
         self.directory.mkdir(parents=True, exist_ok=True)
+        self._remove_legacy_temp_files(progress)
         progress("민감 파일 후보 계산 중")
         files = self.sensitive.file_records({"DLP", "Outbound Mail"})
         progress("민감 사이트 후보 계산 중")
@@ -40,6 +41,20 @@ class IndexService:
         self.dashboard.warm_default()
         progress(f"전체 캐시 인덱싱 완료 · 민감 {len(files)+len(sites):,}건 / 타임라인 {len(events):,}건")
         return {"sensitive": len(files) + len(sites), "timeline": len(events), "dashboard": True, "paths": [str(app_path), str(timeline_path)]}
+
+    def _remove_legacy_temp_files(self, progress: Callable[[str], None]) -> None:
+        """Remove abandoned whole-database temp files from the old indexer."""
+        for name in ("app_cache.db.tmp", "timeline_index.db.tmp"):
+            path = self.directory / name
+            if not path.exists():
+                continue
+            try:
+                path.unlink()
+                progress(f"이전 실패 임시 파일 정리: {name}")
+            except OSError as error:
+                # A stale file is not used by the transactional table-swap
+                # indexer, so cleanup failure must not stop a valid rebuild.
+                progress(f"이전 임시 파일 정리 보류: {name} ({error})")
 
     def _build_sensitive(self, files: list[dict], sites: list[dict]) -> Path:
         final = self.directory / "app_cache.db"

@@ -52,3 +52,39 @@ def test_sensitive_results_support_50_item_pages(tmp_path: Path):
     assert first["total"] == 205
     assert len(first["items"]) == 50
     assert len(fifth["items"]) == 5
+
+
+def test_web_index_schema_preserves_sensitive_file_name_and_detail(tmp_path: Path):
+    database = tmp_path / "cache/index/app_cache.db"
+    database.parent.mkdir(parents=True)
+    record = {"id": "file-web-1", "source": "DLP", "category": "계약", "keywords": ["계약"],
+              "time": "2026-07-28 10:00:00", "name": "계약서.pdf", "path": "C:/docs/계약서.pdf",
+              "user": "kim", "dept": "법무팀", "event": "탐지", "raw": {"filename": "계약서.pdf"}}
+    with sqlite3.connect(database) as connection:
+        connection.execute("CREATE TABLE sensitive_files_index (dedupe_key TEXT PRIMARY KEY, source TEXT, category TEXT, event_time TEXT, search_text TEXT, record_json TEXT)")
+        connection.execute("INSERT INTO sensitive_files_index VALUES (?,?,?,?,?,?)",
+                           (record["id"], record["source"], record["category"], record["time"], "계약서.pdf", json.dumps({**record, "row": record["raw"]})))
+
+    service = SensitiveService(tmp_path)
+    result = service.query("files", "전체", "", {"DLP"}, 0, 50)
+
+    assert result["items"][0]["id"] == "file-web-1"
+    assert result["items"][0]["name"] == "계약서.pdf"
+    assert result["items"][0]["path"] == "C:/docs/계약서.pdf"
+    assert result["items"][0]["time"] == "2026-07-28 10:00:00"
+    assert service.detail("files", "file-web-1", {"DLP"})["raw"]["filename"] == "계약서.pdf"
+
+
+def test_sensitive_sites_keep_only_latest_duplicate_for_same_owner(tmp_path: Path):
+    service = SensitiveService(tmp_path)
+    rows = [
+        ("old", {}, {"destination": "https://instagram.com/a", "destinationDetail": "instagram.com", "username": "kim", "dept": "마케팅", "time": "2026-07-27 10:00:00", "computer": "PC1", "event": "탐지"}),
+        ("new", {}, {"destination": "https://instagram.com/b", "destinationDetail": "instagram.com", "username": "kim", "dept": "마케팅", "time": "2026-07-28 10:00:00", "computer": "PC1", "event": "탐지"}),
+    ]
+    service._transfer_records = lambda kind: rows if kind == "dlp" else []
+
+    records = service.site_records()
+
+    assert len(records) == 1
+    assert records[0]["id"].startswith("site-new-")
+    assert records[0]["time"] == "2026-07-28 10:00:00"

@@ -23,3 +23,19 @@ def test_rebuild_all_creates_search_indexes(tmp_path):
         assert db.execute("SELECT COUNT(*) FROM timeline_events").fetchone()[0] == 1
     assert "완료" in messages[-1]
     reader.close()
+
+
+def test_rebuild_removes_abandoned_legacy_temp_database(tmp_path):
+    stale = tmp_path / "cache/index/app_cache.db.tmp"
+    stale.parent.mkdir(parents=True)
+    stale.write_bytes(b"stale")
+    service = IndexService(tmp_path)
+    service.sensitive.file_records = lambda _sources: []
+    service.sensitive.site_records = lambda: []
+    service.timeline.all_events = lambda _sources: []
+
+    messages = []
+    service.rebuild_all(messages.append)
+
+    assert not stale.exists()
+    assert any("임시 파일 정리" in message for message in messages)

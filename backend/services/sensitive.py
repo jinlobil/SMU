@@ -118,19 +118,27 @@ class SensitiveService:
             except (TypeError, json.JSONDecodeError):
                 continue
             raw = record.get("row") if isinstance(record.get("row"), dict) else record
+            prefix = f"{kind[:-1]}-"
+            stored_id = str(record.get("id") or record_id)
             item = {
-                "id": f"{kind[:-1]}-{record_id}",
+                "id": stored_id if stored_id.startswith(prefix) else f"{prefix}{stored_id}",
                 "source": str(record.get("source", "None")),
                 "category": str(record.get("category", "None")),
                 "keywords": record.get("keywords", []),
                 "user": str(record.get("user", "None")),
                 "dept": str(record.get("dept", "미분류")),
-                "time": str(record.get("event_time", "")),
+                # The desktop index uses event_time/display_filename/filename,
+                # while the web index stores time/name/path.  Read both so an
+                # index rebuilt by either application has the same API shape.
+                "time": str(record.get("time") or record.get("event_time") or ""),
                 "event": str(record.get("event", "None")),
                 "raw": raw,
             }
             if kind == "files":
-                item.update(name=str(record.get("display_filename") or record.get("filename") or "None"), path=str(record.get("filename", "None")))
+                item.update(
+                    name=str(record.get("name") or record.get("display_filename") or record.get("filename") or "None"),
+                    path=str(record.get("path") or record.get("filename") or "None"),
+                )
             else:
                 item.update(site=str(record.get("site", "None")), url=str(record.get("url") or record.get("destination") or "None"))
             items.append(item)
@@ -150,10 +158,16 @@ class SensitiveService:
         if not table:
             raise ValueError(f"Unsupported sensitive kind: {kind}")
         prefix = f"{kind[:-1]}-"
-        key = record_id[len(prefix):] if record_id.startswith(prefix) else record_id
+        stripped_key = record_id[len(prefix):] if record_id.startswith(prefix) else record_id
+        # Older desktop indexes store a bare dedupe key.  Early web indexes
+        # stored the public, prefixed ID.  Accept both during migration.
+        keys = tuple(dict.fromkeys((record_id, stripped_key)))
         try:
             with sqlite3.connect(self.index_path) as connection:
-                row = connection.execute(f"SELECT record_json FROM {table} WHERE dedupe_key = ?", (key,)).fetchone()
+                row = connection.execute(
+                    f"SELECT record_json FROM {table} WHERE dedupe_key IN ({','.join('?' for _ in keys)}) LIMIT 1",
+                    keys,
+                ).fetchone()
         except sqlite3.Error:
             return None
         if not row:
@@ -195,7 +209,7 @@ class SensitiveService:
         return collector(*bounds)[0]
 
     def file_records(self, sources: set[str]) -> list[dict[str, Any]]:
-        output = []
+        latest: dict[tuple[str, str, str, str], dict[str, Any]] = {}
         for source, kind in (("DLP", "dlp"), ("Outbound Mail", "outbound")):
             if source not in sources:
                 continue
@@ -206,11 +220,14 @@ class SensitiveService:
                     continue
                 category, hits = classified
                 name = str(value).replace("\\", "/").rstrip("/").rsplit("/", 1)[-1] or "None"
-                output.append({"id": f"file-{record_id}", "source": source, "name": name, "category": category, "keywords": hits, "user": row["username"] if kind == "dlp" else row["senderName"], "dept": row["dept"], "time": row["time"] if kind == "dlp" else row["date"], "path": value, "event": row["event"] if kind == "dlp" else row["sendResult"], "raw": raw})
-        return output
+                item = {"id": f"file-{record_id}", "source": source, "name": name, "category": category, "keywords": hits, "user": row["username"] if kind == "dlp" else row["senderName"], "dept": row["dept"], "time": row["time"] if kind == "dlp" else row["date"], "path": value, "event": row["event"] if kind == "dlp" else row["sendResult"], "raw": raw}
+                key = (source.lower(), name.strip().lower(), str(item["dept"]).strip().lower(), str(item["user"]).strip().lower())
+                if key not in latest or str(item["time"]) > str(latest[key]["time"]):
+                    latest[key] = item
+        return list(latest.values())
 
     def site_records(self) -> list[dict[str, Any]]:
-        output = []
+        latest: dict[tuple[str, str, str, str], dict[str, Any]] = {}
         for record_id, raw, row in self._transfer_records("dlp"):
             text = " ".join([row["destination"], row["destinationDetail"], str(raw)])
             hosts = {match.group(1).lower().strip(".") for match in URL_PATTERN.finditer(text)}
@@ -219,8 +236,13 @@ class SensitiveService:
                 if not classified:
                     continue
                 category, hits = classified
-                output.append({"id": f"site-{record_id}-{hashlib.sha1(host.encode()).hexdigest()[:8]}", "source": "DLP", "site": host, "url": row["destination"], "category": category, "keywords": hits, "user": row["username"], "dept": row["dept"], "time": row["time"], "machine": row["computer"], "event": row["event"], "raw": raw})
-        return output
+                item = {"id": f"site-{record_id}-{hashlib.sha1(host.encode()).hexdigest()[:8]}", "source": "DLP", "site": host, "url": row["destination"], "category": category, "keywords": hits, "user": row["username"], "dept": row["dept"], "time": row["time"], "machine": row["computer"], "event": row["event"], "raw": raw}
+                # Match the desktop behavior: one latest row per
+                # source/site/department/user rather than one row per event.
+                key = ("dlp", host.strip().lower(), str(item["dept"]).strip().lower(), str(item["user"]).strip().lower())
+                if key not in latest or str(item["time"]) > str(latest[key]["time"]):
+                    latest[key] = item
+        return list(latest.values())
 
     def query(self, kind: str, category: str, keyword: str, sources: set[str], offset: int, limit: int) -> dict[str, Any]:
         indexed = self._query_index(kind, category, keyword, sources, offset, limit)
