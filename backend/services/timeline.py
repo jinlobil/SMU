@@ -168,6 +168,15 @@ class TimelineService:
         else:
             events = indexed
             data_source = "sqlite-index"
+            # Indexes made before raw_json was introduced remain readable.  Do
+            # not, however, expose an empty object to the UI: recover the
+            # original record from the cache until the next full rebuild.
+            if any(not event.get("raw") for event in events):
+                raw_events = self.all_events(sources)
+                raw_by_key = {self._event_key(event): event.get("raw", {}) for event in raw_events}
+                for event in events:
+                    if not event.get("raw"):
+                        event["raw"] = raw_by_key.get(self._event_key(event), {})
         groups: dict[tuple[str, str, str], list[dict[str, str]]] = defaultdict(list)
         for event in events:
             bucket = event["time"][:16] if len(event["time"]) >= 16 else event["time"]
@@ -175,3 +184,9 @@ class TimelineService:
         normalized = [{"bucket": key[0], "source": key[1], "event": key[2], "count": len(items), "items": sorted(items, key=lambda item: item["time"], reverse=True)[:100]} for key, items in groups.items()]
         normalized.sort(key=lambda group: group["bucket"], reverse=True)
         return {"groups": normalized[offset:offset + limit], "pagination": {"offset": offset, "limit": limit, "totalGroups": len(normalized), "totalEvents": len(events)}, "bounds": self.date_bounds(), "source": data_source}
+
+    @staticmethod
+    def _event_key(event: dict[str, Any]) -> tuple[str, ...]:
+        """Stable cache/index join key used to hydrate legacy index rows."""
+        return tuple(str(event.get(field, "")) for field in
+                     ("time", "source", "userId", "asset", "event", "direction", "summary", "indicator"))

@@ -67,6 +67,28 @@ def test_timeline_index_returns_raw_payload_when_available(tmp_path: Path):
     assert result["groups"][0]["items"][0]["raw"]["filename"] == "계약서.pdf"
 
 
+def test_timeline_hydrates_raw_payload_from_cache_for_legacy_index(tmp_path: Path):
+    cache = tmp_path / "cache/mailscreen/mailscreen_mail_2026-07-24.json"
+    cache.parent.mkdir(parents=True)
+    original = {"date": "2026-07-24 14:28:35", "send_result": "성공", "subject": "출장 견적",
+                "sender_email": "bskim@locknlock.com", "sender_name": "김범수",
+                "sender_dept": "IT", "receiver": "receiver@example.com", "attach": "quote.pdf"}
+    cache.write_text(json.dumps({"items": [original]}, ensure_ascii=False), encoding="utf-8")
+    database = tmp_path / "cache/index/timeline_index.db"
+    database.parent.mkdir(parents=True)
+    with sqlite3.connect(database) as connection:
+        connection.execute("CREATE TABLE timeline_events (time TEXT, source TEXT, user TEXT, user_id TEXT, dept TEXT, asset TEXT, event TEXT, direction TEXT, peer TEXT, summary TEXT, indicator TEXT)")
+        connection.execute("INSERT INTO timeline_events VALUES (?,?,?,?,?,?,?,?,?,?,?)", (
+            "2026-07-24 14:28:35", "Outbound Mail", "김범수", "bskim", "IT",
+            "bskim@locknlock.com", "성공", "bskim@locknlock.com → receiver@example.com",
+            "receiver@example.com", "출장 견적", "quote.pdf",
+        ))
+
+    result = TimelineService(tmp_path).search("김범수", "", {"Outbound Mail"})
+
+    assert result["groups"][0]["items"][0]["raw"] == original
+
+
 def test_timeline_all_events_includes_outbound_and_dlp(tmp_path: Path):
     service = TimelineService(tmp_path)
     service.date_bounds = lambda: (date(2026, 7, 22), date(2026, 7, 28))
