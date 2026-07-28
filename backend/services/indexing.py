@@ -91,8 +91,8 @@ class IndexService:
         staging = "timeline_events_web_next"
         with self._connect(final) as db:
             db.execute(f"DROP TABLE IF EXISTS {staging}")
-            db.execute(f"CREATE TABLE {staging} (time TEXT, source TEXT, user TEXT, user_id TEXT, dept TEXT, asset TEXT, event TEXT, direction TEXT, peer TEXT, summary TEXT, indicator TEXT)")
-            db.executemany(f"INSERT INTO {staging} VALUES (?,?,?,?,?,?,?,?,?,?,?)", [tuple(event.get(key, "") for key in fields) for event in events])
+            db.execute(f"CREATE TABLE {staging} (time TEXT, source TEXT, user TEXT, user_id TEXT, dept TEXT, asset TEXT, event TEXT, direction TEXT, peer TEXT, summary TEXT, indicator TEXT, raw_json TEXT)")
+            db.executemany(f"INSERT INTO {staging} VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", [tuple(event.get(key, "") for key in fields) + (json.dumps(event.get("raw", {}), ensure_ascii=False),) for event in events])
             db.execute("DROP TABLE IF EXISTS timeline_events")
             db.execute(f"ALTER TABLE {staging} RENAME TO timeline_events")
             db.execute("CREATE INDEX idx_web_timeline_time ON timeline_events(time DESC)")
