@@ -40,6 +40,7 @@ class SchedulerService:
             "enabled": False, "interval": 10, "targets": ["detections", "inbound"],
             "lastRun": None, "lastResult": "-", "nextRun": None, "running": False,
             "targetStatus": {},
+            "phase": "idle", "currentTarget": None, "currentMessage": "대기 중",
         }
         self._next_run_at: float | None = None
         self._load()
@@ -55,6 +56,8 @@ class SchedulerService:
             if not isinstance(self.state.get("targetStatus"), dict):
                 self.state["targetStatus"] = {}
             self.state["running"] = False
+            self.state["phase"] = "idle"
+            self.state["currentTarget"] = None
         except Exception:
             pass
 
@@ -95,7 +98,7 @@ class SchedulerService:
         return self.get()
 
     def _refresh_target(self, target: str, start: date, today: date):
-        progress = lambda message: self.log.info("scheduler target=%s %s", target, message)
+        progress = lambda message: self._update_progress("collecting", target, message)
         if target == "detections":
             return self.refresh.refresh_detections(start, today, progress)
         if target == "inbound":
@@ -110,6 +113,12 @@ class SchedulerService:
             return self.refresh.refresh_organizations(progress)
         return self.refresh.refresh_users(progress)
 
+    def _update_progress(self, phase: str, target: str, message: str):
+        self.log.info("scheduler phase=%s target=%s %s", phase, target, message)
+        with self.lock:
+            self.state.update(phase=phase, currentTarget=target, currentMessage=str(message))
+            self._persist_locked()
+
     def _run_cycle(self):
         if not self.run_lock.acquire(blocking=False):
             self.log.warning("Scheduler cycle skipped because another cycle is running")
@@ -118,6 +127,7 @@ class SchedulerService:
             with self.lock:
                 self.state["running"] = True
                 self.state["lastResult"] = "수집 작업 실행 중"
+                self.state.update(phase="collecting", currentTarget=None, currentMessage="수집 작업 준비 중")
                 self._persist_locked()
             today = date.today()
             start = today - timedelta(days=1)
@@ -137,7 +147,8 @@ class SchedulerService:
                         self._persist_locked()
             if self.index is not None:
                 try:
-                    self.index.rebuild_all(lambda message: self.log.info("scheduler indexing: %s", message))
+                    self._update_progress("indexing", "index", "전체 인덱싱 준비 중")
+                    self.index.rebuild_all(lambda message: self._update_progress("indexing", "index", message))
                     messages.append("index:OK")
                 except Exception as exc:
                     self.log.exception("Scheduled indexing failed")
@@ -146,6 +157,7 @@ class SchedulerService:
                 self.state["lastRun"] = self._display_time(time.time())
                 self.state["lastResult"] = " / ".join(messages) or "선택된 수집 대상 없음"
                 self.state["running"] = False
+                self.state.update(phase="idle", currentTarget=None, currentMessage="완료")
                 self._persist_locked()
         finally:
             self.run_lock.release()

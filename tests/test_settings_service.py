@@ -54,3 +54,5 @@ def test_scheduler_runs_every_target_then_index(tmp_path: Path):
     assert index.calls==1
     assert "index:OK" in state["lastResult"]
     assert state["lastRun"] is not None
+    assert state["phase"] == "idle"
+    assert state["targetStatus"]["dlp"]["status"] == "SUCCESS"

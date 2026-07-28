@@ -1,16 +1,15 @@
 import json
-import os
 import sqlite3
 from pathlib import Path
 from typing import Callable
 
+from backend.services.dashboard import DashboardService
 from backend.services.sensitive import SensitiveService
 from backend.services.timeline import ALL_SOURCES, TimelineService
-from backend.services.dashboard import DashboardService
 
 
 class IndexService:
-    """Builds web-compatible SQLite indexes off-line, then swaps them atomically."""
+    """Rebuilds web indexes with transactional table swaps safe for Windows readers."""
 
     def __init__(self, project_root: Path):
         self.root = project_root
@@ -19,14 +18,23 @@ class IndexService:
         self.timeline = TimelineService(project_root)
         self.dashboard = DashboardService(project_root)
 
+    @staticmethod
+    def _connect(path: Path) -> sqlite3.Connection:
+        connection = sqlite3.connect(path, timeout=60)
+        connection.execute("PRAGMA busy_timeout=60000")
+        return connection
+
     def rebuild_all(self, progress: Callable[[str], None]) -> dict:
         self.directory.mkdir(parents=True, exist_ok=True)
-        progress("민감 파일/사이트 인덱스 생성 중")
+        progress("민감 파일 후보 계산 중")
         files = self.sensitive.file_records({"DLP", "Outbound Mail"})
+        progress("민감 사이트 후보 계산 중")
         sites = self.sensitive.site_records()
+        progress("민감 파일/사이트 SQLite 반영 중")
         app_path = self._build_sensitive(files, sites)
-        progress("통합 타임라인 인덱스 생성 중")
+        progress("통합 타임라인 이벤트 계산 중")
         events = self.timeline.all_events(set(ALL_SOURCES))
+        progress("통합 타임라인 SQLite 반영 중")
         timeline_path = self._build_timeline(events)
         progress("Dashboard 기본 기간 사전 집계 중")
         self.dashboard.warm_default()
@@ -34,23 +42,31 @@ class IndexService:
         return {"sensitive": len(files) + len(sites), "timeline": len(events), "dashboard": True, "paths": [str(app_path), str(timeline_path)]}
 
     def _build_sensitive(self, files: list[dict], sites: list[dict]) -> Path:
-        final = self.directory / "app_cache.db"; temp = final.with_suffix(".db.tmp")
-        temp.unlink(missing_ok=True)
-        with sqlite3.connect(temp) as db:
-            for table in ("sensitive_files_index", "sensitive_sites_index"):
-                db.execute(f"CREATE TABLE {table} (dedupe_key TEXT PRIMARY KEY, source TEXT, category TEXT, event_time TEXT, search_text TEXT, record_json TEXT)")
-                db.execute(f"CREATE INDEX idx_{table}_filter ON {table}(source, category, event_time DESC)")
+        final = self.directory / "app_cache.db"
+        with self._connect(final) as db:
             for table, records in (("sensitive_files_index", files), ("sensitive_sites_index", sites)):
-                db.executemany(f"INSERT OR REPLACE INTO {table} VALUES (?,?,?,?,?,?)", [(r["id"], r["source"], r["category"], r["time"], json.dumps(r, ensure_ascii=False).lower(), json.dumps({**r, "row": r.get("raw", r)}, ensure_ascii=False)) for r in records])
-        os.replace(temp, final); return final
+                staging = f"{table}_web_next"
+                db.execute(f"DROP TABLE IF EXISTS {staging}")
+                db.execute(f"CREATE TABLE {staging} (dedupe_key TEXT PRIMARY KEY, source TEXT, category TEXT, event_time TEXT, search_text TEXT, record_json TEXT)")
+                db.executemany(
+                    f"INSERT OR REPLACE INTO {staging} VALUES (?,?,?,?,?,?)",
+                    [(r["id"], r["source"], r["category"], r["time"], json.dumps(r, ensure_ascii=False).lower(), json.dumps({**r, "row": r.get("raw", r)}, ensure_ascii=False)) for r in records],
+                )
+                db.execute(f"DROP TABLE IF EXISTS {table}")
+                db.execute(f"ALTER TABLE {staging} RENAME TO {table}")
+                db.execute(f"CREATE INDEX idx_web_{table}_filter ON {table}(source, category, event_time DESC)")
+        return final
 
     def _build_timeline(self, events: list[dict]) -> Path:
-        final = self.directory / "timeline_index.db"; temp = final.with_suffix(".db.tmp")
-        temp.unlink(missing_ok=True)
+        final = self.directory / "timeline_index.db"
         fields = ("time", "source", "user", "userId", "dept", "asset", "event", "direction", "peer", "summary", "indicator")
-        with sqlite3.connect(temp) as db:
-            db.execute("CREATE TABLE timeline_events (time TEXT, source TEXT, user TEXT, user_id TEXT, dept TEXT, asset TEXT, event TEXT, direction TEXT, peer TEXT, summary TEXT, indicator TEXT)")
-            db.execute("CREATE INDEX idx_timeline_time ON timeline_events(time DESC)")
-            db.execute("CREATE INDEX idx_timeline_source ON timeline_events(source, time DESC)")
-            db.executemany("INSERT INTO timeline_events VALUES (?,?,?,?,?,?,?,?,?,?,?)", [tuple(e.get(k, "") for k in fields) for e in events])
-        os.replace(temp, final); return final
+        staging = "timeline_events_web_next"
+        with self._connect(final) as db:
+            db.execute(f"DROP TABLE IF EXISTS {staging}")
+            db.execute(f"CREATE TABLE {staging} (time TEXT, source TEXT, user TEXT, user_id TEXT, dept TEXT, asset TEXT, event TEXT, direction TEXT, peer TEXT, summary TEXT, indicator TEXT)")
+            db.executemany(f"INSERT INTO {staging} VALUES (?,?,?,?,?,?,?,?,?,?,?)", [tuple(event.get(key, "") for key in fields) for event in events])
+            db.execute("DROP TABLE IF EXISTS timeline_events")
+            db.execute(f"ALTER TABLE {staging} RENAME TO timeline_events")
+            db.execute("CREATE INDEX idx_web_timeline_time ON timeline_events(time DESC)")
+            db.execute("CREATE INDEX idx_web_timeline_source ON timeline_events(source, time DESC)")
+        return final

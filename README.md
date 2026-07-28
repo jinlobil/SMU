@@ -105,6 +105,8 @@ Dashboard, Detection, Forensics, Response, Asset, Lab, Config의 모든 상위 �
 - Detection/Inbound/DLP/Outbound 기간, Endpoint/Organization/User 개별 수집을 지원합니다.
 - 스케줄 실행이 끝나면 Sensitive/Timeline SQLite 인덱스와 Dashboard 기본 기간 사전 집계를 자동 재생성하며, Next Run/Last Run/결과와 즉시 실행 기능을 제공합니다.
 - Cache Status에는 소스별 마지막 파일 수정 시각을, Scheduler에는 대상별 마지막 실행 시각과 성공/실패를 표시합니다.
+- Scheduler 실행 중에는 현재 수집 대상과 세부 메시지, 인덱싱 단계를 실시간 표시하며 Cache Status도 3초마다 갱신합니다.
+- SQLite 인덱스는 Windows에서 파일이 열려 있어도 동작하도록 파일 교체 대신 트랜잭션 테이블 교체를 사용하고 기존 비웹 테이블을 보존합니다.
 - Endpoint, Organization, Detection, Inbound, Outbound, DLP 캐시의 파일 수·용량과 App/Timeline/Dashboard 인덱스 상태를 확인하고 `전체 캐시 데이터 인덱싱`으로 검색용 SQLite 인덱스를 원자적으로 재생성합니다.
 - Dashboard 추세 그래프는 네온 곡선·영역 애니메이션을 사용하며 날짜 열에 마우스를 올리면 해당 날짜의 Detection, Email-XDR, Inbound, Outbound, File 카운트를 한 번에 표시합니다.
 - 런처 및 백엔드 오류/요청 로그 경로를 화면에서 바로 확인할 수 있습니다.
