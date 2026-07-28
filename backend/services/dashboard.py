@@ -1,6 +1,7 @@
 import json
 import os
 import threading
+import calendar
 from collections import Counter, defaultdict
 from datetime import date, timedelta
 from pathlib import Path
@@ -14,6 +15,7 @@ from backend.services.transfers import TransferService
 
 
 SERIES_NAMES = ("Detection - XDR", "Email - XDR", "Inbound Mail", "Outbound Mail", "File")
+DASHBOARD_CACHE_VERSION = 2
 
 
 class DashboardService:
@@ -75,6 +77,11 @@ class DashboardService:
             return None if current else 0.0
         return round((current - comparison) / comparison * 100, 1)
 
+    @staticmethod
+    def previous_month_day(value: date) -> date:
+        year, month = (value.year - 1, 12) if value.month == 1 else (value.year, value.month - 1)
+        return date(year, month, min(value.day, calendar.monthrange(year, month)[1]))
+
     def _rows(self, start: date, end: date) -> dict[str, list[tuple]]:
         return {
             "Detection - XDR": self.detections._events(start, end)[0],
@@ -106,22 +113,22 @@ class DashboardService:
         key = f"{start.isoformat()}:{end.isoformat()}"
         with self._lock:
             cached = self._cache.get(key)
-            if not refresh and cached and cached.get("fingerprint") == fingerprint:
+            if not refresh and cached and cached.get("version") == DASHBOARD_CACHE_VERSION and cached.get("fingerprint") == fingerprint:
                 return {**cached["data"], "cache": "pre-aggregated"}
 
         with self._build_lock:
             with self._lock:
                 cached = self._cache.get(key)
-                if not refresh and cached and cached.get("fingerprint") == fingerprint:
+                if not refresh and cached and cached.get("version") == DASHBOARD_CACHE_VERSION and cached.get("fingerprint") == fingerprint:
                     return {**cached["data"], "cache": "pre-aggregated"}
 
             rows = self._rows(start, end)
             duration = (end - start).days + 1
-            previous_end = start - timedelta(days=1)
-            previous_start = previous_end - timedelta(days=duration - 1)
-            year_start, year_end = start - timedelta(days=365), end - timedelta(days=365)
-            previous_totals = self._totals(self._rows(previous_start, previous_end))
-            year_totals = self._totals(self._rows(year_start, year_end))
+            yesterday = end - timedelta(days=1)
+            previous_month = self.previous_month_day(end)
+            today_totals = self._totals(self._rows(end, end))
+            yesterday_totals = self._totals(self._rows(yesterday, yesterday))
+            previous_month_totals = self._totals(self._rows(previous_month, previous_month))
             totals = self._totals(rows)
 
             endpoints = load_json_list(self.project_root / "cache/endpoints.json")
@@ -159,16 +166,16 @@ class DashboardService:
             }
             data = {
                 "range": {"start": start.isoformat(), "end": end.isoformat()},
-                "comparisonRange": {"start": previous_start.isoformat(), "end": previous_end.isoformat()},
+                "comparisonRange": {"day": yesterday.isoformat(), "month": previous_month.isoformat()},
                 "endpoints": {"pc": endpoint_counts["computer"], "server": endpoint_counts["server"], "total": len(endpoints)},
                 "organization": {"departments": len(organizations), "users": len(users)},
                 "folderUsage": self.folder_usage(), "totals": totals,
-                "comparison": {name: {"previous": self.percentage(totals[name], previous_totals[name]), "year": self.percentage(totals[name], year_totals[name])} for name in SERIES_NAMES},
+                "comparison": {name: {"day": self.percentage(today_totals[name], yesterday_totals[name]), "month": self.percentage(today_totals[name], previous_month_totals[name])} for name in SERIES_NAMES},
                 "trend": {"dates": dates, "series": {name: [values[day] for day in dates] for name, values in series.items()}},
                 "top": {name: counter.most_common(6) for name, counter in counters.items()},
                 "summary": summary,
             }
             with self._lock:
-                self._cache[key] = {"fingerprint": fingerprint, "data": data}
+                self._cache[key] = {"version": DASHBOARD_CACHE_VERSION, "fingerprint": fingerprint, "data": data}
                 self._save_cache()
             return {**data, "cache": "freshly-aggregated"}

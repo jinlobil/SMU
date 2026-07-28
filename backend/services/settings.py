@@ -1,4 +1,4 @@
-import json, logging, os, re, threading, time
+import json, logging, os, re, threading, time, uuid
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
@@ -63,9 +63,20 @@ class SchedulerService:
 
     def _persist_locked(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self.path.with_suffix(".tmp")
+        temporary = self.path.with_name(f"{self.path.name}.{uuid.uuid4().hex}.tmp")
         temporary.write_text(json.dumps(self.state, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(temporary, self.path)
+        for attempt in range(20):
+            try:
+                os.replace(temporary, self.path)
+                return
+            except PermissionError:
+                if attempt < 19:
+                    time.sleep(0.1)
+        self.log.error("Scheduler state file remained locked after retries: %s", self.path)
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
 
     @staticmethod
     def _display_time(timestamp: float) -> str:

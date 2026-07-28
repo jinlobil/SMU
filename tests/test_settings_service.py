@@ -1,5 +1,6 @@
 from pathlib import Path
 import pytest
+import os
 from backend.services.settings import ThemeService, SchedulerService
 
 def test_theme_service_persists_valid_colors(tmp_path: Path):
@@ -56,3 +57,20 @@ def test_scheduler_runs_every_target_then_index(tmp_path: Path):
     assert state["lastRun"] is not None
     assert state["phase"] == "idle"
     assert state["targetStatus"]["dlp"]["status"] == "SUCCESS"
+
+
+def test_scheduler_retries_windows_permission_error(tmp_path: Path, monkeypatch):
+    service = SchedulerService(tmp_path, Refresh())
+    real_replace = os.replace
+    attempts = {"count": 0}
+    def flaky_replace(source, destination):
+        attempts["count"] += 1
+        if attempts["count"] < 3:
+            raise PermissionError(5, "access denied")
+        return real_replace(source, destination)
+    monkeypatch.setattr(os, "replace", flaky_replace)
+
+    service.save({"enabled": False, "interval": 10, "targets": ["inbound"]})
+
+    assert attempts["count"] == 3
+    assert service.path.exists()

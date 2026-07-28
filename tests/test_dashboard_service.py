@@ -41,3 +41,18 @@ def test_dashboard_accepts_explicit_date_range(tmp_path: Path) -> None:
 
     assert result["range"] == {"start": "2026-07-01", "end": "2026-07-03"}
     assert result["trend"]["dates"] == ["2026-07-01", "2026-07-02", "2026-07-03"]
+
+
+def test_dashboard_comparison_uses_previous_day_and_previous_month_day(tmp_path: Path) -> None:
+    service = DashboardService(tmp_path)
+    seen = []
+    def rows(start, end):
+        seen.append((start, end))
+        return {name: [] for name in ("Detection - XDR", "Email - XDR", "Inbound Mail", "Outbound Mail", "File")}
+    service._rows = rows
+
+    result = service.summary(date(2026, 3, 25), date(2026, 3, 31))
+
+    assert (date(2026, 3, 30), date(2026, 3, 30)) in seen
+    assert (date(2026, 2, 28), date(2026, 2, 28)) in seen
+    assert set(result["comparison"]["File"]) == {"day", "month"}
