@@ -4,6 +4,7 @@ from pathlib import Path
 
 import requests
 from bs4 import BeautifulSoup
+from requests.packages.urllib3.exceptions import InsecureRequestWarning
 
 log = logging.getLogger("smu.web.collectors")
 PROJECT_ROOT = Path(__file__).resolve().parents[2]

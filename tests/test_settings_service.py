@@ -27,3 +27,30 @@ def test_theme_service_migrates_legacy_blue_ui_colors(tmp_path: Path):
     assert theme["Primary_Blue"]=="#ff4d8d"
     assert theme["Card_Title_Text"]=="#ffb347"
     assert theme["Table_Header_Text"]=="#e4d4f2"
+
+class ScheduledRefresh:
+    def __init__(self): self.calls=[]
+    def _record(self,name): self.calls.append(name); return {"ok":True}
+    def refresh_detections(self,*args): return self._record("detections")
+    def refresh_inbound(self,*args): return self._record("inbound")
+    def refresh_dlp_range(self,*args): return self._record("dlp")
+    def refresh_outbound_range(self,*args): return self._record("outbound")
+    def refresh_endpoints(self,*args): return self._record("endpoints")
+    def refresh_organizations(self,*args): return self._record("organizations")
+    def refresh_users(self,*args): return self._record("users")
+
+class ScheduledIndex:
+    def __init__(self): self.calls=0
+    def rebuild_all(self,progress): self.calls+=1;progress("done");return {"ok":True}
+
+def test_scheduler_runs_every_target_then_index(tmp_path: Path):
+    refresh=ScheduledRefresh();index=ScheduledIndex();service=SchedulerService(tmp_path,refresh,index)
+    targets=["detections","inbound","dlp","outbound","endpoints","organizations","users"]
+    saved=service.save({"enabled":True,"interval":1,"targets":targets})
+    assert saved["nextRun"] is not None
+    service._run_cycle()
+    state=service.get()
+    assert refresh.calls==targets
+    assert index.calls==1
+    assert "index:OK" in state["lastResult"]
+    assert state["lastRun"] is not None

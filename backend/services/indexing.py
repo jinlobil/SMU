@@ -6,6 +6,7 @@ from typing import Callable
 
 from backend.services.sensitive import SensitiveService
 from backend.services.timeline import ALL_SOURCES, TimelineService
+from backend.services.dashboard import DashboardService
 
 
 class IndexService:
@@ -16,6 +17,7 @@ class IndexService:
         self.directory = project_root / "cache" / "index"
         self.sensitive = SensitiveService(project_root)
         self.timeline = TimelineService(project_root)
+        self.dashboard = DashboardService(project_root)
 
     def rebuild_all(self, progress: Callable[[str], None]) -> dict:
         self.directory.mkdir(parents=True, exist_ok=True)
@@ -26,8 +28,10 @@ class IndexService:
         progress("통합 타임라인 인덱스 생성 중")
         events = self.timeline.all_events(set(ALL_SOURCES))
         timeline_path = self._build_timeline(events)
+        progress("Dashboard 기본 기간 사전 집계 중")
+        self.dashboard.warm_default()
         progress(f"전체 캐시 인덱싱 완료 · 민감 {len(files)+len(sites):,}건 / 타임라인 {len(events):,}건")
-        return {"sensitive": len(files) + len(sites), "timeline": len(events), "paths": [str(app_path), str(timeline_path)]}
+        return {"sensitive": len(files) + len(sites), "timeline": len(events), "dashboard": True, "paths": [str(app_path), str(timeline_path)]}
 
     def _build_sensitive(self, files: list[dict], sites: list[dict]) -> Path:
         final = self.directory / "app_cache.db"; temp = final.with_suffix(".db.tmp")

@@ -46,9 +46,9 @@ firewall_service = FirewallService(PROJECT_ROOT)
 easy_query_service = EasyQueryService(PROJECT_ROOT)
 layout_service = LayoutService(PROJECT_ROOT)
 theme_service = ThemeService(PROJECT_ROOT)
-scheduler_service = SchedulerService(PROJECT_ROOT, refresh_service)
 report_service = ReportService(PROJECT_ROOT)
 index_service = IndexService(PROJECT_ROOT)
+scheduler_service = SchedulerService(PROJECT_ROOT, refresh_service, index_service)
 try:
     dashboard_service.warm_default()
 except Exception:
@@ -248,6 +248,11 @@ def save_scheduler(payload: dict = Body()) -> dict:
     return {"success": True, "data": scheduler_service.save(payload)}
 
 
+@app.post("/api/config/scheduler/run", status_code=202)
+def run_scheduler_now() -> dict:
+    return {"success": True, "data": scheduler_service.run_now()}
+
+
 @app.get("/api/config/theme")
 def get_theme() -> dict:
     return {"success": True, "data": theme_service.load()}
@@ -363,10 +368,13 @@ def start_refresh(target: str, payload: dict | None = Body(default=None)) -> dic
         tasks[target] = (lambda progress: refresh_service.refresh_detections(start, end, progress)) if target == "detections" else (lambda progress: refresh_service.refresh_inbound(start, end, progress))
     if target in {"dlp", "outbound"}:
         try:
-            day = date.fromisoformat(str(payload.get("date", "")))
+            start = date.fromisoformat(str(payload.get("start") or payload.get("date", "")))
+            end = date.fromisoformat(str(payload.get("end") or payload.get("date", "")))
+            if start > end: raise ValueError("start date must not be after end date")
+            if (end - start).days > 31: raise ValueError("refresh range must not exceed 32 days")
         except ValueError as exc:
             request_id = str(uuid.uuid4()); return error_response(request_id, "INVALID_REFRESH_DATE", str(exc), 400)
-        tasks[target] = (lambda progress: refresh_service.refresh_dlp(day, progress)) if target == "dlp" else (lambda progress: refresh_service.refresh_outbound(day, progress))
+        tasks[target] = (lambda progress: refresh_service.refresh_dlp_range(start, end, progress)) if target == "dlp" else (lambda progress: refresh_service.refresh_outbound_range(start, end, progress))
     task = tasks.get(target)
     if task is None:
         request_id = str(uuid.uuid4())

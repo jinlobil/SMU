@@ -45,3 +45,25 @@ def test_range_refresh_buckets_records_by_kst_day(tmp_path: Path) -> None:
     assert inbound["days"] == {"2026-07-22": 1}
     assert (tmp_path / "cache/detections/2026-07-22.json").exists()
     assert (tmp_path / "cache/emails/2026-07-22.json").exists()
+
+def test_dlp_and_outbound_ranges_run_each_day(tmp_path, monkeypatch):
+    service = RefreshService(tmp_path)
+    dlp_days=[];outbound_days=[]
+    monkeypatch.setattr(service,"refresh_dlp",lambda day,progress: dlp_days.append(day) or {"count":2})
+    monkeypatch.setattr(service,"refresh_outbound",lambda day,progress: outbound_days.append(day) or {"count":3})
+    start=date(2026,7,24);end=date(2026,7,26)
+    assert service.refresh_dlp_range(start,end,lambda _message:None)["rows"]==6
+    assert service.refresh_outbound_range(start,end,lambda _message:None)["rows"]==9
+    assert dlp_days==outbound_days==[date(2026,7,24),date(2026,7,25),date(2026,7,26)]
+
+def test_dlp_range_continues_after_a_failed_day(tmp_path, monkeypatch):
+    service=RefreshService(tmp_path);attempted=[]
+    def refresh(day,progress):
+        attempted.append(day)
+        if day==date(2026,7,25): raise RuntimeError("login failed")
+        return {"count":1}
+    monkeypatch.setattr(service,"refresh_dlp",refresh)
+    import pytest
+    with pytest.raises(RuntimeError,match="2026-07-25"):
+        service.refresh_dlp_range(date(2026,7,24),date(2026,7,26),lambda _message:None)
+    assert attempted==[date(2026,7,24),date(2026,7,25),date(2026,7,26)]

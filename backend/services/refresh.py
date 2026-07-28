@@ -50,10 +50,40 @@ class RefreshService:
         progress(f"DLP {day.isoformat()} 인증 및 수집 중")
         return DlpClient(progress_cb=progress).refresh_dlp_day(day.isoformat())
 
+    def refresh_dlp_range(self, start: date, end: date, progress: Callable[[str], None]) -> dict:
+        results = []; failures = []
+        current = start
+        while current <= end:
+            progress(f"DLP 기간 수집 {current.isoformat()} ({(current-start).days+1}/{(end-start).days+1})")
+            try:
+                results.append(self.refresh_dlp(current, progress))
+            except Exception as exc:
+                failures.append(f"{current.isoformat()}: {type(exc).__name__}: {exc}")
+                progress(f"DLP {current.isoformat()} 실패 · 다음 날짜 계속")
+            current += timedelta(days=1)
+        if failures:
+            raise RuntimeError("DLP 기간 수집 일부 실패: " + " | ".join(failures))
+        return {"days": results, "rows": sum(int(item.get("count", 0)) for item in results)}
+
     def refresh_outbound(self, day: date, progress: Callable[[str], None]) -> dict:
         from backend.clients.legacy_collectors import MailScreenClient
         progress(f"Outbound Mail {day.isoformat()} 인증 및 수집 중")
         return MailScreenClient(progress_cb=progress).refresh_mail_day(day.isoformat())
+
+    def refresh_outbound_range(self, start: date, end: date, progress: Callable[[str], None]) -> dict:
+        results = []; failures = []
+        current = start
+        while current <= end:
+            progress(f"Outbound Mail 기간 수집 {current.isoformat()} ({(current-start).days+1}/{(end-start).days+1})")
+            try:
+                results.append(self.refresh_outbound(current, progress))
+            except Exception as exc:
+                failures.append(f"{current.isoformat()}: {type(exc).__name__}: {exc}")
+                progress(f"Outbound Mail {current.isoformat()} 실패 · 다음 날짜 계속")
+            current += timedelta(days=1)
+        if failures:
+            raise RuntimeError("Outbound Mail 기간 수집 일부 실패: " + " | ".join(failures))
+        return {"days": results, "rows": sum(int(item.get("count", 0)) for item in results)}
 
     @staticmethod
     def utc_range(start: date, end: date) -> tuple[str, str]:
