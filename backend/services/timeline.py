@@ -7,6 +7,7 @@ from typing import Any
 
 from backend.services.detections import DetectionService
 from backend.services.email_security import EmailSecurityService
+from backend.services.endpoints import load_json_list, normalize_key
 from backend.services.transfers import TransferService
 
 
@@ -21,6 +22,43 @@ class TimelineService:
         self.email = EmailSecurityService(project_root)
         self.transfers = TransferService(project_root)
 
+    def _identities(self) -> tuple[dict[str, dict[str, str]], dict[str, set[str]]]:
+        by_alias: dict[str, dict[str, str]] = {}
+        aliases_by_name: dict[str, set[str]] = defaultdict(set)
+
+        def add(name: Any, dept: Any, *aliases: Any) -> None:
+            display = str(name or "").strip()
+            if not display or display.lower() == "none":
+                return
+            entry = {"user": display, "dept": str(dept or "미분류")}
+            display_key = normalize_key(display)
+            for value in (display, *aliases):
+                text = str(value or "").strip()
+                for variant in (text, text.split("\\")[-1], text.split("@", 1)[0]):
+                    key = normalize_key(variant)
+                    if key:
+                        by_alias[key] = entry
+                        aliases_by_name[display_key].add(key)
+
+        for endpoint in load_json_list(self.project_root / "cache/endpoints.json"):
+            person = endpoint.get("associatedPerson") if isinstance(endpoint.get("associatedPerson"), dict) else {}
+            add(person.get("name"), "미분류", person.get("id"), person.get("viaLogin"))
+        for user in load_json_list(self.project_root / "cache/users.json"):
+            add(user.get("name"), user.get("dept") or user.get("department"), user.get("id"), user.get("userId"), user.get("exchangeLogin"), user.get("email"))
+        return by_alias, aliases_by_name
+
+    @staticmethod
+    def _identity_candidates(event: dict[str, str]) -> list[str]:
+        values = [event.get("user", ""), event.get("userId", ""), event.get("asset", "")]
+        return [variant for value in values for variant in (value, value.split("\\")[-1], value.split("@", 1)[0])]
+
+    def _apply_identity(self, event: dict[str, str], identities: dict[str, dict[str, str]]) -> dict[str, str]:
+        for candidate in self._identity_candidates(event):
+            identity = identities.get(normalize_key(candidate))
+            if identity:
+                return {**event, "user": identity["user"], "dept": event["dept"] if event["dept"] not in {"", "None", "미분류"} else identity["dept"]}
+        return event
+
     @property
     def index_path(self) -> Path:
         return self.project_root / "cache" / "index" / "timeline_index.db"
@@ -33,10 +71,13 @@ class TimelineService:
         if sources:
             clauses.append(f"source IN ({','.join('?' for _ in sources)})")
             params.extend(sorted(sources))
-        user_key = user.strip().lower()
+        user_key = normalize_key(user)
         if user_key:
-            clauses.append("LOWER(COALESCE(user,'') || ' ' || COALESCE(user_id,'') || ' ' || COALESCE(dept,'') || ' ' || COALESCE(asset,'')) LIKE ?")
-            params.append(f"%{user_key}%")
+            identities, aliases_by_name = self._identities()
+            terms = {user_key, *aliases_by_name.get(user_key, set())}
+            identity_sql = "LOWER(COALESCE(user,'') || ' ' || COALESCE(user_id,'') || ' ' || COALESCE(dept,'') || ' ' || COALESCE(asset,''))"
+            clauses.append("(" + " OR ".join(f"{identity_sql} LIKE ?" for _ in terms) + ")")
+            params.extend(f"%{term}%" for term in sorted(terms))
         keyword_key = keyword.strip().lower()
         if keyword_key:
             clauses.append("LOWER(COALESCE(time,'') || ' ' || COALESCE(source,'') || ' ' || COALESCE(user,'') || ' ' || COALESCE(user_id,'') || ' ' || COALESCE(dept,'') || ' ' || COALESCE(asset,'') || ' ' || COALESCE(event,'') || ' ' || COALESCE(direction,'') || ' ' || COALESCE(peer,'') || ' ' || COALESCE(summary,'') || ' ' || COALESCE(indicator,'')) LIKE ?")
@@ -56,7 +97,8 @@ class TimelineService:
                 ).fetchall()
         except sqlite3.Error:
             return None
-        return [
+        identities, _aliases = self._identities()
+        return [self._apply_identity(event, identities) for event in [
             {
                 "time": str(row[0] or "None"), "source": str(row[1] or "None"),
                 "user": str(row[2] or "None"), "userId": str(row[3] or "None"),
@@ -66,7 +108,7 @@ class TimelineService:
                 "indicator": str(row[10] or "None"),
             }
             for row in rows
-        ]
+        ]]
 
     def date_bounds(self) -> tuple[date, date] | None:
         dates = []
@@ -101,7 +143,8 @@ class TimelineService:
             output.extend(self.event("Outbound Mail", row) for _id, _raw, row in self.transfers._collect_outbound(start, end)[0])
         if "File" in sources:
             output.extend(self.event("File", row) for _id, _raw, row in self.transfers._collect_dlp(start, end)[0])
-        return output
+        identities, _aliases = self._identities()
+        return [self._apply_identity(event, identities) for event in output]
 
     def search(self, user: str, keyword: str, sources: set[str], offset: int = 0, limit: int = 250) -> dict[str, Any]:
         invalid = sources - ALL_SOURCES

@@ -1,5 +1,6 @@
 import json
 import sqlite3
+from datetime import date
 from pathlib import Path
 
 from backend.services.timeline import TimelineService
@@ -31,3 +32,41 @@ def test_timeline_search_uses_existing_sqlite_index(tmp_path: Path):
 
     assert result["source"] == "sqlite-index"
     assert result["pagination"]["totalEvents"] == 1
+
+
+def test_timeline_korean_name_search_finds_outbound_login_alias(tmp_path: Path):
+    endpoint_path = tmp_path / "cache/endpoints.json"
+    endpoint_path.parent.mkdir(parents=True)
+    endpoint_path.write_text(json.dumps([{"associatedPerson": {"name": "김범수", "viaLogin": "LOCKNLOCK\\bskim"}}]), encoding="utf-8")
+    database = tmp_path / "cache/index/timeline_index.db"
+    database.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(database) as connection:
+        connection.execute("CREATE TABLE timeline_events (time TEXT, source TEXT, user TEXT, user_id TEXT, dept TEXT, asset TEXT, event TEXT, direction TEXT, peer TEXT, summary TEXT, indicator TEXT)")
+        connection.execute("INSERT INTO timeline_events VALUES (?,?,?,?,?,?,?,?,?,?,?)", (
+            "2026-07-24 14:28:35", "Outbound Mail", "None", "bskim", "미분류", "bskim@locknlock.com",
+            "성공", "bskim@locknlock.com → receiver@example.com", "receiver@example.com", "출장 항공권 견적", "None",
+        ))
+
+    result = TimelineService(tmp_path).search("김범수", "", {"Outbound Mail"})
+
+    assert result["pagination"]["totalEvents"] == 1
+    assert result["groups"][0]["items"][0]["user"] == "김범수"
+
+
+def test_timeline_all_events_includes_outbound_and_dlp(tmp_path: Path):
+    service = TimelineService(tmp_path)
+    service.date_bounds = lambda: (date(2026, 7, 22), date(2026, 7, 28))
+    service.transfers._collect_outbound = lambda _start, _end: ([
+        (
+        "out-1", {}, {"date":"2026-07-24", "senderName":"kim", "senderEmail":"kim@example.com", "dept":"IT", "sendResult":"성공", "receiver":"r@example.com", "subject":"메일", "attachment":"None"}
+        )
+    ], [])
+    service.transfers._collect_dlp = lambda _start, _end: ([
+        (
+        "dlp-1", {}, {"time":"2026-07-24", "username":"kim", "dept":"IT", "computer":"PC1", "event":"탐지", "source":"a.txt", "destination":"USB", "sourceIp":"10.0.0.1", "destinationDetail":"복사", "fileHash":"hash"}
+        )
+    ], [])
+
+    events = service.all_events({"Outbound Mail", "File"})
+
+    assert {event["source"] for event in events} == {"Outbound Mail", "File"}
