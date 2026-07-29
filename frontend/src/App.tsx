@@ -94,8 +94,8 @@ export function App() {
           </div>}
           {menu === "Lab" && activeMenu === "Lab" && <div className="subnav"><button className={view === "layout" ? "selected" : ""} onClick={() => setView("layout")}>Layout - User</button></div>}
           {menu === "Config" && activeMenu === "Config" && <div className="subnav">
-            <button className={view === "config" ? "selected" : ""} onClick={() => setView("config")}>General</button>
-            <button className={view === "systemInfo" ? "selected" : ""} onClick={() => setView("systemInfo")}>System-Info</button>
+            <a href="#config-general" className={view === "config" ? "selected" : ""} onClick={(event) => { event.preventDefault(); setView("config"); }}>General</a>
+            <a href="#config-system-info" className={view === "systemInfo" ? "selected" : ""} onClick={(event) => { event.preventDefault(); setView("systemInfo"); }}>System-Info</a>
           </div>}
         </div>)}</nav>
         <div className={`connection ${health}`}><span className="connection-orb"/><svg className="connection-heartbeat" viewBox="0 0 92 22" aria-hidden="true"><polyline points="0,11 15,11 21,4 27,18 34,7 40,11 55,11 61,5 67,17 73,11 92,11"/></svg><b>{health === "ok" ? "백엔드 연결됨" : health === "error" ? "연결 오류" : "연결 확인 중"}</b></div>

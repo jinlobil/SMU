@@ -40,7 +40,9 @@ def test_system_info_uses_hover_tooltips_without_bottom_time_labels():
     assert 'className="hover-guide"' in page
     assert "<title>" not in page
     assert 'textAnchor="middle"' not in page
-    assert ">General</button>" in app
-    assert ">System-Info</button>" in app
+    assert 'href="#config-general"' in app
+    assert 'href="#config-system-info"' in app
+    assert ">General</button>" not in app
+    assert ">System-Info</button>" not in app
     assert ">General</button>" not in config
     assert ">System-Info</button>" not in config
