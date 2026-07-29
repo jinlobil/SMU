@@ -53,6 +53,8 @@ Python의 `>>>`만 표시된다면 정상 실행이 아닙니다. Windows CMD가
 
 런처는 `/api/health`가 실제 응답할 때까지 기다린 후에만 Vite를 시작합니다. 따라서 정상 실행에서는 Vite의 `/api/health` 또는 `/api/endpoints` 프록시 `ECONNREFUSED` 메시지가 발생하지 않습니다.
 
+Windows에서 백신·동기화·압축 해제 프로그램이 소스 파일을 잠시 잠가도 Vite가 `EBUSY`로 종료되지 않도록 개발 서버는 1초 간격 파일 폴링을 사용합니다.
+
 Dashboard 기본 7일 범위는 백엔드 준비 단계에서 미리 집계해 `cache/index/web_dashboard_summary.json`에 저장합니다. 같은 캐시 상태와 날짜 범위로 Dashboard를 다시 열면 원본 파일을 재집계하지 않고 저장된 집계 결과를 즉시 반환합니다. 날짜 범위를 변경해 `적용`하면 해당 범위는 최초 한 번 집계되고 이후 같은 범위는 재사용됩니다.
 
 ### Endpoint 화면 확인
