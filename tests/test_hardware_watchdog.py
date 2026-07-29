@@ -11,7 +11,6 @@ def test_watchdog_reuses_healthy_independent_collector(tmp_path, monkeypatch):
     status = {"status": "running", "pid": 4321, "lastSampleAt": datetime.now().astimezone().isoformat()}
     watchdog.collector_status.write_text(json.dumps(status), encoding="utf-8")
     monkeypatch.setattr("system_monitor.watchdog.process_alive", lambda pid: pid == 4321)
-    monkeypatch.setattr(watchdog, "prune_duplicate_collectors", lambda pid: None)
     restarted = []
     monkeypatch.setattr(watchdog, "restart_collector", lambda: restarted.append(True))
 
@@ -26,7 +25,6 @@ def test_fresh_heartbeat_wins_when_windows_pid_probe_is_unavailable(tmp_path, mo
     status = {"status": "running", "pid": 4321, "lastSampleAt": datetime.now().astimezone().isoformat()}
     watchdog.collector_status.write_text(json.dumps(status), encoding="utf-8")
     monkeypatch.setattr("system_monitor.watchdog.process_alive", lambda _pid: False)
-    monkeypatch.setattr(watchdog, "prune_duplicate_collectors", lambda _pid: None)
     restarted = []
     monkeypatch.setattr(watchdog, "restart_collector", lambda: restarted.append(True))
 
@@ -68,17 +66,6 @@ def test_wait_accepts_existing_healthy_collector_after_spawn_race(tmp_path, monk
     result = watchdog._wait_for_collector(1234, timeout=0.1)
 
     assert result["pid"] == 9999
-
-
-def test_watchdog_prunes_duplicate_collectors(tmp_path, monkeypatch):
-    watchdog = HardwareWatchdog(tmp_path)
-    monkeypatch.setattr(watchdog, "collector_pids", lambda: [100, 200, 300])
-    stopped = []
-    monkeypatch.setattr("system_monitor.watchdog.terminate_process", lambda pid: stopped.append(pid))
-
-    watchdog.prune_duplicate_collectors(200)
-
-    assert stopped == [100, 300]
 
 
 def test_process_alive_uses_psutil_on_windows_compatible_path(monkeypatch):

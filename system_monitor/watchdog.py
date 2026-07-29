@@ -53,30 +53,6 @@ class HardwareWatchdog:
         self.started_at = datetime.now().astimezone().isoformat(timespec="seconds")
         self.log = logging.getLogger("smu.hardware.watchdog")
 
-    def collector_pids(self) -> list[int]:
-        expected_root = str(self.root.resolve()).casefold()
-        matches = []
-        for process in psutil.process_iter(["pid", "cmdline"]):
-            try:
-                command = [str(part) for part in (process.info.get("cmdline") or [])]
-                folded = [part.casefold() for part in command]
-                if "system_monitor.collector" in folded and "--root" in folded:
-                    root_index = folded.index("--root") + 1
-                    if root_index < len(command) and str(Path(command[root_index]).resolve()).casefold() == expected_root:
-                        matches.append(int(process.info["pid"]))
-            except (OSError, psutil.Error, ValueError):
-                continue
-        return matches
-
-    def prune_duplicate_collectors(self, keep_pid: int | None) -> None:
-        for pid in self.collector_pids():
-            if pid != keep_pid:
-                try:
-                    terminate_process(pid)
-                    self.log.warning("Stopped duplicate Collector pid=%s", pid)
-                except OSError:
-                    pass
-
     def read_collector(self) -> dict:
         try:
             return json.loads(self.collector_status.read_text(encoding="utf-8"))
@@ -103,15 +79,8 @@ class HardwareWatchdog:
         with self.lock:
             status = self.read_collector()
             pid = status.get("pid")
-            for collector_pid in self.collector_pids() or ([pid] if process_alive(pid) else []):
-                try:
-                    terminate_process(int(collector_pid))
-                except OSError:
-                    pass
-                for _ in range(30):
-                    if not process_alive(collector_pid):
-                        break
-                    time.sleep(0.1)
+            if pid:
+                terminate_process(int(pid))
             self._start_collector()
             self.restart_count += 1
             status = self._wait_for_collector(self.collector.pid)
@@ -133,8 +102,6 @@ class HardwareWatchdog:
         if stale:
             self.log.warning("Collector heartbeat stale pid=%s process_alive=%s; restarting", pid, alive)
             self.restart_collector()
-        else:
-            self.prune_duplicate_collectors(int(pid))
 
     def snapshot(self) -> dict:
         collector = {**self.read_collector(), "restartCount": self.restart_count}
