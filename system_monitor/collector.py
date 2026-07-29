@@ -95,7 +95,7 @@ def main() -> int:
     parser.add_argument("--root", type=Path, required=True)
     args = parser.parse_args()
     (args.root / "runtime/logs").mkdir(parents=True, exist_ok=True)
-    logging.basicConfig(filename=args.root / "runtime/logs/hardware_collector.log", level=logging.INFO, encoding="utf-8")
+    logging.basicConfig(filename=args.root / "runtime/logs/hardware_collector.log", level=logging.INFO, encoding="utf-8", format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
     singleton = acquire_singleton(args.root / "runtime/system_metrics/collector.lock")
     if singleton is None:
         logging.info("Collector already running; duplicate process exiting")

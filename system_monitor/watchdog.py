@@ -107,21 +107,25 @@ class HardwareWatchdog:
     def ensure_collector(self) -> None:
         status = self.read_collector()
         pid = status.get("pid")
+        alive = process_alive(pid)
         stale = True
         try:
             sampled = datetime.fromisoformat(status.get("lastSampleAt") or "")
             stale = (datetime.now().astimezone() - sampled.astimezone()).total_seconds() > 20
         except ValueError:
             pass
-        if not process_alive(pid) or stale:
-            self.log.warning("Collector unavailable pid=%s stale=%s; restarting", pid, stale)
+        # A fresh heartbeat is stronger evidence than a Windows PID probe. Some
+        # restricted sessions cannot open another process to verify its PID,
+        # which previously caused a healthy Collector to restart every 5s.
+        if stale:
+            self.log.warning("Collector heartbeat stale pid=%s process_alive=%s; restarting", pid, alive)
             self.restart_collector()
         else:
             self.prune_duplicate_collectors(int(pid))
 
     def snapshot(self) -> dict:
-        collector = self.read_collector()
-        return {"watchdog": {"status": "running", "pid": os.getpid(), "startedAt": self.started_at, "lastCheckAt": datetime.now().astimezone().isoformat(timespec="seconds"), "restartCount": self.restart_count, "lastError": None}, "collector": collector}
+        collector = {**self.read_collector(), "restartCount": self.restart_count}
+        return {"watchdog": {"status": "running", "pid": os.getpid(), "startedAt": self.started_at, "lastCheckAt": datetime.now().astimezone().isoformat(timespec="seconds"), "lastError": None}, "collector": collector}
 
     def loop(self) -> None:
         while not self.stop.is_set():
@@ -158,7 +162,7 @@ def handler_for(watchdog: HardwareWatchdog):
 def main() -> int:
     parser = argparse.ArgumentParser(); parser.add_argument("--root", type=Path, required=True); args = parser.parse_args()
     (args.root / "runtime/logs").mkdir(parents=True, exist_ok=True)
-    logging.basicConfig(filename=args.root / "runtime/logs/hardware_watchdog.log", level=logging.INFO, encoding="utf-8")
+    logging.basicConfig(filename=args.root / "runtime/logs/hardware_watchdog.log", level=logging.INFO, encoding="utf-8", format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
     watchdog = HardwareWatchdog(args.root)
     server = ThreadingHTTPServer(("127.0.0.1", 8766), handler_for(watchdog)); server.timeout = 1
     threading.Thread(target=watchdog.loop, daemon=True).start()

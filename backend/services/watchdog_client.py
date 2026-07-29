@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -15,6 +16,7 @@ class WatchdogManager:
         self.url = f"http://127.0.0.1:{port}"
         self.stop = threading.Event()
         self.lock = threading.Lock()
+        self.log = logging.getLogger("smu.web.watchdog_manager")
 
     def request(self, path: str, method: str = "GET", timeout: float = 2) -> dict:
         request = urllib.request.Request(self.url + path, method=method)
@@ -34,7 +36,8 @@ class WatchdogManager:
         flags = 0
         if os.name == "nt":
             flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
-        subprocess.Popen([sys.executable, "-m", "system_monitor.watchdog", "--root", str(self.root)], cwd=self.root, stdin=subprocess.DEVNULL, stdout=stream, stderr=subprocess.STDOUT, creationflags=flags, close_fds=True, start_new_session=os.name != "nt")
+        process = subprocess.Popen([sys.executable, "-m", "system_monitor.watchdog", "--root", str(self.root)], cwd=self.root, stdin=subprocess.DEVNULL, stdout=stream, stderr=subprocess.STDOUT, creationflags=flags, close_fds=True, start_new_session=os.name != "nt")
+        self.log.warning("Watchdog process launched pid=%s", process.pid)
 
     def ensure(self) -> bool:
         if self.status()["watchdog"].get("status") == "running":
@@ -73,7 +76,10 @@ class WatchdogManager:
 
     def loop(self) -> None:
         while not self.stop.is_set():
-            self.ensure()
+            try:
+                self.ensure()
+            except Exception:
+                self.log.exception("Watchdog health check failed")
             self.stop.wait(10)
 
     def start(self) -> None:
