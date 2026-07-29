@@ -1,4 +1,5 @@
 import argparse
+import hashlib
 import json
 import logging
 import os
@@ -13,6 +14,20 @@ import psutil
 def acquire_singleton(path: Path):
     """Hold an OS file lock for the Collector lifetime to prevent duplicate writers."""
     path.parent.mkdir(parents=True, exist_ok=True)
+    if os.name == "nt":
+        import ctypes
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        name = "Local\\SMU_Hardware_Collector_" + hashlib.sha256(str(path.resolve()).casefold().encode()).hexdigest()[:16]
+        handle = kernel32.CreateMutexW(None, False, name)
+        if not handle:
+            return None
+        if ctypes.get_last_error() == 183:  # ERROR_ALREADY_EXISTS
+            kernel32.CloseHandle(handle)
+            return None
+        class MutexHandle:
+            def close(self):
+                kernel32.CloseHandle(handle)
+        return MutexHandle()
     stream = path.open("a+b")
     stream.seek(0)
     if stream.tell() == 0 and path.stat().st_size == 0:
@@ -71,6 +86,9 @@ class HardwareCollector:
         self.directory.mkdir(parents=True, exist_ok=True)
         psutil.cpu_percent(interval=None)
         self._status("starting")
+        if self.stop.wait(self.interval):
+            self._status("stopped")
+            return
         cleanup_date = None
         while not self.stop.is_set():
             try:

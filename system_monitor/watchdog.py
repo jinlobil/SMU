@@ -21,6 +21,19 @@ def process_alive(pid: int | None) -> bool:
     return psutil.pid_exists(int(pid))
 
 
+def terminate_process(pid: int) -> None:
+    try:
+        process = psutil.Process(int(pid))
+        process.terminate()
+        try:
+            process.wait(timeout=3)
+        except psutil.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=2)
+    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.TimeoutExpired):
+        return
+
+
 def detached_flags() -> int:
     if os.name != "nt":
         return 0
@@ -59,7 +72,7 @@ class HardwareWatchdog:
         for pid in self.collector_pids():
             if pid != keep_pid:
                 try:
-                    os.kill(pid, signal_value())
+                    terminate_process(pid)
                     self.log.warning("Stopped duplicate Collector pid=%s", pid)
                 except OSError:
                     pass
@@ -92,7 +105,7 @@ class HardwareWatchdog:
             pid = status.get("pid")
             for collector_pid in self.collector_pids() or ([pid] if process_alive(pid) else []):
                 try:
-                    os.kill(int(collector_pid), signal_value())
+                    terminate_process(int(collector_pid))
                 except OSError:
                     pass
                 for _ in range(30):

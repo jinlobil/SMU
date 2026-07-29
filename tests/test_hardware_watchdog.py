@@ -74,7 +74,7 @@ def test_watchdog_prunes_duplicate_collectors(tmp_path, monkeypatch):
     watchdog = HardwareWatchdog(tmp_path)
     monkeypatch.setattr(watchdog, "collector_pids", lambda: [100, 200, 300])
     stopped = []
-    monkeypatch.setattr("system_monitor.watchdog.os.kill", lambda pid, _signal: stopped.append(pid))
+    monkeypatch.setattr("system_monitor.watchdog.terminate_process", lambda pid: stopped.append(pid))
 
     watchdog.prune_duplicate_collectors(200)
 
