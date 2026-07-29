@@ -3,6 +3,7 @@ import csv
 import json
 import time
 import uuid
+from contextlib import asynccontextmanager
 from datetime import date
 from pathlib import Path
 
@@ -29,6 +30,8 @@ from backend.services.layout import LayoutService
 from backend.services.settings import SchedulerService, ThemeService
 from backend.services.report import ReportService
 from backend.services.indexing import IndexService
+from backend.services.system_metrics import SystemMetricsService
+from backend.services.watchdog_client import WatchdogManager
 
 
 configure_logging()
@@ -50,15 +53,25 @@ theme_service = ThemeService(PROJECT_ROOT)
 report_service = ReportService(PROJECT_ROOT)
 index_service = IndexService(PROJECT_ROOT)
 scheduler_service = SchedulerService(PROJECT_ROOT, refresh_service, index_service)
+system_metrics_service = SystemMetricsService(PROJECT_ROOT)
+watchdog_manager = WatchdogManager(PROJECT_ROOT)
 try:
     dashboard_service.warm_default()
 except Exception:
     log.exception("Dashboard startup pre-aggregation failed; the API will retry on demand")
 
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    watchdog_manager.start()
+    yield
+    watchdog_manager.stop.set()
+
+
 app = FastAPI(
     title="SMU Local Web API",
     version="0.1.0",
     description="Local API used by the SMU JavaScript frontend.",
+    lifespan=lifespan,
 )
 
 
@@ -135,6 +148,43 @@ def health() -> dict:
             "errorLog": str(WEB_ERROR_LOG),
         },
     }
+
+
+@app.get("/api/system-info/current")
+def system_info_current() -> dict:
+    return {"success": True, "data": system_metrics_service.current()}
+
+
+@app.get("/api/system-info/history")
+def system_info_history(start: str, end: str, bucket: str = "auto") -> dict:
+    try:
+        data = system_metrics_service.history(start, end, bucket)
+    except ValueError as exc:
+        return error_response(str(uuid.uuid4()), "INVALID_SYSTEM_INFO_RANGE", str(exc), 400)
+    return {"success": True, "data": data}
+
+
+@app.get("/api/system-info/process-status")
+def system_info_process_status() -> dict:
+    return {"success": True, "data": watchdog_manager.status()}
+
+
+@app.post("/api/system-info/collector/restart", status_code=202)
+def restart_system_info_collector() -> dict:
+    try:
+        data = watchdog_manager.restart_collector()
+    except Exception as exc:
+        return error_response(str(uuid.uuid4()), "COLLECTOR_RESTART_FAILED", str(exc), 503)
+    return {"success": True, "data": data}
+
+
+@app.post("/api/system-info/watchdog/restart", status_code=202)
+def restart_system_info_watchdog() -> dict:
+    try:
+        data = watchdog_manager.restart_watchdog()
+    except Exception as exc:
+        return error_response(str(uuid.uuid4()), "WATCHDOG_RESTART_FAILED", str(exc), 503)
+    return {"success": True, "data": data}
 
 
 @app.get("/api/dashboard")
