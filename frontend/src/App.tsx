@@ -67,7 +67,7 @@ export function App() {
 
   return (
     <div className="app">
-      <div className="cyber-atmosphere" aria-hidden="true"><div className="cyber-grid"/><div className="radar-sweep"/>{particles.map((particle) => <i key={particle} style={{ "--px": `${(particle * 47) % 100}%`, "--py": `${(particle * 29) % 100}%`, "--delay": `${-(particle % 13)}s`, "--duration": `${10 + particle % 9}s` } as CSSProperties}/>)}</div>
+      <div className="cyber-atmosphere" aria-hidden="true"><div className="cyber-grid"/>{particles.map((particle) => <i key={particle} style={{ "--px": `${(particle * 47) % 100}%`, "--py": `${(particle * 29) % 100}%`, "--delay": `${-(particle % 13)}s`, "--duration": `${10 + particle % 9}s` } as CSSProperties}/>)}</div>
       <aside className="sidebar">
         <div className="brand"><span>SMU</span><strong>Monitoring</strong></div>
         <nav>{menus.map((menu) => <div key={menu}>

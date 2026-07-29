@@ -19,10 +19,13 @@ def test_motion_layer_covers_cards_tables_and_feature_pages():
         ".panel,.config-card,.dash-card,.summary-grid article",
         "@keyframes command-float",
         "@keyframes heartbeat-line",
-        "@keyframes table-scanner",
         ".firewall-buttons .danger-action::before",
         ".page-timeline .timeline-list::before",
-        ".page-layout .seat-canvas::after",
+        ".modal-backdrop { position:fixed!important",
         "@media (prefers-reduced-motion:reduce)",
     ):
         assert marker in styles
+
+    assert "radar-sweep" not in styles
+    assert "table-scanner" not in styles
+    assert "blueprint-scan" not in styles
