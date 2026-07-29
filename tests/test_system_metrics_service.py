@@ -58,3 +58,17 @@ def test_history_preserves_five_second_samples_in_second_bucket(tmp_path):
     result = service.history(now.isoformat(), (now + timedelta(minutes=1)).isoformat(), "second")
 
     assert [point["cpu"]["average"] for point in result["points"]] == [10.0, 30.0]
+
+
+def test_current_reads_independent_collector_snapshot(tmp_path):
+    service = SystemMetricsService(tmp_path, autostart=False)
+    service.directory.mkdir(parents=True)
+    current = sample(datetime.now().astimezone(), 22.5, 55.5)
+    (service.directory / "collector_status.json").write_text(
+        json.dumps({"status": "running", "lastError": None, "sample": current}), encoding="utf-8"
+    )
+
+    result = service.current()
+
+    assert result["collector"]["running"] is True
+    assert result["sample"]["cpuPercent"] == 22.5
