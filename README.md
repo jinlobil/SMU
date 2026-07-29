@@ -100,6 +100,7 @@ Dashboard, Detection, Forensics, Response, Asset, Lab, Config의 모든 상위 �
 
 ### Config
 
+- Config 하위 메뉴의 `System-Info`는 `psutil`로 시스템 CPU와 메모리를 5초마다 수집해 `runtime/system_metrics/YYYY-MM-DD.jsonl`에 일별 저장하고, 선택 기간을 초·분·시간·일 단위로 집계해 그래프로 표시합니다.
 - Detection/Inbound 기간 새로고침과 Endpoint/Organization/User 새로고침 Job을 실행하고 진행 상태를 표시합니다.
 - Auto Refresh Scheduler는 사용 여부, 1~1440분 간격, Detection(Endpoint+Email XDR)/Inbound/DLP/Outbound/Endpoint/Organization/User 대상을 저장하며 백엔드에서 화면과 독립적으로 실행됩니다.
 - Detection/Inbound/DLP/Outbound 기간, Endpoint/Organization/User 개별 수집을 지원합니다.
