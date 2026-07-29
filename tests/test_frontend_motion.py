@@ -46,3 +46,5 @@ def test_system_info_uses_hover_tooltips_without_bottom_time_labels():
     assert ">System-Info</button>" not in app
     assert ">General</button>" not in config
     assert ">System-Info</button>" not in config
+    styles = (ROOT / "frontend/src/styles.css").read_text(encoding="utf-8")
+    assert ".content .config-tabs { display:none!important; }" in styles
