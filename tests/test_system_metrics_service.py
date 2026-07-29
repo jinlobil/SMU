@@ -41,7 +41,7 @@ def test_history_rejects_unknown_bucket(tmp_path):
     try:
         service.history("2026-01-01", "2026-01-02", "week")
     except ValueError as exc:
-        assert "second, minute, hour, day" in str(exc)
+        assert "지원하지 않는 표시 단위" in str(exc)
     else:
         raise AssertionError("ValueError was not raised")
 
@@ -58,6 +58,30 @@ def test_history_preserves_five_second_samples_in_second_bucket(tmp_path):
     result = service.history(now.isoformat(), (now + timedelta(minutes=1)).isoformat(), "second")
 
     assert [point["cpu"]["average"] for point in result["points"]] == [10.0, 30.0]
+
+
+def test_history_auto_selects_bucket_below_point_limit(tmp_path):
+    service = SystemMetricsService(tmp_path, autostart=False)
+    now = datetime.now().astimezone().replace(hour=0, minute=0, second=0, microsecond=0)
+
+    result = service.history(now.isoformat(), (now + timedelta(days=1)).isoformat(), "auto")
+
+    assert result["requestedBucket"] == "auto"
+    assert result["bucket"] == "5minute"
+    assert result["bucketSeconds"] == 300
+    assert result["maxPoints"] == 600
+
+
+def test_history_rejects_manual_bucket_with_too_many_points(tmp_path):
+    service = SystemMetricsService(tmp_path, autostart=False)
+    now = datetime.now().astimezone().replace(hour=0, minute=0, second=0, microsecond=0)
+
+    try:
+        service.history(now.isoformat(), (now + timedelta(days=1)).isoformat(), "minute")
+    except ValueError as exc:
+        assert "최대 600개 포인트" in str(exc)
+    else:
+        raise AssertionError("ValueError was not raised")
 
 
 def test_current_reads_independent_collector_snapshot(tmp_path):

@@ -36,8 +36,8 @@ def test_system_info_uses_hover_tooltips_without_bottom_time_labels():
     app = (ROOT / "frontend/src/App.tsx").read_text(encoding="utf-8")
     config = (ROOT / "frontend/src/pages/ConfigPage.tsx").read_text(encoding="utf-8")
 
-    assert 'className="day-tooltip system-tooltip"' in page
-    assert 'className="hover-guide"' in page
+    assert 'className="day-tooltip system-tooltip visible"' in page
+    assert 'className="hover-guide visible"' in page
     assert "<title>" not in page
     assert 'textAnchor="middle"' not in page
     assert 'href="#config-general"' in app
@@ -48,6 +48,9 @@ def test_system_info_uses_hover_tooltips_without_bottom_time_labels():
     assert ">System-Info</button>" not in config
     styles = (ROOT / "frontend/src/styles.css").read_text(encoding="utf-8")
     assert ".content .config-tabs { display:none!important; }" in styles
+    assert 'points.length <= 150' in page
+    assert '최대 600포인트' in page
+    assert 'type="datetime-local"' in page
 
 
 def test_config_monitor_tolerates_backend_without_new_status_endpoint():

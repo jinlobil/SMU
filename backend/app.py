@@ -156,7 +156,7 @@ def system_info_current() -> dict:
 
 
 @app.get("/api/system-info/history")
-def system_info_history(start: str, end: str, bucket: str = "minute") -> dict:
+def system_info_history(start: str, end: str, bucket: str = "auto") -> dict:
     try:
         data = system_metrics_service.history(start, end, bucket)
     except ValueError as exc:

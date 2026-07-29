@@ -5,7 +5,20 @@ from pathlib import Path
 
 
 class SystemMetricsService:
-    BUCKET_SECONDS = {"second": 1, "minute": 60, "hour": 3600, "day": 86400}
+    MAX_POINTS = 600
+    BUCKET_SECONDS = {
+        "second": 5,  # Backwards-compatible name for the raw five-second samples.
+        "5second": 5,
+        "10second": 10,
+        "30second": 30,
+        "minute": 60,
+        "5minute": 300,
+        "10minute": 600,
+        "30minute": 1800,
+        "hour": 3600,
+        "6hour": 21600,
+        "day": 86400,
+    }
 
     def __init__(self, root: Path, interval_seconds: int = 5, retention_days: int = 30, autostart: bool = True):
         self.directory = root / "runtime/system_metrics"
@@ -40,13 +53,22 @@ class SystemMetricsService:
         return parsed.astimezone() if parsed.tzinfo else parsed.astimezone()
 
     def history(self, start: str, end: str, bucket: str) -> dict:
-        if bucket not in self.BUCKET_SECONDS:
-            raise ValueError("bucket은 second, minute, hour, day 중 하나여야 합니다.")
         start_at, end_at = self._parse(start), self._parse(end)
         if start_at > end_at:
             raise ValueError("시작 시간이 종료 시간보다 늦을 수 없습니다.")
         if end_at - start_at > timedelta(days=366):
             raise ValueError("조회 기간은 최대 366일입니다.")
+        duration_seconds = max(1, (end_at - start_at).total_seconds())
+        requested_bucket = bucket
+        if bucket == "auto":
+            bucket = next(
+                name for name, seconds in self.BUCKET_SECONDS.items()
+                if name != "second" and duration_seconds / seconds <= self.MAX_POINTS
+            )
+        elif bucket not in self.BUCKET_SECONDS:
+            raise ValueError("지원하지 않는 표시 단위입니다.")
+        elif duration_seconds / self.BUCKET_SECONDS[bucket] > self.MAX_POINTS:
+            raise ValueError(f"선택한 표시 단위는 최대 {self.MAX_POINTS}개 포인트까지만 조회할 수 있습니다. 자동 단위를 사용하거나 기간을 줄여주세요.")
 
         rows: list[dict] = []
         day = start_at.date()
@@ -68,16 +90,11 @@ class SystemMetricsService:
             day += timedelta(days=1)
 
         grouped: dict[datetime, list[dict]] = {}
+        bucket_seconds = self.BUCKET_SECONDS[bucket]
         for row in rows:
             timestamp = row["_time"]
-            if bucket == "second":
-                key = timestamp.replace(microsecond=0)
-            elif bucket == "minute":
-                key = timestamp.replace(second=0, microsecond=0)
-            elif bucket == "hour":
-                key = timestamp.replace(minute=0, second=0, microsecond=0)
-            else:
-                key = timestamp.replace(hour=0, minute=0, second=0, microsecond=0)
+            bucket_epoch = int(timestamp.timestamp()) // bucket_seconds * bucket_seconds
+            key = datetime.fromtimestamp(bucket_epoch, tz=timestamp.tzinfo)
             grouped.setdefault(key, []).append(row)
 
         points = []
@@ -93,4 +110,12 @@ class SystemMetricsService:
                 "memoryTotalBytes": latest["memoryTotalBytes"],
                 "samples": len(values),
             })
-        return {"start": start_at.isoformat(), "end": end_at.isoformat(), "bucket": bucket, "points": points}
+        return {
+            "start": start_at.isoformat(),
+            "end": end_at.isoformat(),
+            "requestedBucket": requested_bucket,
+            "bucket": bucket,
+            "bucketSeconds": bucket_seconds,
+            "maxPoints": self.MAX_POINTS,
+            "points": points,
+        }
