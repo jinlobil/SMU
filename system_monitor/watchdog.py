@@ -10,6 +10,8 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+import psutil
+
 from system_monitor.collector import atomic_json
 
 
@@ -26,7 +28,7 @@ def process_alive(pid: int | None) -> bool:
 def detached_flags() -> int:
     if os.name != "nt":
         return 0
-    return subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+    return subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
 
 
 class HardwareWatchdog:
@@ -41,6 +43,30 @@ class HardwareWatchdog:
         self.restart_count = 0
         self.started_at = datetime.now().astimezone().isoformat(timespec="seconds")
         self.log = logging.getLogger("smu.hardware.watchdog")
+
+    def collector_pids(self) -> list[int]:
+        expected_root = str(self.root.resolve()).casefold()
+        matches = []
+        for process in psutil.process_iter(["pid", "cmdline"]):
+            try:
+                command = [str(part) for part in (process.info.get("cmdline") or [])]
+                folded = [part.casefold() for part in command]
+                if "system_monitor.collector" in folded and "--root" in folded:
+                    root_index = folded.index("--root") + 1
+                    if root_index < len(command) and str(Path(command[root_index]).resolve()).casefold() == expected_root:
+                        matches.append(int(process.info["pid"]))
+            except (OSError, psutil.Error, ValueError):
+                continue
+        return matches
+
+    def prune_duplicate_collectors(self, keep_pid: int | None) -> None:
+        for pid in self.collector_pids():
+            if pid != keep_pid:
+                try:
+                    os.kill(pid, signal_value())
+                    self.log.warning("Stopped duplicate Collector pid=%s", pid)
+                except OSError:
+                    pass
 
     def read_collector(self) -> dict:
         try:
@@ -59,7 +85,7 @@ class HardwareWatchdog:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             status = self.read_collector()
-            if status.get("pid") == pid and status.get("status") == "running":
+            if status.get("status") == "running" and process_alive(status.get("pid")):
                 return status
             time.sleep(0.2)
         raise RuntimeError(f"Collector pid={pid} did not publish a healthy heartbeat")
@@ -68,13 +94,13 @@ class HardwareWatchdog:
         with self.lock:
             status = self.read_collector()
             pid = status.get("pid")
-            if process_alive(pid):
+            for collector_pid in self.collector_pids() or ([pid] if process_alive(pid) else []):
                 try:
-                    os.kill(int(pid), signal_value())
+                    os.kill(int(collector_pid), signal_value())
                 except OSError:
                     pass
                 for _ in range(30):
-                    if not process_alive(pid):
+                    if not process_alive(collector_pid):
                         break
                     time.sleep(0.1)
             self._start_collector()
@@ -94,18 +120,21 @@ class HardwareWatchdog:
         if not process_alive(pid) or stale:
             self.log.warning("Collector unavailable pid=%s stale=%s; restarting", pid, stale)
             self.restart_collector()
+        else:
+            self.prune_duplicate_collectors(int(pid))
 
     def snapshot(self) -> dict:
         collector = self.read_collector()
         return {"watchdog": {"status": "running", "pid": os.getpid(), "startedAt": self.started_at, "lastCheckAt": datetime.now().astimezone().isoformat(timespec="seconds"), "restartCount": self.restart_count, "lastError": None}, "collector": collector}
 
     def loop(self) -> None:
-        while not self.stop.wait(5):
+        while not self.stop.is_set():
             try:
                 self.ensure_collector()
                 atomic_json(self.status_path, self.snapshot())
             except Exception:
                 self.log.exception("Watchdog check failed")
+            self.stop.wait(5)
 
 
 def signal_value() -> int:
@@ -121,7 +150,9 @@ def handler_for(watchdog: HardwareWatchdog):
         def do_GET(self):
             self._send(200, watchdog.snapshot()) if self.path in {"/health", "/status"} else self._send(404, {"error": "not found"})
         def do_POST(self):
-            if self.path == "/collector/restart": self._send(202, watchdog.restart_collector())
+            if self.path == "/collector/restart":
+                try: self._send(202, watchdog.restart_collector())
+                except Exception as exc: self._send(503, {"accepted": False, "error": f"{type(exc).__name__}: {exc}"})
             elif self.path == "/shutdown": self._send(202, {"accepted": True}); threading.Thread(target=watchdog.stop.set, daemon=True).start()
             else: self._send(404, {"error": "not found"})
         def log_message(self, *_): pass
@@ -133,7 +164,6 @@ def main() -> int:
     (args.root / "runtime/logs").mkdir(parents=True, exist_ok=True)
     logging.basicConfig(filename=args.root / "runtime/logs/hardware_watchdog.log", level=logging.INFO, encoding="utf-8")
     watchdog = HardwareWatchdog(args.root)
-    watchdog.ensure_collector()
     server = ThreadingHTTPServer(("127.0.0.1", 8766), handler_for(watchdog)); server.timeout = 1
     threading.Thread(target=watchdog.loop, daemon=True).start()
     while not watchdog.stop.is_set(): server.handle_request()

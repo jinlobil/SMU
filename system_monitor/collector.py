@@ -10,6 +10,28 @@ from pathlib import Path
 import psutil
 
 
+def acquire_singleton(path: Path):
+    """Hold an OS file lock for the Collector lifetime to prevent duplicate writers."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    stream = path.open("a+b")
+    stream.seek(0)
+    if stream.tell() == 0 and path.stat().st_size == 0:
+        stream.write(b"0")
+        stream.flush()
+    stream.seek(0)
+    try:
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        stream.close()
+        return None
+    return stream
+
+
 def atomic_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(f".{os.getpid()}.tmp")
@@ -74,10 +96,15 @@ def main() -> int:
     args = parser.parse_args()
     (args.root / "runtime/logs").mkdir(parents=True, exist_ok=True)
     logging.basicConfig(filename=args.root / "runtime/logs/hardware_collector.log", level=logging.INFO, encoding="utf-8")
+    singleton = acquire_singleton(args.root / "runtime/system_metrics/collector.lock")
+    if singleton is None:
+        logging.info("Collector already running; duplicate process exiting")
+        return 0
     collector = HardwareCollector(args.root)
     signal.signal(signal.SIGTERM, lambda *_: collector.stop.set())
     signal.signal(signal.SIGINT, lambda *_: collector.stop.set())
     collector.run()
+    singleton.close()
     return 0
 
 

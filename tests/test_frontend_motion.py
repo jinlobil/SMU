@@ -48,3 +48,10 @@ def test_system_info_uses_hover_tooltips_without_bottom_time_labels():
     assert ">System-Info</button>" not in config
     styles = (ROOT / "frontend/src/styles.css").read_text(encoding="utf-8")
     assert ".content .config-tabs { display:none!important; }" in styles
+
+
+def test_config_monitor_tolerates_backend_without_new_status_endpoint():
+    config = (ROOT / "frontend/src/pages/ConfigPage.tsx").read_text(encoding="utf-8")
+
+    assert "!response.ok||!payload?.data?.watchdog||!payload?.data?.collector" in config
+    assert "setMonitor(unavailableMonitor())" in config
