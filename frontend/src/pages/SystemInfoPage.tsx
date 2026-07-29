@@ -20,7 +20,7 @@ function smoothPath(points: [number, number][]) {
 }
 
 function MetricChart({ title, kind, points, current }: { title: string; kind: "cpu" | "memory"; points: Point[]; current: Current["sample"] }) {
-  const width = 1100, height = 270, left = 48, bottom = 34;
+  const width = 1100, height = 250, left = 48, bottom = 16;
   const values = points.map(point => point[kind]);
   const x = (index: number) => left + index * (width - left - 24) / Math.max(1, points.length - 1);
   const y = (value: number) => height - bottom - Math.max(0, Math.min(100, value)) * (height - bottom - 22) / 100;
@@ -31,7 +31,7 @@ function MetricChart({ title, kind, points, current }: { title: string; kind: "c
   const maximum = values.length ? Math.max(...values.map(value => value.maximum)) : 0;
   const minimum = values.length ? Math.min(...values.map(value => value.minimum)) : 0;
   const color = kind === "cpu" ? "var(--trend-detection)" : "var(--trend-email)";
-  const labelEvery = Math.max(1, Math.ceil(points.length / 8));
+  const columnWidth = (width - left - 24) / Math.max(1, points.length - 1);
   return <article className={`system-metric-card ${kind}`}>
     <header><div><h2>{title}</h2><p>평균 {average.toFixed(1)}% · 최대 {maximum.toFixed(1)}% · 최소 {minimum.toFixed(1)}%</p></div><strong>{currentValue === null ? "-" : `${currentValue.toFixed(1)}%`}</strong></header>
     {kind === "memory" && current && <p className="memory-detail">사용 {bytes(current.memoryUsedBytes)} / 전체 {bytes(current.memoryTotalBytes)}</p>}
@@ -40,8 +40,8 @@ function MetricChart({ title, kind, points, current }: { title: string; kind: "c
       {[0, 25, 50, 75, 100].map(value => <g key={value}><line x1={left} x2={width - 24} y1={y(value)} y2={y(value)} className="system-grid-line"/><text x="8" y={y(value) + 4} className="axis-label">{value}%</text></g>)}
       <path d={`${path} L ${averagePoints.at(-1)?.[0]} ${height - bottom} L ${averagePoints[0][0]} ${height - bottom} Z`} fill={`url(#${kind}-area)`} className="trend-area"/>
       <path d={path} fill="none" stroke={color} strokeWidth="3.5" strokeLinecap="round" className="trend-wave"/>
-      {points.map((point, index) => <g key={point.timestamp} className="system-point"><circle cx={x(index)} cy={y(point[kind].average)} r="4" fill="var(--surface)" stroke={color} strokeWidth="3"/><title>{new Date(point.timestamp).toLocaleString("ko-KR")}\n평균 {point[kind].average}% / 최대 {point[kind].maximum}% / 최소 {point[kind].minimum}%\n{point.samples}개 샘플</title></g>)}
-      {points.map((point, index) => index % labelEvery === 0 || index === points.length - 1 ? <text key={point.timestamp} x={x(index)} y={height - 8} className="axis-label" textAnchor="middle">{new Date(point.timestamp).toLocaleString("ko-KR", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}</text> : null)}
+      {points.map((point, index) => <circle key={point.timestamp} cx={x(index)} cy={y(point[kind].average)} r="4" fill="var(--surface)" stroke={color} strokeWidth="3" className="system-point"/>)}
+      {points.map((point, index) => { const tooltipX = Math.min(width - 234, Math.max(8, x(index) - 110)); return <g key={point.timestamp} className="day-hover"><rect x={x(index) - columnWidth / 2} y="6" width={Math.max(8, columnWidth)} height={height - 12} fill="transparent"/><line x1={x(index)} x2={x(index)} y1="14" y2={height - bottom} className="hover-guide"/><g className="day-tooltip system-tooltip" transform={`translate(${tooltipX},12)`}><rect width="226" height="104" rx="12"/><text x="14" y="22" className="tooltip-date">{new Date(point.timestamp).toLocaleString("ko-KR")}</text><text x="14" y="46" className="tooltip-name">평균</text><text x="210" y="46" className="tooltip-value">{point[kind].average.toFixed(1)}%</text><text x="14" y="65" className="tooltip-name">최대</text><text x="210" y="65" className="tooltip-value">{point[kind].maximum.toFixed(1)}%</text><text x="14" y="84" className="tooltip-name">최소</text><text x="210" y="84" className="tooltip-value">{point[kind].minimum.toFixed(1)}%</text></g></g>; })}
     </svg>}</div>
   </article>;
 }
