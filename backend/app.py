@@ -29,6 +29,7 @@ from backend.services.layout import LayoutService
 from backend.services.settings import SchedulerService, ThemeService
 from backend.services.report import ReportService
 from backend.services.indexing import IndexService
+from backend.services.system_metrics import SystemMetricsService
 
 
 configure_logging()
@@ -50,6 +51,7 @@ theme_service = ThemeService(PROJECT_ROOT)
 report_service = ReportService(PROJECT_ROOT)
 index_service = IndexService(PROJECT_ROOT)
 scheduler_service = SchedulerService(PROJECT_ROOT, refresh_service, index_service)
+system_metrics_service = SystemMetricsService(PROJECT_ROOT)
 try:
     dashboard_service.warm_default()
 except Exception:
@@ -135,6 +137,20 @@ def health() -> dict:
             "errorLog": str(WEB_ERROR_LOG),
         },
     }
+
+
+@app.get("/api/system-info/current")
+def system_info_current() -> dict:
+    return {"success": True, "data": system_metrics_service.current()}
+
+
+@app.get("/api/system-info/history")
+def system_info_history(start: str, end: str, bucket: str = "minute") -> dict:
+    try:
+        data = system_metrics_service.history(start, end, bucket)
+    except ValueError as exc:
+        return error_response(str(uuid.uuid4()), "INVALID_SYSTEM_INFO_RANGE", str(exc), 400)
+    return {"success": True, "data": data}
 
 
 @app.get("/api/dashboard")
