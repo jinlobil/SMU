@@ -18,11 +18,7 @@ from system_monitor.collector import atomic_json
 def process_alive(pid: int | None) -> bool:
     if not pid:
         return False
-    try:
-        os.kill(pid, 0)
-        return True
-    except OSError:
-        return False
+    return psutil.pid_exists(int(pid))
 
 
 def detached_flags() -> int:

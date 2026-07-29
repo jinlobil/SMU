@@ -64,3 +64,10 @@ def test_watchdog_prunes_duplicate_collectors(tmp_path, monkeypatch):
     watchdog.prune_duplicate_collectors(200)
 
     assert stopped == [100, 300]
+
+
+def test_process_alive_uses_psutil_on_windows_compatible_path(monkeypatch):
+    monkeypatch.setattr("system_monitor.watchdog.psutil.pid_exists", lambda pid: pid == 321)
+
+    assert __import__("system_monitor.watchdog", fromlist=["process_alive"]).process_alive(321) is True
+    assert __import__("system_monitor.watchdog", fromlist=["process_alive"]).process_alive(654) is False
