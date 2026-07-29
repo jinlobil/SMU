@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import { EndpointPage } from "./pages/EndpointPage";
 import { OrganizationPage } from "./pages/OrganizationPage";
 import { DetectionPage } from "./pages/DetectionPage";
@@ -16,6 +16,7 @@ import { ConfigPage } from "./pages/ConfigPage";
 type View = "dashboard" | "endpoint" | "organization" | "detectionEndpoint" | "emailXdr" | "inbound" | "outbound" | "dlp" | "timeline" | "sensitiveFiles" | "sensitiveSites" | "firewall" | "easyQuery" | "layout" | "config";
 type DetectionFilter = { field: string; query: string; start?: string; end?: string };
 const menus = ["Dashboard", "Detection", "Forensics", "Response", "Asset", "Lab", "Config"];
+const particles = Array.from({ length: 36 }, (_, index) => index);
 
 export function App() {
   const [health, setHealth] = useState<"loading" | "ok" | "error">("loading");
@@ -66,6 +67,7 @@ export function App() {
 
   return (
     <div className="app">
+      <div className="cyber-atmosphere" aria-hidden="true"><div className="cyber-grid"/><div className="radar-sweep"/>{particles.map((particle) => <i key={particle} style={{ "--px": `${(particle * 47) % 100}%`, "--py": `${(particle * 29) % 100}%`, "--delay": `${-(particle % 13)}s`, "--duration": `${10 + particle % 9}s` } as CSSProperties}/>)}</div>
       <aside className="sidebar">
         <div className="brand"><span>SMU</span><strong>Monitoring</strong></div>
         <nav>{menus.map((menu) => <div key={menu}>
@@ -91,9 +93,9 @@ export function App() {
           </div>}
           {menu === "Lab" && activeMenu === "Lab" && <div className="subnav"><button className={view === "layout" ? "selected" : ""} onClick={() => setView("layout")}>Layout - User</button></div>}
         </div>)}</nav>
-        <div className={`connection ${health}`}><i />{health === "ok" ? "백엔드 연결됨" : health === "error" ? "연결 오류" : "연결 확인 중"}</div>
+        <div className={`connection ${health}`}><span className="connection-orb"/><svg className="connection-heartbeat" viewBox="0 0 92 22" aria-hidden="true"><polyline points="0,11 15,11 21,4 27,18 34,7 40,11 55,11 61,5 67,17 73,11 92,11"/></svg><b>{health === "ok" ? "백엔드 연결됨" : health === "error" ? "연결 오류" : "연결 확인 중"}</b></div>
       </aside>
-      <main className="content">
+      <main className="content"><div key={view} className={`page-stage page-${view}`}>
         {view === "dashboard" && <DashboardPage onOpenDetection={openDetection} />}
         {view === "endpoint" && <EndpointPage />}
         {view === "organization" && <OrganizationPage />}
@@ -109,7 +111,7 @@ export function App() {
         {view === "easyQuery" && <EasyQueryPage />}
         {view === "layout" && <LayoutPage />}
         {view === "config" && <ConfigPage />}
-      </main>
+      </div></main>
     </div>
   );
 }
