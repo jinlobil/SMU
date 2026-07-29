@@ -11,9 +11,10 @@ import { FirewallPage } from "./pages/FirewallPage";
 import { EasyQueryPage } from "./pages/EasyQueryPage";
 import { LayoutPage } from "./pages/LayoutPage";
 import { ConfigPage } from "./pages/ConfigPage";
+import { SystemInfoPage } from "./pages/SystemInfoPage";
 
 
-type View = "dashboard" | "endpoint" | "organization" | "detectionEndpoint" | "emailXdr" | "inbound" | "outbound" | "dlp" | "timeline" | "sensitiveFiles" | "sensitiveSites" | "firewall" | "easyQuery" | "layout" | "config";
+type View = "dashboard" | "endpoint" | "organization" | "detectionEndpoint" | "emailXdr" | "inbound" | "outbound" | "dlp" | "timeline" | "sensitiveFiles" | "sensitiveSites" | "firewall" | "easyQuery" | "layout" | "config" | "systemInfo";
 type DetectionFilter = { field: string; query: string; start?: string; end?: string };
 const menus = ["Dashboard", "Detection", "Forensics", "Response", "Asset", "Lab", "Config"];
 const particles = Array.from({ length: 36 }, (_, index) => index);
@@ -92,6 +93,10 @@ export function App() {
             <button className={view === "easyQuery" ? "selected" : ""} onClick={() => setView("easyQuery")}>Easy Query</button>
           </div>}
           {menu === "Lab" && activeMenu === "Lab" && <div className="subnav"><button className={view === "layout" ? "selected" : ""} onClick={() => setView("layout")}>Layout - User</button></div>}
+          {menu === "Config" && activeMenu === "Config" && <div className="subnav">
+            <button className={view === "config" ? "selected" : ""} onClick={() => setView("config")}>General</button>
+            <button className={view === "systemInfo" ? "selected" : ""} onClick={() => setView("systemInfo")}>System-Info</button>
+          </div>}
         </div>)}</nav>
         <div className={`connection ${health}`}><span className="connection-orb"/><svg className="connection-heartbeat" viewBox="0 0 92 22" aria-hidden="true"><polyline points="0,11 15,11 21,4 27,18 34,7 40,11 55,11 61,5 67,17 73,11 92,11"/></svg><b>{health === "ok" ? "백엔드 연결됨" : health === "error" ? "연결 오류" : "연결 확인 중"}</b></div>
       </aside>
@@ -111,6 +116,7 @@ export function App() {
         {view === "easyQuery" && <EasyQueryPage />}
         {view === "layout" && <LayoutPage />}
         {view === "config" && <ConfigPage />}
+        {view === "systemInfo" && <SystemInfoPage />}
       </div></main>
     </div>
   );

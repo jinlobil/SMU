@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 type Metric = { average: number; minimum: number; maximum: number };
 type Point = { timestamp: string; cpu: Metric; memory: Metric; memoryUsedBytes: number; memoryTotalBytes: number; samples: number };
 type Current = { collector: { running: boolean; intervalSeconds: number; retentionDays: number; lastError: string | null }; sample: { timestamp: string; cpuPercent: number; memoryPercent: number; memoryUsedBytes: number; memoryTotalBytes: number } | null };
-type Bucket = "minute" | "hour" | "day";
+type Bucket = "second" | "minute" | "hour" | "day";
 
 const localDate = (date = new Date()) => {
   const offset = date.getTimezoneOffset() * 60000;
@@ -47,9 +47,9 @@ function MetricChart({ title, kind, points, current }: { title: string; kind: "c
 }
 
 export function SystemInfoPage() {
-  const today = localDate(), initial = localDate(new Date(Date.now() - 6 * 86400000));
-  const [start, setStart] = useState(initial), [end, setEnd] = useState(today), [bucket, setBucket] = useState<Bucket>("hour");
-  const [applied, setApplied] = useState({ start: initial, end: today, bucket: "hour" as Bucket });
+  const today = localDate(), initial = today;
+  const [start, setStart] = useState(initial), [end, setEnd] = useState(today), [bucket, setBucket] = useState<Bucket>("minute");
+  const [applied, setApplied] = useState({ start: initial, end: today, bucket: "minute" as Bucket });
   const [points, setPoints] = useState<Point[]>([]), [current, setCurrent] = useState<Current | null>(null), [error, setError] = useState("");
   const query = useMemo(() => new URLSearchParams({ start: `${applied.start}T00:00:00`, end: `${applied.end}T23:59:59`, bucket: applied.bucket }).toString(), [applied]);
   const load = useCallback(async () => {
@@ -61,10 +61,10 @@ export function SystemInfoPage() {
     } catch (reason) { setError(String(reason)); }
   }, [query]);
   useEffect(() => { void load(); const timer = window.setInterval(() => void load(), 5000); return () => window.clearInterval(timer); }, [load]);
-  return <section className="system-info">
-    <div className="system-info-toolbar"><div className="config-range"><input type="date" value={start} onChange={event => setStart(event.target.value)}/><b>~</b><input type="date" value={end} onChange={event => setEnd(event.target.value)}/></div><label>표시 단위<select value={bucket} onChange={event => setBucket(event.target.value as Bucket)}><option value="minute">분 단위</option><option value="hour">시간 단위</option><option value="day">일 단위</option></select></label><button className="primary-action" onClick={() => setApplied({ start, end, bucket })}>적용</button><span className={current?.collector.running && !current.collector.lastError ? "ok" : "missing"}>● {current?.collector.running ? `5초 수집 중 · 최근 ${current.sample ? new Date(current.sample.timestamp).toLocaleTimeString("ko-KR") : "준비 중"}` : "수집 중지"}</span></div>
+  const collecting = current?.collector.running && !current.collector.lastError;
+  return <><header className="topbar dash-topbar"><div><p className="breadcrumb">System / Config / System-Info</p><h1>System-Info</h1></div><div className="dashboard-range system-info-range"><span>{applied.start} ~ {applied.end}</span><input type="date" value={start} onChange={event => setStart(event.target.value)}/><b>~</b><input type="date" value={end} onChange={event => setEnd(event.target.value)}/><select aria-label="표시 단위" value={bucket} onChange={event => setBucket(event.target.value as Bucket)}><option value="second">초 단위</option><option value="minute">분 단위</option><option value="hour">시간 단위</option><option value="day">일 단위</option></select><button disabled={!start || !end} onClick={() => setApplied({ start, end, bucket })}>적용</button><i className={collecting ? "collecting" : "collector-error"}>{collecting ? `5초 수집 중 · ${current?.sample ? new Date(current.sample.timestamp).toLocaleTimeString("ko-KR") : "준비 중"}` : "수집 상태 확인"}</i></div></header><section className="system-info">
     {error && <div className="error-banner">{error}</div>}
     <MetricChart title="CPU Usage" kind="cpu" points={points} current={current?.sample || null}/>
     <MetricChart title="Memory Usage" kind="memory" points={points} current={current?.sample || null}/>
-  </section>;
+  </section></>;
 }

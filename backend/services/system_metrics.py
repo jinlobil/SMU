@@ -8,7 +8,7 @@ import psutil
 
 
 class SystemMetricsService:
-    BUCKET_SECONDS = {"minute": 60, "hour": 3600, "day": 86400}
+    BUCKET_SECONDS = {"second": 1, "minute": 60, "hour": 3600, "day": 86400}
 
     def __init__(self, root: Path, interval_seconds: int = 5, retention_days: int = 30, autostart: bool = True):
         self.directory = root / "runtime/system_metrics"
@@ -87,7 +87,7 @@ class SystemMetricsService:
 
     def history(self, start: str, end: str, bucket: str) -> dict:
         if bucket not in self.BUCKET_SECONDS:
-            raise ValueError("bucket은 minute, hour, day 중 하나여야 합니다.")
+            raise ValueError("bucket은 second, minute, hour, day 중 하나여야 합니다.")
         start_at, end_at = self._parse(start), self._parse(end)
         if start_at > end_at:
             raise ValueError("시작 시간이 종료 시간보다 늦을 수 없습니다.")
@@ -113,7 +113,9 @@ class SystemMetricsService:
         grouped: dict[datetime, list[dict]] = {}
         for row in rows:
             timestamp = row["_time"]
-            if bucket == "minute":
+            if bucket == "second":
+                key = timestamp.replace(microsecond=0)
+            elif bucket == "minute":
                 key = timestamp.replace(second=0, microsecond=0)
             elif bucket == "hour":
                 key = timestamp.replace(minute=0, second=0, microsecond=0)

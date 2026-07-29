@@ -39,8 +39,22 @@ def test_history_rejects_unknown_bucket(tmp_path):
     service = SystemMetricsService(tmp_path, autostart=False)
 
     try:
-        service.history("2026-01-01", "2026-01-02", "second")
+        service.history("2026-01-01", "2026-01-02", "week")
     except ValueError as exc:
-        assert "minute, hour, day" in str(exc)
+        assert "second, minute, hour, day" in str(exc)
     else:
         raise AssertionError("ValueError was not raised")
+
+
+def test_history_preserves_five_second_samples_in_second_bucket(tmp_path):
+    service = SystemMetricsService(tmp_path, autostart=False)
+    now = datetime.now().astimezone().replace(second=0, microsecond=0)
+    service.directory.mkdir(parents=True)
+    rows = [sample(now, 10, 40), sample(now + timedelta(seconds=5), 30, 50)]
+    (service.directory / f"{now.date()}.jsonl").write_text(
+        "\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8"
+    )
+
+    result = service.history(now.isoformat(), (now + timedelta(minutes=1)).isoformat(), "second")
+
+    assert [point["cpu"]["average"] for point in result["points"]] == [10.0, 30.0]
