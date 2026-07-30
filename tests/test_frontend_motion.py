@@ -121,14 +121,16 @@ def test_easy_query_history_layout_variables_and_cursor_cleanup():
     assert "terminal-cursor" not in styles
 
 
-def test_threat_trend_uses_wide_particle_layer():
+def test_threat_trend_uses_wide_slow_bubble_layer():
     dashboard = (ROOT / "frontend/src/pages/DashboardPage.tsx").read_text(encoding="utf-8")
     styles = (ROOT / "frontend/src/styles.css").read_text(encoding="utf-8")
 
     assert "const width=1400" in dashboard
     assert '<clipPath id={clipId}>' in dashboard
-    assert 'className="trend-particles"' in dashboard
-    assert '<animate attributeName="cx"' in dashboard
-    assert ".trend-particles {" in styles
-    assert ".trend-particles { display:none; }" in styles
+    assert 'className="trend-bubbles"' in dashboard
+    assert "<animateMotion" in dashboard
+    assert 'dur={`${18+' in dashboard
+    assert ".trend-bubbles {" in styles
+    assert ".trend-bubbles { display:none; }" in styles
+    assert "trend-particles" not in dashboard
     assert "trend-flow" not in dashboard

@@ -127,12 +127,12 @@ nav button { color:#496884; } nav button:hover { color:var(--accent); background
 .config-card .primary-action { color:#fff; border-color:var(--accent); background:var(--accent); font-weight:800; }
 .trend-wave { stroke-dasharray:1800; stroke-dashoffset:1800; filter:drop-shadow(0 4px 5px rgba(8,99,226,.14)); animation:draw-wave 1.15s cubic-bezier(.2,.7,.2,1) forwards; }
 .trend-area { opacity:0; animation:area-rise .8s .45s ease-out forwards; }
-.trend-particles { mix-blend-mode:screen; pointer-events:none; filter:drop-shadow(0 0 5px currentColor); }
+.trend-bubbles { mix-blend-mode:screen; pointer-events:none; filter:drop-shadow(0 0 4px currentColor); }
 .trend-point { cursor:crosshair; }.trend-point > circle:nth-child(2) { transition:r .2s ease,filter .2s ease; }.trend-point:hover > circle:nth-child(2) { r:7px; filter:drop-shadow(0 0 7px currentColor); }
 .trend-tooltip { opacity:0; pointer-events:none; transform-box:fill-box; transform-origin:center bottom; transition:opacity .18s ease,scale .18s ease; scale:.82; }.trend-point:hover .trend-tooltip { opacity:1; scale:1; }
 .trend-tooltip rect { fill:#102846; stroke:#6aa9ff; stroke-width:1; filter:drop-shadow(0 6px 8px rgba(16,40,70,.2)); }.trend-tooltip text { fill:#fff; font-size:9px; font-weight:700; text-anchor:middle; }
 @keyframes draw-wave { to { stroke-dashoffset:0; } } @keyframes area-rise { from { opacity:0; transform:translateY(7px); } to { opacity:1; transform:translateY(0); } }
-@media (prefers-reduced-motion:reduce) { .trend-wave,.trend-area { animation:none; stroke-dashoffset:0; opacity:1; }.trend-particles { display:none; } }
+@media (prefers-reduced-motion:reduce) { .trend-wave,.trend-area { animation:none; stroke-dashoffset:0; opacity:1; }.trend-bubbles { display:none; } }
 /* Neon operations theme */
 :root { --accent:#ff4d8d; --accent-dark:#7c3aed; --app-bg:#120b20; --surface:#211238; --card-border:#4c2864; --card-title:#ffb347; --table-head-bg:#2c1746; --table-head-text:#e4d4f2; --table-selection-bg:#3b1c55; --table-selection-text:#fff; color:#f4eefa; background:var(--app-bg); }
 body { color:#f4eefa; background:radial-gradient(circle at 78% 8%,#34205b 0,transparent 34%),linear-gradient(145deg,#10091d,#1b0e2d 58%,#120b20); background-attachment:fixed; }
