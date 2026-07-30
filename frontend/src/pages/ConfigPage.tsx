@@ -1,4 +1,5 @@
 import {useEffect,useState} from "react";
+import {SystemInfoPage} from "./SystemInfoPage";
 type Status={sources:Record<string,{exists:boolean;files:number;bytes:number;latest:number|null}>;indexes:Record<string,{exists:boolean;bytes:number}>;logs:string};type TargetStatus={time:string;status:string;message:string};type Scheduler={enabled:boolean;interval:number;targets:string[];lastRun:string|null;lastResult:string;nextRun:string|null;running:boolean;targetStatus:Record<string,TargetStatus>;phase:string;currentTarget:string|null;currentMessage:string};
 type MonitorProcess={status:string;pid?:number;startedAt?:string;lastCheckAt?:string;lastSampleAt?:string;restartCount?:number;lastError?:string|null};type MonitorStatus={watchdog:MonitorProcess;collector:MonitorProcess};
 const unavailableMonitor=():MonitorStatus=>({watchdog:{status:"unavailable"},collector:{status:"unavailable"}});
