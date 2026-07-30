@@ -32,6 +32,7 @@ from backend.services.indexing import IndexService
 from backend.services.system_metrics import SystemMetricsService
 from backend.services.watchdog_client import WatchdogManager
 from backend.services.spreadsheet import write_xlsx
+from backend.services.integrations import IntegrationService
 
 
 configure_logging()
@@ -55,6 +56,7 @@ index_service = IndexService(PROJECT_ROOT)
 scheduler_service = SchedulerService(PROJECT_ROOT, refresh_service, index_service)
 system_metrics_service = SystemMetricsService(PROJECT_ROOT)
 watchdog_manager = WatchdogManager(PROJECT_ROOT)
+integration_service = IntegrationService(PROJECT_ROOT)
 try:
     dashboard_service.warm_default()
 except Exception:
@@ -315,6 +317,49 @@ def save_theme(payload: dict = Body()) -> dict:
         data = theme_service.save(payload)
     except ValueError as exc:
         return error_response(str(uuid.uuid4()), "INVALID_THEME", str(exc), 400)
+    return {"success": True, "data": data}
+
+
+@app.get("/api/config/integrations")
+def list_integrations() -> dict:
+    return {"success": True, "data": {"items": integration_service.list()}}
+
+
+@app.post("/api/config/integrations", status_code=201)
+def create_integration(payload: dict = Body()) -> dict:
+    try:
+        data = integration_service.save(payload)
+    except (KeyError, ValueError) as exc:
+        return error_response(str(uuid.uuid4()), "INVALID_INTEGRATION", str(exc), 400)
+    return {"success": True, "data": data}
+
+
+@app.put("/api/config/integrations/{integration_id}")
+def update_integration(integration_id: str, payload: dict = Body()) -> dict:
+    try:
+        data = integration_service.save(payload, integration_id)
+    except KeyError:
+        return error_response(str(uuid.uuid4()), "INTEGRATION_NOT_FOUND", "연동 정보를 찾을 수 없습니다.", 404)
+    except ValueError as exc:
+        return error_response(str(uuid.uuid4()), "INVALID_INTEGRATION", str(exc), 400)
+    return {"success": True, "data": data}
+
+
+@app.delete("/api/config/integrations/{integration_id}")
+def delete_integration(integration_id: str) -> dict:
+    try:
+        integration_service.delete(integration_id)
+    except KeyError:
+        return error_response(str(uuid.uuid4()), "INTEGRATION_NOT_FOUND", "연동 정보를 찾을 수 없습니다.", 404)
+    return {"success": True}
+
+
+@app.post("/api/config/integrations/{integration_id}/test")
+def test_integration(integration_id: str) -> dict:
+    try:
+        data = integration_service.test(integration_id)
+    except KeyError:
+        return error_response(str(uuid.uuid4()), "INTEGRATION_NOT_FOUND", "연동 정보를 찾을 수 없습니다.", 404)
     return {"success": True, "data": data}
 
 

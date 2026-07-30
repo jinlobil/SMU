@@ -12,9 +12,10 @@ import { EasyQueryPage } from "./pages/EasyQueryPage";
 import { LayoutPage } from "./pages/LayoutPage";
 import { ConfigPage } from "./pages/ConfigPage";
 import { SystemInfoPage } from "./pages/SystemInfoPage";
+import { IntegrationManagementPage } from "./pages/IntegrationManagementPage";
 
 
-type View = "dashboard" | "endpoint" | "organization" | "detectionEndpoint" | "emailXdr" | "inbound" | "outbound" | "dlp" | "timeline" | "sensitiveFiles" | "sensitiveSites" | "firewall" | "easyQuery" | "layout" | "config" | "systemInfo";
+type View = "dashboard" | "endpoint" | "organization" | "detectionEndpoint" | "emailXdr" | "inbound" | "outbound" | "dlp" | "timeline" | "sensitiveFiles" | "sensitiveSites" | "firewall" | "easyQuery" | "layout" | "config" | "integrationManagement" | "systemInfo";
 type DetectionFilter = { field: string; query: string; start?: string; end?: string };
 const menus = ["Dashboard", "Detection", "Forensics", "Response", "Asset", "Lab", "Config"];
 const particles = Array.from({ length: 36 }, (_, index) => index);
@@ -118,6 +119,7 @@ export function App() {
           {menu === "Lab" && activeMenu === "Lab" && <div className="subnav"><button className={view === "layout" ? "selected" : ""} onClick={() => setView("layout")}>Layout - User</button></div>}
           {menu === "Config" && activeMenu === "Config" && <div className="subnav">
             <a href="#config-general" className={view === "config" ? "selected" : ""} onClick={(event) => { event.preventDefault(); setView("config"); }}>General</a>
+            <a href="#config-integration-management" className={view === "integrationManagement" ? "selected" : ""} onClick={(event) => { event.preventDefault(); setView("integrationManagement"); }}>Integration Management</a>
             <a href="#config-system-info" className={view === "systemInfo" ? "selected" : ""} onClick={(event) => { event.preventDefault(); setView("systemInfo"); }}>System-Info</a>
           </div>}
         </div>)}</nav>
@@ -139,6 +141,7 @@ export function App() {
         {view === "easyQuery" && <EasyQueryPage />}
         {view === "layout" && <LayoutPage />}
         {view === "config" && <ConfigPage />}
+        {view === "integrationManagement" && <IntegrationManagementPage />}
         {view === "systemInfo" && <SystemInfoPage />}
       </div></main>
     </div>

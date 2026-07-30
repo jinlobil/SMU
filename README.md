@@ -102,6 +102,7 @@ Dashboard, Detection, Forensics, Response, Asset, Lab, Config의 모든 상위 �
 
 ### Config
 
+- Config 하위의 Integration Management는 Sophos Central, 장비별 Sophos Firewall, MailScreen, DLP 연동을 카드로 표시하며 우측 상단의 연동 추가 모달에서 기존 `env/*_env.txt` 설정을 안전하게 생성·수정할 수 있습니다. 저장된 비밀번호와 Client Secret은 브라우저로 반환하지 않으며 카드에서 연결 테스트와 설정 삭제를 수행할 수 있습니다.
 - Config 하위 메뉴의 `System-Info`는 `psutil`로 시스템 CPU와 메모리를 5초마다 수집해 `runtime/system_metrics/YYYY-MM-DD.jsonl`에 일별 저장하고, 선택 기간을 초·분·시간·일 단위로 집계해 그래프로 표시합니다.
 - Hardware Collector는 Backend와 독립된 프로세스로 수집을 계속하며, Hardware Watchdog은 heartbeat를 확인해 Collector 장애 시 자동 재시작합니다. General의 Hardware Monitor 카드에서 두 프로세스 상태를 확인하고 수동 재시작할 수 있습니다.
 - 로컬 서버를 먼저 종료한 뒤 `stop_system_monitor.bat`을 실행하면 남아 있는 Hardware Watchdog과 Collector 프로세스를 모두 종료할 수 있습니다.

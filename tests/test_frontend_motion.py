@@ -104,6 +104,20 @@ def test_sidebar_opens_only_from_title_region_and_uses_full_width_content():
     assert ".content { grid-column:1;" in styles
 
 
+def test_integration_management_is_a_config_subpage_with_card_modal_ui():
+    app = (ROOT / "frontend/src/App.tsx").read_text(encoding="utf-8")
+    page = (ROOT / "frontend/src/pages/IntegrationManagementPage.tsx").read_text(encoding="utf-8")
+    styles = (ROOT / "frontend/src/styles.css").read_text(encoding="utf-8")
+
+    assert 'href="#config-integration-management"' in app
+    assert "<IntegrationManagementPage />" in app
+    assert "＋ 연동 추가" in page
+    assert 'className="integration-card"' in page
+    assert 'className="integration-modal"' in page
+    assert "clientSecretConfigured" in page or "저장된 인증정보는 표시하지 않습니다" in page
+    assert ".integration-grid {" in styles
+
+
 def test_easy_query_history_layout_variables_and_cursor_cleanup():
     page = (ROOT / "frontend/src/pages/EasyQueryPage.tsx").read_text(encoding="utf-8")
     styles = (ROOT / "frontend/src/styles.css").read_text(encoding="utf-8")
