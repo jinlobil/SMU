@@ -104,6 +104,7 @@ Dashboard, Detection, Forensics, Response, Asset, Lab, Config의 모든 상위 �
 
 - Config 하위 메뉴의 `System-Info`는 `psutil`로 시스템 CPU와 메모리를 5초마다 수집해 `runtime/system_metrics/YYYY-MM-DD.jsonl`에 일별 저장하고, 선택 기간을 초·분·시간·일 단위로 집계해 그래프로 표시합니다.
 - Hardware Collector는 Backend와 독립된 프로세스로 수집을 계속하며, Hardware Watchdog은 heartbeat를 확인해 Collector 장애 시 자동 재시작합니다. General의 Hardware Monitor 카드에서 두 프로세스 상태를 확인하고 수동 재시작할 수 있습니다.
+- 로컬 서버를 먼저 종료한 뒤 `stop_system_monitor.bat`을 실행하면 남아 있는 Hardware Watchdog과 Collector 프로세스를 모두 종료할 수 있습니다.
 - Detection/Inbound 기간 새로고침과 Endpoint/Organization/User 새로고침 Job을 실행하고 진행 상태를 표시합니다.
 - Auto Refresh Scheduler는 사용 여부, 1~1440분 간격, Detection(Endpoint+Email XDR)/Inbound/DLP/Outbound/Endpoint/Organization/User 대상을 저장하며 백엔드에서 화면과 독립적으로 실행됩니다.
 - Detection/Inbound/DLP/Outbound 기간, Endpoint/Organization/User 개별 수집을 지원합니다.
@@ -114,7 +115,7 @@ Dashboard, Detection, Forensics, Response, Asset, Lab, Config의 모든 상위 �
 - Endpoint, Organization, Detection, Inbound, Outbound, DLP 캐시의 파일 수·용량과 App/Timeline/Dashboard 인덱스 상태를 확인하고 `전체 캐시 데이터 인덱싱`으로 검색용 SQLite 인덱스를 원자적으로 재생성합니다.
 - Dashboard 추세 그래프는 네온 곡선·영역 애니메이션을 사용하며 날짜 열에 마우스를 올리면 해당 날짜의 Detection, Email-XDR, Inbound, Outbound, File 카운트를 한 번에 표시합니다.
 - 런처 및 백엔드 오류/요청 로그 경로를 화면에서 바로 확인할 수 있습니다.
-- 선택 기간의 Detection, Email-XDR, Inbound, Outbound, DLP 결과를 Excel 호환 UTF-8 CSV로 내보냅니다.
+- 선택 기간의 Detection, Email-XDR, Inbound, Outbound, DLP 결과를 XLSX로 내보내며 브라우저 다운로드 폴더와 서버 `exports` 폴더에 저장합니다.
 - 선택 기간의 Endpoint/Organization/보안 이벤트 집계와 Top Analysis를 `reports/security_report_*.pdf` 보안 보고서로 생성합니다.
 - 기본 UI는 다크 퍼플 배경과 핑크·오렌지 네온 강조색을 사용하며, `env/Color_env.txt`의 앱 배경, 카드, 강조색, 테이블, 상태 및 Threat Trend 색상을 Color Picker로 변경할 수 있습니다.
 - Layout - User 배치도는 원본 이미지 비율을 브라우저 가용 폭에 맞추고 동일 배율을 좌석 좌표·크기에 적용하므로 내부 스크롤 없이 이미지와 이름표가 함께 축소됩니다.

@@ -27,3 +27,16 @@ def test_setup_launcher_records_setup_failures() -> None:
     assert "pause" in script.lower()
     assert all(byte < 128 for byte in raw)
     assert b"\r\n" in raw
+
+
+def test_stop_monitor_launcher_only_targets_monitor_modules() -> None:
+    raw = (ROOT / "stop_system_monitor.bat").read_bytes()
+    script = raw.decode("ascii")
+
+    assert "system_monitor[.]watchdog" in script
+    assert "system_monitor[.]collector" in script
+    assert "Stop-Process" in script
+    assert "uvicorn" not in script
+    assert all(byte < 128 for byte in raw)
+    assert b"\r\n" in raw
+    assert b"\n" not in raw.replace(b"\r\n", b"")

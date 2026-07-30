@@ -3,14 +3,15 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 type Metric = { average: number; minimum: number; maximum: number };
 type Point = { timestamp: string; cpu: Metric; memory: Metric; memoryUsedBytes: number; memoryTotalBytes: number; samples: number };
 type Current = { collector: { running: boolean; intervalSeconds: number; retentionDays: number; lastError: string | null }; sample: { timestamp: string; cpuPercent: number; memoryPercent: number; memoryUsedBytes: number; memoryTotalBytes: number } | null };
-type Bucket = "auto" | "5second" | "10second" | "30second" | "minute" | "5minute" | "10minute" | "30minute" | "hour" | "6hour" | "day";
+type Bucket = "auto" | "second" | "5second" | "10second" | "30second" | "minute" | "5minute" | "10minute" | "30minute" | "hour" | "6hour" | "day";
 type History = { points: Point[]; bucket: Bucket; bucketSeconds: number };
 
 const pad = (value: number) => String(value).padStart(2, "0");
 const localDateTime = (date = new Date()) => `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
 const bytes = (value: number) => `${(value / 1073741824).toFixed(1)} GB`;
-const bucketLabels: Record<Bucket, string> = { auto: "자동", "5second": "5초", "10second": "10초", "30second": "30초", minute: "1분", "5minute": "5분", "10minute": "10분", "30minute": "30분", hour: "1시간", "6hour": "6시간", day: "1일" };
+const bucketLabels: Record<Bucket, string> = { auto: "자동", second: "5초", "5second": "5초", "10second": "10초", "30second": "30초", minute: "1분", "5minute": "5분", "10minute": "10분", "30minute": "30분", hour: "1시간", "6hour": "6시간", day: "1일" };
 const presets = [{ label: "10분", minutes: 10 }, { label: "30분", minutes: 30 }, { label: "1시간", minutes: 60 }, { label: "6시간", minutes: 360 }, { label: "24시간", minutes: 1440 }, { label: "7일", minutes: 10080 }, { label: "30일", minutes: 43200 }];
+const legacyBucket = (start: string, end: string): Bucket => { const seconds = (new Date(end).getTime() - new Date(start).getTime()) / 1000; return seconds <= 3000 ? "second" : seconds <= 360000 ? "minute" : seconds <= 2160000 ? "hour" : "day"; };
 
 function smoothPath(points: [number, number][]) {
   if (points.length < 2) return points.length ? `M ${points[0][0]} ${points[0][1]}` : "";
@@ -63,16 +64,21 @@ export function SystemInfoPage() {
   const applyPreset = (minutes: number) => { const presetEnd = new Date(), presetStart = new Date(presetEnd.getTime() - minutes * 60000); const next = { start: localDateTime(presetStart), end: localDateTime(presetEnd), bucket: "auto" as Bucket }; setStart(next.start); setEnd(next.end); setBucket("auto"); setApplied(next); };
   const load = useCallback(async () => {
     try {
-      const [currentResponse, historyResponse] = await Promise.all([fetch("/api/system-info/current"), fetch(`/api/system-info/history?${query}`)]);
-      const [currentPayload, historyPayload] = await Promise.all([currentResponse.json(), historyResponse.json()]);
+      const currentRequest = fetch("/api/system-info/current");
+      let historyResponse = await fetch(`/api/system-info/history?${query}`), historyPayload = await historyResponse.json();
+      if (!historyResponse.ok && String(historyPayload?.error?.message || "").includes("bucket은 second, minute, hour, day")) {
+        const fallback = legacyBucket(applied.start, applied.end), fallbackQuery = new URLSearchParams({ ...applied, bucket: fallback }).toString();
+        historyResponse = await fetch(`/api/system-info/history?${fallbackQuery}`); historyPayload = await historyResponse.json();
+      }
+      const currentResponse = await currentRequest, currentPayload = await currentResponse.json();
       if (!currentResponse.ok || !historyResponse.ok) throw new Error(historyPayload?.error?.message || "System-Info 조회 실패");
       const history = historyPayload.data as History; setCurrent(currentPayload.data); setPoints(history.points); setResolvedBucket(history.bucket); setError("");
     } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
-  }, [query]);
+  }, [applied, query]);
   useEffect(() => { void load(); const timer = window.setInterval(() => void load(), 5000); return () => window.clearInterval(timer); }, [load]);
   const collecting = current?.collector.running && !current.collector.lastError;
   return <><header className="topbar system-info-topbar"><div><p className="breadcrumb">System / Config / System-Info</p><h1>System-Info</h1></div><i className={collecting ? "collecting" : "collector-error"}>{collecting ? `5초 수집 중 · ${current?.sample ? new Date(current.sample.timestamp).toLocaleTimeString("ko-KR") : "준비 중"}` : "수집 상태 확인"}</i></header>
-    <section className="system-time-controls"><div className="system-presets">{presets.map(preset => <button key={preset.label} onClick={() => applyPreset(preset.minutes)}>{preset.label}</button>)}</div><div className="system-custom-range"><input aria-label="시작 시간" type="datetime-local" value={start} onChange={event => setStart(event.target.value)}/><b>~</b><input aria-label="종료 시간" type="datetime-local" value={end} onChange={event => setEnd(event.target.value)}/><select aria-label="표시 단위" value={bucket} onChange={event => setBucket(event.target.value as Bucket)}>{Object.entries(bucketLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select><button disabled={!start || !end || start >= end} onClick={() => setApplied({ start, end, bucket })}>적용</button><span>표시: {bucketLabels[resolvedBucket]} · 최대 600포인트</span></div></section>
+    <section className="system-time-controls"><div className="system-presets">{presets.map(preset => <button key={preset.label} onClick={() => applyPreset(preset.minutes)}>{preset.label}</button>)}</div><div className="system-custom-range"><input aria-label="시작 시간" type="datetime-local" value={start} onChange={event => setStart(event.target.value)}/><b>~</b><input aria-label="종료 시간" type="datetime-local" value={end} onChange={event => setEnd(event.target.value)}/><select aria-label="표시 단위" value={bucket} onChange={event => setBucket(event.target.value as Bucket)}>{Object.entries(bucketLabels).filter(([value]) => value !== "second").map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select><button disabled={!start || !end || start >= end} onClick={() => setApplied({ start, end, bucket })}>적용</button><span>표시: {bucketLabels[resolvedBucket]} · 최대 600포인트</span></div></section>
     <section className="system-info">{error && <div className="error-banner">{error}</div>}<MetricChart title="CPU Usage" kind="cpu" points={points} current={current?.sample || null}/><MetricChart title="Memory Usage" kind="memory" points={points} current={current?.sample || null}/></section>
   </>;
 }

@@ -37,6 +37,8 @@ export function App() {
       root.style.setProperty("--card-title", theme.Card_Title_Text);
       root.style.setProperty("--table-head-bg", theme.Table_Header_Background);
       root.style.setProperty("--table-head-text", theme.Table_Header_Text);
+      root.style.setProperty("--table-selection-bg", theme.Table_Selection_Background);
+      root.style.setProperty("--table-selection-text", theme.Table_Selection_Text);
       root.style.setProperty("--trend-detection", theme.Threat_trend_Detection);
       root.style.setProperty("--trend-xdr", theme.Threat_trend_Detection_XDR);
       root.style.setProperty("--trend-email", theme.Threat_trend_Email);

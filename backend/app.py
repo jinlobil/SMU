@@ -1,5 +1,4 @@
 import logging
-import csv
 import json
 import time
 import uuid
@@ -32,6 +31,7 @@ from backend.services.report import ReportService
 from backend.services.indexing import IndexService
 from backend.services.system_metrics import SystemMetricsService
 from backend.services.watchdog_client import WatchdogManager
+from backend.services.spreadsheet import write_xlsx
 
 
 configure_logging()
@@ -339,6 +339,8 @@ def download_report(filename: str):
 
 @app.get("/api/config/export/{kind}")
 def export_config_data(kind: str, start: date, end: date):
+    if start > end:
+        return error_response(str(uuid.uuid4()), "INVALID_EXPORT_RANGE", "start date must not be after end date", 400)
     collectors = {
         "detections": detection_service._events,
         "xdr": email_security_service._collect_xdr,
@@ -352,13 +354,13 @@ def export_config_data(kind: str, start: date, end: date):
     rows = [row for _record_id, _raw, row in collector(start, end)[0]]
     export_dir = PROJECT_ROOT / "exports"
     export_dir.mkdir(parents=True, exist_ok=True)
-    path = export_dir / f"{kind}_{start}_{end}.csv"
-    columns = list(dict.fromkeys(key for row in rows for key in row))
-    with path.open("w", encoding="utf-8-sig", newline="") as stream:
-        writer = csv.DictWriter(stream, fieldnames=columns)
-        writer.writeheader()
-        writer.writerows(rows)
-    return FileResponse(path, filename=path.name, media_type="text/csv")
+    path = export_dir / f"{kind}_{start}_{end}.xlsx"
+    write_xlsx(path, rows)
+    return FileResponse(
+        path,
+        filename=path.name,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
 
 
 @app.get("/api/endpoints")

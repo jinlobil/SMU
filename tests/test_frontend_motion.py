@@ -51,6 +51,8 @@ def test_system_info_uses_hover_tooltips_without_bottom_time_labels():
     assert 'points.length <= 150' in page
     assert '최대 600포인트' in page
     assert 'type="datetime-local"' in page
+    assert 'includes("bucket은 second, minute, hour, day")' in page
+    assert "legacyBucket(applied.start, applied.end)" in page
 
 
 def test_config_monitor_tolerates_backend_without_new_status_endpoint():
@@ -60,3 +62,30 @@ def test_config_monitor_tolerates_backend_without_new_status_endpoint():
     assert "setMonitor(unavailableMonitor())" in config
     styles = (ROOT / "frontend/src/styles.css").read_text(encoding="utf-8")
     assert ".system-chart-area .trend-wave { stroke-dasharray:none; stroke-dashoffset:0; animation:none; }" in styles
+
+
+def test_config_ranges_exports_and_easy_query_follow_requested_ui_behavior():
+    config = (ROOT / "frontend/src/pages/ConfigPage.tsx").read_text(encoding="utf-8")
+    app = (ROOT / "frontend/src/App.tsx").read_text(encoding="utf-8")
+    styles = (ROOT / "frontend/src/styles.css").read_text(encoding="utf-8")
+
+    for state in ("detectionStart", "detectionEnd", "inboundStart", "inboundEnd", "exportStart", "exportEnd"):
+        assert state in config
+    assert "Detection CSV" not in config
+    assert "DLP File XLSX" not in config  # Generated from the shared label mapping.
+    assert "{label} XLSX" in config
+    assert "브라우저 다운로드 폴더를 확인하세요" in config
+    assert 'type:"COMPLETED"' in config
+    assert '"--table-selection-bg"' in app
+    assert '"--table-selection-text"' in app
+    assert ".query-detail tbody tr:hover td" in styles
+    assert "var(--table-selection-bg)" in styles
+
+
+def test_dashboard_card_titles_have_no_decorative_prefixes():
+    dashboard = (ROOT / "frontend/src/pages/DashboardPage.tsx").read_text(encoding="utf-8")
+
+    for title in ("Endpoints", "Organization", "Top File", "Top Hash", "Security Mix", "Threat Trend", "Top Analysis"):
+        assert f">{title}</h2>" in dashboard or f'title="{title}"' in dashboard
+    for prefix in ("▣ Endpoints", "♧ Organization", "▧ Top File", "# Top Hash", "◉ Security Mix", "⌁ Threat Trend", "▥ Top Analysis"):
+        assert prefix not in dashboard
