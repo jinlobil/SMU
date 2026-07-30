@@ -114,17 +114,21 @@ def test_easy_query_history_layout_variables_and_cursor_cleanup():
     assert "selectedQuery.variables.map" in page
     assert "variable.description || variable.name" in page
     assert ".easy-form.history {" in styles
-    assert 'grid-template-areas:"mode query endpoint endpoint" "dates dates variables submit"' in styles
+    assert 'grid-template-columns:110px 360px 260px 110px' in styles
+    assert 'grid-template-areas:"mode query endpoint ." "dates dates variables submit"' in styles
+    assert "justify-content:start" in styles
     assert ".page-easyQuery .easy-form::after" not in styles
     assert "terminal-cursor" not in styles
 
 
-def test_threat_trend_has_independent_flowing_fill_layer():
+def test_threat_trend_uses_wide_particle_layer():
     dashboard = (ROOT / "frontend/src/pages/DashboardPage.tsx").read_text(encoding="utf-8")
     styles = (ROOT / "frontend/src/styles.css").read_text(encoding="utf-8")
 
-    assert '<animateTransform attributeName="gradientTransform"' in dashboard
-    assert 'className="trend-flow"' in dashboard
-    assert "flow-${seriesId(name)}" in dashboard
-    assert ".trend-flow {" in styles
-    assert ".trend-flow { display:none; }" in styles
+    assert "const width=1400" in dashboard
+    assert '<clipPath id={clipId}>' in dashboard
+    assert 'className="trend-particles"' in dashboard
+    assert '<animate attributeName="cx"' in dashboard
+    assert ".trend-particles {" in styles
+    assert ".trend-particles { display:none; }" in styles
+    assert "trend-flow" not in dashboard
