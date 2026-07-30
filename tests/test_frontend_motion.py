@@ -89,3 +89,42 @@ def test_dashboard_card_titles_have_no_decorative_prefixes():
         assert f">{title}</h2>" in dashboard or f'title="{title}"' in dashboard
     for prefix in ("▣ Endpoints", "♧ Organization", "▧ Top File", "# Top Hash", "◉ Security Mix", "⌁ Threat Trend", "▥ Top Analysis"):
         assert prefix not in dashboard
+
+
+def test_sidebar_opens_only_from_title_region_and_uses_full_width_content():
+    app = (ROOT / "frontend/src/App.tsx").read_text(encoding="utf-8")
+    styles = (ROOT / "frontend/src/styles.css").read_text(encoding="utf-8")
+
+    assert 'className="sidebar-title-trigger"' in app
+    assert 'sidebarOpen ? "open"' in app
+    assert "onMouseLeave={scheduleSidebarClose}" in app
+    assert "window.setTimeout(() => setSidebarOpen(false), 300)" in app
+    assert ".sidebar-title-trigger {" in styles
+    assert ".sidebar.open {" in styles
+    assert ".content { grid-column:1;" in styles
+
+
+def test_easy_query_history_layout_variables_and_cursor_cleanup():
+    page = (ROOT / "frontend/src/pages/EasyQueryPage.tsx").read_text(encoding="utf-8")
+    styles = (ROOT / "frontend/src/styles.css").read_text(encoding="utf-8")
+
+    assert "easy-form ${mode.toLowerCase()}" in page
+    assert 'className="easy-history-dates"' in page
+    assert 'className="easy-history-variables"' in page
+    assert "selectedQuery.variables.map" in page
+    assert "variable.description || variable.name" in page
+    assert ".easy-form.history {" in styles
+    assert 'grid-template-areas:"mode query endpoint endpoint" "dates dates variables submit"' in styles
+    assert ".page-easyQuery .easy-form::after" not in styles
+    assert "terminal-cursor" not in styles
+
+
+def test_threat_trend_has_independent_flowing_fill_layer():
+    dashboard = (ROOT / "frontend/src/pages/DashboardPage.tsx").read_text(encoding="utf-8")
+    styles = (ROOT / "frontend/src/styles.css").read_text(encoding="utf-8")
+
+    assert '<animateTransform attributeName="gradientTransform"' in dashboard
+    assert 'className="trend-flow"' in dashboard
+    assert "flow-${seriesId(name)}" in dashboard
+    assert ".trend-flow {" in styles
+    assert ".trend-flow { display:none; }" in styles

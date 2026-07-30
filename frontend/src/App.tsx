@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { EndpointPage } from "./pages/EndpointPage";
 import { OrganizationPage } from "./pages/OrganizationPage";
 import { DetectionPage } from "./pages/DetectionPage";
@@ -24,6 +24,18 @@ export function App() {
   const [activeMenu, setActiveMenu] = useState("Asset");
   const [view, setView] = useState<View>("endpoint");
   const [detectionFilter, setDetectionFilter] = useState<DetectionFilter | null>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const sidebarCloseTimer = useRef<number | null>(null);
+
+  const openSidebar = () => {
+    if (sidebarCloseTimer.current !== null) window.clearTimeout(sidebarCloseTimer.current);
+    sidebarCloseTimer.current = null;
+    setSidebarOpen(true);
+  };
+  const scheduleSidebarClose = () => {
+    if (sidebarCloseTimer.current !== null) window.clearTimeout(sidebarCloseTimer.current);
+    sidebarCloseTimer.current = window.setTimeout(() => setSidebarOpen(false), 300);
+  };
 
   useEffect(() => {
     fetch("/api/config/theme").then((response) => response.json()).then((payload) => {
@@ -51,6 +63,14 @@ export function App() {
       setHealth("ok");
     }).catch(() => setHealth("error"));
   }, []);
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === "Escape") setSidebarOpen(false); };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      window.removeEventListener("keydown", closeOnEscape);
+      if (sidebarCloseTimer.current !== null) window.clearTimeout(sidebarCloseTimer.current);
+    };
+  }, []);
 
   const selectMenu = (menu: string) => {
     setActiveMenu(menu);
@@ -71,7 +91,8 @@ export function App() {
   return (
     <div className="app">
       <div className="cyber-atmosphere" aria-hidden="true"><div className="cyber-grid"/>{particles.map((particle) => <i key={particle} style={{ "--px": `${(particle * 47) % 100}%`, "--py": `${(particle * 29) % 100}%`, "--delay": `${-(particle % 13)}s`, "--duration": `${10 + particle % 9}s` } as CSSProperties}/>)}</div>
-      <aside className="sidebar">
+      <div className="sidebar-title-trigger" aria-hidden="true" onMouseEnter={openSidebar}/>
+      <aside className={`sidebar ${sidebarOpen ? "open" : ""}`} onMouseEnter={openSidebar} onMouseLeave={scheduleSidebarClose}>
         <div className="brand"><span>SMU</span><strong>Monitoring</strong></div>
         <nav>{menus.map((menu) => <div key={menu}>
           <button className={menu === activeMenu ? "active" : ""} onClick={() => selectMenu(menu)}>{menu}<span>›</span></button>
