@@ -114,6 +114,8 @@ def test_integration_management_is_a_config_subpage_with_card_modal_ui():
     assert "＋ 연동 추가" in page
     assert 'className="integration-card"' in page
     assert 'className="integration-modal"' in page
+    assert 'className="integration-heartbeat"' in page
+    assert "integration-heartbeat-flow" in styles
     assert "clientSecretConfigured" in page or "저장된 인증정보는 표시하지 않습니다" in page
     assert ".integration-grid {" in styles
 
