@@ -130,6 +130,8 @@ def test_threat_trend_uses_wide_slow_bubble_layer():
     assert 'className="trend-bubbles"' in dashboard
     assert "<animateMotion" in dashboard
     assert 'dur={`${18+' in dashboard
+    assert "radius=.65+(bubbleIndex%3)*.35" in dashboard
+    assert "Array.from({length:20}" in dashboard
     assert ".trend-bubbles {" in styles
     assert ".trend-bubbles { display:none; }" in styles
     assert "trend-particles" not in dashboard
