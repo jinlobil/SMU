@@ -33,6 +33,7 @@ from backend.services.system_metrics import SystemMetricsService
 from backend.services.watchdog_client import WatchdogManager
 from backend.services.spreadsheet import write_xlsx
 from backend.services.integrations import IntegrationService
+from backend.services.exceptions import ExceptionService
 
 
 configure_logging()
@@ -57,6 +58,7 @@ scheduler_service = SchedulerService(PROJECT_ROOT, refresh_service, index_servic
 system_metrics_service = SystemMetricsService(PROJECT_ROOT)
 watchdog_manager = WatchdogManager(PROJECT_ROOT)
 integration_service = IntegrationService(PROJECT_ROOT)
+exception_service = ExceptionService(PROJECT_ROOT)
 try:
     dashboard_service.warm_default()
 except Exception:
@@ -361,6 +363,46 @@ def test_integration(integration_id: str) -> dict:
     except KeyError:
         return error_response(str(uuid.uuid4()), "INTEGRATION_NOT_FOUND", "연동 정보를 찾을 수 없습니다.", 404)
     return {"success": True, "data": data}
+
+
+@app.get("/api/config/exceptions/{kind}")
+def list_exceptions(kind: str) -> dict:
+    try:
+        data = exception_service.list(kind)
+    except ValueError as exc:
+        return error_response(str(uuid.uuid4()), "INVALID_EXCEPTION_TYPE", str(exc), 400)
+    return {"success": True, "data": data}
+
+
+@app.post("/api/config/exceptions/{kind}", status_code=201)
+def create_exception(kind: str, payload: dict = Body()) -> dict:
+    try:
+        data = exception_service.save(kind, payload)
+    except ValueError as exc:
+        return error_response(str(uuid.uuid4()), "INVALID_EXCEPTION", str(exc), 400)
+    return {"success": True, "data": data}
+
+
+@app.put("/api/config/exceptions/{kind}/{item_id}")
+def update_exception(kind: str, item_id: str, payload: dict = Body()) -> dict:
+    try:
+        data = exception_service.save(kind, payload, item_id)
+    except KeyError:
+        return error_response(str(uuid.uuid4()), "EXCEPTION_NOT_FOUND", "예외 규칙을 찾을 수 없습니다.", 404)
+    except ValueError as exc:
+        return error_response(str(uuid.uuid4()), "INVALID_EXCEPTION", str(exc), 400)
+    return {"success": True, "data": data}
+
+
+@app.delete("/api/config/exceptions/{kind}/{item_id}")
+def delete_exception(kind: str, item_id: str) -> dict:
+    try:
+        exception_service.delete(kind, item_id)
+    except KeyError:
+        return error_response(str(uuid.uuid4()), "EXCEPTION_NOT_FOUND", "예외 규칙을 찾을 수 없습니다.", 404)
+    except ValueError as exc:
+        return error_response(str(uuid.uuid4()), "INVALID_EXCEPTION_TYPE", str(exc), 400)
+    return {"success": True}
 
 
 @app.post("/api/jobs/report", status_code=202)

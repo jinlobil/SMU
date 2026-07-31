@@ -8,7 +8,8 @@ from typing import Any
 
 from backend.services.detections import DetectionService
 from backend.services.email_security import EmailSecurityService
-from backend.services.endpoints import load_json_list, normalize_key
+from backend.services.endpoints import EndpointService, load_json_list, normalize_key
+from backend.services.exceptions import ExceptionService
 from backend.services.transfers import TransferService
 
 
@@ -22,6 +23,8 @@ class TimelineService:
         self.detections = DetectionService(project_root)
         self.email = EmailSecurityService(project_root)
         self.transfers = TransferService(project_root)
+        self.endpoints = EndpointService(project_root)
+        self.exception_service = ExceptionService(project_root)
 
     def _identities(self) -> tuple[dict[str, dict[str, str]], dict[str, set[str]]]:
         by_alias: dict[str, dict[str, str]] = {}
@@ -41,9 +44,11 @@ class TimelineService:
                         by_alias[key] = entry
                         aliases_by_name[display_key].add(key)
 
-        for endpoint in load_json_list(self.project_root / "cache/endpoints.json"):
+        context = self.endpoints._department_context()
+        for index, endpoint in enumerate(load_json_list(self.project_root / "cache/endpoints.json")):
+            row = self.endpoints._row(endpoint, context, f"timeline-endpoint-{index}")
             person = endpoint.get("associatedPerson") if isinstance(endpoint.get("associatedPerson"), dict) else {}
-            add(person.get("name"), "미분류", person.get("id"), person.get("viaLogin"))
+            add(row.get("user"), row.get("dept"), row.get("userId"), person.get("viaLogin"), row.get("hostname"))
         for user in load_json_list(self.project_root / "cache/users.json"):
             add(user.get("name"), user.get("dept") or user.get("department"), user.get("id"), user.get("userId"), user.get("exchangeLogin"), user.get("email"))
         return by_alias, aliases_by_name
@@ -54,11 +59,14 @@ class TimelineService:
         return [variant for value in values for variant in (value, value.split("\\")[-1], value.split("@", 1)[0])]
 
     def _apply_identity(self, event: dict[str, str], identities: dict[str, dict[str, str]]) -> dict[str, str]:
+        output = event
         for candidate in self._identity_candidates(event):
             identity = identities.get(normalize_key(candidate))
             if identity:
-                return {**event, "user": identity["user"], "dept": event["dept"] if event["dept"] not in {"", "None", "미분류"} else identity["dept"]}
-        return event
+                output = {**event, "user": identity["user"], "dept": event["dept"] if event["dept"] not in {"", "None", "미분류"} else identity["dept"]}
+                break
+        final = self.exception_service.finalize(principal=output.get("principal"), hostname=output.get("asset"), email=output.get("email"), user_name=output.get("user"), department=output.get("dept"))
+        return {**output, "user": final["user"], "dept": final["dept"]}
 
     @property
     def index_path(self) -> Path:
@@ -127,11 +135,11 @@ class TimelineService:
 
     @staticmethod
     def event(source: str, row: dict[str, str], raw: dict[str, Any] | None = None) -> dict[str, Any]:
-        if source == "Detection": result = {"time": row["time"], "source": source, "user": row["username"], "userId": "None", "dept": row["dept"], "asset": row["hostname"], "event": row["rule"], "direction": "Host", "peer": row["privateIp"], "summary": row["file"], "indicator": row["sha256"] if row["sha256"] != "None" else row["publicIp"]}
-        elif source == "XDR": result = {"time": row["time"], "source": source, "user": row["user"], "userId": row["userId"], "dept": row["dept"], "asset": row["mailbox"], "event": row["rule"], "direction": f"{row['from']} → {row['to']}", "peer": row["senderIp"], "summary": row["subject"], "indicator": row["iocSha256"] if row["iocSha256"] != "None" else row["ioc"]}
-        elif source == "Email": result = {"time": row["received"], "source": source, "user": row["to"], "userId": row["to"].split("@", 1)[0], "dept": "미분류", "asset": row["to"], "event": row["reason"], "direction": f"{row['from']} → {row['to']}", "peer": row["senderIp"], "summary": row["subject"], "indicator": row["senderIp"]}
-        elif source == "Outbound Mail": result = {"time": row["date"], "source": source, "user": row["senderName"], "userId": row["senderEmail"].split("@", 1)[0], "dept": row["dept"], "asset": row["senderEmail"], "event": row["sendResult"], "direction": f"{row['senderEmail']} → {row['receiver']}", "peer": row["receiver"], "summary": row["subject"], "indicator": row["attachment"]}
-        else: result = {"time": row["time"], "source": source, "user": row["username"], "userId": row["username"], "dept": row["dept"], "asset": row["computer"], "event": row["event"], "direction": f"{row['source']} → {row['destination']}", "peer": row["sourceIp"], "summary": row["destinationDetail"], "indicator": row["fileHash"]}
+        if source == "Detection": result = {"time": row["time"], "source": source, "principal": row.get("principal", ""), "user": row["username"], "userId": "None", "dept": row["dept"], "asset": row["hostname"], "event": row["rule"], "direction": "Host", "peer": row["privateIp"], "summary": row["file"], "indicator": row["sha256"] if row["sha256"] != "None" else row["publicIp"]}
+        elif source == "XDR": result = {"time": row["time"], "source": source, "principal": row.get("principal", ""), "email": row["mailbox"], "user": row["user"], "userId": row["userId"], "dept": row["dept"], "asset": row["mailbox"], "event": row["rule"], "direction": f"{row['from']} → {row['to']}", "peer": row["senderIp"], "summary": row["subject"], "indicator": row["iocSha256"] if row["iocSha256"] != "None" else row["ioc"]}
+        elif source == "Email": result = {"time": row["received"], "source": source, "principal": row.get("principal", ""), "email": row["to"], "user": row.get("user", row["to"]), "userId": row.get("userId", row["to"].split("@", 1)[0]), "dept": row.get("dept", "미분류"), "asset": row["to"], "event": row["reason"], "direction": f"{row['from']} → {row['to']}", "peer": row["senderIp"], "summary": row["subject"], "indicator": row["senderIp"]}
+        elif source == "Outbound Mail": result = {"time": row["date"], "source": source, "email": row["senderEmail"], "user": row["senderName"], "userId": row["senderEmail"].split("@", 1)[0], "dept": row["dept"], "asset": row["senderEmail"], "event": row["sendResult"], "direction": f"{row['senderEmail']} → {row['receiver']}", "peer": row["receiver"], "summary": row["subject"], "indicator": row["attachment"]}
+        else: result = {"time": row["time"], "source": source, "principal": row.get("principal", ""), "user": row["username"], "userId": row["username"], "dept": row["dept"], "asset": row["computer"], "event": row["event"], "direction": f"{row['source']} → {row['destination']}", "peer": row["sourceIp"], "summary": row["destinationDetail"], "indicator": row["fileHash"]}
         return {**result, "raw": raw or {}}
 
     def all_events(self, sources: set[str]) -> list[dict[str, str]]:

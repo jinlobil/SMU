@@ -120,6 +120,21 @@ def test_integration_management_is_a_config_subpage_with_card_modal_ui():
     assert ".integration-grid {" in styles
 
 
+def test_exception_management_uses_department_and_full_principal_tabs():
+    app = (ROOT / "frontend/src/App.tsx").read_text(encoding="utf-8")
+    page = (ROOT / "frontend/src/pages/ExceptionManagementPage.tsx").read_text(encoding="utf-8")
+    styles = (ROOT / "frontend/src/styles.css").read_text(encoding="utf-8")
+
+    assert 'href="#config-exception-management"' in app
+    assert "<ExceptionManagementPage />" in app
+    assert "부서 예외처리" in page
+    assert "사용자 예외처리" in page
+    assert "전체 사용자 식별값" in page
+    assert "mac처럼 계정명만 입력할 수 없습니다" in page
+    assert "Raw Data는 변경하지 않고 2차 가공 결과에만" in page
+    assert ".exception-tabs {" in styles
+
+
 def test_easy_query_history_layout_variables_and_cursor_cleanup():
     page = (ROOT / "frontend/src/pages/EasyQueryPage.tsx").read_text(encoding="utf-8")
     styles = (ROOT / "frontend/src/styles.css").read_text(encoding="utf-8")
