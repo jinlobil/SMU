@@ -11,6 +11,7 @@ import urllib.request
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import urlparse
 
 import psutil
 
@@ -135,9 +136,9 @@ class HardwareWatchdog:
                 time.sleep(0.25)
         raise RuntimeError("Indexer did not publish a healthy heartbeat")
 
-    def submit_index_job(self) -> dict:
+    def submit_index_job(self, query: str = "") -> dict:
         self.ensure_indexer()
-        return self._indexer_request("/jobs", "POST", timeout=5)
+        return self._indexer_request("/jobs" + (f"?{query}" if query else ""), "POST", timeout=5)
 
     def index_job(self, job_id: str) -> dict:
         self.ensure_indexer()
@@ -200,8 +201,8 @@ def handler_for(watchdog: HardwareWatchdog):
             elif self.path == "/indexer/restart":
                 try: self._send(202, watchdog.restart_indexer())
                 except Exception as exc: self._send(503, {"accepted": False, "error": f"{type(exc).__name__}: {exc}"})
-            elif self.path == "/indexer/jobs":
-                try: self._send(202, watchdog.submit_index_job())
+            elif self.path.startswith("/indexer/jobs"):
+                try: self._send(202, watchdog.submit_index_job(urlparse(self.path).query))
                 except Exception as exc: self._send(503, {"accepted": False, "error": f"{type(exc).__name__}: {exc}"})
             elif self.path == "/shutdown": self._send(202, {"accepted": True}); threading.Thread(target=watchdog.stop.set, daemon=True).start()
             else: self._send(404, {"error": "not found"})

@@ -127,6 +127,11 @@ def test_hardware_monitor_shows_indexer_status_and_manual_restart():
     assert "Indexer 재시작" in page
     assert 'restartMonitor("indexer")' in page
     assert "monitor.indexer.lastHeartbeatAt" in page
+    assert "Process Monitor" in page
+    assert "<h2>Hardware Monitor</h2>" not in page
+    assert "스마트 캐시 데이터 인덱싱" in page
+    assert "전체 캐시 인덱싱" in page
+    assert "{force:true}" in page
 
 
 def test_exception_management_uses_department_and_full_principal_tabs():

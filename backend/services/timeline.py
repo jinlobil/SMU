@@ -140,24 +140,37 @@ class TimelineService:
         elif source == "Email": result = {"time": row["received"], "source": source, "principal": row.get("principal", ""), "email": row["to"], "user": row.get("user", row["to"]), "userId": row.get("userId", row["to"].split("@", 1)[0]), "dept": row.get("dept", "미분류"), "asset": row["to"], "event": row["reason"], "direction": f"{row['from']} → {row['to']}", "peer": row["senderIp"], "summary": row["subject"], "indicator": row["senderIp"]}
         elif source == "Outbound Mail": result = {"time": row["date"], "source": source, "email": row["senderEmail"], "user": row["senderName"], "userId": row["senderEmail"].split("@", 1)[0], "dept": row["dept"], "asset": row["senderEmail"], "event": row["sendResult"], "direction": f"{row['senderEmail']} → {row['receiver']}", "peer": row["receiver"], "summary": row["subject"], "indicator": row["attachment"]}
         else: result = {"time": row["time"], "source": source, "principal": row.get("principal", ""), "user": row["username"], "userId": row["username"], "dept": row["dept"], "asset": row["computer"], "event": row["event"], "direction": f"{row['source']} → {row['destination']}", "peer": row["sourceIp"], "summary": row["destinationDetail"], "indicator": row["fileHash"]}
-        return {**result, "raw": raw or {}}
+        return {**result, "sourceFile": row.get("_sourceFile", ""), "raw": raw or {}}
 
-    def all_events(self, sources: set[str]) -> list[dict[str, str]]:
+    def all_events(self, sources: set[str], progress=None) -> list[dict[str, str]]:
         bounds = self.date_bounds()
         if bounds is None: return []
-        start, end = bounds; output = []
+        return self.events_between(bounds[0], bounds[1], sources, progress)
+
+    def events_between(self, start: date, end: date, sources: set[str], progress=None) -> list[dict[str, str]]:
+        output = []
         if "Detection" in sources:
-            output.extend(self.event("Detection", row, raw) for _id, raw, row in self.detections._events(start, end)[0])
+            rows = self.detections._events(start, end)[0]; output.extend(self.event("Detection", row, raw) for _id, raw, row in rows)
+            if progress: progress(f"통합 타임라인 · Detection {len(rows):,}건 변환 완료")
         if "XDR" in sources:
-            output.extend(self.event("XDR", row, raw) for _id, raw, row in self.email._collect_xdr(start, end)[0])
+            rows = self.email._collect_xdr(start, end)[0]; output.extend(self.event("XDR", row, raw) for _id, raw, row in rows)
+            if progress: progress(f"통합 타임라인 · Email XDR {len(rows):,}건 변환 완료")
         if "Email" in sources:
-            output.extend(self.event("Email", row, raw) for _id, raw, row in self.email._collect_inbound(start, end)[0])
+            rows = self.email._collect_inbound(start, end)[0]; output.extend(self.event("Email", row, raw) for _id, raw, row in rows)
+            if progress: progress(f"통합 타임라인 · Inbound Mail {len(rows):,}건 변환 완료")
         if "Outbound Mail" in sources:
-            output.extend(self.event("Outbound Mail", row, raw) for _id, raw, row in self.transfers._collect_outbound(start, end)[0])
+            rows = self.transfers._collect_outbound(start, end)[0]; output.extend(self.event("Outbound Mail", row, raw) for _id, raw, row in rows)
+            if progress: progress(f"통합 타임라인 · Outbound Mail {len(rows):,}건 변환 완료")
         if "File" in sources:
-            output.extend(self.event("File", row, raw) for _id, raw, row in self.transfers._collect_dlp(start, end)[0])
+            rows = self.transfers._collect_dlp(start, end)[0]; output.extend(self.event("File", row, raw) for _id, raw, row in rows)
+            if progress: progress(f"통합 타임라인 · DLP File {len(rows):,}건 변환 완료")
+        if progress: progress(f"통합 타임라인 · 사용자/부서 정보 최종 반영 중 · 총 {len(output):,}건")
         identities, _aliases = self._identities()
-        return [self._apply_identity(event, identities) for event in output]
+        finalized = []
+        for index, event in enumerate(output, 1):
+            finalized.append(self._apply_identity(event, identities))
+            if progress and index % 25000 == 0: progress(f"통합 타임라인 · 사용자/부서 반영 {index:,}/{len(output):,}건")
+        return finalized
 
     def search(self, user: str, keyword: str, sources: set[str], offset: int = 0, limit: int = 250) -> dict[str, Any]:
         invalid = sources - ALL_SOURCES

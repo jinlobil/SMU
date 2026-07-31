@@ -530,9 +530,9 @@ def start_refresh(target: str, payload: dict | None = Body(default=None)) -> dic
 
 
 @app.post("/api/jobs/index", status_code=202)
-def rebuild_indexes() -> dict:
+def rebuild_indexes(payload: dict | None = Body(default=None)) -> dict:
     try:
-        data = watchdog_manager.start_index_job()
+        data = watchdog_manager.start_index_job(force_full=bool((payload or {}).get("force", False)))
     except Exception as exc:
         return error_response(str(uuid.uuid4()), "INDEXER_JOB_FAILED", str(exc), 503)
     return {"success": True, "data": data}

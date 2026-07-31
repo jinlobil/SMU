@@ -41,8 +41,9 @@ class ScheduledRefresh:
     def refresh_users(self,*args): return self._record("users")
 
 class ScheduledIndex:
-    def __init__(self): self.calls=0
+    def __init__(self): self.calls=0;self.mode=None
     def rebuild_all(self,progress): self.calls+=1;progress("done");return {"ok":True}
+    def rebuild_smart(self,progress): self.calls+=1;self.mode="smart";progress("incremental done");return {"ok":True}
 
 def test_scheduler_runs_every_target_then_index(tmp_path: Path):
     refresh=ScheduledRefresh();index=ScheduledIndex();service=SchedulerService(tmp_path,refresh,index)
@@ -53,6 +54,7 @@ def test_scheduler_runs_every_target_then_index(tmp_path: Path):
     state=service.get()
     assert refresh.calls==targets
     assert index.calls==1
+    assert index.mode == "smart"
     assert "index:OK" in state["lastResult"]
     assert state["lastRun"] is not None
     assert state["phase"] == "idle"

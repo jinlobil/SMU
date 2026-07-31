@@ -103,7 +103,7 @@ class EmailSecurityService:
                 description = event.get("detectionDescription") if isinstance(event.get("detectionDescription"), dict) else {}
                 rule = str(description.get("createdReasonId") or event.get("detectionRule") or "")
                 if sensor_type(event) != "email" and rule not in XDR_RULES: continue
-                event_id = self._id("xdr", path, index); records.append((event_id, event, self._xdr_row(event, event_id, identities)))
+                event_id = self._id("xdr", path, index); records.append((event_id, event, {**self._xdr_row(event, event_id, identities), "_sourceFile": str(path.resolve())}))
         return records, files
 
     def _collect_inbound(self, start: date, end: date):
@@ -118,7 +118,7 @@ class EmailSecurityService:
                     identity = identities.get(normalize_key(recipient), {"principal": "", "userId": recipient.split("@", 1)[0], "user": recipient, "dept": "미분류"})
                     final = self.exception_service.finalize(principal=identity.get("principal"), email=recipient, user_name=identity.get("user"), department=identity.get("dept"))
                     row = {"id": event_id, "received": kst_time(event.get("receivedAt")), "from": (addresses([event.get("from")]) or ["None"])[0], "to": recipient, "principal": identity.get("principal", ""), "userId": identity.get("userId", "None"), "user": final["user"], "dept": final["dept"], "cc": ", ".join(addresses(event.get("cc"))) or "None", "subject": str(event.get("subject") or "None"), "reason": str(event.get("reason") or "None"), "senderIp": str(event.get("clientIp") or "None")}
-                    records.append((event_id, event, row))
+                    records.append((event_id, event, {**row, "_sourceFile": str(path.resolve())}))
         return records, files
 
     def list_records(self, kind: str, start: date, end: date, conditions: list[dict[str, str]], page: int, page_size: int, sort: str, direction: str) -> dict[str, Any]:

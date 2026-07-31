@@ -1,4 +1,6 @@
 import sqlite3
+from datetime import date
+import pytest
 from backend.services.indexing import IndexService
 
 
@@ -54,3 +56,84 @@ def test_sensitive_index_defensively_deduplicates_semantic_site_key(tmp_path):
     with sqlite3.connect(tmp_path / "cache/index/app_cache.db") as db:
         row = db.execute("SELECT COUNT(*), MAX(event_time) FROM sensitive_sites_index").fetchone()
     assert row == (1, "2026-07-28")
+
+
+def test_incremental_update_preserves_older_timeline_rows(tmp_path):
+    service = IndexService(tmp_path)
+    old = {"time":"2026-07-20 10:00:00","source":"File","user":"old","raw":{}}
+    replaced = {"time":"2026-07-30 10:00:00","source":"File","user":"before","raw":{}}
+    service._build_timeline([old, replaced])
+    current = {"time":"2026-07-30 11:00:00","source":"File","user":"after","raw":{}}
+
+    messages = []
+    service._update_timeline_range([current], date(2026, 7, 30), date(2026, 7, 31), messages.append)
+
+    with sqlite3.connect(tmp_path/"cache/index/timeline_index.db") as db:
+        rows = db.execute("SELECT time,user FROM timeline_events ORDER BY time").fetchall()
+    assert rows == [("2026-07-20 10:00:00", "old"), ("2026-07-30 11:00:00", "after")]
+    assert any("1/1건" in message for message in messages)
+
+
+def test_smart_rebuild_skips_unchanged_files_and_indexes_only_changed_file(tmp_path):
+    first = tmp_path/"cache/dlp/2026-07-30.jsonl"
+    second = tmp_path/"cache/dlp/2026-07-31.jsonl"
+    first.parent.mkdir(parents=True)
+    first.write_text("{}\n", encoding="utf-8")
+    second.write_text("{}\n", encoding="utf-8")
+    service = IndexService(tmp_path)
+    service._build_sensitive([], [])
+    service._build_timeline([])
+    service._save_manifest(service._source_snapshot())
+    second.write_text('{"changed":true}\n', encoding="utf-8")
+    service.timeline.events_between = lambda start,end,sources,progress: []
+    service.sensitive.file_records = lambda sources,start,end,progress: []
+    service.sensitive.site_records = lambda start,end,progress: []
+    service.dashboard.warm_default = lambda: None
+
+    messages = []
+    result = service.rebuild_smart(messages.append)
+
+    assert result["mode"] == "smart"
+    assert result["changed"] == 1
+    assert result["skipped"] == 1
+    assert any("변경 1개" in message and "유지 1개" in message for message in messages)
+
+
+def test_smart_rebuild_does_no_parsing_when_manifest_is_current(tmp_path):
+    source = tmp_path/"cache/dlp/2026-07-31.jsonl"
+    source.parent.mkdir(parents=True)
+    source.write_text("{}\n", encoding="utf-8")
+    service = IndexService(tmp_path)
+    service._build_sensitive([], [])
+    service._build_timeline([])
+    service._save_manifest(service._source_snapshot())
+    service.timeline.events_between = lambda *_args: (_ for _ in ()).throw(AssertionError("must skip"))
+
+    result = service.rebuild_smart(lambda _message: None)
+
+    assert result == {"mode": "smart", "changed": 0, "removed": 0, "skipped": 1, "dashboard": False}
+
+
+def test_smart_rebuild_never_automatically_runs_full_without_manifest(tmp_path):
+    service = IndexService(tmp_path)
+    service.rebuild_all = lambda _progress: (_ for _ in ()).throw(AssertionError("must not auto rebuild"))
+    messages = []
+
+    with pytest.raises(RuntimeError, match="수동 실행"):
+        service.rebuild_smart(messages.append)
+
+    assert any("manifest" in message for message in messages)
+
+
+def test_smart_rebuild_never_automatically_runs_full_for_rule_changes(tmp_path):
+    source = tmp_path/"cache/dlp/2026-07-31.jsonl"
+    rule = tmp_path/"env/exceptions/user_exceptions.json"
+    source.parent.mkdir(parents=True); rule.parent.mkdir(parents=True)
+    source.write_text("{}\n", encoding="utf-8"); rule.write_text('{"version":1,"items":[]}', encoding="utf-8")
+    service = IndexService(tmp_path)
+    service._build_sensitive([], []); service._build_timeline([]); service._save_manifest(service._source_snapshot())
+    rule.write_text('{"version":1,"items":[{}]}', encoding="utf-8")
+    service.rebuild_all = lambda _progress: (_ for _ in ()).throw(AssertionError("must not auto rebuild"))
+
+    with pytest.raises(RuntimeError, match="전체 캐시 인덱싱"):
+        service.rebuild_smart(lambda _message: None)

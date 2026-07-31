@@ -88,7 +88,7 @@ class DetectionService:
                 if sensor_type(event) != "endpoint" or not event.get("time"):
                     continue
                 event_id = self._id(path, index)
-                events.append((event_id, event, self._row(event, event_id, identities)))
+                events.append((event_id, event, {**self._row(event, event_id, identities), "_sourceFile": str(path.resolve())}))
         return events, existing_files
 
     def list_detections(self, start: date, end: date, conditions: list[dict[str, str]], page: int = 1, page_size: int = 50, sort: str = "time", direction: str = "desc") -> dict[str, Any]:

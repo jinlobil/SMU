@@ -7,6 +7,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from datetime import date
 from pathlib import Path
 
 
@@ -73,17 +74,22 @@ class WatchdogManager:
         self.ensure()
         return self.request("/indexer/restart", "POST", timeout=20)
 
-    def start_index_job(self) -> dict:
+    def start_index_job(self, start: date | None = None, end: date | None = None, force_full: bool = False) -> dict:
         self.ensure()
+        path = "/indexer/jobs"
+        if start is not None and end is not None:
+            path += f"?start={start.isoformat()}&end={end.isoformat()}"
+        elif force_full:
+            path += "?force=1"
         try:
-            return self.request("/indexer/jobs", "POST", timeout=20)
+            return self.request(path, "POST", timeout=20)
         except urllib.error.HTTPError as exc:
             # A watchdog from an older application version may still own the
             # fixed port after an update. Replace it once, then retry.
             if exc.code != 404:
                 raise
             self.restart_watchdog()
-            return self.request("/indexer/jobs", "POST", timeout=20)
+            return self.request(path, "POST", timeout=20)
 
     def index_job(self, job_id: str) -> dict | None:
         try:
@@ -95,16 +101,21 @@ class WatchdogManager:
 
     def rebuild_all(self, progress) -> dict:
         """Scheduler-compatible blocking facade over the independent Indexer."""
-        job = self.start_index_job()
+        return self._wait_for_index_job(self.start_index_job(force_full=True), progress)
+
+    def rebuild_smart(self, progress) -> dict:
+        return self._wait_for_index_job(self.start_index_job(), progress)
+
+    def rebuild_range(self, start: date, end: date, progress) -> dict:
+        return self._wait_for_index_job(self.start_index_job(start, end), progress)
+
+    def _wait_for_index_job(self, job: dict, progress) -> dict:
         while not self.stop.is_set():
             current = self.index_job(job["id"])
-            if current is None:
-                raise RuntimeError(f"Indexer job disappeared: {job['id']}")
+            if current is None: raise RuntimeError(f"Indexer job disappeared: {job['id']}")
             progress(current.get("message", "인덱싱 중"))
-            if current.get("status") == "completed":
-                return current.get("result") or {}
-            if current.get("status") == "failed":
-                raise RuntimeError((current.get("error") or {}).get("message", "Indexer job failed"))
+            if current.get("status") == "completed": return current.get("result") or {}
+            if current.get("status") == "failed": raise RuntimeError((current.get("error") or {}).get("message", "Indexer job failed"))
             time.sleep(0.8)
         raise RuntimeError("Indexer wait interrupted")
 

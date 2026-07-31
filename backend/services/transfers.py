@@ -12,13 +12,15 @@ EVENT_NAMES = {"Content Threat Detected": "탐지됨", "Content Threat Blocked":
 EMAIL_PATTERN = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.IGNORECASE)
 
 
-def load_jsonl(path: Path) -> list[dict[str, Any]]:
+def load_jsonl(path: Path, progress=None) -> list[dict[str, Any]]:
     if not path.exists(): return []
     output = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if not line.strip(): continue
-        value = json.loads(line)
-        if isinstance(value, dict): output.append(value)
+    with path.open(encoding="utf-8") as stream:
+        for line_number, line in enumerate(stream, 1):
+            if not line.strip(): continue
+            value = json.loads(line)
+            if isinstance(value, dict): output.append(value)
+            if progress and line_number % 50000 == 0: progress(f"{path.name} 원본 {line_number:,}줄 읽는 중")
     return output
 
 
@@ -50,26 +52,28 @@ class TransferService:
             identities[normalize_key(item.get("hostname"))] = {**row, "principal": endpoint_principal(person, item.get("hostname"))}
         return identities
 
-    def _collect_dlp(self, start: date, end: date):
+    def _collect_dlp(self, start: date, end: date, progress=None):
         records = []; files = []; identities = self._identities()
         for day in self._dates(start, end):
             path = self.dlp_dir / f"{day.isoformat()}.jsonl"
             if not path.exists(): continue
+            if progress: progress(f"DLP 원본 읽는 중 · {path.name}")
             files.append(path.name)
-            for index, raw in enumerate(load_jsonl(path)):
+            for index, raw in enumerate(load_jsonl(path, progress)):
                 machine = str(raw.get("machine_name") or "None"); identity = identities.get(normalize_key(machine), {})
                 record_id = self._id("dlp", path, index)
                 principal = identity.get("principal", ""); fallback_user = identity.get("user") or str(raw.get("client_name") or "None")
                 final = self.exception_service.finalize(principal=principal, hostname=machine, user_name=fallback_user, department=identity.get("dept", "미분류"))
-                row = {"id": record_id, "event": EVENT_NAMES.get(str(raw.get("event_id") or "None"), str(raw.get("event_id") or "None")), "time": str(raw.get("eventtimelocal") or "None"), "computer": machine, "principal": principal, "dept": final["dept"], "sourceIp": str(raw.get("ip") or "None"), "username": final["user"], "source": str(raw.get("filename") or "None"), "destination": str(raw.get("destination") or "None"), "destinationType": str(raw.get("destination_type") or "None"), "destinationDetail": str(raw.get("item_details") or raw.get("destinationDetails") or "None"), "fileSize": str(raw.get("filesize") or "None"), "fileHash": str(raw.get("filehash") or "None")}
+                row = {"id": record_id, "_sourceFile": str(path.resolve()), "event": EVENT_NAMES.get(str(raw.get("event_id") or "None"), str(raw.get("event_id") or "None")), "time": str(raw.get("eventtimelocal") or "None"), "computer": machine, "principal": principal, "dept": final["dept"], "sourceIp": str(raw.get("ip") or "None"), "username": final["user"], "source": str(raw.get("filename") or "None"), "destination": str(raw.get("destination") or "None"), "destinationType": str(raw.get("destination_type") or "None"), "destinationDetail": str(raw.get("item_details") or raw.get("destinationDetails") or "None"), "fileSize": str(raw.get("filesize") or "None"), "fileHash": str(raw.get("filehash") or "None")}
                 records.append((record_id, raw, row))
         return records, files
 
-    def _collect_outbound(self, start: date, end: date):
+    def _collect_outbound(self, start: date, end: date, progress=None):
         records = []; files = []
         for day in self._dates(start, end):
             path = self.outbound_dir / f"mailscreen_mail_{day.isoformat()}.json"
             if not path.exists(): continue
+            if progress: progress(f"Outbound Mail 원본 읽는 중 · {path.name}")
             files.append(path.name); payload = json.loads(path.read_text(encoding="utf-8")); items = payload.get("items", []) if isinstance(payload, dict) else payload
             if not isinstance(items, list): continue
             for index, raw in enumerate(item for item in items if isinstance(item, dict)):
@@ -77,7 +81,7 @@ class TransferService:
                 record_id = self._id("outbound", path, index)
                 sender_email = str(raw.get("sender_email") or (match.group(0) if match else sender)); sender_name = str(raw.get("sender_name") or ("None" if "@" in sender else sender)); base_dept = str(raw.get("sender_dept") or raw.get("dept") or "None")
                 final = self.exception_service.finalize(email=sender_email, user_name=sender_name, department=base_dept)
-                row = {"id": record_id, "date": str(raw.get("date") or "None"), "mailProcess": str(raw.get("mail_process") or "None"), "sendResult": str(raw.get("send_result") or "None"), "subject": str(raw.get("subject") or "None"), "senderEmail": sender_email, "senderName": final["user"], "dept": final["dept"], "receiver": str(raw.get("receiver") or "None"), "size": str(raw.get("size") or "None"), "policy": str(raw.get("policy") or "None"), "attachment": str(raw.get("attach") or "None")}
+                row = {"id": record_id, "_sourceFile": str(path.resolve()), "date": str(raw.get("date") or "None"), "mailProcess": str(raw.get("mail_process") or "None"), "sendResult": str(raw.get("send_result") or "None"), "subject": str(raw.get("subject") or "None"), "senderEmail": sender_email, "senderName": final["user"], "dept": final["dept"], "receiver": str(raw.get("receiver") or "None"), "size": str(raw.get("size") or "None"), "policy": str(raw.get("policy") or "None"), "attachment": str(raw.get("attach") or "None")}
                 records.append((record_id, raw, row))
         return records, files
 
