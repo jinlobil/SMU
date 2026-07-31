@@ -12,7 +12,6 @@ const emptyUser = ():UserRule => ({ id:"", principal:"", displayName:"", descrip
 export function ExceptionManagementPage() {
   const [kind,setKind] = useState<Kind>("departments");
   const [items,setItems] = useState<Rule[]>([]);
-  const [version,setVersion] = useState(1);
   const [query,setQuery] = useState("");
   const [modal,setModal] = useState(false);
   const [editing,setEditing] = useState<Rule|null>(null);
@@ -28,7 +27,6 @@ export function ExceptionManagementPage() {
       const payload = await response.json();
       if (!response.ok) throw new Error(payload?.error?.message || "예외 목록 조회 실패");
       setItems(payload.data.items || []);
-      setVersion(payload.data.version || 1);
       if (clearMessage) setMessage("");
     } catch (error) { setMessage(String(error)); }
     finally { setLoading(false); }
@@ -59,12 +57,19 @@ export function ExceptionManagementPage() {
     if (!response.ok) { setMessage(payload?.error?.message || "삭제 실패"); return; }
     await load(kind,false); setMessage("예외 규칙을 삭제했습니다. 원본 Raw 데이터는 변경되지 않았습니다.");
   };
-  const filtered = items.filter(item => JSON.stringify(item).toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()));
+  const normalizedQuery = query.trim().replaceAll("/","\\").toLocaleLowerCase();
+  const filtered = items.filter(item => {
+    if (!normalizedQuery) return true;
+    const values = kind === "departments"
+      ? Object.values(item as DepartmentRule)
+      : Object.values(item as UserRule);
+    return values.some(value => String(value ?? "").replaceAll("/","\\").toLocaleLowerCase().includes(normalizedQuery));
+  });
 
   return <>
     <header className="topbar"><div><p className="breadcrumb">System / Config / Exception Management</p><h1>Exception Management</h1></div><button className="refresh-button" onClick={openAdd}>＋ 예외 추가</button></header>
     <section className="panel exception-management">
-      <div className="detection-tools exception-heading"><div><h2>예외 규칙 관리</h2><p>Raw Data는 변경하지 않고 2차 가공 결과에만 최종 적용합니다. · 설정 버전 {version}</p></div><div className="source-filters exception-tabs"><button className={kind === "departments" ? "active" : ""} onClick={() => changeKind("departments")}>부서 예외처리</button><button className={kind === "users" ? "active" : ""} onClick={() => changeKind("users")}>사용자 예외처리</button></div></div>
+      <div className="detection-tools exception-heading"><div><h2>예외 규칙 관리</h2></div><div className="source-filters exception-tabs"><button className={kind === "departments" ? "active" : ""} onClick={() => changeKind("departments")}>부서 예외처리</button><button className={kind === "users" ? "active" : ""} onClick={() => changeKind("users")}>사용자 예외처리</button></div></div>
       <div className="condition-list exception-condition-list"><div className="condition-row exception-filter-row"><input value={query} onChange={event => setQuery(event.target.value)} placeholder={kind === "departments" ? "식별값 또는 부서명 검색" : "전체 사용자 식별값 또는 표시 사용자명 검색"}/><span>{filtered.length.toLocaleString()}개 규칙</span></div></div>
       {message && <div className="error-banner exception-message">{message}</div>}
       <div className="table-wrap exception-table"><table><thead>{kind === "departments" ? <tr><th>매칭 유형</th><th>식별값</th><th>최종 부서</th><th>설명</th><th>수정일</th><th>작업</th></tr> : <tr><th>전체 사용자 식별값</th><th>표시 사용자명</th><th>설명</th><th>수정일</th><th>작업</th></tr>}</thead><tbody>
