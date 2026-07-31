@@ -95,11 +95,14 @@ def test_repeated_resolution_uses_cached_rule_file(tmp_path, monkeypatch):
     assert reads == 0
 
 
-def test_detection_uses_full_principal_from_endpoint_name_when_via_login_is_missing(tmp_path):
+def test_detection_prefers_hostname_principal_over_os_generated_via_login(tmp_path):
     raw_endpoint = {
         "id": "endpoint-1",
         "hostname": "DEVICE-01",
-        "associatedPerson": {"name": r"DEVICE-01\account"},
+        "associatedPerson": {
+            "name": r"DEVICE-01\account",
+            "viaLogin": r"Operating System Device\account",
+        },
     }
     write_json(tmp_path / "cache/endpoints.json", [raw_endpoint])
     write_json(tmp_path / "cache/user_groups.json", [])

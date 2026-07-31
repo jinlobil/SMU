@@ -48,7 +48,7 @@ class TimelineService:
         for index, endpoint in enumerate(load_json_list(self.project_root / "cache/endpoints.json")):
             row = self.endpoints._row(endpoint, context, f"timeline-endpoint-{index}")
             person = endpoint.get("associatedPerson") if isinstance(endpoint.get("associatedPerson"), dict) else {}
-            add(row.get("user"), row.get("dept"), row.get("userId"), endpoint_principal(person), row.get("hostname"))
+            add(row.get("user"), row.get("dept"), row.get("userId"), endpoint_principal(person, row.get("hostname")), row.get("hostname"))
         for user in load_json_list(self.project_root / "cache/users.json"):
             add(user.get("name"), user.get("dept") or user.get("department"), user.get("id"), user.get("userId"), user.get("exchangeLogin"), user.get("email"))
         return by_alias, aliases_by_name

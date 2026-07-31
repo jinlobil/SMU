@@ -47,7 +47,7 @@ class TransferService:
         for index, item in enumerate(load_json_list(self.endpoint_service.endpoints_path)):
             row = self.endpoint_service._row(item, context, f"endpoint-{index}")
             person = item.get("associatedPerson") if isinstance(item.get("associatedPerson"), dict) else {}
-            identities[normalize_key(item.get("hostname"))] = {**row, "principal": endpoint_principal(person)}
+            identities[normalize_key(item.get("hostname"))] = {**row, "principal": endpoint_principal(person, item.get("hostname"))}
         return identities
 
     def _collect_dlp(self, start: date, end: date):

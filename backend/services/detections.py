@@ -38,7 +38,7 @@ class DetectionService:
         for index, endpoint in enumerate(load_json_list(self.endpoint_service.endpoints_path)):
             row = self.endpoint_service._row(endpoint, context, f"endpoint-{index}")
             person = endpoint.get("associatedPerson") if isinstance(endpoint.get("associatedPerson"), dict) else {}
-            identities[normalize_key(endpoint.get("hostname"))] = {**row, "principal": endpoint_principal(person)}
+            identities[normalize_key(endpoint.get("hostname"))] = {**row, "principal": endpoint_principal(person, endpoint.get("hostname"))}
         return identities
 
     def _files(self, start: date, end: date) -> list[Path]:

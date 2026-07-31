@@ -38,13 +38,15 @@ def normalize_key(value: object) -> str:
     return re.sub(r"\s+", "", str(value or "")).strip().lower()
 
 
-def endpoint_principal(person: dict[str, Any]) -> str:
+def endpoint_principal(person: dict[str, Any], hostname: Any = "") -> str:
     """Return a full device/domain principal, never an account-only alias."""
+    candidates = []
     for value in (person.get("viaLogin"), person.get("name"), person.get("id")):
         candidate = str(value or "").strip().replace("/", "\\")
         if "\\" in candidate and all(part.strip() for part in candidate.split("\\", 1)):
-            return candidate
-    return ""
+            candidates.append(candidate)
+    host_key = normalize_key(hostname)
+    return next((value for value in candidates if normalize_key(value.split("\\", 1)[0]) == host_key), candidates[0] if candidates else "")
 
 
 def normalize_org_name(value: object) -> str:
@@ -141,7 +143,7 @@ class EndpointService:
         hostname = str(endpoint.get("hostname", "None") or "None")
         person = endpoint.get("associatedPerson") if isinstance(endpoint.get("associatedPerson"), dict) else {}
         user = str(person.get("name", "None") or "None")
-        via_login = endpoint_principal(person)
+        via_login = endpoint_principal(person, hostname)
         user_id = via_login.split("\\")[-1] if "\\" in via_login else via_login
         ips = endpoint.get("ipv4Addresses", [])
         ip_text = ", ".join(str(ip) for ip in ips) if isinstance(ips, list) and ips else "None"

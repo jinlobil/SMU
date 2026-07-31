@@ -32,7 +32,7 @@ class ReportService:
         for endpoint in legacy_report.ENDPOINTS:
             person = endpoint.get("associatedPerson") if isinstance(endpoint.get("associatedPerson"), dict) else None
             if person is not None:
-                person["name"] = self.exceptions.resolve_user(endpoint_principal(person), person.get("name"))
+                person["name"] = self.exceptions.resolve_user(endpoint_principal(person, endpoint.get("hostname")), person.get("name"))
         legacy_report.ORGS = load_json_list(self.root / "cache/user_groups.json")
         legacy_report.DEPT_MAP = {
             str(org.get("deptCode", "")): str(org.get("deptName") or org.get("name") or org.get("deptCode") or "미분류")
