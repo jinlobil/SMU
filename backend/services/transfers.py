@@ -5,7 +5,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Callable
 
-from backend.services.endpoints import EndpointService, load_json_list, normalize_key
+from backend.services.endpoints import EndpointService, endpoint_principal, load_json_list, normalize_key
 
 
 EVENT_NAMES = {"Content Threat Detected": "탐지됨", "Content Threat Blocked": "차단"}
@@ -28,6 +28,7 @@ class TransferService:
         self.endpoint_service = EndpointService(project_root)
         self.dlp_dir = project_root / "cache" / "dlp"
         self.outbound_dir = project_root / "cache" / "mailscreen"
+        self.exception_service = self.endpoint_service.exception_service
 
     @staticmethod
     def _id(kind: str, path: Path, index: int) -> str:
@@ -42,7 +43,12 @@ class TransferService:
 
     def _identities(self) -> dict[str, dict[str, str]]:
         context = self.endpoint_service._department_context()
-        return {normalize_key(item.get("hostname")): self.endpoint_service._row(item, context, f"endpoint-{index}") for index, item in enumerate(load_json_list(self.endpoint_service.endpoints_path))}
+        identities = {}
+        for index, item in enumerate(load_json_list(self.endpoint_service.endpoints_path)):
+            row = self.endpoint_service._row(item, context, f"endpoint-{index}")
+            person = item.get("associatedPerson") if isinstance(item.get("associatedPerson"), dict) else {}
+            identities[normalize_key(item.get("hostname"))] = {**row, "principal": endpoint_principal(person, item.get("hostname"))}
+        return identities
 
     def _collect_dlp(self, start: date, end: date):
         records = []; files = []; identities = self._identities()
@@ -53,7 +59,9 @@ class TransferService:
             for index, raw in enumerate(load_jsonl(path)):
                 machine = str(raw.get("machine_name") or "None"); identity = identities.get(normalize_key(machine), {})
                 record_id = self._id("dlp", path, index)
-                row = {"id": record_id, "event": EVENT_NAMES.get(str(raw.get("event_id") or "None"), str(raw.get("event_id") or "None")), "time": str(raw.get("eventtimelocal") or "None"), "computer": machine, "dept": identity.get("dept", "미분류"), "sourceIp": str(raw.get("ip") or "None"), "username": str(raw.get("client_name") or "None"), "source": str(raw.get("filename") or "None"), "destination": str(raw.get("destination") or "None"), "destinationType": str(raw.get("destination_type") or "None"), "destinationDetail": str(raw.get("item_details") or raw.get("destinationDetails") or "None"), "fileSize": str(raw.get("filesize") or "None"), "fileHash": str(raw.get("filehash") or "None")}
+                principal = identity.get("principal", ""); fallback_user = identity.get("user") or str(raw.get("client_name") or "None")
+                final = self.exception_service.finalize(principal=principal, hostname=machine, user_name=fallback_user, department=identity.get("dept", "미분류"))
+                row = {"id": record_id, "event": EVENT_NAMES.get(str(raw.get("event_id") or "None"), str(raw.get("event_id") or "None")), "time": str(raw.get("eventtimelocal") or "None"), "computer": machine, "principal": principal, "dept": final["dept"], "sourceIp": str(raw.get("ip") or "None"), "username": final["user"], "source": str(raw.get("filename") or "None"), "destination": str(raw.get("destination") or "None"), "destinationType": str(raw.get("destination_type") or "None"), "destinationDetail": str(raw.get("item_details") or raw.get("destinationDetails") or "None"), "fileSize": str(raw.get("filesize") or "None"), "fileHash": str(raw.get("filehash") or "None")}
                 records.append((record_id, raw, row))
         return records, files
 
@@ -67,7 +75,9 @@ class TransferService:
             for index, raw in enumerate(item for item in items if isinstance(item, dict)):
                 sender = str(raw.get("sender_email") or raw.get("sender") or "None"); match = EMAIL_PATTERN.search(" ".join([sender, str(raw.get("sender_detail") or "")]))
                 record_id = self._id("outbound", path, index)
-                row = {"id": record_id, "date": str(raw.get("date") or "None"), "mailProcess": str(raw.get("mail_process") or "None"), "sendResult": str(raw.get("send_result") or "None"), "subject": str(raw.get("subject") or "None"), "senderEmail": str(raw.get("sender_email") or (match.group(0) if match else sender)), "senderName": str(raw.get("sender_name") or ("None" if "@" in sender else sender)), "dept": str(raw.get("sender_dept") or raw.get("dept") or "None"), "receiver": str(raw.get("receiver") or "None"), "size": str(raw.get("size") or "None"), "policy": str(raw.get("policy") or "None"), "attachment": str(raw.get("attach") or "None")}
+                sender_email = str(raw.get("sender_email") or (match.group(0) if match else sender)); sender_name = str(raw.get("sender_name") or ("None" if "@" in sender else sender)); base_dept = str(raw.get("sender_dept") or raw.get("dept") or "None")
+                final = self.exception_service.finalize(email=sender_email, user_name=sender_name, department=base_dept)
+                row = {"id": record_id, "date": str(raw.get("date") or "None"), "mailProcess": str(raw.get("mail_process") or "None"), "sendResult": str(raw.get("send_result") or "None"), "subject": str(raw.get("subject") or "None"), "senderEmail": sender_email, "senderName": final["user"], "dept": final["dept"], "receiver": str(raw.get("receiver") or "None"), "size": str(raw.get("size") or "None"), "policy": str(raw.get("policy") or "None"), "attachment": str(raw.get("attach") or "None")}
                 records.append((record_id, raw, row))
         return records, files
 
