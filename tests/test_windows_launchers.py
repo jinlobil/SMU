@@ -11,7 +11,7 @@ def test_start_launcher_uses_explicit_virtualenv_python() -> None:
     assert '"%~dp0.venv\\Scripts\\python.exe" "%~dp0run_local.py"' in script
     assert "python run_local.py" not in script
     assert "bootstrap.log" in script
-    assert 'import fastapi,uvicorn' in script
+    assert 'import fastapi,psutil,uvicorn' in script
     assert "pause" in script.lower()
     assert all(byte < 128 for byte in raw)
     assert b"\r\n" in raw
@@ -27,3 +27,17 @@ def test_setup_launcher_records_setup_failures() -> None:
     assert "pause" in script.lower()
     assert all(byte < 128 for byte in raw)
     assert b"\r\n" in raw
+
+
+def test_stop_monitor_launcher_only_targets_monitor_modules() -> None:
+    raw = (ROOT / "stop_system_monitor.bat").read_bytes()
+    script = raw.decode("ascii")
+
+    assert "system_monitor[.]watchdog" in script
+    assert "system_monitor[.]collector" in script
+    assert "system_monitor[.]indexer" in script
+    assert "Stop-Process" in script
+    assert "uvicorn" not in script
+    assert all(byte < 128 for byte in raw)
+    assert b"\r\n" in raw
+    assert b"\n" not in raw.replace(b"\r\n", b"")

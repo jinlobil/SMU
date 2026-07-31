@@ -158,8 +158,12 @@ class SchedulerService:
                         self._persist_locked()
             if self.index is not None:
                 try:
-                    self._update_progress("indexing", "index", "전체 인덱싱 준비 중")
-                    self.index.rebuild_all(lambda message: self._update_progress("indexing", "index", message))
+                    self._update_progress("indexing", "index", "스마트 증분 인덱싱 준비 중 · 변경 파일 확인")
+                    callback = lambda message: self._update_progress("indexing", "index", message)
+                    if hasattr(self.index, "rebuild_smart"):
+                        self.index.rebuild_smart(callback)
+                    else:
+                        self.index.rebuild_all(callback)
                     messages.append("index:OK")
                 except Exception as exc:
                     self.log.exception("Scheduled indexing failed")
