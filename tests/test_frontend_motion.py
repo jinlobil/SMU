@@ -195,3 +195,14 @@ def test_config_process_monitor_includes_fetcher():
     assert "fetcher:MonitorProcess" in page
     assert "Fetcher 재시작" in page
     assert 'restartMonitor("fetcher")' in page
+
+
+def test_content_management_uses_config_navigation_and_theme_forms():
+    app = (ROOT / "frontend/src/App.tsx").read_text(encoding="utf-8")
+    page = (ROOT / "frontend/src/pages/ContentManagementPage.tsx").read_text(encoding="utf-8")
+    styles = (ROOT / "frontend/src/styles.css").read_text(encoding="utf-8")
+    assert "Content Management" in app and "ContentManagementPage" in app
+    assert "Sensitive Files" in page and "Sensitive Sites" in page
+    assert "/api/config/content/" in page
+    assert "실제" not in page
+    assert ".content-filter-row input:focus" in styles

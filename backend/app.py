@@ -33,6 +33,7 @@ from backend.services.watchdog_client import WatchdogManager
 from backend.services.spreadsheet import write_xlsx
 from backend.services.integrations import IntegrationService
 from backend.services.exceptions import ExceptionService
+from backend.services.content import ContentService
 
 
 configure_logging()
@@ -57,6 +58,7 @@ watchdog_manager = WatchdogManager(PROJECT_ROOT)
 scheduler_service = SchedulerService(PROJECT_ROOT, refresh_service, watchdog_manager)
 integration_service = IntegrationService(PROJECT_ROOT)
 exception_service = ExceptionService(PROJECT_ROOT)
+content_service = ContentService(PROJECT_ROOT)
 try:
     dashboard_service.warm_default()
 except Exception:
@@ -418,6 +420,36 @@ def delete_exception(kind: str, item_id: str) -> dict:
         return error_response(str(uuid.uuid4()), "EXCEPTION_NOT_FOUND", "예외 규칙을 찾을 수 없습니다.", 404)
     except ValueError as exc:
         return error_response(str(uuid.uuid4()), "INVALID_EXCEPTION_TYPE", str(exc), 400)
+    return {"success": True}
+
+
+@app.get("/api/config/content/{kind}")
+def list_content_categories(kind: str) -> dict:
+    try: data = content_service.list(kind)
+    except ValueError as exc: return error_response(str(uuid.uuid4()), "INVALID_CONTENT_KIND", str(exc), 400)
+    return {"success": True, "data": data}
+
+
+@app.post("/api/config/content/{kind}", status_code=201)
+def create_content_category(kind: str, payload: dict = Body()) -> dict:
+    try: data = content_service.save(kind, payload)
+    except ValueError as exc: return error_response(str(uuid.uuid4()), "INVALID_CONTENT_RULE", str(exc), 400)
+    return {"success": True, "data": data}
+
+
+@app.put("/api/config/content/{kind}/{item_id}")
+def update_content_category(kind: str, item_id: str, payload: dict = Body()) -> dict:
+    try: data = content_service.save(kind, payload, item_id)
+    except ValueError as exc: return error_response(str(uuid.uuid4()), "INVALID_CONTENT_RULE", str(exc), 400)
+    except KeyError: return error_response(str(uuid.uuid4()), "CONTENT_RULE_NOT_FOUND", "콘텐츠 카테고리를 찾을 수 없습니다.", 404)
+    return {"success": True, "data": data}
+
+
+@app.delete("/api/config/content/{kind}/{item_id}")
+def delete_content_category(kind: str, item_id: str) -> dict:
+    try: content_service.delete(kind, item_id)
+    except ValueError as exc: return error_response(str(uuid.uuid4()), "INVALID_CONTENT_KIND", str(exc), 400)
+    except KeyError: return error_response(str(uuid.uuid4()), "CONTENT_RULE_NOT_FOUND", "콘텐츠 카테고리를 찾을 수 없습니다.", 404)
     return {"success": True}
 
 

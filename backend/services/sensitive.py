@@ -10,6 +10,7 @@ from typing import Any
 
 from backend.services.endpoints import load_json_list, normalize_key
 from backend.services.transfers import TransferService
+from backend.services.content import ContentService
 
 
 FILE_CATEGORIES = {
@@ -86,8 +87,15 @@ class SensitiveService:
     def __init__(self, project_root: Path):
         self.project_root = project_root
         self.transfers = TransferService(project_root)
-        self.file_categories = legacy_specs(project_root, "SENSITIVE_FILE_CATEGORY_SPECS", FILE_CATEGORIES)
-        self.site_categories = legacy_specs(project_root, "SENSITIVE_SITE_CATEGORY_SPECS", SITE_CATEGORIES)
+        self.content = ContentService(project_root)
+
+    @property
+    def file_categories(self) -> dict[str, list[str]]:
+        return self.content.specs("files")
+
+    @property
+    def site_categories(self) -> dict[str, list[str]]:
+        return self.content.specs("sites")
 
     @property
     def index_path(self) -> Path:

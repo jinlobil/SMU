@@ -7,6 +7,7 @@ import sqlite3
 import threading
 import time
 import traceback
+import urllib.error
 import urllib.request
 import uuid
 from datetime import date, datetime, timezone
@@ -108,9 +109,20 @@ class FetcherAgent:
         return service.refresh_users(progress)
 
     def _notify_watchdog(self, job_id: str) -> dict:
-        request = urllib.request.Request(f"{self.watchdog_url}/fetcher/completed?job_id={job_id}", method="POST")
-        with urllib.request.urlopen(request, timeout=10) as response:
-            return json.loads(response.read())
+        last_error = ""
+        for attempt in range(3):
+            request = urllib.request.Request(f"{self.watchdog_url}/fetcher/completed?job_id={job_id}", method="POST")
+            try:
+                with urllib.request.urlopen(request, timeout=15) as response:
+                    return json.loads(response.read())
+            except urllib.error.HTTPError as exc:
+                detail = exc.read().decode("utf-8", errors="replace")
+                last_error = f"HTTP {exc.code}: {detail or exc.reason}"
+            except (OSError, urllib.error.URLError) as exc:
+                last_error = f"{type(exc).__name__}: {exc}"
+            self.log.warning("Watchdog indexing notification failed attempt=%s job_id=%s error=%s", attempt + 1, job_id, last_error)
+            if attempt < 2: time.sleep(0.8 * (attempt + 1))
+        raise RuntimeError(f"Watchdog가 인덱싱 요청을 받지 못했습니다: {last_error}")
 
     def worker_loop(self) -> None:
         while not self.stop.is_set():

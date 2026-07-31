@@ -1,6 +1,26 @@
 from system_monitor.fetcher import FetcherAgent
 
 
+def test_fetcher_retries_transient_watchdog_index_notification(tmp_path, monkeypatch):
+    import io
+    import json
+    import urllib.error
+    agent = FetcherAgent(tmp_path); calls = []
+    class Response:
+        def __enter__(self): return self
+        def __exit__(self, *_args): return False
+        def read(self): return json.dumps({"id": "index-1"}).encode()
+    def open_request(_request, timeout=0):
+        calls.append(timeout)
+        if len(calls) == 1: raise urllib.error.HTTPError("url", 503, "starting", {}, io.BytesIO(b'{"error":"Indexer starting"}'))
+        return Response()
+    monkeypatch.setattr("system_monitor.fetcher.urllib.request.urlopen", open_request)
+    monkeypatch.setattr("system_monitor.fetcher.time.sleep", lambda _seconds: None)
+
+    assert agent._notify_watchdog("fetch-1") == {"id": "index-1"}
+    assert len(calls) == 2
+
+
 def test_fetcher_runs_all_selected_targets_and_notifies_watchdog_for_scheduler(tmp_path, monkeypatch):
     agent = FetcherAgent(tmp_path)
     calls = []

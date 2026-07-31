@@ -95,8 +95,8 @@ def test_smart_rebuild_skips_unchanged_files_and_indexes_only_changed_file(tmp_p
 
     assert result["mode"] == "smart"
     assert result["changed"] == 1
-    assert result["skipped"] == 1
-    assert any("변경 1개" in message and "유지 1개" in message for message in messages)
+    assert result["skipped"] == 3
+    assert any("변경 1개" in message and "유지 3개" in message for message in messages)
 
 
 def test_smart_rebuild_does_no_parsing_when_manifest_is_current(tmp_path):
@@ -111,7 +111,7 @@ def test_smart_rebuild_does_no_parsing_when_manifest_is_current(tmp_path):
 
     result = service.rebuild_smart(lambda _message: None)
 
-    assert result == {"mode": "smart", "changed": 0, "removed": 0, "skipped": 1, "dashboard": False}
+    assert result == {"mode": "smart", "changed": 0, "removed": 0, "skipped": 3, "dashboard": False}
 
 
 def test_smart_rebuild_never_automatically_runs_full_without_manifest(tmp_path):

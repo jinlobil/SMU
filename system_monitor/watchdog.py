@@ -187,8 +187,18 @@ class HardwareWatchdog:
         raise RuntimeError("Indexer did not publish a healthy heartbeat")
 
     def submit_index_job(self, query: str = "") -> dict:
-        self.ensure_indexer()
-        return self._indexer_request("/jobs" + (f"?{query}" if query else ""), "POST", timeout=5)
+        path = "/jobs" + (f"?{query}" if query else "")
+        last_error: Exception | None = None
+        for attempt in range(3):
+            try:
+                self.ensure_indexer()
+                return self._indexer_request(path, "POST", timeout=10)
+            except (OSError, urllib.error.URLError, urllib.error.HTTPError) as exc:
+                last_error = exc
+                self.log.warning("Indexer submission failed attempt=%s path=%s error=%s", attempt + 1, path, exc)
+                if attempt < 2:
+                    time.sleep(0.5 * (attempt + 1))
+        raise RuntimeError(f"Indexer command failed after health check: {last_error}")
 
     def index_job(self, job_id: str) -> dict:
         self.ensure_indexer()
@@ -260,13 +270,13 @@ def handler_for(watchdog: HardwareWatchdog):
             elif self.path == "/fetcher/restart":
                 try: self._send(202, watchdog.restart_fetcher())
                 except Exception as exc: self._send(503, {"accepted": False, "error": f"{type(exc).__name__}: {exc}"})
-            elif self.path.startswith("/fetcher/jobs"):
-                try: self._send(202, watchdog.submit_fetch_job(urlparse(self.path).query))
-                except Exception as exc: self._send(503, {"accepted": False, "error": f"{type(exc).__name__}: {exc}"})
             elif self.path.startswith("/fetcher/completed"):
                 try:
                     job_id = (dict(item.split("=", 1) for item in urlparse(self.path).query.split("&") if "=" in item).get("job_id"))
                     self._send(202, watchdog.submit_index_job(f"source_fetch_job={job_id or ''}"))
+                except Exception as exc: self._send(503, {"accepted": False, "error": f"{type(exc).__name__}: {exc}"})
+            elif self.path.startswith("/fetcher/jobs"):
+                try: self._send(202, watchdog.submit_fetch_job(urlparse(self.path).query))
                 except Exception as exc: self._send(503, {"accepted": False, "error": f"{type(exc).__name__}: {exc}"})
             elif self.path.startswith("/indexer/jobs"):
                 try: self._send(202, watchdog.submit_index_job(urlparse(self.path).query))

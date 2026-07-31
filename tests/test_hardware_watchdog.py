@@ -97,6 +97,21 @@ def test_watchdog_checks_indexer_health_before_submitting_job(tmp_path, monkeypa
     assert calls == ["health", ("/jobs", "POST")]
 
 
+def test_watchdog_retries_transient_indexer_submission_failure(tmp_path, monkeypatch):
+    import urllib.error
+    watchdog = HardwareWatchdog(tmp_path); calls = []
+    monkeypatch.setattr(watchdog, "ensure_indexer", lambda: calls.append("health") or {"status": "running"})
+    def request(path, method="GET", timeout=3):
+        calls.append(path)
+        if calls.count(path) < 2: raise urllib.error.URLError("starting")
+        return {"id": "index-after-retry"}
+    monkeypatch.setattr(watchdog, "_indexer_request", request)
+    monkeypatch.setattr("system_monitor.watchdog.time.sleep", lambda _seconds: None)
+
+    assert watchdog.submit_index_job()["id"] == "index-after-retry"
+    assert calls.count("health") == 2
+
+
 def test_watchdog_snapshot_includes_indexer_status(tmp_path, monkeypatch):
     watchdog = HardwareWatchdog(tmp_path)
     watchdog.indexer_restart_count = 3

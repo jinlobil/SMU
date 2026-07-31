@@ -161,3 +161,5 @@ Dashboard, Detection, Forensics, Response, Asset, Lab, Config의 모든 상위 �
 - Indexer는 원본 파일명과 읽은 줄 수, 솔루션별 변환 건수, 사용자/부서 반영 건수, SQLite 기록 건수를 작업 상태와 `runtime/logs/indexer.log`에 지속적으로 기록합니다.
 - API 수집은 백엔드와 분리된 상시 대기 `system_monitor.fetcher`가 수행합니다. Cache Data 버튼은 선택한 단일 대상만 Fetcher에 요청하고, 스케줄러는 체크된 모든 대상을 하나의 순차 작업으로 요청합니다.
 - 스케줄러 Fetcher가 모든 대상 수집을 마치면 Watchdog에 완료 신호를 보내며, Watchdog가 Indexer 상태를 확인한 뒤 스마트 인덱싱을 즉시 시작합니다. Config의 Process Monitor에서 Fetcher 상태와 현재 작업을 확인하고 수동 재시작할 수 있습니다.
+- Config의 Content Management에서는 Sensitive Files와 Sensitive Sites 카테고리, 우선순위, 키워드·도메인을 관리합니다. 최초 실행 시 기존 `uimain_window.py` 분류표를 `env/content/*.json`으로 한 번만 마이그레이션하고 이후에는 백엔드 JSON 설정만 사용합니다.
+- Content 규칙 저장은 Raw Data를 변경하지 않으며, 과거 인덱스 반영은 General의 `전체 캐시 인덱싱`을 사용자가 직접 실행해야 합니다.

@@ -14,9 +14,10 @@ import { ConfigPage } from "./pages/ConfigPage";
 import { SystemInfoPage } from "./pages/SystemInfoPage";
 import { IntegrationManagementPage } from "./pages/IntegrationManagementPage";
 import { ExceptionManagementPage } from "./pages/ExceptionManagementPage";
+import { ContentManagementPage } from "./pages/ContentManagementPage";
 
 
-type View = "dashboard" | "endpoint" | "organization" | "detectionEndpoint" | "emailXdr" | "inbound" | "outbound" | "dlp" | "timeline" | "sensitiveFiles" | "sensitiveSites" | "firewall" | "easyQuery" | "layout" | "config" | "integrationManagement" | "exceptionManagement" | "systemInfo";
+type View = "dashboard" | "endpoint" | "organization" | "detectionEndpoint" | "emailXdr" | "inbound" | "outbound" | "dlp" | "timeline" | "sensitiveFiles" | "sensitiveSites" | "firewall" | "easyQuery" | "layout" | "config" | "integrationManagement" | "exceptionManagement" | "contentManagement" | "systemInfo";
 type DetectionFilter = { field: string; query: string; start?: string; end?: string };
 const menus = ["Dashboard", "Detection", "Forensics", "Response", "Asset", "Lab", "Config"];
 const particles = Array.from({ length: 36 }, (_, index) => index);
@@ -122,6 +123,7 @@ export function App() {
             <a href="#config-general" className={view === "config" ? "selected" : ""} onClick={(event) => { event.preventDefault(); setView("config"); }}>General</a>
             <a href="#config-integration-management" className={view === "integrationManagement" ? "selected" : ""} onClick={(event) => { event.preventDefault(); setView("integrationManagement"); }}>Integration Management</a>
             <a href="#config-exception-management" className={view === "exceptionManagement" ? "selected" : ""} onClick={(event) => { event.preventDefault(); setView("exceptionManagement"); }}>Exception Management</a>
+            <a href="#config-content-management" className={view === "contentManagement" ? "selected" : ""} onClick={(event) => { event.preventDefault(); setView("contentManagement"); }}>Content Management</a>
             <a href="#config-system-info" className={view === "systemInfo" ? "selected" : ""} onClick={(event) => { event.preventDefault(); setView("systemInfo"); }}>System-Info</a>
           </div>}
         </div>)}</nav>
@@ -145,6 +147,7 @@ export function App() {
         {view === "config" && <ConfigPage />}
         {view === "integrationManagement" && <IntegrationManagementPage />}
         {view === "exceptionManagement" && <ExceptionManagementPage />}
+        {view === "contentManagement" && <ContentManagementPage />}
         {view === "systemInfo" && <SystemInfoPage />}
       </div></main>
     </div>
