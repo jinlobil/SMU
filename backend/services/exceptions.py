@@ -28,6 +28,7 @@ class ExceptionService:
         self.user_path = self.directory / "user_exceptions.json"
         self.legacy_path = root / "env" / "Report_exception_List.txt"
         self.lock = threading.RLock()
+        self._cache: dict[Path, tuple[int, int, dict[str, Any]]] = {}
         self._migrate_legacy()
 
     @staticmethod
@@ -37,13 +38,19 @@ class ExceptionService:
     def _load(self, path: Path) -> dict[str, Any]:
         if not path.exists():
             return self._empty()
+        stat = path.stat()
+        cached = self._cache.get(path)
+        if cached and cached[0] == stat.st_mtime_ns and cached[1] == stat.st_size:
+            return cached[2]
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             raise ValueError(f"예외 설정 파일을 읽을 수 없습니다: {path.name}") from exc
         if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
             raise ValueError(f"예외 설정 파일 형식이 올바르지 않습니다: {path.name}")
-        return {"version": int(payload.get("version", 1)), "items": [item for item in payload["items"] if isinstance(item, dict)]}
+        data = {"version": int(payload.get("version", 1)), "items": [item for item in payload["items"] if isinstance(item, dict)]}
+        self._cache[path] = (stat.st_mtime_ns, stat.st_size, data)
+        return data
 
     def _write(self, path: Path, payload: dict[str, Any]) -> None:
         self.directory.mkdir(parents=True, exist_ok=True)
@@ -53,6 +60,8 @@ class ExceptionService:
         if path.exists():
             shutil.copy2(path, path.with_suffix(path.suffix + ".bak"))
         os.replace(temporary, path)
+        stat = path.stat()
+        self._cache[path] = (stat.st_mtime_ns, stat.st_size, payload)
 
     @staticmethod
     def _now() -> str:

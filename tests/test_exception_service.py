@@ -72,3 +72,22 @@ def test_duplicate_rules_are_rejected_and_delete_is_atomic(tmp_path):
     service.delete("users", first["id"])
 
     assert service.list("users")["items"] == []
+
+
+def test_repeated_resolution_uses_cached_rule_file(tmp_path, monkeypatch):
+    service = ExceptionService(tmp_path)
+    service.save("users", {"principal": r"PC-1\local", "displayName": "사용자1"})
+    original_read_text = type(service.user_path).read_text
+    reads = 0
+
+    def counted_read_text(path, *args, **kwargs):
+        nonlocal reads
+        if path == service.user_path:
+            reads += 1
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(type(service.user_path), "read_text", counted_read_text)
+    for _ in range(100):
+        assert service.resolve_user(r"PC-1\local", "local") == "사용자1"
+
+    assert reads == 0
