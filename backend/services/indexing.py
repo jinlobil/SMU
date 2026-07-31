@@ -71,17 +71,23 @@ class IndexService:
             message = "스마트 증분 중단 · 기존 인덱스 형식이 호환되지 않습니다. General에서 전체 캐시 인덱싱을 수동 실행하세요."
             progress(message)
             raise RuntimeError(message)
-        changed = sorted(path for path, meta in current.items() if previous.get(path) != meta)
-        removed = sorted(path for path in previous if path not in current)
-        unchanged = len(current) - len(changed)
-        progress(f"스마트 증분 · 변경 {len(changed):,}개 / 삭제 {len(removed):,}개 / 유지 {unchanged:,}개")
         identity_sources = {"endpoints", "orgs", "users", "rules"}
-        if any((current.get(path) or previous.get(path) or {}).get("source") in identity_sources for path in changed + removed):
-            message = "스마트 증분 중단 · 기준정보 또는 예외/콘텐츠 규칙이 변경되었습니다. General에서 전체 캐시 인덱싱을 수동 실행하세요."
-            progress(message)
-            raise RuntimeError(message)
+        all_changed = sorted(path for path, meta in current.items() if previous.get(path) != meta)
+        all_removed = sorted(path for path in previous if path not in current)
+        metadata_changed = [path for path in all_changed if current[path].get("source") in identity_sources]
+        metadata_removed = [path for path in all_removed if previous[path].get("source") in identity_sources]
+        changed = [path for path in all_changed if path not in metadata_changed]
+        removed = [path for path in all_removed if path not in metadata_removed]
+        unchanged = len(current) - len(all_changed)
+        progress(f"스마트 증분 · 원본 변경 {len(changed):,}개 / 삭제 {len(removed):,}개 / 유지 {unchanged:,}개")
+        if metadata_changed or metadata_removed:
+            progress(
+                "스마트 증분 · 기준정보/규칙 변경 "
+                f"{len(metadata_changed) + len(metadata_removed):,}개 확인 · 자동 전체 인덱싱 없이 원본 변경분만 계속 처리"
+            )
         if not changed and not removed:
-            progress(f"스마트 증분 완료 · 변경 없음 · {unchanged:,}개 파일 건너뜀")
+            self._save_manifest(current)
+            progress(f"스마트 증분 완료 · 원본 변경 없음 · {unchanged:,}개 파일 건너뜀")
             return {"mode": "smart", "changed": 0, "removed": 0, "skipped": unchanged, "dashboard": False}
 
         affected = changed + removed

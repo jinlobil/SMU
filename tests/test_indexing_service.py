@@ -125,7 +125,7 @@ def test_smart_rebuild_never_automatically_runs_full_without_manifest(tmp_path):
     assert any("manifest" in message for message in messages)
 
 
-def test_smart_rebuild_never_automatically_runs_full_for_rule_changes(tmp_path):
+def test_smart_rebuild_does_not_fail_or_run_full_for_rule_changes(tmp_path):
     source = tmp_path/"cache/dlp/2026-07-31.jsonl"
     rule = tmp_path/"env/exceptions/user_exceptions.json"
     source.parent.mkdir(parents=True); rule.parent.mkdir(parents=True)
@@ -134,6 +134,11 @@ def test_smart_rebuild_never_automatically_runs_full_for_rule_changes(tmp_path):
     service._build_sensitive([], []); service._build_timeline([]); service._save_manifest(service._source_snapshot())
     rule.write_text('{"version":1,"items":[{}]}', encoding="utf-8")
     service.rebuild_all = lambda _progress: (_ for _ in ()).throw(AssertionError("must not auto rebuild"))
+    messages = []
 
-    with pytest.raises(RuntimeError, match="전체 캐시 인덱싱"):
-        service.rebuild_smart(lambda _message: None)
+    result = service.rebuild_smart(messages.append)
+
+    assert result["mode"] == "smart"
+    assert result["changed"] == 0
+    assert any("자동 전체 인덱싱 없이" in message for message in messages)
+    assert service._load_manifest() == service._source_snapshot()
