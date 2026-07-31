@@ -35,6 +35,7 @@ def test_stop_monitor_launcher_only_targets_monitor_modules() -> None:
 
     assert "system_monitor[.]watchdog" in script
     assert "system_monitor[.]collector" in script
+    assert "system_monitor[.]fetcher" in script
     assert "system_monitor[.]indexer" in script
     assert "Stop-Process" in script
     assert "uvicorn" not in script

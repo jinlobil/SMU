@@ -142,32 +142,24 @@ class SchedulerService:
                 self._persist_locked()
             today = date.today()
             start = today - timedelta(days=1)
-            messages = []
-            for target in self.get()["targets"]:
+            messages = []; targets = self.get()["targets"]
+            if targets and self.index is not None and hasattr(self.index, "start_fetch_job"):
                 try:
-                    self._refresh_target(target, start, today)
-                    messages.append(f"{target}:OK")
-                    with self.lock:
-                        self.state["targetStatus"][target] = {"time": self._display_time(time.time()), "status": "SUCCESS", "message": ""}
-                        self._persist_locked()
-                except Exception as exc:
-                    self.log.exception("Scheduled refresh failed target=%s", target)
-                    messages.append(f"{target}:FAIL {type(exc).__name__}: {exc}")
-                    with self.lock:
-                        self.state["targetStatus"][target] = {"time": self._display_time(time.time()), "status": "FAIL", "message": f"{type(exc).__name__}: {exc}"}
-                        self._persist_locked()
-            if self.index is not None:
-                try:
-                    self._update_progress("indexing", "index", "스마트 증분 인덱싱 준비 중 · 변경 파일 확인")
-                    callback = lambda message: self._update_progress("indexing", "index", message)
-                    if hasattr(self.index, "rebuild_smart"):
-                        self.index.rebuild_smart(callback)
-                    else:
-                        self.index.rebuild_all(callback)
+                    fetch_job = self.index.start_fetch_job(targets, start, today, chain_index=True)
+                    result = self.index.wait_for_fetch_job(fetch_job, lambda message: self._update_progress("collecting" if "FETCHING" in message or "수집" in message else "indexing", "fetcher", message), wait_for_index=True)
+                    for target in targets:
+                        target_result = result.get(target) or {"status": "FAIL", "error": "결과 없음"}
+                        state = target_result.get("status", "FAIL"); detail = target_result.get("error", "")
+                        messages.append(f"{target}:{'OK' if state == 'SUCCESS' else 'FAIL ' + detail}")
+                        with self.lock:
+                            self.state["targetStatus"][target] = {"time": self._display_time(time.time()), "status": state, "message": detail}
+                            self._persist_locked()
                     messages.append("index:OK")
                 except Exception as exc:
-                    self.log.exception("Scheduled indexing failed")
-                    messages.append(f"index:FAIL {type(exc).__name__}: {exc}")
+                    self.log.exception("Scheduled Fetcher/Indexer chain failed")
+                    messages.append(f"fetch/index:FAIL {type(exc).__name__}: {exc}")
+            elif not targets:
+                messages.append("선택된 수집 대상 없음")
             with self.lock:
                 self.state["lastRun"] = self._display_time(time.time())
                 self.state["lastResult"] = " / ".join(messages) or "선택된 수집 대상 없음"

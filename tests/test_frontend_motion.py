@@ -188,3 +188,10 @@ def test_threat_trend_uses_wide_slow_bubble_layer():
     assert ".trend-bubbles { display:none; }" in styles
     assert "trend-particles" not in dashboard
     assert "trend-flow" not in dashboard
+
+
+def test_config_process_monitor_includes_fetcher():
+    page = (ROOT / "frontend/src/pages/ConfigPage.tsx").read_text(encoding="utf-8")
+    assert "fetcher:MonitorProcess" in page
+    assert "Fetcher 재시작" in page
+    assert 'restartMonitor("fetcher")' in page

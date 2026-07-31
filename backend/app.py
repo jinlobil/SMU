@@ -198,6 +198,15 @@ def restart_system_info_indexer() -> dict:
     return {"success": True, "data": data}
 
 
+@app.post("/api/system-info/fetcher/restart", status_code=202)
+def restart_system_info_fetcher() -> dict:
+    try:
+        data = watchdog_manager.restart_fetcher()
+    except Exception as exc:
+        return error_response(str(uuid.uuid4()), "FETCHER_RESTART_FAILED", str(exc), 503)
+    return {"success": True, "data": data}
+
+
 @app.get("/api/dashboard")
 def get_dashboard(start: date | None = None, end: date | None = None, refresh: bool = False) -> dict:
     try:
@@ -505,14 +514,17 @@ def list_organizations(
 @app.post("/api/jobs/refresh/{target}", status_code=202)
 def start_refresh(target: str, payload: dict | None = Body(default=None)) -> dict:
     payload = payload or {}
-    tasks = {"endpoints": refresh_service.refresh_endpoints, "organizations": refresh_service.refresh_organizations, "users": refresh_service.refresh_users}
+    allowed = {"detections", "inbound", "dlp", "outbound", "endpoints", "organizations", "users"}
+    if target not in allowed:
+        request_id = str(uuid.uuid4())
+        return error_response(request_id, "UNKNOWN_REFRESH_TARGET", f"Unknown refresh target: {target}", 404)
+    start = end = None
     if target in {"detections", "inbound"}:
         try:
             start = date.fromisoformat(str(payload.get("start", ""))); end = date.fromisoformat(str(payload.get("end", "")))
             if start > end: raise ValueError("start date must not be after end date")
         except ValueError as exc:
             request_id = str(uuid.uuid4()); return error_response(request_id, "INVALID_REFRESH_RANGE", str(exc), 400)
-        tasks[target] = (lambda progress: refresh_service.refresh_detections(start, end, progress)) if target == "detections" else (lambda progress: refresh_service.refresh_inbound(start, end, progress))
     if target in {"dlp", "outbound"}:
         try:
             start = date.fromisoformat(str(payload.get("start") or payload.get("date", "")))
@@ -521,12 +533,11 @@ def start_refresh(target: str, payload: dict | None = Body(default=None)) -> dic
             if (end - start).days > 31: raise ValueError("refresh range must not exceed 32 days")
         except ValueError as exc:
             request_id = str(uuid.uuid4()); return error_response(request_id, "INVALID_REFRESH_DATE", str(exc), 400)
-        tasks[target] = (lambda progress: refresh_service.refresh_dlp_range(start, end, progress)) if target == "dlp" else (lambda progress: refresh_service.refresh_outbound_range(start, end, progress))
-    task = tasks.get(target)
-    if task is None:
-        request_id = str(uuid.uuid4())
-        return error_response(request_id, "UNKNOWN_REFRESH_TARGET", f"Unknown refresh target: {target}", 404)
-    return {"success": True, "data": job_manager.create(f"refresh-{target}", task)}
+    try:
+        job = watchdog_manager.start_fetch_job([target], start, end)
+    except Exception as exc:
+        return error_response(str(uuid.uuid4()), "FETCHER_JOB_FAILED", str(exc), 503)
+    return {"success": True, "data": job}
 
 
 @app.post("/api/jobs/index", status_code=202)
@@ -543,7 +554,7 @@ def get_job(job_id: str) -> dict:
     job = job_manager.get(job_id)
     if job is None:
         try:
-            job = watchdog_manager.index_job(job_id)
+            job = watchdog_manager.fetch_job(job_id) or watchdog_manager.index_job(job_id)
         except Exception as exc:
             return error_response(str(uuid.uuid4()), "INDEXER_STATUS_FAILED", str(exc), 503)
     if job is None:

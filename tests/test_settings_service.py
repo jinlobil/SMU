@@ -41,9 +41,12 @@ class ScheduledRefresh:
     def refresh_users(self,*args): return self._record("users")
 
 class ScheduledIndex:
-    def __init__(self): self.calls=0;self.mode=None
-    def rebuild_all(self,progress): self.calls+=1;progress("done");return {"ok":True}
-    def rebuild_smart(self,progress): self.calls+=1;self.mode="smart";progress("incremental done");return {"ok":True}
+    def __init__(self): self.calls=0;self.targets=[];self.chain_index=False
+    def start_fetch_job(self,targets,start,end,chain_index=False):
+        self.targets=list(targets);self.chain_index=chain_index;return {"id":"fetch-1"}
+    def wait_for_fetch_job(self,job,progress,wait_for_index=False):
+        self.calls+=1;progress("FETCHING · 완료");progress("스마트 증분 완료")
+        return {**{target:{"status":"SUCCESS","data":{"ok":True}} for target in self.targets},"index":{"ok":True}}
 
 def test_scheduler_runs_every_target_then_index(tmp_path: Path):
     refresh=ScheduledRefresh();index=ScheduledIndex();service=SchedulerService(tmp_path,refresh,index)
@@ -52,7 +55,9 @@ def test_scheduler_runs_every_target_then_index(tmp_path: Path):
     assert saved["nextRun"] is not None
     service._run_cycle()
     state=service.get()
-    assert refresh.calls==targets
+    assert refresh.calls==[]
+    assert index.targets==targets
+    assert index.chain_index is True
     assert index.calls==1
     assert index.mode == "smart"
     assert "index:OK" in state["lastResult"]

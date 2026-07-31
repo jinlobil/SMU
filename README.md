@@ -159,3 +159,5 @@ Dashboard, Detection, Forensics, Response, Asset, Lab, Config의 모든 상위 �
 - Config의 Process Monitor에서 Watchdog, Collector와 함께 Indexer 상태를 확인하고 수동으로 재시작할 수 있습니다.
 - 자동 스케줄러와 Config의 `스마트 캐시 데이터 인덱싱`은 전체 원본의 경로·수정시각(ns)·크기를 manifest와 비교하고 신규·변경·삭제 파일만 Sensitive/Timeline 인덱스에 반영합니다. manifest가 없거나 인덱스 스키마·기준정보·예외/콘텐츠 규칙이 바뀐 경우 자동 전체 재생성하지 않고 중단하며, General의 `전체 캐시 인덱싱`을 수동 실행해야 합니다.
 - Indexer는 원본 파일명과 읽은 줄 수, 솔루션별 변환 건수, 사용자/부서 반영 건수, SQLite 기록 건수를 작업 상태와 `runtime/logs/indexer.log`에 지속적으로 기록합니다.
+- API 수집은 백엔드와 분리된 상시 대기 `system_monitor.fetcher`가 수행합니다. Cache Data 버튼은 선택한 단일 대상만 Fetcher에 요청하고, 스케줄러는 체크된 모든 대상을 하나의 순차 작업으로 요청합니다.
+- 스케줄러 Fetcher가 모든 대상 수집을 마치면 Watchdog에 완료 신호를 보내며, Watchdog가 Indexer 상태를 확인한 뒤 스마트 인덱싱을 즉시 시작합니다. Config의 Process Monitor에서 Fetcher 상태와 현재 작업을 확인하고 수동 재시작할 수 있습니다.

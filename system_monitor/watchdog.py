@@ -53,8 +53,10 @@ class HardwareWatchdog:
         self.stop = threading.Event()
         self.collector: subprocess.Popen | None = None
         self.indexer: subprocess.Popen | None = None
+        self.fetcher: subprocess.Popen | None = None
         self.restart_count = 0
         self.indexer_restart_count = 0
+        self.fetcher_restart_count = 0
         self.started_at = datetime.now().astimezone().isoformat(timespec="seconds")
         self.log = logging.getLogger("smu.hardware.watchdog")
 
@@ -113,6 +115,54 @@ class HardwareWatchdog:
         self.indexer = subprocess.Popen([sys.executable, "-m", "system_monitor.indexer", "--root", str(self.root)], cwd=self.root, stdin=subprocess.DEVNULL, stdout=stream, stderr=subprocess.STDOUT, creationflags=detached_flags(), close_fds=True, start_new_session=os.name != "nt")
         self.log.info("Indexer started pid=%s", self.indexer.pid)
 
+    def _fetcher_request(self, path: str, method: str = "GET", timeout: float = 3) -> dict:
+        request = urllib.request.Request("http://127.0.0.1:8768" + path, method=method)
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read())
+
+    def read_fetcher(self) -> dict:
+        try:
+            status = self._fetcher_request("/health")
+            heartbeat = datetime.fromisoformat(status.get("lastHeartbeatAt") or "")
+            if (datetime.now().astimezone() - heartbeat.astimezone()).total_seconds() <= 10:
+                return status
+        except (OSError, ValueError, json.JSONDecodeError, urllib.error.URLError):
+            pass
+        return {"status": "missing", "pid": None, "startedAt": None, "lastHeartbeatAt": None, "currentJobId": None, "lastError": None}
+
+    def _start_fetcher(self) -> None:
+        log_path = self.root / "runtime/logs/fetcher_process.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        stream = log_path.open("a", encoding="utf-8")
+        self.fetcher = subprocess.Popen([sys.executable, "-m", "system_monitor.fetcher", "--root", str(self.root)], cwd=self.root, stdin=subprocess.DEVNULL, stdout=stream, stderr=subprocess.STDOUT, creationflags=detached_flags(), close_fds=True, start_new_session=os.name != "nt")
+        self.log.info("Fetcher started pid=%s", self.fetcher.pid)
+
+    def ensure_fetcher(self) -> dict:
+        status = self.read_fetcher()
+        if status.get("status") == "running": return status
+        self.log.warning("Fetcher health check failed; restarting before command")
+        return self.restart_fetcher()["status"]
+
+    def restart_fetcher(self) -> dict:
+        with self.lock:
+            status = self.read_fetcher()
+            if status.get("pid"): terminate_process(int(status["pid"]))
+            self._start_fetcher(); self.fetcher_restart_count += 1
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline:
+                status = self.read_fetcher()
+                if status.get("status") == "running": return {"accepted": True, "pid": status.get("pid"), "status": status}
+                time.sleep(0.25)
+        raise RuntimeError("Fetcher did not publish a healthy heartbeat")
+
+    def submit_fetch_job(self, query: str) -> dict:
+        self.ensure_fetcher()
+        return self._fetcher_request("/jobs" + (f"?{query}" if query else ""), "POST", timeout=10)
+
+    def fetch_job(self, job_id: str) -> dict:
+        self.ensure_fetcher()
+        return self._fetcher_request(f"/jobs/{job_id}", timeout=5)
+
     def ensure_indexer(self) -> dict:
         """Probe the Indexer before every command and recover it when unavailable."""
         status = self.read_indexer()
@@ -164,12 +214,14 @@ class HardwareWatchdog:
     def snapshot(self) -> dict:
         collector = {**self.read_collector(), "restartCount": self.restart_count}
         indexer = {**self.read_indexer(), "restartCount": self.indexer_restart_count}
-        return {"watchdog": {"status": "running", "pid": os.getpid(), "startedAt": self.started_at, "lastCheckAt": datetime.now().astimezone().isoformat(timespec="seconds"), "lastError": None}, "collector": collector, "indexer": indexer}
+        fetcher = {**self.read_fetcher(), "restartCount": self.fetcher_restart_count}
+        return {"watchdog": {"status": "running", "pid": os.getpid(), "startedAt": self.started_at, "lastCheckAt": datetime.now().astimezone().isoformat(timespec="seconds"), "lastError": None}, "collector": collector, "fetcher": fetcher, "indexer": indexer}
 
     def loop(self) -> None:
         while not self.stop.is_set():
             try:
                 self.ensure_collector()
+                self.ensure_fetcher()
                 self.ensure_indexer()
                 atomic_json(self.status_path, self.snapshot())
             except Exception:
@@ -193,6 +245,10 @@ def handler_for(watchdog: HardwareWatchdog):
                 try: self._send(200, watchdog.index_job(self.path.removeprefix("/indexer/jobs/")))
                 except urllib.error.HTTPError as exc: self._send(exc.code, {"error": "job not found"})
                 except Exception as exc: self._send(503, {"error": f"{type(exc).__name__}: {exc}"})
+            elif self.path.startswith("/fetcher/jobs/"):
+                try: self._send(200, watchdog.fetch_job(self.path.removeprefix("/fetcher/jobs/")))
+                except urllib.error.HTTPError as exc: self._send(exc.code, {"error": "job not found"})
+                except Exception as exc: self._send(503, {"error": f"{type(exc).__name__}: {exc}"})
             else: self._send(404, {"error": "not found"})
         def do_POST(self):
             if self.path == "/collector/restart":
@@ -200,6 +256,17 @@ def handler_for(watchdog: HardwareWatchdog):
                 except Exception as exc: self._send(503, {"accepted": False, "error": f"{type(exc).__name__}: {exc}"})
             elif self.path == "/indexer/restart":
                 try: self._send(202, watchdog.restart_indexer())
+                except Exception as exc: self._send(503, {"accepted": False, "error": f"{type(exc).__name__}: {exc}"})
+            elif self.path == "/fetcher/restart":
+                try: self._send(202, watchdog.restart_fetcher())
+                except Exception as exc: self._send(503, {"accepted": False, "error": f"{type(exc).__name__}: {exc}"})
+            elif self.path.startswith("/fetcher/jobs"):
+                try: self._send(202, watchdog.submit_fetch_job(urlparse(self.path).query))
+                except Exception as exc: self._send(503, {"accepted": False, "error": f"{type(exc).__name__}: {exc}"})
+            elif self.path.startswith("/fetcher/completed"):
+                try:
+                    job_id = (dict(item.split("=", 1) for item in urlparse(self.path).query.split("&") if "=" in item).get("job_id"))
+                    self._send(202, watchdog.submit_index_job(f"source_fetch_job={job_id or ''}"))
                 except Exception as exc: self._send(503, {"accepted": False, "error": f"{type(exc).__name__}: {exc}"})
             elif self.path.startswith("/indexer/jobs"):
                 try: self._send(202, watchdog.submit_index_job(urlparse(self.path).query))
