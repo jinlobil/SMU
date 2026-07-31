@@ -134,7 +134,10 @@ def test_exception_management_uses_department_and_full_principal_tabs():
     assert 'placeholder="PREFIX\\account"' in page
     assert "HONGJEHEE" not in page
     assert "Raw Data는 변경하지 않고 2차 가공 결과에만" in page
-    assert ".exception-tabs {" in styles
+    assert 'className="entity-name"' in page
+    assert 'className="dept-name"' in page
+    assert 'className="condition-list exception-condition-list"' in page
+    assert ".exception-tabs button" in styles
 
 
 def test_easy_query_history_layout_variables_and_cursor_cleanup():
