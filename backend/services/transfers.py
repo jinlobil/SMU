@@ -5,7 +5,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Callable
 
-from backend.services.endpoints import EndpointService, load_json_list, normalize_key
+from backend.services.endpoints import EndpointService, endpoint_principal, load_json_list, normalize_key
 
 
 EVENT_NAMES = {"Content Threat Detected": "탐지됨", "Content Threat Blocked": "차단"}
@@ -47,7 +47,7 @@ class TransferService:
         for index, item in enumerate(load_json_list(self.endpoint_service.endpoints_path)):
             row = self.endpoint_service._row(item, context, f"endpoint-{index}")
             person = item.get("associatedPerson") if isinstance(item.get("associatedPerson"), dict) else {}
-            identities[normalize_key(item.get("hostname"))] = {**row, "principal": str(person.get("viaLogin") or "")}
+            identities[normalize_key(item.get("hostname"))] = {**row, "principal": endpoint_principal(person)}
         return identities
 
     def _collect_dlp(self, start: date, end: date):

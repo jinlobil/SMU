@@ -1,7 +1,9 @@
 import json
+from datetime import date
 
 import pytest
 
+from backend.services.detections import DetectionService
 from backend.services.endpoints import EndpointService
 from backend.services.exceptions import ExceptionService
 
@@ -91,3 +93,30 @@ def test_repeated_resolution_uses_cached_rule_file(tmp_path, monkeypatch):
         assert service.resolve_user(r"PC-1\local", "local") == "사용자1"
 
     assert reads == 0
+
+
+def test_detection_uses_full_principal_from_endpoint_name_when_via_login_is_missing(tmp_path):
+    raw_endpoint = {
+        "id": "endpoint-1",
+        "hostname": "DEVICE-01",
+        "associatedPerson": {"name": r"DEVICE-01\account"},
+    }
+    write_json(tmp_path / "cache/endpoints.json", [raw_endpoint])
+    write_json(tmp_path / "cache/user_groups.json", [])
+    write_json(tmp_path / "cache/users.json", [])
+    write_json(tmp_path / "cache/detections/2026-07-31.json", [{
+        "time": "2026-07-31T01:00:00Z",
+        "sensor": {"type": "endpoint"},
+        "rawData": {"meta_hostname": "DEVICE-01", "process_name": "sample.exe"},
+    }])
+    ExceptionService(tmp_path).save("users", {
+        "principal": r"DEVICE-01\account",
+        "displayName": "표시 사용자",
+    })
+
+    result = DetectionService(tmp_path).list_detections(
+        date(2026, 7, 31), date(2026, 7, 31), []
+    )
+
+    assert result["items"][0]["username"] == "표시 사용자"
+    assert json.loads((tmp_path / "cache/endpoints.json").read_text(encoding="utf-8")) == [raw_endpoint]

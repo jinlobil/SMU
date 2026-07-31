@@ -7,7 +7,7 @@ from typing import Any, Callable
 
 from backend.services.detections import DetectionService
 from backend.services.email_security import EmailSecurityService
-from backend.services.endpoints import EndpointService, load_json_list, normalize_key
+from backend.services.endpoints import EndpointService, endpoint_principal, load_json_list, normalize_key
 from backend.services.transfers import TransferService
 from backend.services import legacy_report
 from backend.services.exceptions import ExceptionService, normalize_identity
@@ -32,7 +32,7 @@ class ReportService:
         for endpoint in legacy_report.ENDPOINTS:
             person = endpoint.get("associatedPerson") if isinstance(endpoint.get("associatedPerson"), dict) else None
             if person is not None:
-                person["name"] = self.exceptions.resolve_user(person.get("viaLogin"), person.get("name"))
+                person["name"] = self.exceptions.resolve_user(endpoint_principal(person), person.get("name"))
         legacy_report.ORGS = load_json_list(self.root / "cache/user_groups.json")
         legacy_report.DEPT_MAP = {
             str(org.get("deptCode", "")): str(org.get("deptName") or org.get("name") or org.get("deptCode") or "미분류")

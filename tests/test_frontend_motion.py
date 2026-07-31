@@ -130,7 +130,9 @@ def test_exception_management_uses_department_and_full_principal_tabs():
     assert "부서 예외처리" in page
     assert "사용자 예외처리" in page
     assert "전체 사용자 식별값" in page
-    assert "mac처럼 계정명만 입력할 수 없습니다" in page
+    assert "계정명만 입력할 수 없습니다" in page
+    assert 'placeholder="PREFIX\\account"' in page
+    assert "HONGJEHEE" not in page
     assert "Raw Data는 변경하지 않고 2차 가공 결과에만" in page
     assert ".exception-tabs {" in styles
 

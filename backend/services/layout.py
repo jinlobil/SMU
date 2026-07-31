@@ -2,7 +2,7 @@ import json
 import os
 from pathlib import Path
 from typing import Any
-from backend.services.endpoints import EndpointService, load_json_list
+from backend.services.endpoints import EndpointService, endpoint_principal, load_json_list
 
 class LayoutService:
     def __init__(self, root: Path): self.root=root; self.path=root/"env/layout/Layout_User.json"; self.endpoints=EndpointService(root)
@@ -29,7 +29,7 @@ class LayoutService:
         candidates={}
         context=self.endpoints._department_context()
         for index,endpoint in enumerate(load_json_list(self.root/"cache/endpoints.json")):
-            row=self.endpoints._row(endpoint,context,f"layout-{index}"); person=endpoint.get("associatedPerson") if isinstance(endpoint.get("associatedPerson"),dict) else {}; principal=str(person.get("viaLogin","") or ""); login=row["userId"]; name=row["user"]; host=row["hostname"]; key=(principal or login or host or name).lower()
+            row=self.endpoints._row(endpoint,context,f"layout-{index}"); person=endpoint.get("associatedPerson") if isinstance(endpoint.get("associatedPerson"),dict) else {}; principal=endpoint_principal(person); login=row["userId"]; name=row["user"]; host=row["hostname"]; key=(principal or login or host or name).lower()
             if key: candidates[key]={"name":name,"user_id":login,"hostname":host,"ip":row["ip"],"email":"","dept":row["dept"],"source":"Endpoint"}
         for user in load_json_list(self.root/"cache/users.json"):
             login=str(user.get("exchangeLogin","") or ""); email=str(user.get("email","") or ""); key=(login or email or str(user.get("name",""))).lower()

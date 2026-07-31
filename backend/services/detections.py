@@ -4,7 +4,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from backend.services.endpoints import EndpointService, kst_time, load_json_list, normalize_key
+from backend.services.endpoints import EndpointService, endpoint_principal, kst_time, load_json_list, normalize_key
 
 
 SEARCH_FIELDS = {"all", "hostname", "dept", "username", "privateIp", "publicIp", "file", "sha256", "rule", "lineage", "rawData"}
@@ -38,7 +38,7 @@ class DetectionService:
         for index, endpoint in enumerate(load_json_list(self.endpoint_service.endpoints_path)):
             row = self.endpoint_service._row(endpoint, context, f"endpoint-{index}")
             person = endpoint.get("associatedPerson") if isinstance(endpoint.get("associatedPerson"), dict) else {}
-            identities[normalize_key(endpoint.get("hostname"))] = {**row, "principal": str(person.get("viaLogin") or "")}
+            identities[normalize_key(endpoint.get("hostname"))] = {**row, "principal": endpoint_principal(person)}
         return identities
 
     def _files(self, start: date, end: date) -> list[Path]:
