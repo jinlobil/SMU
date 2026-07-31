@@ -28,7 +28,6 @@ from backend.services.easy_query import EasyQueryService
 from backend.services.layout import LayoutService
 from backend.services.settings import SchedulerService, ThemeService
 from backend.services.report import ReportService
-from backend.services.indexing import IndexService
 from backend.services.system_metrics import SystemMetricsService
 from backend.services.watchdog_client import WatchdogManager
 from backend.services.spreadsheet import write_xlsx
@@ -53,10 +52,9 @@ easy_query_service = EasyQueryService(PROJECT_ROOT)
 layout_service = LayoutService(PROJECT_ROOT)
 theme_service = ThemeService(PROJECT_ROOT)
 report_service = ReportService(PROJECT_ROOT)
-index_service = IndexService(PROJECT_ROOT)
-scheduler_service = SchedulerService(PROJECT_ROOT, refresh_service, index_service)
 system_metrics_service = SystemMetricsService(PROJECT_ROOT)
 watchdog_manager = WatchdogManager(PROJECT_ROOT)
+scheduler_service = SchedulerService(PROJECT_ROOT, refresh_service, watchdog_manager)
 integration_service = IntegrationService(PROJECT_ROOT)
 exception_service = ExceptionService(PROJECT_ROOT)
 try:
@@ -188,6 +186,15 @@ def restart_system_info_watchdog() -> dict:
         data = watchdog_manager.restart_watchdog()
     except Exception as exc:
         return error_response(str(uuid.uuid4()), "WATCHDOG_RESTART_FAILED", str(exc), 503)
+    return {"success": True, "data": data}
+
+
+@app.post("/api/system-info/indexer/restart", status_code=202)
+def restart_system_info_indexer() -> dict:
+    try:
+        data = watchdog_manager.restart_indexer()
+    except Exception as exc:
+        return error_response(str(uuid.uuid4()), "INDEXER_RESTART_FAILED", str(exc), 503)
     return {"success": True, "data": data}
 
 
@@ -524,12 +531,21 @@ def start_refresh(target: str, payload: dict | None = Body(default=None)) -> dic
 
 @app.post("/api/jobs/index", status_code=202)
 def rebuild_indexes() -> dict:
-    return {"success": True, "data": job_manager.create("rebuild-all-indexes", index_service.rebuild_all)}
+    try:
+        data = watchdog_manager.start_index_job()
+    except Exception as exc:
+        return error_response(str(uuid.uuid4()), "INDEXER_JOB_FAILED", str(exc), 503)
+    return {"success": True, "data": data}
 
 
 @app.get("/api/jobs/{job_id}")
 def get_job(job_id: str) -> dict:
     job = job_manager.get(job_id)
+    if job is None:
+        try:
+            job = watchdog_manager.index_job(job_id)
+        except Exception as exc:
+            return error_response(str(uuid.uuid4()), "INDEXER_STATUS_FAILED", str(exc), 503)
     if job is None:
         request_id = str(uuid.uuid4())
         return error_response(request_id, "JOB_NOT_FOUND", f"Job not found: {job_id}", 404)

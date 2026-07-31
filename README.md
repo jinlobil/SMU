@@ -155,3 +155,5 @@ Dashboard, Detection, Forensics, Response, Asset, Lab, Config의 모든 상위 �
 - 민감 파일·사이트 분류표는 `uimain_window.py`의 전체 `SENSITIVE_*_CATEGORY_SPECS`를 AST로 안전하게 읽어 기존 분류와 키워드를 빠짐없이 재사용합니다.
 - 웹 백엔드는 기존 앱의 `cache/index/timeline_index.db`와 `cache/index/app_cache.db`가 있으면 Timeline과 Sensitive Files/Sites를 SQLite 인덱스에서 바로 조회합니다.
 - 인덱스 파일 또는 해당 테이블이 없을 때만 호환성을 위해 원본 캐시를 직접 검색하며, 화면에는 `인덱스 검색` 또는 `캐시 직접 검색`이 표시됩니다. 검색이 느리고 `캐시 직접 검색`으로 표시되면 기존 앱 Config의 `Data Index`를 먼저 실행해주세요.
+- 전체 인덱싱은 백엔드 프로세스와 분리된 상시 대기 `system_monitor.indexer`가 수행합니다. Watchdog는 명령 전 Indexer heartbeat를 확인하고 필요하면 먼저 재기동하며, 작업 상태는 `runtime/indexer/jobs.db`에 보존됩니다.
+- Config의 Hardware Monitor에서 Watchdog, Collector와 함께 Indexer 상태를 확인하고 수동으로 재시작할 수 있습니다.

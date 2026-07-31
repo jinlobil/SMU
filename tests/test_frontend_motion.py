@@ -120,6 +120,15 @@ def test_integration_management_is_a_config_subpage_with_card_modal_ui():
     assert ".integration-grid {" in styles
 
 
+def test_hardware_monitor_shows_indexer_status_and_manual_restart():
+    page = (ROOT / "frontend/src/pages/ConfigPage.tsx").read_text(encoding="utf-8")
+
+    assert "indexer:MonitorProcess" in page
+    assert "Indexer 재시작" in page
+    assert 'restartMonitor("indexer")' in page
+    assert "monitor.indexer.lastHeartbeatAt" in page
+
+
 def test_exception_management_uses_department_and_full_principal_tabs():
     app = (ROOT / "frontend/src/App.tsx").read_text(encoding="utf-8")
     page = (ROOT / "frontend/src/pages/ExceptionManagementPage.tsx").read_text(encoding="utf-8")

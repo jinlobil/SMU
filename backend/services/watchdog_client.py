@@ -27,7 +27,7 @@ class WatchdogManager:
         try:
             return self.request("/status")
         except (OSError, urllib.error.URLError, json.JSONDecodeError):
-            return {"watchdog": {"status": "missing"}, "collector": {"status": "unknown"}}
+            return {"watchdog": {"status": "missing"}, "collector": {"status": "unknown"}, "indexer": {"status": "unknown"}}
 
     def _spawn(self) -> None:
         log_path = self.root / "runtime/logs/hardware_watchdog_process.log"
@@ -40,10 +40,23 @@ class WatchdogManager:
         self.log.warning("Watchdog process launched pid=%s", process.pid)
 
     def ensure(self) -> bool:
-        if self.status()["watchdog"].get("status") == "running":
+        current = self.status()
+        if current["watchdog"].get("status") == "running" and "indexer" in current:
             return True
         with self.lock:
-            if self.status()["watchdog"].get("status") == "running":
+            current = self.status()
+            if current["watchdog"].get("status") == "running" and "indexer" not in current:
+                # Replace a detached watchdog left by a previous application
+                # version so the new Indexer control API becomes available.
+                try:
+                    self.request("/shutdown", "POST")
+                except OSError:
+                    pass
+                for _ in range(20):
+                    time.sleep(0.25)
+                    if self.status()["watchdog"].get("status") != "running":
+                        break
+            elif current["watchdog"].get("status") == "running":
                 return True
             self._spawn()
             for _ in range(20):
@@ -55,6 +68,45 @@ class WatchdogManager:
     def restart_collector(self) -> dict:
         self.ensure()
         return self.request("/collector/restart", "POST", timeout=10)
+
+    def restart_indexer(self) -> dict:
+        self.ensure()
+        return self.request("/indexer/restart", "POST", timeout=20)
+
+    def start_index_job(self) -> dict:
+        self.ensure()
+        try:
+            return self.request("/indexer/jobs", "POST", timeout=20)
+        except urllib.error.HTTPError as exc:
+            # A watchdog from an older application version may still own the
+            # fixed port after an update. Replace it once, then retry.
+            if exc.code != 404:
+                raise
+            self.restart_watchdog()
+            return self.request("/indexer/jobs", "POST", timeout=20)
+
+    def index_job(self, job_id: str) -> dict | None:
+        try:
+            return self.request(f"/indexer/jobs/{job_id}", timeout=10)
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                return None
+            raise
+
+    def rebuild_all(self, progress) -> dict:
+        """Scheduler-compatible blocking facade over the independent Indexer."""
+        job = self.start_index_job()
+        while not self.stop.is_set():
+            current = self.index_job(job["id"])
+            if current is None:
+                raise RuntimeError(f"Indexer job disappeared: {job['id']}")
+            progress(current.get("message", "인덱싱 중"))
+            if current.get("status") == "completed":
+                return current.get("result") or {}
+            if current.get("status") == "failed":
+                raise RuntimeError((current.get("error") or {}).get("message", "Indexer job failed"))
+            time.sleep(0.8)
+        raise RuntimeError("Indexer wait interrupted")
 
     def restart_watchdog(self) -> dict:
         with self.lock:

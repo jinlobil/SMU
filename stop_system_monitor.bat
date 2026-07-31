@@ -4,10 +4,10 @@ cd /d "%~dp0"
 
 echo Stopping SMU hardware monitor processes...
 echo Stop the local web server first, or it will launch the watchdog again.
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$items=Get-CimInstance Win32_Process; foreach($item in $items){if($item.CommandLine -match 'system_monitor[.]watchdog'){Stop-Process -Id $item.ProcessId -Force -ErrorAction SilentlyContinue}}; Start-Sleep -Milliseconds 500; foreach($item in $items){if($item.CommandLine -match 'system_monitor[.]collector'){Stop-Process -Id $item.ProcessId -Force -ErrorAction SilentlyContinue}}"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$items=Get-CimInstance Win32_Process; foreach($item in $items){if($item.CommandLine -match 'system_monitor[.]watchdog'){Stop-Process -Id $item.ProcessId -Force -ErrorAction SilentlyContinue}}; Start-Sleep -Milliseconds 500; foreach($item in $items){if($item.CommandLine -match 'system_monitor[.]collector' -or $item.CommandLine -match 'system_monitor[.]indexer'){Stop-Process -Id $item.ProcessId -Force -ErrorAction SilentlyContinue}}"
 if errorlevel 1 goto failed
 
-echo Watchdog and Collector processes stopped.
+echo Watchdog, Collector, and Indexer processes stopped.
 exit /b 0
 
 :failed
