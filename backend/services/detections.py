@@ -34,7 +34,12 @@ class DetectionService:
 
     def _identity_map(self) -> dict[str, dict[str, str]]:
         context = self.endpoint_service._department_context()
-        return {normalize_key(endpoint.get("hostname")): self.endpoint_service._row(endpoint, context, f"endpoint-{index}") for index, endpoint in enumerate(load_json_list(self.endpoint_service.endpoints_path))}
+        identities = {}
+        for index, endpoint in enumerate(load_json_list(self.endpoint_service.endpoints_path)):
+            row = self.endpoint_service._row(endpoint, context, f"endpoint-{index}")
+            person = endpoint.get("associatedPerson") if isinstance(endpoint.get("associatedPerson"), dict) else {}
+            identities[normalize_key(endpoint.get("hostname"))] = {**row, "principal": str(person.get("viaLogin") or "")}
+        return identities
 
     def _files(self, start: date, end: date) -> list[Path]:
         files = []
@@ -66,7 +71,7 @@ class DetectionService:
         file_name, sha = file_and_sha(raw)
         return {
             "id": event_id, "time": kst_time(raw_event.get("time")), "hostname": hostname,
-            "dept": identity.get("dept", "미분류"), "username": identity.get("user", "None"),
+            "principal": identity.get("principal", ""), "dept": identity.get("dept", "미분류"), "username": identity.get("user", "None"),
             "privateIp": str(raw.get("meta_ip_address") or "None"), "publicIp": str(raw.get("meta_public_ip") or "None"),
             "file": file_name, "sha256": sha, "rule": str(rule), "lineage": lineage,
         }

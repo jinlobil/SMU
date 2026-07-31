@@ -297,7 +297,8 @@ class SensitiveService:
                     raw_aliases = (raw.get("client_name"),) if kind == "dlp" else (row.get("senderEmail"), raw.get("sender_email"), raw.get("sender_user_id"), raw.get("sender"))
                     fallback_user = row["username"] if kind == "dlp" else row["senderName"]
                     user = self._display_user(user_names, fallback_user, *raw_aliases)
-                    item = {"id": f"file-{record_id}-{hashlib.sha1(name.encode()).hexdigest()[:8]}", "source": source, "name": name, "category": category, "keywords": hits, "user": user, "dept": row["dept"], "time": row["time"] if kind == "dlp" else row["date"], "path": value, "event": row["event"] if kind == "dlp" else row["sendResult"], "raw": raw}
+                    final = self.transfers.exception_service.finalize(principal=row.get("principal", ""), hostname=row.get("computer", ""), email=row.get("senderEmail", ""), user_name=user, department=row["dept"])
+                    item = {"id": f"file-{record_id}-{hashlib.sha1(name.encode()).hexdigest()[:8]}", "source": source, "name": name, "category": category, "keywords": hits, "user": final["user"], "dept": final["dept"], "time": row["time"] if kind == "dlp" else row["date"], "path": value, "event": row["event"] if kind == "dlp" else row["sendResult"], "raw": raw}
                     key = (normalized_identity(source), normalized_identity(name), normalized_identity(item["dept"]), normalized_identity(item["user"]))
                     if key not in latest or str(item["time"]) > str(latest[key]["time"]):
                         latest[key] = item
@@ -315,7 +316,8 @@ class SensitiveService:
                     continue
                 category, hits = classified
                 user = self._display_user(user_names, row["username"], raw.get("client_name"))
-                item = {"id": f"site-{record_id}-{hashlib.sha1(host.encode()).hexdigest()[:8]}", "source": "DLP", "site": host, "url": row["destination"], "category": category, "keywords": hits, "user": user, "dept": row["dept"], "time": row["time"], "machine": row["computer"], "event": row["event"], "raw": raw}
+                final = self.transfers.exception_service.finalize(principal=row.get("principal", ""), hostname=row["computer"], user_name=user, department=row["dept"])
+                item = {"id": f"site-{record_id}-{hashlib.sha1(host.encode()).hexdigest()[:8]}", "source": "DLP", "site": host, "url": row["destination"], "category": category, "keywords": hits, "user": final["user"], "dept": final["dept"], "time": row["time"], "machine": row["computer"], "event": row["event"], "raw": raw}
                 # Match the desktop behavior: one latest row per
                 # source/site/department/user rather than one row per event.
                 key = ("dlp", normalized_identity(host), normalized_identity(item["dept"]), normalized_identity(item["user"]))

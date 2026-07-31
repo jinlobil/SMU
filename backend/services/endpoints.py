@@ -4,6 +4,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from backend.services.exceptions import ExceptionService
+
 
 SEARCH_FIELDS = {"all", "hostname", "userId", "user", "dept", "ip", "ztna"}
 SORT_FIELDS = {"hostname", "userId", "user", "dept", "ip", "ztna", "lastSeen"}
@@ -112,6 +114,7 @@ class EndpointService:
         self.project_root = project_root
         self.cache_dir = project_root / "cache"
         self.env_dir = project_root / "env"
+        self.exception_service = ExceptionService(project_root)
 
     @property
     def endpoints_path(self) -> Path:
@@ -149,18 +152,14 @@ class EndpointService:
         if not dept_info:
             dept_info = directory_index.get(normalize_key(user_id))
         dept = (dept_info or {}).get("dept", "미분류")
-        for exception_key in (match_name, user_id, hostname):
-            exception_dept = exceptions.get(normalize_key(exception_key))
-            if exception_dept:
-                dept = exception_dept
-                break
+        final_identity = self.exception_service.finalize(principal=via_login, hostname=hostname, user_name=user, department=dept)
 
         return {
             "id": str(endpoint.get("id", "") or fallback_id or hostname),
             "hostname": hostname,
             "userId": user_id or "None",
-            "user": user,
-            "dept": dept,
+            "user": final_identity["user"],
+            "dept": final_identity["dept"],
             "ip": ip_text,
             "ztna": ztna,
             "lastSeen": kst_time(endpoint.get("lastSeenAt")),
