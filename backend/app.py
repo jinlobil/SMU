@@ -38,6 +38,11 @@ from backend.services.content import ContentService
 
 configure_logging()
 log = logging.getLogger("smu.web")
+QUIET_POLL_PATHS = {
+    "/api/health", "/api/config/status", "/api/config/scheduler",
+    "/api/system-info/process-status", "/api/system-info/current",
+    "/api/system-info/history",
+}
 endpoint_service = EndpointService(PROJECT_ROOT)
 organization_service = OrganizationService(PROJECT_ROOT)
 refresh_service = RefreshService(PROJECT_ROOT)
@@ -119,14 +124,12 @@ async def request_logging(request: Request, call_next):
 
     elapsed_ms = (time.monotonic() - started) * 1000
     response.headers["X-Request-ID"] = request_id
-    log.info(
-        "request_id=%s method=%s path=%s status=%s elapsed_ms=%.1f",
-        request_id,
-        request.method,
-        request.url.path,
-        response.status_code,
-        elapsed_ms,
-    )
+    path = request.url.path
+    polling = path in QUIET_POLL_PATHS or path.startswith("/api/jobs/")
+    if response.status_code >= 400:
+        log.warning("request_id=%s method=%s path=%s status=%s elapsed_ms=%.1f", request_id, request.method, path, response.status_code, elapsed_ms)
+    elif elapsed_ms >= 1000 or not polling:
+        log.info("request_id=%s method=%s path=%s status=%s elapsed_ms=%.1f", request_id, request.method, path, response.status_code, elapsed_ms)
     return response
 
 

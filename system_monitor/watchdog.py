@@ -16,6 +16,7 @@ from urllib.parse import urlparse
 import psutil
 
 from system_monitor.collector import atomic_json
+from system_monitor.logging_utils import configure_agent_logging, dated_process_log
 
 
 def process_alive(pid: int | None) -> bool:
@@ -67,7 +68,7 @@ class HardwareWatchdog:
             return {"status": "missing", "pid": None, "lastSampleAt": None, "lastError": None}
 
     def _start_collector(self) -> None:
-        log_path = self.root / "runtime/logs/hardware_collector_process.log"
+        log_path = dated_process_log(self.root / "runtime/logs", "hardware_collector_process")
         log_path.parent.mkdir(parents=True, exist_ok=True)
         stream = log_path.open("a", encoding="utf-8")
         self.collector = subprocess.Popen([sys.executable, "-m", "system_monitor.collector", "--root", str(self.root)], cwd=self.root, stdin=subprocess.DEVNULL, stdout=stream, stderr=subprocess.STDOUT, creationflags=detached_flags(), close_fds=True, start_new_session=os.name != "nt")
@@ -109,7 +110,7 @@ class HardwareWatchdog:
         return {"status": "missing", "pid": None, "startedAt": None, "lastHeartbeatAt": None, "currentJobId": None, "lastError": None}
 
     def _start_indexer(self) -> None:
-        log_path = self.root / "runtime/logs/indexer_process.log"
+        log_path = dated_process_log(self.root / "runtime/logs", "indexer_process")
         log_path.parent.mkdir(parents=True, exist_ok=True)
         stream = log_path.open("a", encoding="utf-8")
         self.indexer = subprocess.Popen([sys.executable, "-m", "system_monitor.indexer", "--root", str(self.root)], cwd=self.root, stdin=subprocess.DEVNULL, stdout=stream, stderr=subprocess.STDOUT, creationflags=detached_flags(), close_fds=True, start_new_session=os.name != "nt")
@@ -131,7 +132,7 @@ class HardwareWatchdog:
         return {"status": "missing", "pid": None, "startedAt": None, "lastHeartbeatAt": None, "currentJobId": None, "lastError": None}
 
     def _start_fetcher(self) -> None:
-        log_path = self.root / "runtime/logs/fetcher_process.log"
+        log_path = dated_process_log(self.root / "runtime/logs", "fetcher_process")
         log_path.parent.mkdir(parents=True, exist_ok=True)
         stream = log_path.open("a", encoding="utf-8")
         self.fetcher = subprocess.Popen([sys.executable, "-m", "system_monitor.fetcher", "--root", str(self.root)], cwd=self.root, stdin=subprocess.DEVNULL, stdout=stream, stderr=subprocess.STDOUT, creationflags=detached_flags(), close_fds=True, start_new_session=os.name != "nt")
@@ -290,7 +291,7 @@ def handler_for(watchdog: HardwareWatchdog):
 def main() -> int:
     parser = argparse.ArgumentParser(); parser.add_argument("--root", type=Path, required=True); args = parser.parse_args()
     (args.root / "runtime/logs").mkdir(parents=True, exist_ok=True)
-    logging.basicConfig(filename=args.root / "runtime/logs/hardware_watchdog.log", level=logging.INFO, encoding="utf-8", format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
+    configure_agent_logging(args.root / "runtime/logs/hardware_watchdog.log", retention_days=60)
     watchdog = HardwareWatchdog(args.root)
     server = ThreadingHTTPServer(("127.0.0.1", 8766), handler_for(watchdog)); server.timeout = 1
     threading.Thread(target=watchdog.loop, daemon=True).start()

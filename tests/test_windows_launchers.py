@@ -51,3 +51,4 @@ def test_python_launcher_does_not_open_a_browser() -> None:
     assert "import webbrowser" not in script
     assert "webbrowser.open" not in script
     assert "open_browser_when_ready" not in script
+    assert '"--no-access-log"' in script

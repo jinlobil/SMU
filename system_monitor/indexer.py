@@ -15,6 +15,7 @@ from urllib.parse import parse_qs, urlparse
 
 from backend.services.indexing import IndexService
 from system_monitor.collector import acquire_singleton, atomic_json
+from system_monitor.logging_utils import configure_agent_logging
 
 
 class IndexerAgent:
@@ -146,7 +147,7 @@ def handler_for(agent: IndexerAgent):
 def main() -> int:
     parser = argparse.ArgumentParser(); parser.add_argument("--root", type=Path, required=True); parser.add_argument("--port", type=int, default=8767); args = parser.parse_args()
     (args.root / "runtime/logs").mkdir(parents=True, exist_ok=True)
-    logging.basicConfig(filename=args.root / "runtime/logs/indexer.log", level=logging.INFO, encoding="utf-8", format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
+    configure_agent_logging(args.root / "runtime/logs/indexer.log", retention_days=60)
     singleton = acquire_singleton(args.root / "runtime/indexer/indexer.lock")
     if singleton is None:
         logging.info("Indexer already running; duplicate process exiting")

@@ -1,4 +1,5 @@
 import datetime as dt
+import logging
 import shutil
 import subprocess
 import sys
@@ -7,18 +8,34 @@ import time
 import urllib.request
 from pathlib import Path
 
+from system_monitor.logging_utils import daily_file_handler
+
 
 ROOT = Path(__file__).resolve().parent
 LOG_DIR = ROOT / "runtime" / "logs"
 LAUNCH_LOG = LOG_DIR / "launcher.log"
+launcher_log = logging.getLogger("smu.launcher")
+launcher_log.setLevel(logging.INFO)
+launcher_log.propagate = False
+
+
+def configure_launcher_log() -> None:
+    expected = str(LAUNCH_LOG.resolve())
+    current = next((handler for handler in launcher_log.handlers if getattr(handler, "baseFilename", None) == expected), None)
+    if current is not None:
+        return
+    for handler in launcher_log.handlers:
+        handler.close()
+    launcher_log.handlers.clear()
+    launcher_log.addHandler(daily_file_handler(LAUNCH_LOG, retention_days=30))
 
 
 def write_line(message: str) -> None:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
+    configure_launcher_log()
     line = f"{dt.datetime.now().isoformat(timespec='seconds')} {message}"
     print(line, flush=True)
-    with LAUNCH_LOG.open("a", encoding="utf-8") as stream:
-        stream.write(line + "\n")
+    launcher_log.info(message)
 
 
 def relay_output(name: str, process: subprocess.Popen[str]) -> None:
@@ -75,7 +92,7 @@ def main() -> int:
 
         backend = start_process(
             "backend",
-            [sys.executable, "-m", "uvicorn", "backend.app:app", "--host", "127.0.0.1", "--port", "8765"],
+            [sys.executable, "-m", "uvicorn", "backend.app:app", "--host", "127.0.0.1", "--port", "8765", "--no-access-log"],
             ROOT,
         )
         processes.append(("backend", backend))

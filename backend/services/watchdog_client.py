@@ -9,6 +9,7 @@ import urllib.error
 import urllib.request
 from datetime import date
 from pathlib import Path
+from system_monitor.logging_utils import dated_process_log
 
 
 class WatchdogManager:
@@ -17,7 +18,22 @@ class WatchdogManager:
         self.url = f"http://127.0.0.1:{port}"
         self.stop = threading.Event()
         self.lock = threading.Lock()
+        self.job_states: dict[str, str] = {}
         self.log = logging.getLogger("smu.web.watchdog_manager")
+        self.job_events = logging.getLogger("smu.job.events")
+
+    def _report_job_state(self, job: dict | None, kind: str) -> dict | None:
+        if not job or not job.get("id"):
+            return job
+        job_id, status = str(job["id"]), str(job.get("status", "unknown"))
+        if self.job_states.get(job_id) == status:
+            return job
+        self.job_states[job_id] = status
+        if status == "failed":
+            self.job_events.warning("%s job failed job_id=%s", kind, job_id)
+        elif status in {"queued", "running", "completed"}:
+            self.job_events.info("%s job %s job_id=%s", kind, status, job_id)
+        return job
 
     def request(self, path: str, method: str = "GET", timeout: float = 2) -> dict:
         request = urllib.request.Request(self.url + path, method=method)
@@ -31,7 +47,7 @@ class WatchdogManager:
             return {"watchdog": {"status": "missing"}, "collector": {"status": "unknown"}, "fetcher": {"status": "unknown"}, "indexer": {"status": "unknown"}}
 
     def _spawn(self) -> None:
-        log_path = self.root / "runtime/logs/hardware_watchdog_process.log"
+        log_path = dated_process_log(self.root / "runtime/logs", "hardware_watchdog_process")
         log_path.parent.mkdir(parents=True, exist_ok=True)
         stream = log_path.open("a", encoding="utf-8")
         flags = 0
@@ -83,10 +99,10 @@ class WatchdogManager:
         query = f"targets={','.join(targets)}"
         if start is not None and end is not None: query += f"&start={start.isoformat()}&end={end.isoformat()}"
         if chain_index: query += "&chain_index=1"
-        return self.request(f"/fetcher/jobs?{query}", "POST", timeout=20)
+        return self._report_job_state(self.request(f"/fetcher/jobs?{query}", "POST", timeout=20), "Fetcher")
 
     def fetch_job(self, job_id: str) -> dict | None:
-        try: return self.request(f"/fetcher/jobs/{job_id}", timeout=10)
+        try: return self._report_job_state(self.request(f"/fetcher/jobs/{job_id}", timeout=10), "Fetcher")
         except urllib.error.HTTPError as exc:
             if exc.code == 404: return None
             raise
@@ -113,18 +129,18 @@ class WatchdogManager:
         elif force_full:
             path += "?force=1"
         try:
-            return self.request(path, "POST", timeout=20)
+            return self._report_job_state(self.request(path, "POST", timeout=20), "Indexer")
         except urllib.error.HTTPError as exc:
             # A watchdog from an older application version may still own the
             # fixed port after an update. Replace it once, then retry.
             if exc.code != 404:
                 raise
             self.restart_watchdog()
-            return self.request(path, "POST", timeout=20)
+            return self._report_job_state(self.request(path, "POST", timeout=20), "Indexer")
 
     def index_job(self, job_id: str) -> dict | None:
         try:
-            return self.request(f"/indexer/jobs/{job_id}", timeout=10)
+            return self._report_job_state(self.request(f"/indexer/jobs/{job_id}", timeout=10), "Indexer")
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
                 return None

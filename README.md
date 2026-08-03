@@ -18,6 +18,8 @@
 
 실행 중 출력은 화면과 `runtime/logs/launcher.log`에 동시에 저장됩니다. 백엔드에서 처리되지 않은 오류는 `runtime/logs/web_errors.log`에 요청 ID와 함께 저장됩니다. 실행 프로세스가 비정상 종료되면 실행 스크립트는 오류 경로를 표시하고 터미널을 즉시 닫지 않습니다.
 
+로그는 매일 자정에 날짜별 파일로 분리됩니다. 예를 들어 전날 Backend 로그는 `web_app.log.YYYY-MM-DD`로 보관됩니다. 일반·Launcher·Collector 로그는 30일, Backend 오류·Watchdog·Fetcher·Indexer 로그는 60~90일 보존한 뒤 자동 정리됩니다. 터미널은 경고·오류와 Job 시작/완료를 중심으로 표시하고, 일반 INFO 기록은 `web_app.log`에 남깁니다.
+
 ### 정상 실행 시 확인할 내용
 
 1. 명령 프롬프트에 `Starting backend`와 `Backend ready`가 먼저 표시된 뒤 `Starting frontend`가 표시됩니다.

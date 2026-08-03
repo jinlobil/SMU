@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import psutil
+from system_monitor.logging_utils import configure_agent_logging
 
 
 def acquire_singleton(path: Path):
@@ -113,7 +114,7 @@ def main() -> int:
     parser.add_argument("--root", type=Path, required=True)
     args = parser.parse_args()
     (args.root / "runtime/logs").mkdir(parents=True, exist_ok=True)
-    logging.basicConfig(filename=args.root / "runtime/logs/hardware_collector.log", level=logging.INFO, encoding="utf-8", format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
+    configure_agent_logging(args.root / "runtime/logs/hardware_collector.log", retention_days=30)
     singleton = acquire_singleton(args.root / "runtime/system_metrics/collector.lock")
     if singleton is None:
         logging.info("Collector already running; duplicate process exiting")
