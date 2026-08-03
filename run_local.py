@@ -5,7 +5,6 @@ import sys
 import threading
 import time
 import urllib.request
-import webbrowser
 from pathlib import Path
 
 
@@ -60,15 +59,6 @@ def wait_for_service(url: str, process: subprocess.Popen[str], name: str, attemp
     return False
 
 
-def open_browser_when_ready(frontend: subprocess.Popen[str]) -> None:
-    """Open the UI only after both the backend and Vite are accepting requests."""
-    url = "http://127.0.0.1:5173"
-    if wait_for_service(url, frontend, "frontend"):
-        webbrowser.open(url)
-    else:
-        write_line(f"WARNING Frontend did not become ready within 30 seconds: {url}")
-
-
 def hold_terminal() -> None:
     message = f"오류 내용이 저장되었습니다: {LAUNCH_LOG}"
     write_line(message)
@@ -98,8 +88,7 @@ def main() -> int:
         processes.append(("frontend", frontend))
         write_line(f"Launcher log: {LAUNCH_LOG}")
         write_line(f"Backend error log: {LOG_DIR / 'web_errors.log'}")
-        write_line("Starting SMU local web. The browser will open when it is ready.")
-        threading.Thread(target=open_browser_when_ready, args=(frontend,), daemon=True).start()
+        write_line("Starting SMU local web. Open http://127.0.0.1:5173 in a browser when needed.")
 
         while True:
             for name, process in processes:
