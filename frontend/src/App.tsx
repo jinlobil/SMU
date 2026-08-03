@@ -24,8 +24,8 @@ const particles = Array.from({ length: 36 }, (_, index) => index);
 
 export function App() {
   const [health, setHealth] = useState<"loading" | "ok" | "error">("loading");
-  const [activeMenu, setActiveMenu] = useState("Asset");
-  const [view, setView] = useState<View>("endpoint");
+  const [activeMenu, setActiveMenu] = useState("Dashboard");
+  const [view, setView] = useState<View>("dashboard");
   const [detectionFilter, setDetectionFilter] = useState<DetectionFilter | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const sidebarCloseTimer = useRef<number | null>(null);

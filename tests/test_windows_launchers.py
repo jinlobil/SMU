@@ -13,6 +13,7 @@ def test_start_launcher_uses_explicit_virtualenv_python() -> None:
     assert "bootstrap.log" in script
     assert 'import fastapi,psutil,uvicorn' in script
     assert "pause" in script.lower()
+    assert "browser will open" not in script.lower()
     assert all(byte < 128 for byte in raw)
     assert b"\r\n" in raw
 
@@ -42,3 +43,11 @@ def test_stop_monitor_launcher_only_targets_monitor_modules() -> None:
     assert all(byte < 128 for byte in raw)
     assert b"\r\n" in raw
     assert b"\n" not in raw.replace(b"\r\n", b"")
+
+
+def test_python_launcher_does_not_open_a_browser() -> None:
+    script = (ROOT / "run_local.py").read_text(encoding="utf-8")
+
+    assert "import webbrowser" not in script
+    assert "webbrowser.open" not in script
+    assert "open_browser_when_ready" not in script

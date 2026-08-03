@@ -7,7 +7,7 @@
 1. Python 3와 Node.js LTS를 설치합니다.
 2. `start_local.bat`을 더블클릭합니다.
 3. 첫 실행이면 Python 가상환경과 필요한 패키지를 자동으로 설치합니다.
-4. 정상적으로 준비되면 `http://127.0.0.1:5173`이 브라우저에서 자동으로 열립니다.
+4. 정상적으로 준비되면 필요할 때 브라우저에서 `http://127.0.0.1:5173`을 엽니다. 로컬 런처는 브라우저를 자동으로 열지 않습니다.
 
 설치만 다시 실행하려면 `setup_local.bat`을 사용합니다. 설치 상세 출력은 `runtime/logs/setup.log`에 저장됩니다.
 
@@ -22,7 +22,7 @@
 
 1. 명령 프롬프트에 `Starting backend`와 `Backend ready`가 먼저 표시된 뒤 `Starting frontend`가 표시됩니다.
 2. `Frontend ready: http://127.0.0.1:5173`이 표시됩니다.
-3. 브라우저가 자동으로 열리고 `Python 백엔드 연결 완료`가 표시됩니다.
+3. 필요할 때 `http://127.0.0.1:5173`을 열면 사이드바 하단에 `백엔드 연결됨`이 표시됩니다.
 4. `http://127.0.0.1:8765/api/health`에 접속하면 `status`가 `ok`로 표시됩니다.
 
 Python의 `>>>`만 표시된다면 정상 실행이 아닙니다. Windows CMD가 UTF-8 BAT 내용을 잘못 해석하는 경우를 방지하기 위해 실행 BAT는 ASCII와 Windows CRLF 형식만 사용합니다. 반드시 새 `start_local.bat`을 실행하고, 계속 발생하면 `runtime/logs/bootstrap.log`와 명령 프롬프트 화면을 전달해주세요.

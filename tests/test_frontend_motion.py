@@ -210,3 +210,14 @@ def test_content_management_uses_config_navigation_and_theme_forms():
     assert 'className="integration-card content-rule-card"' in page
     assert 'className="integration-actions"' in page
     assert ".content-filter-row input:focus" not in styles
+
+
+def test_app_starts_on_dashboard_and_config_links_share_subnav_hover():
+    app = (ROOT / "frontend/src/App.tsx").read_text(encoding="utf-8")
+    styles = (ROOT / "frontend/src/styles.css").read_text(encoding="utf-8")
+    launcher = (ROOT / "run_local.py").read_text(encoding="utf-8")
+    assert 'useState("Dashboard")' in app
+    assert 'useState<View>("dashboard")' in app
+    assert ".subnav button:hover,.subnav a:hover" in styles
+    assert "import webbrowser" not in launcher
+    assert "webbrowser.open" not in launcher

@@ -24,7 +24,7 @@ if errorlevel 1 goto failed
 
 :launch
 echo Starting backend and frontend...
-echo The browser will open at http://127.0.0.1:5173 when ready.
+echo Open http://127.0.0.1:5173 in a browser when needed.
 echo.
 "%~dp0.venv\Scripts\python.exe" "%~dp0run_local.py"
 if errorlevel 1 goto failed
