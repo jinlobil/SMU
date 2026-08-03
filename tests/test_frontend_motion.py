@@ -205,4 +205,8 @@ def test_content_management_uses_config_navigation_and_theme_forms():
     assert "Sensitive Files" in page and "Sensitive Sites" in page
     assert "/api/config/content/" in page
     assert "실제" not in page
-    assert ".content-filter-row input:focus" in styles
+    assert 'className="source-filters exception-tabs"' in page
+    assert 'className="condition-list exception-condition-list"' in page
+    assert 'className="integration-card content-rule-card"' in page
+    assert 'className="integration-actions"' in page
+    assert ".content-filter-row input:focus" not in styles
