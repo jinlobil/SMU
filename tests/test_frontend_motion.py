@@ -197,6 +197,16 @@ def test_config_process_monitor_includes_fetcher():
     assert 'restartMonitor("fetcher")' in page
 
 
+def test_config_restores_an_active_job_after_page_navigation():
+    page = (ROOT / "frontend/src/pages/ConfigPage.tsx").read_text(encoding="utf-8")
+
+    assert 'const activeConfigJobKey="smu.config.activeJob"' in page
+    assert "localStorage.setItem(activeConfigJobKey" in page
+    assert "localStorage.getItem(activeConfigJobKey)" in page
+    assert "진행 중인 작업 상태 확인 중" in page
+    assert "jobPollGeneration.current+=1" in page
+
+
 def test_content_management_uses_config_navigation_and_theme_forms():
     app = (ROOT / "frontend/src/App.tsx").read_text(encoding="utf-8")
     page = (ROOT / "frontend/src/pages/ContentManagementPage.tsx").read_text(encoding="utf-8")
