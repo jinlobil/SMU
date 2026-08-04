@@ -13,7 +13,7 @@ echo.
 if not exist "%~dp0run_local.py" goto missing_launcher
 if not exist "%~dp0.venv\Scripts\python.exe" goto run_setup
 if not exist "%~dp0frontend\node_modules" goto run_setup
-"%~dp0.venv\Scripts\python.exe" -c "import fastapi,uvicorn" >nul 2>&1
+"%~dp0.venv\Scripts\python.exe" -c "import fastapi,psutil,uvicorn" >nul 2>&1
 if errorlevel 1 goto run_setup
 goto launch
 
@@ -24,7 +24,7 @@ if errorlevel 1 goto failed
 
 :launch
 echo Starting backend and frontend...
-echo The browser will open at http://127.0.0.1:5173 when ready.
+echo Open http://127.0.0.1:5173 in a browser when needed.
 echo.
 "%~dp0.venv\Scripts\python.exe" "%~dp0run_local.py"
 if errorlevel 1 goto failed
