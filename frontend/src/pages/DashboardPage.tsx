@@ -18,6 +18,9 @@ const emptyTotals = Object.fromEntries(Object.keys(colors).map((name) => [name, 
 const emptyTrend = { dates: [] as string[], series: Object.fromEntries(Object.keys(colors).map((name) => [name, []])) as Record<string, number[]> };
 let dashboardSnapshot: DashboardSnapshot | null = null;
 const summaryTitles: Record<string, string> = { detection: "Detection - XDR Summary", xdr: "Email - XDR Summary", inbound: "Inbound Mail Summary", file: "File Summary" };
+const quickRanges = [1, 7, 15, 30];
+const dateSpanDays = (rangeStart: string, rangeEnd: string) => { if (!rangeStart || !rangeEnd) return null; const startDate = new Date(`${rangeStart}T00:00:00Z`), endDate = new Date(`${rangeEnd}T00:00:00Z`); if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) return null; return Math.floor((endDate.getTime() - startDate.getTime()) / 86400000) + 1; };
+const quickStart = (anchor: string, days: number) => { const value = new Date(`${anchor}T00:00:00Z`); value.setUTCDate(value.getUTCDate() - days + 1); return value.toISOString().slice(0, 10); };
 
 function LoadingText({ label }: { label: string }) { return <p className="dashboard-loading-inline">{label} 불러오는 중...</p>; }
 function Ranking({ title, rows, loading, onSelect }: { title: string; rows: Pair[]; loading?: boolean; onSelect?: (name: string) => void }) { return <article className="dash-card ranking"><h2>{title}</h2>{loading ? <LoadingText label={title} /> : rows.length === 0 ? <p>집계 데이터 없음</p> : <ol>{rows.map(([name, count]) => <li key={name} className={onSelect ? "clickable" : ""} onClick={() => onSelect?.(name)}><span title={name}>{name}</span><b>({count.toLocaleString()})</b></li>)}</ol>}</article>; }
@@ -57,6 +60,8 @@ export function DashboardPage({ onOpenDetection }: { onOpenDetection: (filter: {
   const [visible, setVisible] = useState(Object.keys(colors));
   const activeRange = snapshot.mixTrend?.range || snapshot.assets?.range || snapshot.topDetection?.range || { start, end };
   const anyLoading = Object.values(loading).some(Boolean);
+  const selectedDays = dateSpanDays(start, end);
+  const rangeError = selectedDays !== null && (selectedDays < 1 || selectedDays > 30) ? "Dashboard는 최대 30일까지 조회할 수 있습니다." : "";
   const topRows = Math.max(snapshot.topDetection?.top.hosts.length || 0, snapshot.topDetection?.top.rules.length || 0, snapshot.topMail?.top.senders.length || 0);
   const summaries = useMemo(() => ({
     detection: snapshot.topDetection?.summary.detection,
@@ -70,7 +75,18 @@ export function DashboardPage({ onOpenDetection }: { onOpenDetection: (filter: {
     setEnd((current) => current || range.end);
   };
 
+  const applyQuickRange = (days: number) => {
+    const anchor = end || activeRange.end || new Date().toISOString().slice(0, 10);
+    setStart(quickStart(anchor, days));
+    setEnd(anchor);
+  };
+
   const load = (rangeStart = "", rangeEnd = "") => {
+    const days = dateSpanDays(rangeStart, rangeEnd);
+    if (days !== null && (days < 1 || days > 30)) {
+      setErrors([]);
+      return;
+    }
     const groups: [GroupName, string, Promise<DashboardSnapshot[GroupName]>][] = [
       ["assets", "/api/dashboard/assets", fetchGroup<AssetsData>("/api/dashboard/assets", rangeStart, rangeEnd)],
       ["mixTrend", "/api/dashboard/mix-trend", fetchGroup<MixTrendData>("/api/dashboard/mix-trend", rangeStart, rangeEnd)],
@@ -107,8 +123,8 @@ export function DashboardPage({ onOpenDetection }: { onOpenDetection: (filter: {
     load();
   }, []);
 
-  return <><header className="topbar dash-topbar"><div><p className="breadcrumb">Overview / Dashboard</p><h1>Dashboard</h1></div><div className="dashboard-range"><span>{activeRange.start && activeRange.end ? `${activeRange.start} ~ ${activeRange.end}` : "조회 기간 준비 중"}</span><input type="date" value={start} onChange={(event) => setStart(event.target.value)} /><b>~</b><input type="date" value={end} onChange={(event) => setEnd(event.target.value)} /><button disabled={anyLoading || !start || !end} onClick={() => load(start, end)}>{anyLoading ? "조회 중" : "적용"}</button><i>{anyLoading ? "일부 카드 조회 중" : snapshot.mixTrend?.cache === "pre-aggregated" ? "미리 집계됨" : "인덱스 조회"}</i></div></header>
-    {errors.length > 0 && <div className="error-banner">Dashboard 조회 오류: {errors.join(" / ")}</div>}
+  return <><header className="topbar dash-topbar"><div><p className="breadcrumb">Overview / Dashboard</p><h1>Dashboard</h1></div><div className="dashboard-range"><span>{activeRange.start && activeRange.end ? `${activeRange.start} ~ ${activeRange.end}` : "조회 기간 준비 중"}</span><input type="date" value={start} onChange={(event) => setStart(event.target.value)} /><b>~</b><input type="date" value={end} onChange={(event) => setEnd(event.target.value)} /><div className="dashboard-quick-ranges">{quickRanges.map((days) => <button key={days} type="button" disabled={anyLoading} onClick={() => applyQuickRange(days)}>{days}일</button>)}</div><button disabled={anyLoading || !start || !end || Boolean(rangeError)} onClick={() => load(start, end)}>{anyLoading ? "조회 중" : "적용"}</button><i>{anyLoading ? "일부 카드 조회 중" : snapshot.mixTrend?.cache === "pre-aggregated" ? "미리 집계됨" : "인덱스 조회"}</i>{rangeError && <small className="dashboard-range-error">{rangeError}</small>}</div></header>
+    {errors.length > 0 && !rangeError && <div className="error-banner">Dashboard 조회 오류: {errors.join(" / ")}</div>}
     <section className="dash-top"><div className="asset-stack"><article className="dash-card asset-card"><h2>Endpoints</h2>{loading.assets || !snapshot.assets ? <LoadingText label="Endpoints" /> : <dl><div><dt>PC</dt><dd>{snapshot.assets.endpoints.pc.toLocaleString()} 대</dd></div><div><dt>Server</dt><dd>{snapshot.assets.endpoints.server.toLocaleString()} 대</dd></div></dl>}</article><article className="dash-card asset-card"><h2>Organization</h2>{loading.assets || !snapshot.assets ? <LoadingText label="Organization" /> : <dl><div><dt>조직부서</dt><dd>{snapshot.assets.organization.departments.toLocaleString()} 개</dd></div><div><dt>사원 수</dt><dd>{snapshot.assets.organization.users.toLocaleString()} 명</dd></div></dl>}</article></div><Ranking title="Top File" rows={snapshot.topDetection?.top.files || []} loading={loading.topDetection || !snapshot.topDetection} onSelect={(query) => onOpenDetection({ field: "file", query, start: activeRange.start, end: activeRange.end })} /><Ranking title="Top Hash" rows={snapshot.topDetection?.top.hashes || []} loading={loading.topDetection || !snapshot.topDetection} onSelect={(query) => onOpenDetection({ field: "sha256", query, start: activeRange.start, end: activeRange.end })} /><SecurityMix totals={snapshot.mixTrend?.totals || emptyTotals} loading={loading.mixTrend || !snapshot.mixTrend}/></section>
     <section className="dash-card threat-card"><h2>Threat Trend</h2><div className="threat-content">{loading.mixTrend || !snapshot.mixTrend ? <LoadingText label="Threat Trend" /> : <TrendChart data={{ trend: snapshot.mixTrend.trend || emptyTrend }} visible={visible} setVisible={setVisible}/>}<aside className="comparison"><header><span/><span>전일 대비</span><span>전월 대비</span></header>{Object.entries(snapshot.mixTrend?.comparison || {}).map(([name, values]) => <div key={name}><strong>{name}</strong><Percent value={values.day} /><Percent value={values.month} /></div>)}</aside></div></section>
     <section className="dash-bottom"><article className="dash-card top-analysis"><h2>Top Analysis</h2>{loading.topDetection || loading.topMail ? <LoadingText label="Top Analysis" /> : <table><thead><tr><th>Top Hostname</th><th>Top Rule</th><th>Top Sender IP</th></tr></thead><tbody>{Array.from({ length: topRows }, (_, index) => <tr key={index}><td>{snapshot.topDetection?.top.hosts[index] ? `${snapshot.topDetection.top.hosts[index][0]} (${snapshot.topDetection.top.hosts[index][1]})` : ""}</td><td>{snapshot.topDetection?.top.rules[index] ? `${snapshot.topDetection.top.rules[index][0]} (${snapshot.topDetection.top.rules[index][1]})` : ""}</td><td>{snapshot.topMail?.top.senders[index] ? `${snapshot.topMail.top.senders[index][0]} (${snapshot.topMail.top.senders[index][1]})` : ""}</td></tr>)}</tbody></table>}</article><div className="summary-grid">{Object.entries(summaryTitles).map(([name]) => <Summary key={name} name={name} rows={summaries[name as keyof typeof summaries]} loading={(name === "file" ? loading.topFile : name === "detection" ? loading.topDetection : loading.topMail) || !summaries[name as keyof typeof summaries]} />)}</div></section>

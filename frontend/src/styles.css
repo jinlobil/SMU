@@ -244,3 +244,8 @@ nav button.active { position:relative; overflow:hidden; animation:nav-neon 2.4s 
 @media (max-width:750px) { .content-modal .content-form { grid-template-columns:1fr; }.content-modal .content-keyword-input { grid-column:auto; } }
 
 .dashboard-loading-inline { margin: 12px 0 0; color: var(--muted); font-weight: 800; }
+.dashboard-range { position: relative; }
+.dashboard-quick-ranges { display:flex; gap:6px; }
+.dashboard-quick-ranges button { min-width:42px; height:34px; padding:0 10px; color:var(--text); border:1px solid var(--card-border); border-radius:9px; background:rgba(255,255,255,.05); font-size:11px; font-weight:900; }
+.dashboard-quick-ranges button:hover:not(:disabled) { border-color:var(--accent); color:var(--accent); }
+.dashboard-range-error { position:absolute; right:0; bottom:-22px; color:#ff9a62; font-size:11px; font-weight:900; white-space:nowrap; }

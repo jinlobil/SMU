@@ -82,3 +82,17 @@ def test_dashboard_group_methods_share_indexed_range_and_payloads(tmp_path: Path
     assert service.top_detection()["top"]["files"] == [("tool.exe", 1)]
     assert service.top_mail()["top"]["senders"] == []
     assert service.top_file()["summary"]["file"][0] == ["Top Machine", []]
+
+
+def test_dashboard_warms_quick_ranges_into_preaggregate_cache(tmp_path: Path) -> None:
+    write_index_row(tmp_path, "detections", "2026-08-05 12:22:52", {"time": "2026-08-05 12:22:52", "hostname": "PC-2", "file": "tool.exe", "sha256": "def", "rule": "Rule-A"})
+
+    service = DashboardService(tmp_path)
+    service.warm_quick_ranges()
+
+    cache = json.loads((tmp_path / "cache/index/web_dashboard_summary.json").read_text(encoding="utf-8"))
+    assert "2026-08-05:2026-08-05" in cache
+    assert "2026-07-30:2026-08-05" in cache
+    assert "2026-07-22:2026-08-05" in cache
+    assert "2026-07-07:2026-08-05" in cache
+    assert service.summary(date(2026, 7, 7), date(2026, 8, 5))["cache"] == "pre-aggregated"

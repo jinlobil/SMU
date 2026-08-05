@@ -67,8 +67,23 @@ class DashboardService:
         return end - timedelta(days=6), end
 
     def warm_default(self) -> None:
-        start, end = self.default_range()
-        self.summary(start, end)
+        self.warm_quick_ranges()
+
+    def warm_quick_ranges(self) -> None:
+        bounds = self.event_index.date_bounds()
+        end = bounds[1] if bounds else date.today()
+        for days in (1, 7, 15, 30):
+            start = end - timedelta(days=days - 1)
+            self.summary(start, end, refresh=True)
+
+    def _normalize_range(self, start: date | None, end: date | None) -> tuple[date, date]:
+        if start is None or end is None:
+            start, end = self.default_range()
+        if start > end:
+            raise ValueError("start date must not be after end date")
+        if (end - start).days > 30:
+            raise ValueError("dashboard range must not exceed 31 days")
+        return start, end
 
     def _normalize_range(self, start: date | None, end: date | None) -> tuple[date, date]:
         if start is None or end is None:

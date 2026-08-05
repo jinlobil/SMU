@@ -110,6 +110,10 @@ def test_dashboard_uses_grouped_async_index_api_calls():
     assert "topMail" in dashboard
     assert "topFile" in dashboard
     assert "dashboard-loading-inline" in dashboard
+    assert "quickRanges = [1, 7, 15, 30]" in dashboard
+    assert "dateSpanDays" in dashboard
+    assert "Boolean(rangeError)" in dashboard
+    assert "Dashboard는 최대 30일까지 조회할 수 있습니다." in dashboard
 
 def test_sidebar_opens_only_from_title_region_and_uses_full_width_content():
     app = (ROOT / "frontend/src/App.tsx").read_text(encoding="utf-8")
