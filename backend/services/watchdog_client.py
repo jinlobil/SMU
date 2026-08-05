@@ -7,6 +7,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from urllib.parse import urlencode
 from datetime import date
 from pathlib import Path
 from system_monitor.logging_utils import dated_process_log
@@ -44,7 +45,7 @@ class WatchdogManager:
         try:
             return self.request("/status")
         except (OSError, urllib.error.URLError, json.JSONDecodeError):
-            return {"watchdog": {"status": "missing"}, "collector": {"status": "unknown"}, "fetcher": {"status": "unknown"}, "indexer": {"status": "unknown"}}
+            return {"watchdog": {"status": "missing"}, "collector": {"status": "unknown"}, "fetcher": {"status": "unknown"}, "indexer": {"status": "unknown"}, "laborer": {"status": "unknown"}}
 
     def _spawn(self) -> None:
         log_path = dated_process_log(self.root / "runtime/logs", "hardware_watchdog_process")
@@ -58,11 +59,11 @@ class WatchdogManager:
 
     def ensure(self) -> bool:
         current = self.status()
-        if current["watchdog"].get("status") == "running" and "indexer" in current and "fetcher" in current:
+        if current["watchdog"].get("status") == "running" and "indexer" in current and "fetcher" in current and "laborer" in current:
             return True
         with self.lock:
             current = self.status()
-            if current["watchdog"].get("status") == "running" and ("indexer" not in current or "fetcher" not in current):
+            if current["watchdog"].get("status") == "running" and ("indexer" not in current or "fetcher" not in current or "laborer" not in current):
                 # Replace a detached watchdog left by a previous application
                 # version so the current Fetcher/Indexer control API is available.
                 try:
@@ -94,6 +95,10 @@ class WatchdogManager:
         self.ensure()
         return self.request("/fetcher/restart", "POST", timeout=20)
 
+    def restart_laborer(self) -> dict:
+        self.ensure()
+        return self.request("/laborer/restart", "POST", timeout=20)
+
     def start_fetch_job(self, targets: list[str], start: date | None = None, end: date | None = None, chain_index: bool = False) -> dict:
         self.ensure()
         query = f"targets={','.join(targets)}"
@@ -121,13 +126,15 @@ class WatchdogManager:
             time.sleep(0.8)
         raise RuntimeError("Fetcher wait interrupted")
 
-    def start_index_job(self, start: date | None = None, end: date | None = None, force_full: bool = False) -> dict:
+    def start_index_job(self, start: date | None = None, end: date | None = None, force_full: bool = False, scope: str | None = None) -> dict:
         self.ensure()
         path = "/indexer/jobs"
         if start is not None and end is not None:
             path += f"?start={start.isoformat()}&end={end.isoformat()}"
         elif force_full:
             path += "?force=1"
+        if scope:
+            path += ("&" if "?" in path else "?") + f"scope={scope}"
         try:
             return self._report_job_state(self.request(path, "POST", timeout=20), "Indexer")
         except urllib.error.HTTPError as exc:
@@ -141,6 +148,20 @@ class WatchdogManager:
     def index_job(self, job_id: str) -> dict | None:
         try:
             return self._report_job_state(self.request(f"/indexer/jobs/{job_id}", timeout=10), "Indexer")
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                return None
+            raise
+
+
+    def start_laborer_job(self, job_type: str, **payload) -> dict:
+        self.ensure()
+        query = urlencode({"type": job_type, **{key: value for key, value in payload.items() if value is not None}})
+        return self._report_job_state(self.request(f"/laborer/jobs?{query}", "POST", timeout=20), "Laborer")
+
+    def laborer_job(self, job_id: str) -> dict | None:
+        try:
+            return self._report_job_state(self.request(f"/laborer/jobs/{job_id}", timeout=10), "Laborer")
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
                 return None

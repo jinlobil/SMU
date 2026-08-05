@@ -41,7 +41,8 @@ def test_system_info_uses_hover_tooltips_without_bottom_time_labels():
     assert "<title>" not in page
     assert 'textAnchor="middle"' not in page
     assert 'href="#config-general"' in app
-    assert 'href="#config-system-info"' in app
+    assert 'href="#config-data-management"' in app
+    assert 'href="#config-system-management"' in app
     assert ">General</button>" not in app
     assert ">System-Info</button>" not in app
     assert ">General</button>" not in config
@@ -193,8 +194,11 @@ def test_threat_trend_uses_wide_slow_bubble_layer():
 def test_config_process_monitor_includes_fetcher():
     page = (ROOT / "frontend/src/pages/ConfigPage.tsx").read_text(encoding="utf-8")
     assert "fetcher:MonitorProcess" in page
+    assert "laborer:MonitorProcess" in page
     assert "Fetcher 재시작" in page
+    assert "Laborer 재시작" in page
     assert 'restartMonitor("fetcher")' in page
+    assert 'restartMonitor("laborer")' in page
 
 
 def test_config_restores_an_active_job_after_page_navigation():
@@ -240,3 +244,18 @@ def test_config_exposes_friendly_index_vacuum_controls() -> None:
     assert "Detection 리스트 인덱스 DB" in page
     assert "/api/jobs/index/vacuum" in page
     assert "timeline_index.db VACUUM" not in page
+    assert "민감 콘텐츠 전체 캐시 인덱싱" in page
+    assert "타임라인 전체 캐시 인덱싱" in page
+    assert "Detection 리스트 전체 캐시 인덱싱" in page
+    assert "Dashboard 사전 집계 전체 갱신" in page
+
+
+def test_config_general_and_data_management_cards_are_split() -> None:
+    app = (ROOT / "frontend/src/App.tsx").read_text(encoding="utf-8")
+    page = (ROOT / "frontend/src/pages/ConfigPage.tsx").read_text(encoding="utf-8")
+
+    assert '<ConfigPage section="general" />' in app
+    assert '<ConfigPage section="data" />' in app
+    assert '{section==="data"&&<>' in page
+    assert '{section==="general"&&<>' in page
+    assert '<h1>{section==="data"?"Data Management":"Config"}</h1>' in page

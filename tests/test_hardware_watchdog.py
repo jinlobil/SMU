@@ -116,12 +116,15 @@ def test_watchdog_snapshot_includes_indexer_status(tmp_path, monkeypatch):
     watchdog = HardwareWatchdog(tmp_path)
     watchdog.indexer_restart_count = 3
     monkeypatch.setattr(watchdog, "read_indexer", lambda: {"status": "running", "pid": 9876})
+    watchdog.laborer_restart_count = 2
     monkeypatch.setattr(watchdog, "read_fetcher", lambda: {"status": "running", "pid": 8765})
+    monkeypatch.setattr(watchdog, "read_laborer", lambda: {"status": "running", "pid": 7654})
 
     snapshot = watchdog.snapshot()
 
     assert snapshot["indexer"] == {"status": "running", "pid": 9876, "restartCount": 3}
     assert snapshot["fetcher"] == {"status": "running", "pid": 8765, "restartCount": 0}
+    assert snapshot["laborer"] == {"status": "running", "pid": 7654, "restartCount": 2}
 
 
 def test_watchdog_checks_fetcher_health_before_submitting_job(tmp_path, monkeypatch):
@@ -133,3 +136,14 @@ def test_watchdog_checks_fetcher_health_before_submitting_job(tmp_path, monkeypa
 
     assert result["id"] == "fetch-1"
     assert calls == ["health", ("/jobs?targets=detections", "POST")]
+
+
+def test_watchdog_checks_laborer_health_before_submitting_job(tmp_path, monkeypatch):
+    watchdog = HardwareWatchdog(tmp_path); calls = []
+    monkeypatch.setattr(watchdog, "ensure_laborer", lambda: calls.append("health") or {"status": "running"})
+    monkeypatch.setattr(watchdog, "_laborer_request", lambda path, method="GET", timeout=3: calls.append((path, method)) or {"id": "labor-1"})
+
+    result = watchdog.submit_laborer_job("type=vacuum&target=all")
+
+    assert result["id"] == "labor-1"
+    assert calls == ["health", ("/jobs?type=vacuum&target=all", "POST")]

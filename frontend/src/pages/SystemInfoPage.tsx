@@ -71,13 +71,13 @@ export function SystemInfoPage() {
         historyResponse = await fetch(`/api/system-info/history?${fallbackQuery}`); historyPayload = await historyResponse.json();
       }
       const currentResponse = await currentRequest, currentPayload = await currentResponse.json();
-      if (!currentResponse.ok || !historyResponse.ok) throw new Error(historyPayload?.error?.message || "System-Info 조회 실패");
+      if (!currentResponse.ok || !historyResponse.ok) throw new Error(historyPayload?.error?.message || "System Management 조회 실패");
       const history = historyPayload.data as History; setCurrent(currentPayload.data); setPoints(history.points); setResolvedBucket(history.bucket); setError("");
     } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
   }, [applied, query]);
   useEffect(() => { void load(); const timer = window.setInterval(() => void load(), 5000); return () => window.clearInterval(timer); }, [load]);
   const collecting = current?.collector.running && !current.collector.lastError;
-  return <><header className="topbar system-info-topbar"><div><p className="breadcrumb">System / Config / System-Info</p><h1>System-Info</h1></div><i className={collecting ? "collecting" : "collector-error"}>{collecting ? `5초 수집 중 · ${current?.sample ? new Date(current.sample.timestamp).toLocaleTimeString("ko-KR") : "준비 중"}` : "수집 상태 확인"}</i></header>
+  return <><header className="topbar system-info-topbar"><div><p className="breadcrumb">System / Config / System Management</p><h1>System Management</h1></div><i className={collecting ? "collecting" : "collector-error"}>{collecting ? `5초 수집 중 · ${current?.sample ? new Date(current.sample.timestamp).toLocaleTimeString("ko-KR") : "준비 중"}` : "수집 상태 확인"}</i></header>
     <section className="system-time-controls"><div className="system-presets">{presets.map(preset => <button key={preset.label} onClick={() => applyPreset(preset.minutes)}>{preset.label}</button>)}</div><div className="system-custom-range"><input aria-label="시작 시간" type="datetime-local" value={start} onChange={event => setStart(event.target.value)}/><b>~</b><input aria-label="종료 시간" type="datetime-local" value={end} onChange={event => setEnd(event.target.value)}/><select aria-label="표시 단위" value={bucket} onChange={event => setBucket(event.target.value as Bucket)}>{Object.entries(bucketLabels).filter(([value]) => value !== "second").map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select><button disabled={!start || !end || start >= end} onClick={() => setApplied({ start, end, bucket })}>적용</button><span>표시: {bucketLabels[resolvedBucket]} · 최대 600포인트</span></div></section>
     <section className="system-info">{error && <div className="error-banner">{error}</div>}<MetricChart title="CPU Usage" kind="cpu" points={points} current={current?.sample || null}/><MetricChart title="Memory Usage" kind="memory" points={points} current={current?.sample || null}/></section>
   </>;

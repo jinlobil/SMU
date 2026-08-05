@@ -214,6 +214,15 @@ def restart_system_info_fetcher() -> dict:
     return {"success": True, "data": data}
 
 
+@app.post("/api/system-info/laborer/restart", status_code=202)
+def restart_system_info_laborer() -> dict:
+    try:
+        data = watchdog_manager.restart_laborer()
+    except Exception as exc:
+        return error_response(str(uuid.uuid4()), "LABORER_RESTART_FAILED", str(exc), 503)
+    return {"success": True, "data": data}
+
+
 @app.get("/api/dashboard")
 def get_dashboard(start: date | None = None, end: date | None = None, refresh: bool = False) -> dict:
     try:
@@ -466,7 +475,7 @@ def start_report(payload: dict = Body()) -> dict:
             raise ValueError("start date must not be after end date")
     except ValueError as exc:
         return error_response(str(uuid.uuid4()), "INVALID_REPORT_RANGE", str(exc), 400)
-    return {"success": True, "data": job_manager.create("security-report", lambda progress: report_service.build(start, end, progress))}
+    return {"success": True, "data": watchdog_manager.start_laborer_job("report", start=start.isoformat(), end=end.isoformat())}
 
 
 @app.get("/api/config/report/{filename}")
@@ -477,30 +486,39 @@ def download_report(filename: str):
     return FileResponse(path, filename=path.name, media_type="application/pdf")
 
 
-@app.get("/api/config/export/{kind}")
 def export_config_data(kind: str, start: date, end: date):
     if start > end:
         return error_response(str(uuid.uuid4()), "INVALID_EXPORT_RANGE", "start date must not be after end date", 400)
-    collectors = {
-        "detections": detection_service._events,
-        "xdr": email_security_service._collect_xdr,
-        "inbound": email_security_service._collect_inbound,
-        "outbound": transfer_service._collect_outbound,
-        "dlp": transfer_service._collect_dlp,
-    }
+    collectors = {"detections": detection_service._events, "xdr": email_security_service._collect_xdr, "inbound": email_security_service._collect_inbound, "outbound": transfer_service._collect_outbound, "dlp": transfer_service._collect_dlp}
     collector = collectors.get(kind)
     if collector is None:
         return error_response(str(uuid.uuid4()), "INVALID_EXPORT", "Unknown export type", 400)
     rows = [row for _record_id, _raw, row in collector(start, end)[0]]
-    export_dir = PROJECT_ROOT / "exports"
-    export_dir.mkdir(parents=True, exist_ok=True)
+    export_dir = PROJECT_ROOT / "exports"; export_dir.mkdir(parents=True, exist_ok=True)
     path = export_dir / f"{kind}_{start}_{end}.xlsx"
     write_xlsx(path, rows)
-    return FileResponse(
-        path,
-        filename=path.name,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
+    return FileResponse(path, filename=path.name, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
+@app.post("/api/jobs/export", status_code=202)
+def start_export(payload: dict = Body()) -> dict:
+    kind = str(payload.get("kind", ""))
+    if kind not in {"detections", "xdr", "inbound", "outbound", "dlp"}:
+        return error_response(str(uuid.uuid4()), "INVALID_EXPORT", "Unknown export type", 400)
+    try:
+        start, end = date.fromisoformat(str(payload.get("start", ""))), date.fromisoformat(str(payload.get("end", "")))
+        if start > end: raise ValueError("start date must not be after end date")
+    except ValueError as exc:
+        return error_response(str(uuid.uuid4()), "INVALID_EXPORT_RANGE", str(exc), 400)
+    return {"success": True, "data": watchdog_manager.start_laborer_job("export", kind=kind, start=start.isoformat(), end=end.isoformat())}
+
+
+@app.get("/api/config/export/file/{filename}")
+def download_export_file(filename: str):
+    path = PROJECT_ROOT / "exports" / Path(filename).name
+    if not path.exists():
+        return error_response(str(uuid.uuid4()), "EXPORT_NOT_FOUND", "Export not found", 404)
+    return FileResponse(path, filename=path.name, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
 @app.get("/api/endpoints")
@@ -580,7 +598,7 @@ def start_refresh(target: str, payload: dict | None = Body(default=None)) -> dic
 @app.post("/api/jobs/index", status_code=202)
 def rebuild_indexes(payload: dict | None = Body(default=None)) -> dict:
     try:
-        data = watchdog_manager.start_index_job(force_full=bool((payload or {}).get("force", False)))
+        data = watchdog_manager.start_index_job(force_full=bool((payload or {}).get("force", False)), scope=(payload or {}).get("scope"))
     except Exception as exc:
         return error_response(str(uuid.uuid4()), "INDEXER_JOB_FAILED", str(exc), 503)
     return {"success": True, "data": data}
@@ -591,8 +609,7 @@ def rebuild_indexes(payload: dict | None = Body(default=None)) -> dict:
 @app.post("/api/jobs/index/vacuum", status_code=202)
 def vacuum_indexes(payload: dict | None = Body(default=None)) -> dict:
     target = str((payload or {}).get("target", "all"))
-    task = lambda progress: index_maintenance_service.vacuum(target, progress)
-    return {"success": True, "data": job_manager.create("index-vacuum", task)}
+    return {"success": True, "data": watchdog_manager.start_laborer_job("vacuum", target=target)}
 
 
 @app.get("/api/jobs/{job_id}")
@@ -600,7 +617,7 @@ def get_job(job_id: str) -> dict:
     job = job_manager.get(job_id)
     if job is None:
         try:
-            job = watchdog_manager.fetch_job(job_id) or watchdog_manager.index_job(job_id)
+            job = watchdog_manager.fetch_job(job_id) or watchdog_manager.index_job(job_id) or watchdog_manager.laborer_job(job_id)
         except Exception as exc:
             return error_response(str(uuid.uuid4()), "INDEXER_STATUS_FAILED", str(exc), 503)
     if job is None:

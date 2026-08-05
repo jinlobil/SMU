@@ -106,17 +106,17 @@ Dashboard, Detection, Forensics, Response, Asset, Lab, Config의 모든 상위 �
 
 - Config 하위의 Integration Management는 Sophos Central, 장비별 Sophos Firewall, MailScreen, DLP 연동을 카드로 표시하며 우측 상단의 연동 추가 모달에서 기존 `env/*_env.txt` 설정을 안전하게 생성·수정할 수 있습니다. 저장된 비밀번호와 Client Secret은 브라우저로 반환하지 않으며 카드에서 연결 테스트와 설정 삭제를 수행할 수 있습니다.
 - Config 하위의 Exception Management는 부서 예외와 사용자 예외를 목록으로 관리합니다. 사용자 예외는 `PREFIX\account` 형식의 전체 사용자 식별값만 허용하며, 솔루션 Raw Cache는 수정하지 않고 Endpoint·Detection·Email·DLP·Timeline·Sensitive·Layout·XLSX·PDF의 2차 가공 결과 마지막에 적용합니다. 기존 `env/Report_exception_List.txt`는 최초 로드 시 `auto` 부서 규칙으로 마이그레이션됩니다.
-- Config 하위 메뉴의 `System-Info`는 `psutil`로 시스템 CPU와 메모리를 5초마다 수집해 `runtime/system_metrics/YYYY-MM-DD.jsonl`에 일별 저장하고, 선택 기간을 초·분·시간·일 단위로 집계해 그래프로 표시합니다.
-- Hardware Collector는 Backend와 독립된 프로세스로 수집을 계속하며, Hardware Watchdog은 heartbeat를 확인해 Collector 장애 시 자동 재시작합니다. General의 Process Monitor 카드에서 두 프로세스 상태를 확인하고 수동 재시작할 수 있습니다.
-- 로컬 서버를 먼저 종료한 뒤 `stop_system_monitor.bat`을 실행하면 남아 있는 Hardware Watchdog과 Collector 프로세스를 모두 종료할 수 있습니다.
-- Detection/Inbound 기간 새로고침과 Endpoint/Organization/User 새로고침 Job을 실행하고 진행 상태를 표시합니다.
+- Config 하위 메뉴의 `System Management`는 `psutil`로 시스템 CPU와 메모리를 5초마다 수집해 `runtime/system_metrics/YYYY-MM-DD.jsonl`에 일별 저장하고, 선택 기간을 초·분·시간·일 단위로 집계해 그래프로 표시합니다.
+- Collector, Fetcher, Indexer, Laborer는 Backend와 독립된 프로세스로 수집·인덱싱·DB 최적화·Export/Report 작업을 수행하며, Watchdog은 heartbeat를 확인해 장애 시 자동 재시작합니다. General의 Process Monitor 카드에서 각 프로세스 상태를 확인하고 수동 재시작할 수 있습니다.
+- 로컬 서버를 먼저 종료한 뒤 `stop_system_monitor.bat`을 실행하면 남아 있는 Watchdog, Collector, Fetcher, Indexer, Laborer 프로세스를 모두 종료할 수 있습니다.
+- Data Management 하위 화면에서 Detection/Inbound 기간 새로고침과 Endpoint/Organization/User 새로고침 Job을 실행하고 진행 상태를 표시합니다.
 - Auto Refresh Scheduler는 사용 여부, 1~1440분 간격, Detection(Endpoint+Email XDR)/Inbound/DLP/Outbound/Endpoint/Organization/User 대상을 저장하며 백엔드에서 화면과 독립적으로 실행됩니다.
 - Detection/Inbound/DLP/Outbound 기간, Endpoint/Organization/User 개별 수집을 지원합니다.
 - 스케줄 실행이 끝나면 Sensitive/Timeline SQLite 인덱스와 Dashboard 기본 기간 사전 집계를 자동 재생성하며, Next Run/Last Run/결과와 즉시 실행 기능을 제공합니다.
 - Cache Status에는 소스별 마지막 파일 수정 시각을, Scheduler에는 대상별 마지막 실행 시각과 성공/실패를 표시합니다.
 - Scheduler 실행 중에는 현재 수집 대상과 세부 메시지, 인덱싱 단계를 실시간 표시하며 Cache Status도 3초마다 갱신합니다.
 - SQLite 인덱스는 Windows에서 파일이 열려 있어도 동작하도록 파일 교체 대신 트랜잭션 테이블 교체를 사용하고 기존 비웹 테이블을 보존합니다.
-- Endpoint, Organization, Detection, Inbound, Outbound, DLP 캐시의 파일 수·용량과 App/Timeline/Dashboard 인덱스 상태를 확인하고 `스마트 캐시 데이터 인덱싱`으로 검색용 SQLite 인덱스를 원자적으로 재생성합니다.
+- Data Management에서 Endpoint, Organization, Detection, Inbound, Outbound, DLP 캐시의 파일 수·용량과 App/Timeline/Dashboard 인덱스 상태를 확인하고 `스마트 캐시 데이터 인덱싱`, 범위별 전체 인덱싱, Index Optimization VACUUM 작업을 실행합니다.
 - Dashboard 추세 그래프는 네온 곡선·영역 애니메이션을 사용하며 날짜 열에 마우스를 올리면 해당 날짜의 Detection, Email-XDR, Inbound, Outbound, File 카운트를 한 번에 표시합니다.
 - 런처 및 백엔드 오류/요청 로그 경로를 화면에서 바로 확인할 수 있습니다.
 - 선택 기간의 Detection, Email-XDR, Inbound, Outbound, DLP 결과를 XLSX로 내보내며 브라우저 다운로드 폴더와 서버 `exports` 폴더에 저장합니다.

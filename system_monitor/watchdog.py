@@ -55,9 +55,11 @@ class HardwareWatchdog:
         self.collector: subprocess.Popen | None = None
         self.indexer: subprocess.Popen | None = None
         self.fetcher: subprocess.Popen | None = None
+        self.laborer: subprocess.Popen | None = None
         self.restart_count = 0
         self.indexer_restart_count = 0
         self.fetcher_restart_count = 0
+        self.laborer_restart_count = 0
         self.started_at = datetime.now().astimezone().isoformat(timespec="seconds")
         self.log = logging.getLogger("smu.hardware.watchdog")
 
@@ -120,6 +122,54 @@ class HardwareWatchdog:
         request = urllib.request.Request("http://127.0.0.1:8768" + path, method=method)
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.loads(response.read())
+
+    def _laborer_request(self, path: str, method: str = "GET", timeout: float = 3) -> dict:
+        request = urllib.request.Request("http://127.0.0.1:8769" + path, method=method)
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read())
+
+    def read_laborer(self) -> dict:
+        try:
+            status = self._laborer_request("/health")
+            heartbeat = datetime.fromisoformat(status.get("lastHeartbeatAt") or "")
+            if (datetime.now().astimezone() - heartbeat.astimezone()).total_seconds() <= 10:
+                return status
+        except (OSError, ValueError, json.JSONDecodeError, urllib.error.URLError):
+            pass
+        return {"status": "missing", "pid": None, "startedAt": None, "lastHeartbeatAt": None, "currentJobId": None, "lastError": None}
+
+    def _start_laborer(self) -> None:
+        log_path = dated_process_log(self.root / "runtime/logs", "laborer_process")
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        stream = log_path.open("a", encoding="utf-8")
+        self.laborer = subprocess.Popen([sys.executable, "-m", "system_monitor.laborer", "--root", str(self.root)], cwd=self.root, stdin=subprocess.DEVNULL, stdout=stream, stderr=subprocess.STDOUT, creationflags=detached_flags(), close_fds=True, start_new_session=os.name != "nt")
+        self.log.info("Laborer started pid=%s", self.laborer.pid)
+
+    def ensure_laborer(self) -> dict:
+        status = self.read_laborer()
+        if status.get("status") == "running": return status
+        self.log.warning("Laborer health check failed; restarting before command")
+        return self.restart_laborer()["status"]
+
+    def restart_laborer(self) -> dict:
+        with self.lock:
+            status = self.read_laborer()
+            if status.get("pid"): terminate_process(int(status["pid"]))
+            self._start_laborer(); self.laborer_restart_count += 1
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline:
+                status = self.read_laborer()
+                if status.get("status") == "running": return {"accepted": True, "pid": status.get("pid"), "status": status}
+                time.sleep(0.25)
+        raise RuntimeError("Laborer did not publish a healthy heartbeat")
+
+    def submit_laborer_job(self, query: str) -> dict:
+        self.ensure_laborer()
+        return self._laborer_request("/jobs" + (f"?{query}" if query else ""), "POST", timeout=10)
+
+    def laborer_job(self, job_id: str) -> dict:
+        self.ensure_laborer()
+        return self._laborer_request(f"/jobs/{job_id}", timeout=5)
 
     def read_fetcher(self) -> dict:
         try:
@@ -226,7 +276,8 @@ class HardwareWatchdog:
         collector = {**self.read_collector(), "restartCount": self.restart_count}
         indexer = {**self.read_indexer(), "restartCount": self.indexer_restart_count}
         fetcher = {**self.read_fetcher(), "restartCount": self.fetcher_restart_count}
-        return {"watchdog": {"status": "running", "pid": os.getpid(), "startedAt": self.started_at, "lastCheckAt": datetime.now().astimezone().isoformat(timespec="seconds"), "lastError": None}, "collector": collector, "fetcher": fetcher, "indexer": indexer}
+        laborer = {**self.read_laborer(), "restartCount": self.laborer_restart_count}
+        return {"watchdog": {"status": "running", "pid": os.getpid(), "startedAt": self.started_at, "lastCheckAt": datetime.now().astimezone().isoformat(timespec="seconds"), "lastError": None}, "collector": collector, "fetcher": fetcher, "indexer": indexer, "laborer": laborer}
 
     def loop(self) -> None:
         while not self.stop.is_set():
@@ -234,6 +285,7 @@ class HardwareWatchdog:
                 self.ensure_collector()
                 self.ensure_fetcher()
                 self.ensure_indexer()
+                self.ensure_laborer()
                 atomic_json(self.status_path, self.snapshot())
             except Exception:
                 self.log.exception("Watchdog check failed")
@@ -260,6 +312,10 @@ def handler_for(watchdog: HardwareWatchdog):
                 try: self._send(200, watchdog.fetch_job(self.path.removeprefix("/fetcher/jobs/")))
                 except urllib.error.HTTPError as exc: self._send(exc.code, {"error": "job not found"})
                 except Exception as exc: self._send(503, {"error": f"{type(exc).__name__}: {exc}"})
+            elif self.path.startswith("/laborer/jobs/"):
+                try: self._send(200, watchdog.laborer_job(self.path.removeprefix("/laborer/jobs/")))
+                except urllib.error.HTTPError as exc: self._send(exc.code, {"error": "job not found"})
+                except Exception as exc: self._send(503, {"error": f"{type(exc).__name__}: {exc}"})
             else: self._send(404, {"error": "not found"})
         def do_POST(self):
             if self.path == "/collector/restart":
@@ -271,6 +327,9 @@ def handler_for(watchdog: HardwareWatchdog):
             elif self.path == "/fetcher/restart":
                 try: self._send(202, watchdog.restart_fetcher())
                 except Exception as exc: self._send(503, {"accepted": False, "error": f"{type(exc).__name__}: {exc}"})
+            elif self.path == "/laborer/restart":
+                try: self._send(202, watchdog.restart_laborer())
+                except Exception as exc: self._send(503, {"accepted": False, "error": f"{type(exc).__name__}: {exc}"})
             elif self.path.startswith("/fetcher/completed"):
                 try:
                     job_id = (dict(item.split("=", 1) for item in urlparse(self.path).query.split("&") if "=" in item).get("job_id"))
@@ -281,6 +340,9 @@ def handler_for(watchdog: HardwareWatchdog):
                 except Exception as exc: self._send(503, {"accepted": False, "error": f"{type(exc).__name__}: {exc}"})
             elif self.path.startswith("/indexer/jobs"):
                 try: self._send(202, watchdog.submit_index_job(urlparse(self.path).query))
+                except Exception as exc: self._send(503, {"accepted": False, "error": f"{type(exc).__name__}: {exc}"})
+            elif self.path.startswith("/laborer/jobs"):
+                try: self._send(202, watchdog.submit_laborer_job(urlparse(self.path).query))
                 except Exception as exc: self._send(503, {"accepted": False, "error": f"{type(exc).__name__}: {exc}"})
             elif self.path == "/shutdown": self._send(202, {"accepted": True}); threading.Thread(target=watchdog.stop.set, daemon=True).start()
             else: self._send(404, {"error": "not found"})

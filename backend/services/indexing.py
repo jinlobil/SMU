@@ -57,6 +57,39 @@ class IndexService:
         self._save_manifest(self._source_snapshot())
         return {"sensitive": len(files) + len(sites), "timeline": len(events), "dashboard": True, "paths": [str(app_path), str(timeline_path)]}
 
+
+    def rebuild_scope(self, scope: str, progress: Callable[[str], None]) -> dict:
+        if scope == "app":
+            progress("민감 콘텐츠 인덱스 전체 재생성 시작")
+            files = self.sensitive.file_records({"DLP", "Outbound Mail"}, progress=progress)
+            sites = self.sensitive.site_records(progress=progress)
+            path = self._build_sensitive(files, sites, progress)
+            progress(f"민감 콘텐츠 인덱스 전체 재생성 완료 · {len(files)+len(sites):,}건")
+            return {"scope": "app", "sensitive": len(files)+len(sites), "paths": [str(path)]}
+        if scope == "timeline":
+            bounds = self.timeline.date_bounds()
+            progress(f"타임라인 인덱스 전체 재생성 시작 · {bounds[0]}~{bounds[1]}" if bounds else "타임라인 인덱스 원본 없음")
+            events = self.timeline.all_events(set(ALL_SOURCES), progress=progress)
+            path = self._build_timeline(events, progress)
+            progress(f"타임라인 인덱스 전체 재생성 완료 · {len(events):,}건")
+            return {"scope": "timeline", "timeline": len(events), "paths": [str(path)]}
+        if scope == "dashboard":
+            progress("Dashboard 사전 집계 전체 재생성 시작")
+            self.dashboard.warm_default()
+            progress("Dashboard 사전 집계 전체 재생성 완료")
+            return {"scope": "dashboard", "dashboard": True}
+        if scope == "events":
+            self.directory.mkdir(parents=True, exist_ok=True)
+            path = self.directory / "events_index.db"
+            progress("Detection 리스트 인덱스 DB 초기화 중")
+            with self._connect(path) as db:
+                db.execute("CREATE TABLE IF NOT EXISTS index_metadata (key TEXT PRIMARY KEY, value TEXT)")
+                db.execute("INSERT OR REPLACE INTO index_metadata VALUES ('mode','display-list-raw-detail')")
+                db.execute("INSERT OR REPLACE INTO index_metadata VALUES ('updated_at', datetime('now'))")
+            progress("Detection 리스트 인덱스 DB 준비 완료 · Raw 상세 참조형")
+            return {"scope": "events", "events": True, "paths": [str(path)]}
+        raise ValueError(f"지원하지 않는 인덱싱 범위입니다: {scope}")
+
     def rebuild_smart(self, progress: Callable[[str], None]) -> dict:
         """Scan all source metadata, but parse and replace only changed files."""
         self.directory.mkdir(parents=True, exist_ok=True)

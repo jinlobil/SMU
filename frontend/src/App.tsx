@@ -17,7 +17,7 @@ import { ExceptionManagementPage } from "./pages/ExceptionManagementPage";
 import { ContentManagementPage } from "./pages/ContentManagementPage";
 
 
-type View = "dashboard" | "endpoint" | "organization" | "detectionEndpoint" | "emailXdr" | "inbound" | "outbound" | "dlp" | "timeline" | "sensitiveFiles" | "sensitiveSites" | "firewall" | "easyQuery" | "layout" | "config" | "integrationManagement" | "exceptionManagement" | "contentManagement" | "systemInfo";
+type View = "dashboard" | "endpoint" | "organization" | "detectionEndpoint" | "emailXdr" | "inbound" | "outbound" | "dlp" | "timeline" | "sensitiveFiles" | "sensitiveSites" | "firewall" | "easyQuery" | "layout" | "config" | "dataManagement" | "integrationManagement" | "exceptionManagement" | "contentManagement" | "systemInfo";
 type DetectionFilter = { field: string; query: string; start?: string; end?: string };
 const menus = ["Dashboard", "Detection", "Forensics", "Response", "Asset", "Lab", "Config"];
 const particles = Array.from({ length: 36 }, (_, index) => index);
@@ -121,10 +121,11 @@ export function App() {
           {menu === "Lab" && activeMenu === "Lab" && <div className="subnav"><button className={view === "layout" ? "selected" : ""} onClick={() => setView("layout")}>Layout - User</button></div>}
           {menu === "Config" && activeMenu === "Config" && <div className="subnav">
             <a href="#config-general" className={view === "config" ? "selected" : ""} onClick={(event) => { event.preventDefault(); setView("config"); }}>General</a>
+            <a href="#config-data-management" className={view === "dataManagement" ? "selected" : ""} onClick={(event) => { event.preventDefault(); setView("dataManagement"); }}>Data Management</a>
             <a href="#config-integration-management" className={view === "integrationManagement" ? "selected" : ""} onClick={(event) => { event.preventDefault(); setView("integrationManagement"); }}>Integration Management</a>
             <a href="#config-exception-management" className={view === "exceptionManagement" ? "selected" : ""} onClick={(event) => { event.preventDefault(); setView("exceptionManagement"); }}>Exception Management</a>
             <a href="#config-content-management" className={view === "contentManagement" ? "selected" : ""} onClick={(event) => { event.preventDefault(); setView("contentManagement"); }}>Content Management</a>
-            <a href="#config-system-info" className={view === "systemInfo" ? "selected" : ""} onClick={(event) => { event.preventDefault(); setView("systemInfo"); }}>System-Info</a>
+            <a href="#config-system-management" className={view === "systemInfo" ? "selected" : ""} onClick={(event) => { event.preventDefault(); setView("systemInfo"); }}>System Management</a>
           </div>}
         </div>)}</nav>
         <div className={`connection ${health}`}><span className="connection-orb"/><svg className="connection-heartbeat" viewBox="0 0 92 22" aria-hidden="true"><polyline points="0,11 15,11 21,4 27,18 34,7 40,11 55,11 61,5 67,17 73,11 92,11"/></svg><b>{health === "ok" ? "백엔드 연결됨" : health === "error" ? "연결 오류" : "연결 확인 중"}</b></div>
@@ -144,7 +145,8 @@ export function App() {
         {view === "firewall" && <FirewallPage />}
         {view === "easyQuery" && <EasyQueryPage />}
         {view === "layout" && <LayoutPage />}
-        {view === "config" && <ConfigPage />}
+        {view === "config" && <ConfigPage section="general" />}
+        {view === "dataManagement" && <ConfigPage section="data" />}
         {view === "integrationManagement" && <IntegrationManagementPage />}
         {view === "exceptionManagement" && <ExceptionManagementPage />}
         {view === "contentManagement" && <ContentManagementPage />}
