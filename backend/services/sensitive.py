@@ -10,6 +10,7 @@ from typing import Any
 
 from backend.services.endpoints import load_json_list, normalize_key
 from backend.services.transfers import TransferService
+from backend.services.content import ContentService
 
 
 FILE_CATEGORIES = {
@@ -86,8 +87,15 @@ class SensitiveService:
     def __init__(self, project_root: Path):
         self.project_root = project_root
         self.transfers = TransferService(project_root)
-        self.file_categories = legacy_specs(project_root, "SENSITIVE_FILE_CATEGORY_SPECS", FILE_CATEGORIES)
-        self.site_categories = legacy_specs(project_root, "SENSITIVE_SITE_CATEGORY_SPECS", SITE_CATEGORIES)
+        self.content = ContentService(project_root)
+
+    @property
+    def file_categories(self) -> dict[str, list[str]]:
+        return self.content.specs("files")
+
+    @property
+    def site_categories(self) -> dict[str, list[str]]:
+        return self.content.specs("sites")
 
     @property
     def index_path(self) -> Path:
@@ -226,14 +234,14 @@ class SensitiveService:
                     pass
         return (min(dates), max(dates)) if dates else None
 
-    def _transfer_records(self, kind: str):
+    def _transfer_records(self, kind: str, start: date | None = None, end: date | None = None, progress=None):
         directory = self.transfers.dlp_dir if kind == "dlp" else self.transfers.outbound_dir
         paths = list(directory.glob("*")) if directory.exists() else []
-        bounds = self.bounds(paths)
+        bounds = (start, end) if start is not None and end is not None else self.bounds(paths)
         if bounds is None:
             return []
         collector = self.transfers._collect_dlp if kind == "dlp" else self.transfers._collect_outbound
-        return collector(*bounds)[0]
+        return collector(*bounds, progress=progress)[0]
 
     def _user_name_index(self) -> dict[str, str]:
         """Build the legacy-style login/e-mail/person ID to display-name map."""
@@ -275,13 +283,15 @@ class SensitiveService:
                     return mapped
         return str(fallback or next((alias for alias in aliases if alias), "None"))
 
-    def file_records(self, sources: set[str]) -> list[dict[str, Any]]:
+    def file_records(self, sources: set[str], start: date | None = None, end: date | None = None, progress=None) -> list[dict[str, Any]]:
         latest: dict[tuple[str, str, str, str], dict[str, Any]] = {}
         user_names = self._user_name_index()
         for source, kind in (("DLP", "dlp"), ("Outbound Mail", "outbound")):
             if source not in sources:
                 continue
-            for record_id, raw, row in self._transfer_records(kind):
+            records = self._transfer_records(kind) if start is None and end is None and progress is None else self._transfer_records(kind, start, end, progress)
+            if progress: progress(f"민감 파일 · {source} 원본 {len(records):,}건 분류 중")
+            for record_index, (record_id, raw, row) in enumerate(records, 1):
                 values = [row["source"]] if kind == "dlp" else extract_attachment_names(row["attachment"])
                 for value in values:
                     # A DLP row without a filename and a MailScreen row without
@@ -297,16 +307,21 @@ class SensitiveService:
                     raw_aliases = (raw.get("client_name"),) if kind == "dlp" else (row.get("senderEmail"), raw.get("sender_email"), raw.get("sender_user_id"), raw.get("sender"))
                     fallback_user = row["username"] if kind == "dlp" else row["senderName"]
                     user = self._display_user(user_names, fallback_user, *raw_aliases)
-                    item = {"id": f"file-{record_id}-{hashlib.sha1(name.encode()).hexdigest()[:8]}", "source": source, "name": name, "category": category, "keywords": hits, "user": user, "dept": row["dept"], "time": row["time"] if kind == "dlp" else row["date"], "path": value, "event": row["event"] if kind == "dlp" else row["sendResult"], "raw": raw}
+                    final = self.transfers.exception_service.finalize(principal=row.get("principal", ""), hostname=row.get("computer", ""), email=row.get("senderEmail", ""), user_name=user, department=row["dept"])
+                    item = {"id": f"file-{record_id}-{hashlib.sha1(name.encode()).hexdigest()[:8]}", "source": source, "sourceFile": row.get("_sourceFile", ""), "name": name, "category": category, "keywords": hits, "user": final["user"], "dept": final["dept"], "time": row["time"] if kind == "dlp" else row["date"], "path": value, "event": row["event"] if kind == "dlp" else row["sendResult"], "raw": raw}
                     key = (normalized_identity(source), normalized_identity(name), normalized_identity(item["dept"]), normalized_identity(item["user"]))
                     if key not in latest or str(item["time"]) > str(latest[key]["time"]):
                         latest[key] = item
+                if progress and record_index % 10000 == 0: progress(f"민감 파일 · {source} {record_index:,}/{len(records):,}건 처리 · 후보 {len(latest):,}건")
+            if progress: progress(f"민감 파일 · {source} 분류 완료 · 후보 {len(latest):,}건")
         return list(latest.values())
 
-    def site_records(self) -> list[dict[str, Any]]:
+    def site_records(self, start: date | None = None, end: date | None = None, progress=None) -> list[dict[str, Any]]:
         latest: dict[tuple[str, str, str, str], dict[str, Any]] = {}
         user_names = self._user_name_index()
-        for record_id, raw, row in self._transfer_records("dlp"):
+        records = self._transfer_records("dlp") if start is None and end is None and progress is None else self._transfer_records("dlp", start, end, progress)
+        if progress: progress(f"민감 사이트 · DLP 원본 {len(records):,}건에서 URL 추출 중")
+        for record_index, (record_id, raw, row) in enumerate(records, 1):
             text = " ".join([row["destination"], row["destinationDetail"], str(raw)])
             hosts = {match.group(1).lower().strip(".") for match in URL_PATTERN.finditer(text)}
             for host in hosts:
@@ -315,12 +330,15 @@ class SensitiveService:
                     continue
                 category, hits = classified
                 user = self._display_user(user_names, row["username"], raw.get("client_name"))
-                item = {"id": f"site-{record_id}-{hashlib.sha1(host.encode()).hexdigest()[:8]}", "source": "DLP", "site": host, "url": row["destination"], "category": category, "keywords": hits, "user": user, "dept": row["dept"], "time": row["time"], "machine": row["computer"], "event": row["event"], "raw": raw}
+                final = self.transfers.exception_service.finalize(principal=row.get("principal", ""), hostname=row["computer"], user_name=user, department=row["dept"])
+                item = {"id": f"site-{record_id}-{hashlib.sha1(host.encode()).hexdigest()[:8]}", "source": "DLP", "sourceFile": row.get("_sourceFile", ""), "site": host, "url": row["destination"], "category": category, "keywords": hits, "user": final["user"], "dept": final["dept"], "time": row["time"], "machine": row["computer"], "event": row["event"], "raw": raw}
                 # Match the desktop behavior: one latest row per
                 # source/site/department/user rather than one row per event.
                 key = ("dlp", normalized_identity(host), normalized_identity(item["dept"]), normalized_identity(item["user"]))
                 if key not in latest or str(item["time"]) > str(latest[key]["time"]):
                     latest[key] = item
+            if progress and record_index % 10000 == 0: progress(f"민감 사이트 · DLP {record_index:,}/{len(records):,}건 처리 · 후보 {len(latest):,}건")
+        if progress: progress(f"민감 사이트 분류 완료 · 후보 {len(latest):,}건")
         return list(latest.values())
 
     def query(self, kind: str, category: str, keyword: str, sources: set[str], offset: int, limit: int) -> dict[str, Any]:
