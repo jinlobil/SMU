@@ -6,6 +6,7 @@ from typing import Any, Callable
 
 from backend.services.detections import sensor_type
 from backend.services.endpoints import kst_time, load_json_list, normalize_key
+from backend.services.event_list_index import EventListIndex
 from backend.services.exceptions import ExceptionService
 
 
@@ -45,6 +46,7 @@ class EmailSecurityService:
         self.detection_dir = project_root / "cache" / "detections"
         self.email_dir = project_root / "cache" / "emails"
         self.exception_service = ExceptionService(project_root)
+        self.event_index = EventListIndex(project_root)
 
     @staticmethod
     def _files(directory: Path, start: date, end: date) -> list[Path]:
@@ -126,6 +128,10 @@ class EmailSecurityService:
         if kind not in collectors or start > end or direction not in {"asc", "desc"}: raise ValueError("Invalid email security query")
         collector, fields = collectors[kind]
         if sort not in fields: raise ValueError(f"Unsupported sort: {sort}")
+        indexed = self.event_index.list_records(kind, start, end, conditions, page, page_size, sort, direction, fields)
+        if indexed is not None:
+            return indexed
+
         records, files = collector(start, end); filtered = []
         for _record_id, raw, row in records:
             matches = True
