@@ -45,3 +45,12 @@ def test_force_full_job_is_explicit_and_separate_from_smart_job(tmp_path):
     assert smart["type"] == "smart-indexes"
     assert full["type"] == "rebuild-all-indexes"
     assert smart["id"] != full["id"]
+
+
+def test_indexer_accepts_fetch_job_incremental_source(tmp_path):
+    agent = IndexerAgent(tmp_path)
+
+    job = agent.submit(source_fetch_job="fetch-123")
+
+    assert job["type"] == "fetch-incremental-indexes"
+    assert job["sourceFetchJob"] == "fetch-123"

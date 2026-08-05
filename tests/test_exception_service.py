@@ -6,6 +6,7 @@ import pytest
 from backend.services.detections import DetectionService
 from backend.services.endpoints import EndpointService
 from backend.services.exceptions import ExceptionService
+from backend.services.indexing import IndexService
 
 
 def write_json(path, payload):
@@ -116,6 +117,7 @@ def test_detection_prefers_hostname_principal_over_os_generated_via_login(tmp_pa
         "principal": r"DEVICE-01\account",
         "displayName": "표시 사용자",
     })
+    IndexService(tmp_path).rebuild_scope("events", lambda _message: None)
 
     result = DetectionService(tmp_path).list_detections(
         date(2026, 7, 31), date(2026, 7, 31), []

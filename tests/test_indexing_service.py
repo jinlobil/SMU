@@ -197,3 +197,32 @@ def test_incremental_rebuild_updates_detection_list_index_for_scheduler(tmp_path
     assert len(rows) == 1
     assert rows[0][0] == "new"
     assert "NEW" in rows[0][1]
+
+
+def test_fetch_job_incremental_rebuild_updates_only_refreshed_event_file(tmp_path):
+    dlp_path = tmp_path / "cache/dlp/2026-08-05.jsonl"
+    dlp_path.parent.mkdir(parents=True)
+    dlp_path.write_text(json.dumps({"event_id": "Content Threat Blocked", "eventtimelocal": "2026-08-05 12:22:47", "machine_name": "PC", "filename": "latest.txt"}) + "\n", encoding="utf-8")
+    fetch_db = tmp_path / "runtime/fetcher/jobs.db"
+    fetch_db.parent.mkdir(parents=True)
+    fetch_result = {"dlp": {"status": "SUCCESS", "data": {"mode": "daily-rollover", "finalizedDays": [], "today": {"days": [{"date": "2026-08-05", "path": str(dlp_path)}], "rows": 1}}}, "failures": {}}
+    with sqlite3.connect(fetch_db) as db:
+        db.execute("CREATE TABLE jobs (id TEXT PRIMARY KEY, status TEXT, result TEXT, error TEXT)")
+        db.execute("INSERT INTO jobs VALUES (?,?,?,?)", ("fetch-1", "completed", json.dumps(fetch_result), None))
+    service = IndexService(tmp_path)
+    service._build_sensitive([], [])
+    service._build_timeline([])
+    service._build_events_index([
+        {"kind": "dlp", "recordId": "old", "eventTime": "2026-08-05 11:33:39", "rowJson": json.dumps({"id": "old", "time": "2026-08-05 11:33:39", "source": "old.txt"}), "searchText": "old", "sourceFile": str(dlp_path.resolve())}
+    ])
+    service.timeline.events_between = lambda start, end, sources, progress: []
+    service.sensitive.file_records = lambda sources, start, end, progress: []
+    service.sensitive.site_records = lambda start, end, progress: []
+
+    result = service.rebuild_from_fetch_job("fetch-1", lambda _message: None)
+
+    assert result["events"] == 1
+    with sqlite3.connect(tmp_path / "cache/index/events_index.db") as db:
+        row = db.execute("SELECT event_time, row_json FROM event_list_rows WHERE kind='dlp'").fetchone()
+    assert row[0] == "2026-08-05 12:22:47"
+    assert "latest.txt" in row[1]

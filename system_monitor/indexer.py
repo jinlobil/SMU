@@ -45,24 +45,25 @@ class IndexerAgent:
 
     def _initialize_database(self) -> None:
         with self._connect() as db:
-            db.execute("CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, type TEXT NOT NULL, status TEXT NOT NULL, message TEXT NOT NULL, result TEXT, error TEXT, created_at TEXT NOT NULL, started_at TEXT, finished_at TEXT, range_start TEXT, range_end TEXT, scope TEXT)")
+            db.execute("CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, type TEXT NOT NULL, status TEXT NOT NULL, message TEXT NOT NULL, result TEXT, error TEXT, created_at TEXT NOT NULL, started_at TEXT, finished_at TEXT, range_start TEXT, range_end TEXT, scope TEXT, source_fetch_job TEXT)")
             columns = {row[1] for row in db.execute("PRAGMA table_info(jobs)")}
             if "range_start" not in columns: db.execute("ALTER TABLE jobs ADD COLUMN range_start TEXT")
             if "range_end" not in columns: db.execute("ALTER TABLE jobs ADD COLUMN range_end TEXT")
             if "scope" not in columns: db.execute("ALTER TABLE jobs ADD COLUMN scope TEXT")
+            if "source_fetch_job" not in columns: db.execute("ALTER TABLE jobs ADD COLUMN source_fetch_job TEXT")
             # A terminated process cannot still own a running job. Requeue it so
             # the fresh agent rebuilds from the transactional staging tables.
             db.execute("UPDATE jobs SET status='queued', message='Indexer 재시작 후 작업 복구 중', started_at=NULL WHERE status='running'")
 
-    def submit(self, range_start: str | None = None, range_end: str | None = None, force_full: bool = False, scope: str | None = None) -> dict:
-        job_type = f"rebuild-{scope}-indexes" if scope else "rebuild-all-indexes" if force_full else "incremental-indexes" if range_start and range_end else "smart-indexes"
+    def submit(self, range_start: str | None = None, range_end: str | None = None, force_full: bool = False, scope: str | None = None, source_fetch_job: str | None = None) -> dict:
+        job_type = "fetch-incremental-indexes" if source_fetch_job else f"rebuild-{scope}-indexes" if scope else "rebuild-all-indexes" if force_full else "incremental-indexes" if range_start and range_end else "smart-indexes"
         with self.job_lock:
             with self._connect() as db:
-                active = db.execute("SELECT * FROM jobs WHERE status IN ('queued','running') AND type=? AND COALESCE(range_start,'')=COALESCE(?,'') AND COALESCE(range_end,'')=COALESCE(?,'') AND COALESCE(scope,'')=COALESCE(?,'') ORDER BY created_at LIMIT 1", (job_type, range_start, range_end, scope)).fetchone()
+                active = db.execute("SELECT * FROM jobs WHERE status IN ('queued','running') AND type=? AND COALESCE(range_start,'')=COALESCE(?,'') AND COALESCE(range_end,'')=COALESCE(?,'') AND COALESCE(scope,'')=COALESCE(?,'') AND COALESCE(source_fetch_job,'')=COALESCE(?,'') ORDER BY created_at LIMIT 1", (job_type, range_start, range_end, scope, source_fetch_job)).fetchone()
                 if active:
                     return self._public(active)
                 job_id = str(uuid.uuid4())
-                db.execute("INSERT INTO jobs (id,type,status,message,result,error,created_at,started_at,finished_at,range_start,range_end,scope) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", (job_id, job_type, "queued", "대기 중", None, None, self._now(), None, None, range_start, range_end, scope))
+                db.execute("INSERT INTO jobs (id,type,status,message,result,error,created_at,started_at,finished_at,range_start,range_end,scope,source_fetch_job) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", (job_id, job_type, "queued", "대기 중", None, None, self._now(), None, None, range_start, range_end, scope, source_fetch_job))
                 row = db.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
         self.wake.set()
         return self._public(row)
@@ -74,7 +75,7 @@ class IndexerAgent:
 
     @staticmethod
     def _public(row: sqlite3.Row) -> dict:
-        return {"id": row["id"], "type": row["type"], "status": row["status"], "message": row["message"], "result": json.loads(row["result"]) if row["result"] else None, "error": json.loads(row["error"]) if row["error"] else None, "createdAt": row["created_at"], "startedAt": row["started_at"], "finishedAt": row["finished_at"]}
+        return {"id": row["id"], "type": row["type"], "status": row["status"], "message": row["message"], "result": json.loads(row["result"]) if row["result"] else None, "error": json.loads(row["error"]) if row["error"] else None, "createdAt": row["created_at"], "startedAt": row["started_at"], "finishedAt": row["finished_at"], "sourceFetchJob": row["source_fetch_job"] if "source_fetch_job" in row.keys() else None}
 
     def _update(self, job_id: str, **fields) -> None:
         names = {"status": "status", "message": "message", "result": "result", "error": "error", "started_at": "started_at", "finished_at": "finished_at"}
@@ -111,7 +112,8 @@ class IndexerAgent:
                 # rules are loaded without restarting the persistent agent.
                 service = IndexService(self.root)
                 callback = lambda message: self._update(job_id, message=str(message))
-                if row["scope"]: result = service.rebuild_scope(row["scope"], callback)
+                if row["source_fetch_job"]: result = service.rebuild_from_fetch_job(row["source_fetch_job"], callback)
+                elif row["scope"]: result = service.rebuild_scope(row["scope"], callback)
                 elif row["type"] == "rebuild-all-indexes": result = service.rebuild_all(callback)
                 elif row["range_start"] and row["range_end"]: result = service.rebuild_range(date.fromisoformat(row["range_start"]), date.fromisoformat(row["range_end"]), callback)
                 else: result = service.rebuild_smart(callback)
@@ -139,7 +141,7 @@ def handler_for(agent: IndexerAgent):
             parsed = urlparse(self.path)
             if parsed.path == "/jobs":
                 query = parse_qs(parsed.query)
-                self._send(202, agent.submit((query.get("start") or [None])[0], (query.get("end") or [None])[0], (query.get("force") or ["0"])[0] == "1", (query.get("scope") or [None])[0])); return
+                self._send(202, agent.submit((query.get("start") or [None])[0], (query.get("end") or [None])[0], (query.get("force") or ["0"])[0] == "1", (query.get("scope") or [None])[0], (query.get("source_fetch_job") or [None])[0])); return
             if self.path == "/shutdown": agent.stop.set(); self._send(202, {"accepted": True}); return
             self._send(404, {"error": "not found"})
         def log_message(self, *_): pass

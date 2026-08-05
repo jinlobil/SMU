@@ -128,25 +128,8 @@ class EmailSecurityService:
         if kind not in collectors or start > end or direction not in {"asc", "desc"}: raise ValueError("Invalid email security query")
         collector, fields = collectors[kind]
         if sort not in fields: raise ValueError(f"Unsupported sort: {sort}")
-        indexed = self.event_index.list_records(kind, start, end, conditions, page, page_size, sort, direction, fields)
-        if indexed is not None:
-            return indexed
-
-        records, files = collector(start, end); filtered = []
-        for _record_id, raw, row in records:
-            matches = True
-            for condition in conditions:
-                query = str(condition.get("query", "")).strip().lower(); field = condition.get("field", "all")
-                if not query: continue
-                if field == "rawData": value = json.dumps(raw, ensure_ascii=False).lower()
-                elif field == "all": value = " ".join(row[name] for name in fields).lower()
-                elif field in fields: value = row[field].lower()
-                else: raise ValueError(f"Unsupported search field: {field}")
-                if query not in value: matches = False; break
-            if matches: filtered.append(row)
-        filtered.sort(key=lambda row: (row[sort].lower(), row["id"]), reverse=direction == "desc")
-        total = len(filtered); offset = (page - 1) * page_size
-        return {"items": filtered[offset:offset + page_size], "pagination": {"page": page, "pageSize": page_size, "total": total, "totalPages": max(1, (total + page_size - 1) // page_size)}, "source": {"files": files}}
+        indexed = self.event_index.require_records(kind, start, end, conditions, page, page_size, sort, direction, fields)
+        return indexed
 
     def get_record(self, kind: str, record_id: str, start: date, end: date) -> dict[str, Any] | None:
         collector = self._collect_xdr if kind == "xdr" else self._collect_inbound if kind == "inbound" else None

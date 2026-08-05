@@ -5,6 +5,10 @@ from pathlib import Path
 from typing import Any
 
 
+class EventListIndexUnavailable(ValueError):
+    pass
+
+
 class EventListIndex:
     """Read display-list rows from cache/index/events_index.db without loading Raw cache payloads."""
 
@@ -21,7 +25,31 @@ class EventListIndex:
         except sqlite3.Error:
             return False
 
-    def list_records(
+    def _source_paths(self, kind: str, start: date, end: date) -> list[Path]:
+        specs = {
+            "detections": (self.project_root / "cache" / "detections", "{day}.json"),
+            "xdr": (self.project_root / "cache" / "detections", "{day}.json"),
+            "inbound": (self.project_root / "cache" / "emails", "{day}.json"),
+            "outbound": (self.project_root / "cache" / "mailscreen", "mailscreen_mail_{day}.json"),
+            "dlp": (self.project_root / "cache" / "dlp", "{day}.jsonl"),
+        }
+        if kind not in specs:
+            return []
+        directory, template = specs[kind]
+        paths = []
+        current = start
+        while current <= end:
+            paths.append(directory / template.format(day=current.isoformat()))
+            current = date.fromordinal(current.toordinal() + 1)
+        return paths
+
+    def fresh_for(self, kind: str, start: date, end: date) -> bool:
+        if not self.path.exists():
+            return False
+        index_mtime = self.path.stat().st_mtime_ns
+        return all(not path.exists() or path.stat().st_mtime_ns <= index_mtime for path in self._source_paths(kind, start, end))
+
+    def require_records(
         self,
         kind: str,
         start: date,
@@ -32,9 +60,11 @@ class EventListIndex:
         sort: str,
         direction: str,
         fields: set[str],
-    ) -> dict[str, Any] | None:
+    ) -> dict[str, Any]:
         if not self.available():
-            return None
+            raise EventListIndexUnavailable("Detection 리스트 인덱스가 없습니다. Data Management에서 Detection 리스트 전체 캐시 인덱싱을 실행하세요.")
+        if not self.fresh_for(kind, start, end):
+            raise EventListIndexUnavailable("Detection 리스트 인덱스가 Raw 캐시보다 오래되었습니다. 스케줄러/인덱서 상태를 확인하고 Detection 리스트 인덱싱을 다시 실행하세요.")
         with sqlite3.connect(self.path) as db:
             db.row_factory = sqlite3.Row
             rows = db.execute(

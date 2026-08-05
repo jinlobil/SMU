@@ -92,26 +92,8 @@ class TransferService:
         if kind not in configs or start > end or direction not in {"asc", "desc"}: raise ValueError("Invalid transfer query")
         collector, fields = configs[kind]
         if sort not in fields: raise ValueError(f"Unsupported sort field: {sort}")
-        indexed = self.event_index.list_records(kind, start, end, conditions, page, page_size, sort, direction, fields)
-        if indexed is not None:
-            return indexed
-
-        records, files = collector(start, end); output = []
-        for _record_id, raw, row in records:
-            matches = True
-            for condition in conditions:
-                query = str(condition.get("query", "")).strip().lower(); field = condition.get("field", "all"); mode = condition.get("mode", "include")
-                if not query: continue
-                if field == "rawData": value = json.dumps(raw, ensure_ascii=False).lower()
-                elif field == "all": value = " ".join(row[name] for name in fields).lower()
-                elif field in fields: value = row[field].lower()
-                else: raise ValueError(f"Unsupported search field: {field}")
-                found = query in value
-                if (mode == "include" and not found) or (mode == "exclude" and found): matches = False; break
-            if matches: output.append(row)
-        output.sort(key=lambda row: (row[sort].lower(), row["id"]), reverse=direction == "desc")
-        total = len(output); offset = (page - 1) * page_size
-        return {"items": output[offset:offset + page_size], "pagination": {"page": page, "pageSize": page_size, "total": total, "totalPages": max(1, (total + page_size - 1) // page_size)}, "source": {"files": files}}
+        indexed = self.event_index.require_records(kind, start, end, conditions, page, page_size, sort, direction, fields)
+        return indexed
 
     def get_record(self, kind: str, record_id: str, start: date, end: date) -> dict[str, Any] | None:
         collector = self._collect_dlp if kind == "dlp" else self._collect_outbound if kind == "outbound" else None

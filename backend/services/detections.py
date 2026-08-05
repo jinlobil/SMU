@@ -102,28 +102,8 @@ class DetectionService:
             if condition.get("field", "all") not in SEARCH_FIELDS:
                 raise ValueError(f"Unsupported detection search field: {condition.get('field')}")
 
-        indexed = self.event_index.list_records("detections", start, end, conditions, page, page_size, sort, direction, SORT_FIELDS)
-        if indexed is not None:
-            return indexed
-
-        events, files = self._events(start, end)
-        filtered = []
-        for _event_id, raw, row in events:
-            matched = True
-            for condition in conditions:
-                keyword = str(condition.get("query", "")).strip().lower()
-                if not keyword:
-                    continue
-                field = condition.get("field", "all")
-                value = json.dumps(raw, ensure_ascii=False).lower() if field == "rawData" else " ".join(row[name] for name in SORT_FIELDS).lower() if field == "all" else row[field].lower()
-                if keyword not in value:
-                    matched = False
-                    break
-            if matched:
-                filtered.append(row)
-        filtered.sort(key=lambda row: (row[sort].lower(), row["id"]), reverse=direction == "desc")
-        total = len(filtered); offset = (page - 1) * page_size
-        return {"items": filtered[offset:offset + page_size], "pagination": {"page": page, "pageSize": page_size, "total": total, "totalPages": max(1, (total + page_size - 1) // page_size)}, "source": {"directory": str(self.cache_dir), "files": files}}
+        indexed = self.event_index.require_records("detections", start, end, conditions, page, page_size, sort, direction, SORT_FIELDS)
+        return indexed
 
     def get_detection(self, event_id: str, start: date, end: date) -> dict[str, Any] | None:
         for candidate_id, raw, summary in self._events(start, end)[0]:
