@@ -2,13 +2,10 @@ import json
 import os
 import time
 
-import pytest
-
 from datetime import date
 from pathlib import Path
 
 from backend.services.detections import DetectionService
-from backend.services.event_list_index import EventListIndexUnavailable
 from backend.services.indexing import IndexService
 
 
@@ -60,7 +57,7 @@ def test_detection_list_uses_events_index_when_available(tmp_path: Path) -> None
     assert result["items"][0]["hostname"] == "INDEX-PC"
 
 
-def test_detection_list_rejects_stale_events_index_without_raw_fallback(tmp_path: Path) -> None:
+def test_detection_list_shows_existing_index_rows_without_raw_fallback(tmp_path: Path) -> None:
     source = tmp_path / "cache" / "detections" / "2026-07-23.json"
     write_json(source, [{"time": "2026-07-23T02:00:00Z", "sensor": {"type": "endpoint"}, "rawData": {"meta_hostname": "RAW-PC"}}])
     service = IndexService(tmp_path)
@@ -73,5 +70,6 @@ def test_detection_list_rejects_stale_events_index_without_raw_fallback(tmp_path
     detection_service = DetectionService(tmp_path)
     detection_service._events = lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("raw cache must not be read for stale list"))
 
-    with pytest.raises(EventListIndexUnavailable):
-        detection_service.list_detections(date(2026, 7, 23), date(2026, 7, 23), [], 1, 50, "time", "desc")
+    result = detection_service.list_detections(date(2026, 7, 23), date(2026, 7, 23), [], 1, 50, "time", "desc")
+
+    assert result["items"][0]["hostname"] == "STALE-PC"

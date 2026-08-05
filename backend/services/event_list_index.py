@@ -5,10 +5,6 @@ from pathlib import Path
 from typing import Any
 
 
-class EventListIndexUnavailable(ValueError):
-    pass
-
-
 class EventListIndex:
     """Read display-list rows from cache/index/events_index.db without loading Raw cache payloads."""
 
@@ -62,9 +58,7 @@ class EventListIndex:
         fields: set[str],
     ) -> dict[str, Any]:
         if not self.available():
-            raise EventListIndexUnavailable("Detection 리스트 인덱스가 없습니다. Data Management에서 Detection 리스트 전체 캐시 인덱싱을 실행하세요.")
-        if not self.fresh_for(kind, start, end):
-            raise EventListIndexUnavailable("Detection 리스트 인덱스가 Raw 캐시보다 오래되었습니다. 스케줄러/인덱서 상태를 확인하고 Detection 리스트 인덱싱을 다시 실행하세요.")
+            return {"items": [], "pagination": {"page": page, "pageSize": page_size, "total": 0, "totalPages": 1}, "source": {"directory": str(self.path), "files": [], "index": "events_index.db"}}
         with sqlite3.connect(self.path) as db:
             db.row_factory = sqlite3.Row
             rows = db.execute(

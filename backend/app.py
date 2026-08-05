@@ -35,7 +35,6 @@ from backend.services.integrations import IntegrationService
 from backend.services.index_maintenance import IndexMaintenanceService
 from backend.services.exceptions import ExceptionService
 from backend.services.content import ContentService
-from backend.services.event_list_index import EventListIndexUnavailable
 
 
 configure_logging()
