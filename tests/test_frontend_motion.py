@@ -231,3 +231,12 @@ def test_app_starts_on_dashboard_and_config_links_share_subnav_hover():
     assert ".subnav button:hover,.subnav a:hover" in styles
     assert "import webbrowser" not in launcher
     assert "webbrowser.open" not in launcher
+
+
+def test_config_exposes_friendly_index_vacuum_controls() -> None:
+    page = (ROOT / "frontend/src/pages/ConfigPage.tsx").read_text(encoding="utf-8")
+    assert "민감 콘텐츠 인덱스 DB" in page
+    assert "타임라인 인덱스 DB" in page
+    assert "Detection 리스트 인덱스 DB" in page
+    assert "/api/jobs/index/vacuum" in page
+    assert "timeline_index.db VACUUM" not in page

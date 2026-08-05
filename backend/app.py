@@ -32,6 +32,7 @@ from backend.services.system_metrics import SystemMetricsService
 from backend.services.watchdog_client import WatchdogManager
 from backend.services.spreadsheet import write_xlsx
 from backend.services.integrations import IntegrationService
+from backend.services.index_maintenance import IndexMaintenanceService
 from backend.services.exceptions import ExceptionService
 from backend.services.content import ContentService
 
@@ -64,6 +65,7 @@ scheduler_service = SchedulerService(PROJECT_ROOT, refresh_service, watchdog_man
 integration_service = IntegrationService(PROJECT_ROOT)
 exception_service = ExceptionService(PROJECT_ROOT)
 content_service = ContentService(PROJECT_ROOT)
+index_maintenance_service = IndexMaintenanceService(PROJECT_ROOT)
 try:
     dashboard_service.warm_default()
 except Exception:
@@ -308,10 +310,10 @@ def config_status() -> dict:
         files = [path] if path.is_file() else list(path.glob("*")) if path.is_dir() else []
         sources[name] = {"exists": bool(files), "files": len(files), "bytes": sum(file.stat().st_size for file in files if file.is_file()), "latest": max((file.stat().st_mtime for file in files), default=None)}
     indexes = {}
-    for name, relative in {"app": "cache/index/app_cache.db", "timeline": "cache/index/timeline_index.db", "dashboard": "cache/index/web_dashboard_summary.json"}.items():
+    for name, relative in {"app": "cache/index/app_cache.db", "timeline": "cache/index/timeline_index.db", "events": "cache/index/events_index.db", "dashboard": "cache/index/web_dashboard_summary.json"}.items():
         path = PROJECT_ROOT / relative
         indexes[name] = {"exists": path.exists(), "bytes": path.stat().st_size if path.exists() else 0}
-    return {"success": True, "data": {"sources": sources, "indexes": indexes, "logs": str(PROJECT_ROOT / "runtime/logs")}}
+    return {"success": True, "data": {"sources": sources, "indexes": indexes, "indexDatabases": index_maintenance_service.databases(), "logs": str(PROJECT_ROOT / "runtime/logs")}}
 
 
 @app.get("/api/config/scheduler")
@@ -582,6 +584,15 @@ def rebuild_indexes(payload: dict | None = Body(default=None)) -> dict:
     except Exception as exc:
         return error_response(str(uuid.uuid4()), "INDEXER_JOB_FAILED", str(exc), 503)
     return {"success": True, "data": data}
+
+
+
+
+@app.post("/api/jobs/index/vacuum", status_code=202)
+def vacuum_indexes(payload: dict | None = Body(default=None)) -> dict:
+    target = str((payload or {}).get("target", "all"))
+    task = lambda progress: index_maintenance_service.vacuum(target, progress)
+    return {"success": True, "data": job_manager.create("index-vacuum", task)}
 
 
 @app.get("/api/jobs/{job_id}")
