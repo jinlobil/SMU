@@ -1,8 +1,8 @@
 import logging
-import csv
 import json
 import time
 import uuid
+from contextlib import asynccontextmanager
 from datetime import date
 from pathlib import Path
 
@@ -28,11 +28,23 @@ from backend.services.easy_query import EasyQueryService
 from backend.services.layout import LayoutService
 from backend.services.settings import SchedulerService, ThemeService
 from backend.services.report import ReportService
-from backend.services.indexing import IndexService
+from backend.services.system_metrics import SystemMetricsService
+from backend.services.watchdog_client import WatchdogManager
+from backend.services.spreadsheet import write_xlsx
+from backend.services.integrations import IntegrationService
+from backend.services.index_maintenance import IndexMaintenanceService
+from backend.services.exceptions import ExceptionService
+from backend.services.content import ContentService
+from backend.services.event_list_index import EventListIndexUnavailable
 
 
 configure_logging()
 log = logging.getLogger("smu.web")
+QUIET_POLL_PATHS = {
+    "/api/health", "/api/config/status", "/api/config/scheduler",
+    "/api/system-info/process-status", "/api/system-info/current",
+    "/api/system-info/history",
+}
 endpoint_service = EndpointService(PROJECT_ROOT)
 organization_service = OrganizationService(PROJECT_ROOT)
 refresh_service = RefreshService(PROJECT_ROOT)
@@ -48,17 +60,30 @@ easy_query_service = EasyQueryService(PROJECT_ROOT)
 layout_service = LayoutService(PROJECT_ROOT)
 theme_service = ThemeService(PROJECT_ROOT)
 report_service = ReportService(PROJECT_ROOT)
-index_service = IndexService(PROJECT_ROOT)
-scheduler_service = SchedulerService(PROJECT_ROOT, refresh_service, index_service)
+system_metrics_service = SystemMetricsService(PROJECT_ROOT)
+watchdog_manager = WatchdogManager(PROJECT_ROOT)
+scheduler_service = SchedulerService(PROJECT_ROOT, refresh_service, watchdog_manager)
+integration_service = IntegrationService(PROJECT_ROOT)
+exception_service = ExceptionService(PROJECT_ROOT)
+content_service = ContentService(PROJECT_ROOT)
+index_maintenance_service = IndexMaintenanceService(PROJECT_ROOT)
 try:
     dashboard_service.warm_default()
 except Exception:
     log.exception("Dashboard startup pre-aggregation failed; the API will retry on demand")
 
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    watchdog_manager.start()
+    yield
+    watchdog_manager.stop.set()
+
+
 app = FastAPI(
     title="SMU Local Web API",
     version="0.1.0",
     description="Local API used by the SMU JavaScript frontend.",
+    lifespan=lifespan,
 )
 
 
@@ -102,14 +127,12 @@ async def request_logging(request: Request, call_next):
 
     elapsed_ms = (time.monotonic() - started) * 1000
     response.headers["X-Request-ID"] = request_id
-    log.info(
-        "request_id=%s method=%s path=%s status=%s elapsed_ms=%.1f",
-        request_id,
-        request.method,
-        request.url.path,
-        response.status_code,
-        elapsed_ms,
-    )
+    path = request.url.path
+    polling = path in QUIET_POLL_PATHS or path.startswith("/api/jobs/")
+    if response.status_code >= 400:
+        log.warning("request_id=%s method=%s path=%s status=%s elapsed_ms=%.1f", request_id, request.method, path, response.status_code, elapsed_ms)
+    elif elapsed_ms >= 1000 or not polling:
+        log.info("request_id=%s method=%s path=%s status=%s elapsed_ms=%.1f", request_id, request.method, path, response.status_code, elapsed_ms)
     return response
 
 
@@ -135,6 +158,70 @@ def health() -> dict:
             "errorLog": str(WEB_ERROR_LOG),
         },
     }
+
+
+@app.get("/api/system-info/current")
+def system_info_current() -> dict:
+    return {"success": True, "data": system_metrics_service.current()}
+
+
+@app.get("/api/system-info/history")
+def system_info_history(start: str, end: str, bucket: str = "auto") -> dict:
+    try:
+        data = system_metrics_service.history(start, end, bucket)
+    except ValueError as exc:
+        return error_response(str(uuid.uuid4()), "INVALID_SYSTEM_INFO_RANGE", str(exc), 400)
+    return {"success": True, "data": data}
+
+
+@app.get("/api/system-info/process-status")
+def system_info_process_status() -> dict:
+    return {"success": True, "data": watchdog_manager.status()}
+
+
+@app.post("/api/system-info/collector/restart", status_code=202)
+def restart_system_info_collector() -> dict:
+    try:
+        data = watchdog_manager.restart_collector()
+    except Exception as exc:
+        return error_response(str(uuid.uuid4()), "COLLECTOR_RESTART_FAILED", str(exc), 503)
+    return {"success": True, "data": data}
+
+
+@app.post("/api/system-info/watchdog/restart", status_code=202)
+def restart_system_info_watchdog() -> dict:
+    try:
+        data = watchdog_manager.restart_watchdog()
+    except Exception as exc:
+        return error_response(str(uuid.uuid4()), "WATCHDOG_RESTART_FAILED", str(exc), 503)
+    return {"success": True, "data": data}
+
+
+@app.post("/api/system-info/indexer/restart", status_code=202)
+def restart_system_info_indexer() -> dict:
+    try:
+        data = watchdog_manager.restart_indexer()
+    except Exception as exc:
+        return error_response(str(uuid.uuid4()), "INDEXER_RESTART_FAILED", str(exc), 503)
+    return {"success": True, "data": data}
+
+
+@app.post("/api/system-info/fetcher/restart", status_code=202)
+def restart_system_info_fetcher() -> dict:
+    try:
+        data = watchdog_manager.restart_fetcher()
+    except Exception as exc:
+        return error_response(str(uuid.uuid4()), "FETCHER_RESTART_FAILED", str(exc), 503)
+    return {"success": True, "data": data}
+
+
+@app.post("/api/system-info/laborer/restart", status_code=202)
+def restart_system_info_laborer() -> dict:
+    try:
+        data = watchdog_manager.restart_laborer()
+    except Exception as exc:
+        return error_response(str(uuid.uuid4()), "LABORER_RESTART_FAILED", str(exc), 503)
+    return {"success": True, "data": data}
 
 
 @app.get("/api/dashboard")
@@ -233,10 +320,10 @@ def config_status() -> dict:
         files = [path] if path.is_file() else list(path.glob("*")) if path.is_dir() else []
         sources[name] = {"exists": bool(files), "files": len(files), "bytes": sum(file.stat().st_size for file in files if file.is_file()), "latest": max((file.stat().st_mtime for file in files), default=None)}
     indexes = {}
-    for name, relative in {"app": "cache/index/app_cache.db", "timeline": "cache/index/timeline_index.db", "dashboard": "cache/index/web_dashboard_summary.json"}.items():
+    for name, relative in {"app": "cache/index/app_cache.db", "timeline": "cache/index/timeline_index.db", "events": "cache/index/events_index.db", "dashboard": "cache/index/web_dashboard_summary.json"}.items():
         path = PROJECT_ROOT / relative
         indexes[name] = {"exists": path.exists(), "bytes": path.stat().st_size if path.exists() else 0}
-    return {"success": True, "data": {"sources": sources, "indexes": indexes, "logs": str(PROJECT_ROOT / "runtime/logs")}}
+    return {"success": True, "data": {"sources": sources, "indexes": indexes, "indexDatabases": index_maintenance_service.databases(), "logs": str(PROJECT_ROOT / "runtime/logs")}}
 
 
 @app.get("/api/config/scheduler")
@@ -268,6 +355,119 @@ def save_theme(payload: dict = Body()) -> dict:
     return {"success": True, "data": data}
 
 
+@app.get("/api/config/integrations")
+def list_integrations() -> dict:
+    return {"success": True, "data": {"items": integration_service.list()}}
+
+
+@app.post("/api/config/integrations", status_code=201)
+def create_integration(payload: dict = Body()) -> dict:
+    try:
+        data = integration_service.save(payload)
+    except (KeyError, ValueError) as exc:
+        return error_response(str(uuid.uuid4()), "INVALID_INTEGRATION", str(exc), 400)
+    return {"success": True, "data": data}
+
+
+@app.put("/api/config/integrations/{integration_id}")
+def update_integration(integration_id: str, payload: dict = Body()) -> dict:
+    try:
+        data = integration_service.save(payload, integration_id)
+    except KeyError:
+        return error_response(str(uuid.uuid4()), "INTEGRATION_NOT_FOUND", "연동 정보를 찾을 수 없습니다.", 404)
+    except ValueError as exc:
+        return error_response(str(uuid.uuid4()), "INVALID_INTEGRATION", str(exc), 400)
+    return {"success": True, "data": data}
+
+
+@app.delete("/api/config/integrations/{integration_id}")
+def delete_integration(integration_id: str) -> dict:
+    try:
+        integration_service.delete(integration_id)
+    except KeyError:
+        return error_response(str(uuid.uuid4()), "INTEGRATION_NOT_FOUND", "연동 정보를 찾을 수 없습니다.", 404)
+    return {"success": True}
+
+
+@app.post("/api/config/integrations/{integration_id}/test")
+def test_integration(integration_id: str) -> dict:
+    try:
+        data = integration_service.test(integration_id)
+    except KeyError:
+        return error_response(str(uuid.uuid4()), "INTEGRATION_NOT_FOUND", "연동 정보를 찾을 수 없습니다.", 404)
+    return {"success": True, "data": data}
+
+
+@app.get("/api/config/exceptions/{kind}")
+def list_exceptions(kind: str) -> dict:
+    try:
+        data = exception_service.list(kind)
+    except ValueError as exc:
+        return error_response(str(uuid.uuid4()), "INVALID_EXCEPTION_TYPE", str(exc), 400)
+    return {"success": True, "data": data}
+
+
+@app.post("/api/config/exceptions/{kind}", status_code=201)
+def create_exception(kind: str, payload: dict = Body()) -> dict:
+    try:
+        data = exception_service.save(kind, payload)
+    except ValueError as exc:
+        return error_response(str(uuid.uuid4()), "INVALID_EXCEPTION", str(exc), 400)
+    return {"success": True, "data": data}
+
+
+@app.put("/api/config/exceptions/{kind}/{item_id}")
+def update_exception(kind: str, item_id: str, payload: dict = Body()) -> dict:
+    try:
+        data = exception_service.save(kind, payload, item_id)
+    except KeyError:
+        return error_response(str(uuid.uuid4()), "EXCEPTION_NOT_FOUND", "예외 규칙을 찾을 수 없습니다.", 404)
+    except ValueError as exc:
+        return error_response(str(uuid.uuid4()), "INVALID_EXCEPTION", str(exc), 400)
+    return {"success": True, "data": data}
+
+
+@app.delete("/api/config/exceptions/{kind}/{item_id}")
+def delete_exception(kind: str, item_id: str) -> dict:
+    try:
+        exception_service.delete(kind, item_id)
+    except KeyError:
+        return error_response(str(uuid.uuid4()), "EXCEPTION_NOT_FOUND", "예외 규칙을 찾을 수 없습니다.", 404)
+    except ValueError as exc:
+        return error_response(str(uuid.uuid4()), "INVALID_EXCEPTION_TYPE", str(exc), 400)
+    return {"success": True}
+
+
+@app.get("/api/config/content/{kind}")
+def list_content_categories(kind: str) -> dict:
+    try: data = content_service.list(kind)
+    except ValueError as exc: return error_response(str(uuid.uuid4()), "INVALID_CONTENT_KIND", str(exc), 400)
+    return {"success": True, "data": data}
+
+
+@app.post("/api/config/content/{kind}", status_code=201)
+def create_content_category(kind: str, payload: dict = Body()) -> dict:
+    try: data = content_service.save(kind, payload)
+    except ValueError as exc: return error_response(str(uuid.uuid4()), "INVALID_CONTENT_RULE", str(exc), 400)
+    return {"success": True, "data": data}
+
+
+@app.put("/api/config/content/{kind}/{item_id}")
+def update_content_category(kind: str, item_id: str, payload: dict = Body()) -> dict:
+    try: data = content_service.save(kind, payload, item_id)
+    except ValueError as exc: return error_response(str(uuid.uuid4()), "INVALID_CONTENT_RULE", str(exc), 400)
+    except KeyError: return error_response(str(uuid.uuid4()), "CONTENT_RULE_NOT_FOUND", "콘텐츠 카테고리를 찾을 수 없습니다.", 404)
+    return {"success": True, "data": data}
+
+
+@app.delete("/api/config/content/{kind}/{item_id}")
+def delete_content_category(kind: str, item_id: str) -> dict:
+    try: content_service.delete(kind, item_id)
+    except ValueError as exc: return error_response(str(uuid.uuid4()), "INVALID_CONTENT_KIND", str(exc), 400)
+    except KeyError: return error_response(str(uuid.uuid4()), "CONTENT_RULE_NOT_FOUND", "콘텐츠 카테고리를 찾을 수 없습니다.", 404)
+    return {"success": True}
+
+
 @app.post("/api/jobs/report", status_code=202)
 def start_report(payload: dict = Body()) -> dict:
     try:
@@ -276,7 +476,7 @@ def start_report(payload: dict = Body()) -> dict:
             raise ValueError("start date must not be after end date")
     except ValueError as exc:
         return error_response(str(uuid.uuid4()), "INVALID_REPORT_RANGE", str(exc), 400)
-    return {"success": True, "data": job_manager.create("security-report", lambda progress: report_service.build(start, end, progress))}
+    return {"success": True, "data": watchdog_manager.start_laborer_job("report", start=start.isoformat(), end=end.isoformat())}
 
 
 @app.get("/api/config/report/{filename}")
@@ -287,28 +487,39 @@ def download_report(filename: str):
     return FileResponse(path, filename=path.name, media_type="application/pdf")
 
 
-@app.get("/api/config/export/{kind}")
 def export_config_data(kind: str, start: date, end: date):
-    collectors = {
-        "detections": detection_service._events,
-        "xdr": email_security_service._collect_xdr,
-        "inbound": email_security_service._collect_inbound,
-        "outbound": transfer_service._collect_outbound,
-        "dlp": transfer_service._collect_dlp,
-    }
+    if start > end:
+        return error_response(str(uuid.uuid4()), "INVALID_EXPORT_RANGE", "start date must not be after end date", 400)
+    collectors = {"detections": detection_service._events, "xdr": email_security_service._collect_xdr, "inbound": email_security_service._collect_inbound, "outbound": transfer_service._collect_outbound, "dlp": transfer_service._collect_dlp}
     collector = collectors.get(kind)
     if collector is None:
         return error_response(str(uuid.uuid4()), "INVALID_EXPORT", "Unknown export type", 400)
     rows = [row for _record_id, _raw, row in collector(start, end)[0]]
-    export_dir = PROJECT_ROOT / "exports"
-    export_dir.mkdir(parents=True, exist_ok=True)
-    path = export_dir / f"{kind}_{start}_{end}.csv"
-    columns = list(dict.fromkeys(key for row in rows for key in row))
-    with path.open("w", encoding="utf-8-sig", newline="") as stream:
-        writer = csv.DictWriter(stream, fieldnames=columns)
-        writer.writeheader()
-        writer.writerows(rows)
-    return FileResponse(path, filename=path.name, media_type="text/csv")
+    export_dir = PROJECT_ROOT / "exports"; export_dir.mkdir(parents=True, exist_ok=True)
+    path = export_dir / f"{kind}_{start}_{end}.xlsx"
+    write_xlsx(path, rows)
+    return FileResponse(path, filename=path.name, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
+@app.post("/api/jobs/export", status_code=202)
+def start_export(payload: dict = Body()) -> dict:
+    kind = str(payload.get("kind", ""))
+    if kind not in {"detections", "xdr", "inbound", "outbound", "dlp"}:
+        return error_response(str(uuid.uuid4()), "INVALID_EXPORT", "Unknown export type", 400)
+    try:
+        start, end = date.fromisoformat(str(payload.get("start", ""))), date.fromisoformat(str(payload.get("end", "")))
+        if start > end: raise ValueError("start date must not be after end date")
+    except ValueError as exc:
+        return error_response(str(uuid.uuid4()), "INVALID_EXPORT_RANGE", str(exc), 400)
+    return {"success": True, "data": watchdog_manager.start_laborer_job("export", kind=kind, start=start.isoformat(), end=end.isoformat())}
+
+
+@app.get("/api/config/export/file/{filename}")
+def download_export_file(filename: str):
+    path = PROJECT_ROOT / "exports" / Path(filename).name
+    if not path.exists():
+        return error_response(str(uuid.uuid4()), "EXPORT_NOT_FOUND", "Export not found", 404)
+    return FileResponse(path, filename=path.name, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
 @app.get("/api/endpoints")
@@ -359,14 +570,17 @@ def list_organizations(
 @app.post("/api/jobs/refresh/{target}", status_code=202)
 def start_refresh(target: str, payload: dict | None = Body(default=None)) -> dict:
     payload = payload or {}
-    tasks = {"endpoints": refresh_service.refresh_endpoints, "organizations": refresh_service.refresh_organizations, "users": refresh_service.refresh_users}
+    allowed = {"detections", "inbound", "dlp", "outbound", "endpoints", "organizations", "users"}
+    if target not in allowed:
+        request_id = str(uuid.uuid4())
+        return error_response(request_id, "UNKNOWN_REFRESH_TARGET", f"Unknown refresh target: {target}", 404)
+    start = end = None
     if target in {"detections", "inbound"}:
         try:
             start = date.fromisoformat(str(payload.get("start", ""))); end = date.fromisoformat(str(payload.get("end", "")))
             if start > end: raise ValueError("start date must not be after end date")
         except ValueError as exc:
             request_id = str(uuid.uuid4()); return error_response(request_id, "INVALID_REFRESH_RANGE", str(exc), 400)
-        tasks[target] = (lambda progress: refresh_service.refresh_detections(start, end, progress)) if target == "detections" else (lambda progress: refresh_service.refresh_inbound(start, end, progress))
     if target in {"dlp", "outbound"}:
         try:
             start = date.fromisoformat(str(payload.get("start") or payload.get("date", "")))
@@ -375,22 +589,38 @@ def start_refresh(target: str, payload: dict | None = Body(default=None)) -> dic
             if (end - start).days > 31: raise ValueError("refresh range must not exceed 32 days")
         except ValueError as exc:
             request_id = str(uuid.uuid4()); return error_response(request_id, "INVALID_REFRESH_DATE", str(exc), 400)
-        tasks[target] = (lambda progress: refresh_service.refresh_dlp_range(start, end, progress)) if target == "dlp" else (lambda progress: refresh_service.refresh_outbound_range(start, end, progress))
-    task = tasks.get(target)
-    if task is None:
-        request_id = str(uuid.uuid4())
-        return error_response(request_id, "UNKNOWN_REFRESH_TARGET", f"Unknown refresh target: {target}", 404)
-    return {"success": True, "data": job_manager.create(f"refresh-{target}", task)}
+    try:
+        job = watchdog_manager.start_fetch_job([target], start, end)
+    except Exception as exc:
+        return error_response(str(uuid.uuid4()), "FETCHER_JOB_FAILED", str(exc), 503)
+    return {"success": True, "data": job}
 
 
 @app.post("/api/jobs/index", status_code=202)
-def rebuild_indexes() -> dict:
-    return {"success": True, "data": job_manager.create("rebuild-all-indexes", index_service.rebuild_all)}
+def rebuild_indexes(payload: dict | None = Body(default=None)) -> dict:
+    try:
+        data = watchdog_manager.start_index_job(force_full=bool((payload or {}).get("force", False)), scope=(payload or {}).get("scope"))
+    except Exception as exc:
+        return error_response(str(uuid.uuid4()), "INDEXER_JOB_FAILED", str(exc), 503)
+    return {"success": True, "data": data}
+
+
+
+
+@app.post("/api/jobs/index/vacuum", status_code=202)
+def vacuum_indexes(payload: dict | None = Body(default=None)) -> dict:
+    target = str((payload or {}).get("target", "all"))
+    return {"success": True, "data": watchdog_manager.start_laborer_job("vacuum", target=target)}
 
 
 @app.get("/api/jobs/{job_id}")
 def get_job(job_id: str) -> dict:
     job = job_manager.get(job_id)
+    if job is None:
+        try:
+            job = watchdog_manager.fetch_job(job_id) or watchdog_manager.index_job(job_id) or watchdog_manager.laborer_job(job_id)
+        except Exception as exc:
+            return error_response(str(uuid.uuid4()), "INDEXER_STATUS_FAILED", str(exc), 503)
     if job is None:
         request_id = str(uuid.uuid4())
         return error_response(request_id, "JOB_NOT_FOUND", f"Job not found: {job_id}", 404)
@@ -412,6 +642,10 @@ def list_detections(
         if not isinstance(parsed_conditions, list):
             raise ValueError("conditions must be a JSON list")
         data = detection_service.list_detections(start, end, parsed_conditions, page, page_size, sort, direction)
+    except EventListIndexUnavailable as exc:
+        request_id = str(uuid.uuid4())
+        log.warning("Detection list index unavailable request_id=%s error=%s", request_id, exc)
+        return error_response(request_id, "EVENT_LIST_INDEX_UNAVAILABLE", str(exc), 409)
     except (ValueError, json.JSONDecodeError) as exc:
         request_id = str(uuid.uuid4())
         log.error("Detection query rejected request_id=%s error=%s", request_id, exc)
@@ -434,6 +668,9 @@ def list_email_security(kind: str, start: date, end: date, conditions: str = "[]
         parsed = json.loads(conditions)
         if not isinstance(parsed, list): raise ValueError("conditions must be a list")
         data = email_security_service.list_records(kind, start, end, parsed, page, page_size, sort, direction)
+    except EventListIndexUnavailable as exc:
+        request_id = str(uuid.uuid4()); log.warning("Email security list index unavailable request_id=%s error=%s", request_id, exc)
+        return error_response(request_id, "EVENT_LIST_INDEX_UNAVAILABLE", str(exc), 409)
     except (ValueError, json.JSONDecodeError) as exc:
         request_id = str(uuid.uuid4()); log.error("Email security query rejected request_id=%s error=%s", request_id, exc)
         return error_response(request_id, "INVALID_EMAIL_SECURITY_QUERY", str(exc), 400)
@@ -454,6 +691,9 @@ def list_transfers(kind: str, start: date, end: date, conditions: str = "[]", pa
         parsed = json.loads(conditions)
         if not isinstance(parsed, list): raise ValueError("conditions must be a list")
         data = transfer_service.list_records(kind, start, end, parsed, page, page_size, sort, direction)
+    except EventListIndexUnavailable as exc:
+        request_id = str(uuid.uuid4()); log.warning("Transfer list index unavailable request_id=%s error=%s", request_id, exc)
+        return error_response(request_id, "EVENT_LIST_INDEX_UNAVAILABLE", str(exc), 409)
     except (ValueError, json.JSONDecodeError) as exc:
         request_id = str(uuid.uuid4()); log.error("Transfer query rejected request_id=%s error=%s", request_id, exc)
         return error_response(request_id, "INVALID_TRANSFER_QUERY", str(exc), 400)

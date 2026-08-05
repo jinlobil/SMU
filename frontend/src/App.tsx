@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { EndpointPage } from "./pages/EndpointPage";
 import { OrganizationPage } from "./pages/OrganizationPage";
 import { DetectionPage } from "./pages/DetectionPage";
@@ -11,18 +11,34 @@ import { FirewallPage } from "./pages/FirewallPage";
 import { EasyQueryPage } from "./pages/EasyQueryPage";
 import { LayoutPage } from "./pages/LayoutPage";
 import { ConfigPage } from "./pages/ConfigPage";
+import { SystemInfoPage } from "./pages/SystemInfoPage";
+import { IntegrationManagementPage } from "./pages/IntegrationManagementPage";
+import { ExceptionManagementPage } from "./pages/ExceptionManagementPage";
+import { ContentManagementPage } from "./pages/ContentManagementPage";
 
 
-type View = "dashboard" | "endpoint" | "organization" | "detectionEndpoint" | "emailXdr" | "inbound" | "outbound" | "dlp" | "timeline" | "sensitiveFiles" | "sensitiveSites" | "firewall" | "easyQuery" | "layout" | "config";
+type View = "dashboard" | "endpoint" | "organization" | "detectionEndpoint" | "emailXdr" | "inbound" | "outbound" | "dlp" | "timeline" | "sensitiveFiles" | "sensitiveSites" | "firewall" | "easyQuery" | "layout" | "config" | "dataManagement" | "integrationManagement" | "exceptionManagement" | "contentManagement" | "systemInfo";
 type DetectionFilter = { field: string; query: string; start?: string; end?: string };
 const menus = ["Dashboard", "Detection", "Forensics", "Response", "Asset", "Lab", "Config"];
 const particles = Array.from({ length: 36 }, (_, index) => index);
 
 export function App() {
   const [health, setHealth] = useState<"loading" | "ok" | "error">("loading");
-  const [activeMenu, setActiveMenu] = useState("Asset");
-  const [view, setView] = useState<View>("endpoint");
+  const [activeMenu, setActiveMenu] = useState("Dashboard");
+  const [view, setView] = useState<View>("dashboard");
   const [detectionFilter, setDetectionFilter] = useState<DetectionFilter | null>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const sidebarCloseTimer = useRef<number | null>(null);
+
+  const openSidebar = () => {
+    if (sidebarCloseTimer.current !== null) window.clearTimeout(sidebarCloseTimer.current);
+    sidebarCloseTimer.current = null;
+    setSidebarOpen(true);
+  };
+  const scheduleSidebarClose = () => {
+    if (sidebarCloseTimer.current !== null) window.clearTimeout(sidebarCloseTimer.current);
+    sidebarCloseTimer.current = window.setTimeout(() => setSidebarOpen(false), 300);
+  };
 
   useEffect(() => {
     fetch("/api/config/theme").then((response) => response.json()).then((payload) => {
@@ -36,6 +52,8 @@ export function App() {
       root.style.setProperty("--card-title", theme.Card_Title_Text);
       root.style.setProperty("--table-head-bg", theme.Table_Header_Background);
       root.style.setProperty("--table-head-text", theme.Table_Header_Text);
+      root.style.setProperty("--table-selection-bg", theme.Table_Selection_Background);
+      root.style.setProperty("--table-selection-text", theme.Table_Selection_Text);
       root.style.setProperty("--trend-detection", theme.Threat_trend_Detection);
       root.style.setProperty("--trend-xdr", theme.Threat_trend_Detection_XDR);
       root.style.setProperty("--trend-email", theme.Threat_trend_Email);
@@ -47,6 +65,14 @@ export function App() {
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       setHealth("ok");
     }).catch(() => setHealth("error"));
+  }, []);
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === "Escape") setSidebarOpen(false); };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      window.removeEventListener("keydown", closeOnEscape);
+      if (sidebarCloseTimer.current !== null) window.clearTimeout(sidebarCloseTimer.current);
+    };
   }, []);
 
   const selectMenu = (menu: string) => {
@@ -68,7 +94,8 @@ export function App() {
   return (
     <div className="app">
       <div className="cyber-atmosphere" aria-hidden="true"><div className="cyber-grid"/>{particles.map((particle) => <i key={particle} style={{ "--px": `${(particle * 47) % 100}%`, "--py": `${(particle * 29) % 100}%`, "--delay": `${-(particle % 13)}s`, "--duration": `${10 + particle % 9}s` } as CSSProperties}/>)}</div>
-      <aside className="sidebar">
+      <div className="sidebar-title-trigger" aria-hidden="true" onMouseEnter={openSidebar}/>
+      <aside className={`sidebar ${sidebarOpen ? "open" : ""}`} onMouseEnter={openSidebar} onMouseLeave={scheduleSidebarClose}>
         <div className="brand"><span>SMU</span><strong>Monitoring</strong></div>
         <nav>{menus.map((menu) => <div key={menu}>
           <button className={menu === activeMenu ? "active" : ""} onClick={() => selectMenu(menu)}>{menu}<span>›</span></button>
@@ -92,6 +119,14 @@ export function App() {
             <button className={view === "easyQuery" ? "selected" : ""} onClick={() => setView("easyQuery")}>Easy Query</button>
           </div>}
           {menu === "Lab" && activeMenu === "Lab" && <div className="subnav"><button className={view === "layout" ? "selected" : ""} onClick={() => setView("layout")}>Layout - User</button></div>}
+          {menu === "Config" && activeMenu === "Config" && <div className="subnav">
+            <a href="#config-general" className={view === "config" ? "selected" : ""} onClick={(event) => { event.preventDefault(); setView("config"); }}>General</a>
+            <a href="#config-data-management" className={view === "dataManagement" ? "selected" : ""} onClick={(event) => { event.preventDefault(); setView("dataManagement"); }}>Data Management</a>
+            <a href="#config-integration-management" className={view === "integrationManagement" ? "selected" : ""} onClick={(event) => { event.preventDefault(); setView("integrationManagement"); }}>Integration Management</a>
+            <a href="#config-exception-management" className={view === "exceptionManagement" ? "selected" : ""} onClick={(event) => { event.preventDefault(); setView("exceptionManagement"); }}>Exception Management</a>
+            <a href="#config-content-management" className={view === "contentManagement" ? "selected" : ""} onClick={(event) => { event.preventDefault(); setView("contentManagement"); }}>Content Management</a>
+            <a href="#config-system-management" className={view === "systemInfo" ? "selected" : ""} onClick={(event) => { event.preventDefault(); setView("systemInfo"); }}>System Management</a>
+          </div>}
         </div>)}</nav>
         <div className={`connection ${health}`}><span className="connection-orb"/><svg className="connection-heartbeat" viewBox="0 0 92 22" aria-hidden="true"><polyline points="0,11 15,11 21,4 27,18 34,7 40,11 55,11 61,5 67,17 73,11 92,11"/></svg><b>{health === "ok" ? "백엔드 연결됨" : health === "error" ? "연결 오류" : "연결 확인 중"}</b></div>
       </aside>
@@ -110,7 +145,12 @@ export function App() {
         {view === "firewall" && <FirewallPage />}
         {view === "easyQuery" && <EasyQueryPage />}
         {view === "layout" && <LayoutPage />}
-        {view === "config" && <ConfigPage />}
+        {view === "config" && <ConfigPage section="general" />}
+        {view === "dataManagement" && <ConfigPage section="data" />}
+        {view === "integrationManagement" && <IntegrationManagementPage />}
+        {view === "exceptionManagement" && <ExceptionManagementPage />}
+        {view === "contentManagement" && <ContentManagementPage />}
+        {view === "systemInfo" && <SystemInfoPage />}
       </div></main>
     </div>
   );
