@@ -7,8 +7,11 @@ from pathlib import Path
 from typing import Callable
 
 from backend.services.dashboard import DashboardService
+from backend.services.detections import DetectionService
+from backend.services.email_security import EmailSecurityService
 from backend.services.sensitive import SensitiveService, normalized_identity
 from backend.services.timeline import ALL_SOURCES, TimelineService
+from backend.services.transfers import TransferService
 
 
 class IndexService:
@@ -21,6 +24,9 @@ class IndexService:
         self.sensitive = SensitiveService(project_root)
         self.timeline = TimelineService(project_root)
         self.dashboard = DashboardService(project_root)
+        self.detections = DetectionService(project_root)
+        self.email = EmailSecurityService(project_root)
+        self.transfers = TransferService(project_root)
 
     @staticmethod
     def _connect(path: Path) -> sqlite3.Connection:
@@ -79,15 +85,16 @@ class IndexService:
             progress("Dashboard 사전 집계 전체 재생성 완료")
             return {"scope": "dashboard", "dashboard": True}
         if scope == "events":
-            self.directory.mkdir(parents=True, exist_ok=True)
-            path = self.directory / "events_index.db"
-            progress("Detection 리스트 인덱스 DB 초기화 중")
-            with self._connect(path) as db:
-                db.execute("CREATE TABLE IF NOT EXISTS index_metadata (key TEXT PRIMARY KEY, value TEXT)")
-                db.execute("INSERT OR REPLACE INTO index_metadata VALUES ('mode','display-list-raw-detail')")
-                db.execute("INSERT OR REPLACE INTO index_metadata VALUES ('updated_at', datetime('now'))")
-            progress("Detection 리스트 인덱스 DB 준비 완료 · Raw 상세 참조형")
-            return {"scope": "events", "events": True, "paths": [str(path)]}
+            bounds = self._cache_bounds()
+            if not bounds:
+                progress("Detection 리스트 인덱스 원본 없음")
+                path = self._build_events_index([], progress)
+                return {"scope": "events", "events": 0, "paths": [str(path)]}
+            progress(f"Detection 리스트 인덱스 전체 재생성 시작 · {bounds[0]}~{bounds[1]}")
+            rows = self._event_index_rows(bounds[0], bounds[1], progress)
+            path = self._build_events_index(rows, progress)
+            progress(f"Detection 리스트 인덱스 전체 재생성 완료 · {len(rows):,}건 · Raw 상세 참조형")
+            return {"scope": "events", "events": len(rows), "paths": [str(path)]}
         raise ValueError(f"지원하지 않는 인덱싱 범위입니다: {scope}")
 
     def rebuild_smart(self, progress: Callable[[str], None]) -> dict:
@@ -152,6 +159,70 @@ class IndexService:
         self._save_manifest(current)
         progress(f"스마트 증분 완료 · 변경 {len(changed):,}개 / 삭제 {len(removed):,}개 / 유지 {unchanged:,}개")
         return {"mode": "smart", "changed": len(changed), "removed": len(removed), "skipped": unchanged, "dashboard": True}
+
+    def _cache_bounds(self) -> tuple[date, date] | None:
+        days = sorted({date.fromisoformat(meta["date"]) for meta in self._source_snapshot().values() if meta.get("date")})
+        return (days[0], days[-1]) if days else None
+
+    @staticmethod
+    def _event_time(kind: str, row: dict[str, str]) -> str:
+        if kind in {"detections", "xdr"}:
+            return str(row.get("time") or "")
+        if kind == "inbound":
+            return str(row.get("received") or "")
+        if kind in {"outbound", "dlp"}:
+            return str(row.get("date") or row.get("time") or "")
+        return ""
+
+    def _event_index_rows(self, start: date, end: date, progress: Callable[[str], None]) -> list[dict[str, str]]:
+        collectors = (
+            ("detections", "Detection", self.detections._events),
+            ("xdr", "Email XDR", self.email._collect_xdr),
+            ("inbound", "Inbound Mail", self.email._collect_inbound),
+            ("outbound", "Outbound Mail", self.transfers._collect_outbound),
+            ("dlp", "DLP", self.transfers._collect_dlp),
+        )
+        output: list[dict[str, str]] = []
+        for kind, label, collector in collectors:
+            progress(f"Detection 리스트 인덱스 · {label} 리스트 필드 계산 중")
+            try:
+                records, _files = collector(start, end, progress)
+            except TypeError:
+                records, _files = collector(start, end)
+            total = len(records)
+            for offset in range(0, total, 5000):
+                batch = records[offset:offset+5000]
+                for record_id, _raw, row in batch:
+                    output.append({
+                        "kind": kind,
+                        "recordId": str(record_id),
+                        "eventTime": self._event_time(kind, row),
+                        "rowJson": json.dumps({key: value for key, value in row.items() if key != "_sourceFile"}, ensure_ascii=False),
+                        "searchText": json.dumps(row, ensure_ascii=False).lower(),
+                        "sourceFile": str(row.get("_sourceFile", "")),
+                    })
+                progress(f"Detection 리스트 인덱스 · {label} {min(offset+len(batch), total):,}/{total:,}건")
+        return output
+
+    def _build_events_index(self, rows: list[dict[str, str]], progress=lambda _message: None) -> Path:
+        self.directory.mkdir(parents=True, exist_ok=True)
+        final = self.directory / "events_index.db"
+        staging = "event_list_rows_web_next"
+        with self._connect(final) as db:
+            db.execute(f"DROP TABLE IF EXISTS {staging}")
+            db.execute(f"CREATE TABLE {staging} (kind TEXT, record_id TEXT, event_time TEXT, search_text TEXT, row_json TEXT, source_file TEXT, PRIMARY KEY(kind, record_id))")
+            for offset in range(0, len(rows), 5000):
+                batch = rows[offset:offset+5000]
+                db.executemany(f"INSERT OR REPLACE INTO {staging} VALUES (?,?,?,?,?,?)", [(row["kind"], row["recordId"], row["eventTime"], row["searchText"], row["rowJson"], row["sourceFile"]) for row in batch])
+                progress(f"Detection 리스트 인덱스 SQLite 기록 {min(offset+len(batch),len(rows)):,}/{len(rows):,}건")
+            db.execute("DROP TABLE IF EXISTS event_list_rows")
+            db.execute(f"ALTER TABLE {staging} RENAME TO event_list_rows")
+            db.execute("CREATE INDEX idx_web_event_list_kind_time ON event_list_rows(kind, event_time DESC)")
+            db.execute("CREATE INDEX idx_web_event_list_source_file ON event_list_rows(source_file)")
+            db.execute("CREATE TABLE IF NOT EXISTS index_metadata (key TEXT PRIMARY KEY, value TEXT)")
+            db.execute("INSERT OR REPLACE INTO index_metadata VALUES ('mode','display-list-raw-detail')")
+            db.execute("INSERT OR REPLACE INTO index_metadata VALUES ('updated_at', datetime('now'))")
+        return final
 
     def _source_snapshot(self) -> dict[str, dict]:
         specs = (("detections", self.root/"cache/detections", "????-??-??.json"), ("emails", self.root/"cache/emails", "????-??-??.json"), ("mailscreen", self.root/"cache/mailscreen", "mailscreen_mail_????-??-??.json"), ("dlp", self.root/"cache/dlp", "????-??-??.jsonl"))

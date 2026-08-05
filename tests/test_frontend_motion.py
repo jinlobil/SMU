@@ -209,6 +209,7 @@ def test_config_restores_an_active_job_after_page_navigation():
     assert "localStorage.getItem(activeConfigJobKey)" in page
     assert "진행 중인 작업 상태 확인 중" in page
     assert "jobPollGeneration.current+=1" in page
+    assert "void loadMonitor();const response=await fetch" in page
 
 
 def test_content_management_uses_config_navigation_and_theme_forms():

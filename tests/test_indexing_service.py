@@ -142,3 +142,29 @@ def test_smart_rebuild_does_not_fail_or_run_full_for_rule_changes(tmp_path):
     assert result["changed"] == 0
     assert any("자동 전체 인덱싱 없이" in message for message in messages)
     assert service._load_manifest() == service._source_snapshot()
+
+
+def test_detection_list_scope_builds_real_list_index_without_raw_payload(tmp_path):
+    source = tmp_path / "cache/detections/2026-08-04.json"
+    source.parent.mkdir(parents=True)
+    source.write_text("[]", encoding="utf-8")
+    service = IndexService(tmp_path)
+    service.detections._events = lambda start, end, progress=None: ([
+        ("det-1", {"raw": "large"}, {"id": "det-1", "time": "2026-08-04 09:00:00", "hostname": "PC1", "dept": "SOC", "username": "kim", "_sourceFile": str(source.resolve())})
+    ], [source.name])
+    service.email._collect_xdr = lambda start, end, progress=None: ([], [])
+    service.email._collect_inbound = lambda start, end, progress=None: ([], [])
+    service.transfers._collect_outbound = lambda start, end, progress=None: ([], [])
+    service.transfers._collect_dlp = lambda start, end, progress=None: ([], [])
+    messages = []
+
+    result = service.rebuild_scope("events", messages.append)
+
+    assert result["events"] == 1
+    with sqlite3.connect(tmp_path / "cache/index/events_index.db") as db:
+        row = db.execute("SELECT kind, record_id, row_json, search_text, source_file FROM event_list_rows").fetchone()
+    assert row[0:2] == ("detections", "det-1")
+    assert "hostname" in row[2]
+    assert "large" not in row[2]
+    assert str(source.resolve()) == row[4]
+    assert any("Detection 리스트 인덱스 SQLite 기록" in message for message in messages)
