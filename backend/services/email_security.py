@@ -6,6 +6,7 @@ from typing import Any, Callable
 
 from backend.services.detections import sensor_type
 from backend.services.endpoints import kst_time, load_json_list, normalize_key
+from backend.services.exceptions import ExceptionService
 
 
 XDR_RULES = {"XDR-sophos-email-maliciousurl", "XDR-sophos-email-virus", "XDR-sophos-email-impersonation"}
@@ -43,6 +44,7 @@ class EmailSecurityService:
         self.project_root = project_root
         self.detection_dir = project_root / "cache" / "detections"
         self.email_dir = project_root / "cache" / "emails"
+        self.exception_service = ExceptionService(project_root)
 
     @staticmethod
     def _files(directory: Path, start: date, end: date) -> list[Path]:
@@ -60,7 +62,10 @@ class EmailSecurityService:
     def _directory_identity(self) -> dict[str, dict[str, str]]:
         output = {}
         for user in load_json_list(self.project_root / "cache" / "users.json"):
-            entry = {"userId": str(user.get("exchangeLogin", "") or "None"), "user": str(user.get("name", "") or "None"), "dept": "미분류"}
+            principal = str(user.get("exchangeLogin", "") or user.get("userId", "") or "")
+            email = str(user.get("email", "") or "")
+            final = self.exception_service.finalize(principal=principal, email=email, user_name=user.get("name"), department=user.get("dept") or user.get("department") or "미분류")
+            entry = {"principal": principal, "userId": principal.split("\\")[-1] or "None", "user": final["user"], "dept": final["dept"]}
             for value in (user.get("email"), user.get("exchangeLogin"), user.get("name")):
                 if value:
                     output[normalize_key(value)] = entry
@@ -85,8 +90,9 @@ class EmailSecurityService:
         elif rule == "XDR-sophos-email-impersonation":
             imp = raw.get("impersonationData", {})
             if isinstance(imp, dict): ioc, detail = str(imp.get("categoryDetails") or "None"), f"{imp.get('category') or 'None'} / isImpersonation={imp.get('isImpersonation')}"
-        identity = identities.get(normalize_key(mailbox.split(",", 1)[0]), {"userId": "None", "user": "None", "dept": "미분류"})
-        return {"id": event_id, "time": kst_time(event.get("time")), "rule": rule, "mailbox": mailbox, **identity, "from": str(raw.get("mailFrom") or raw.get("from") or "None"), "to": to_text, "subject": str(raw.get("subject") or "None"), "senderIp": str(raw.get("clientIp") or "None"), "ioc": ioc, "iocSha256": ioc_sha, "detail": detail}
+        identity = identities.get(normalize_key(mailbox.split(",", 1)[0]), {"principal": "", "userId": "None", "user": "None", "dept": "미분류"})
+        final = self.exception_service.finalize(principal=identity.get("principal"), email=mailbox.split(",", 1)[0], user_name=identity.get("user"), department=identity.get("dept"))
+        return {"id": event_id, "time": kst_time(event.get("time")), "rule": rule, "mailbox": mailbox, **identity, "user": final["user"], "dept": final["dept"], "from": str(raw.get("mailFrom") or raw.get("from") or "None"), "to": to_text, "subject": str(raw.get("subject") or "None"), "senderIp": str(raw.get("clientIp") or "None"), "ioc": ioc, "iocSha256": ioc_sha, "detail": detail}
 
     def _collect_xdr(self, start: date, end: date):
         identities = self._directory_identity(); records = []; files = []
@@ -97,11 +103,11 @@ class EmailSecurityService:
                 description = event.get("detectionDescription") if isinstance(event.get("detectionDescription"), dict) else {}
                 rule = str(description.get("createdReasonId") or event.get("detectionRule") or "")
                 if sensor_type(event) != "email" and rule not in XDR_RULES: continue
-                event_id = self._id("xdr", path, index); records.append((event_id, event, self._xdr_row(event, event_id, identities)))
+                event_id = self._id("xdr", path, index); records.append((event_id, event, {**self._xdr_row(event, event_id, identities), "_sourceFile": str(path.resolve())}))
         return records, files
 
     def _collect_inbound(self, start: date, end: date):
-        records = []; files = []
+        records = []; files = []; identities = self._directory_identity()
         for path in self._files(self.email_dir, start, end):
             if not path.exists(): continue
             files.append(path.name)
@@ -109,8 +115,10 @@ class EmailSecurityService:
                 to_list = addresses(event.get("to"))
                 for recipient_index, recipient in enumerate(to_list):
                     event_id = self._id("inbound", path, index, recipient_index)
-                    row = {"id": event_id, "received": kst_time(event.get("receivedAt")), "from": (addresses([event.get("from")]) or ["None"])[0], "to": recipient, "cc": ", ".join(addresses(event.get("cc"))) or "None", "subject": str(event.get("subject") or "None"), "reason": str(event.get("reason") or "None"), "senderIp": str(event.get("clientIp") or "None")}
-                    records.append((event_id, event, row))
+                    identity = identities.get(normalize_key(recipient), {"principal": "", "userId": recipient.split("@", 1)[0], "user": recipient, "dept": "미분류"})
+                    final = self.exception_service.finalize(principal=identity.get("principal"), email=recipient, user_name=identity.get("user"), department=identity.get("dept"))
+                    row = {"id": event_id, "received": kst_time(event.get("receivedAt")), "from": (addresses([event.get("from")]) or ["None"])[0], "to": recipient, "principal": identity.get("principal", ""), "userId": identity.get("userId", "None"), "user": final["user"], "dept": final["dept"], "cc": ", ".join(addresses(event.get("cc"))) or "None", "subject": str(event.get("subject") or "None"), "reason": str(event.get("reason") or "None"), "senderIp": str(event.get("clientIp") or "None")}
+                    records.append((event_id, event, {**row, "_sourceFile": str(path.resolve())}))
         return records, files
 
     def list_records(self, kind: str, start: date, end: date, conditions: list[dict[str, str]], page: int, page_size: int, sort: str, direction: str) -> dict[str, Any]:
