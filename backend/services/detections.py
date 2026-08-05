@@ -4,7 +4,8 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from backend.services.endpoints import EndpointService, kst_time, load_json_list, normalize_key
+from backend.services.endpoints import EndpointService, endpoint_principal, kst_time, load_json_list, normalize_key
+from backend.services.event_list_index import EventListIndex
 
 
 SEARCH_FIELDS = {"all", "hostname", "dept", "username", "privateIp", "publicIp", "file", "sha256", "rule", "lineage", "rawData"}
@@ -31,10 +32,16 @@ class DetectionService:
         self.project_root = project_root
         self.cache_dir = project_root / "cache" / "detections"
         self.endpoint_service = EndpointService(project_root)
+        self.event_index = EventListIndex(project_root)
 
     def _identity_map(self) -> dict[str, dict[str, str]]:
         context = self.endpoint_service._department_context()
-        return {normalize_key(endpoint.get("hostname")): self.endpoint_service._row(endpoint, context, f"endpoint-{index}") for index, endpoint in enumerate(load_json_list(self.endpoint_service.endpoints_path))}
+        identities = {}
+        for index, endpoint in enumerate(load_json_list(self.endpoint_service.endpoints_path)):
+            row = self.endpoint_service._row(endpoint, context, f"endpoint-{index}")
+            person = endpoint.get("associatedPerson") if isinstance(endpoint.get("associatedPerson"), dict) else {}
+            identities[normalize_key(endpoint.get("hostname"))] = {**row, "principal": endpoint_principal(person, endpoint.get("hostname"))}
+        return identities
 
     def _files(self, start: date, end: date) -> list[Path]:
         files = []
@@ -66,7 +73,7 @@ class DetectionService:
         file_name, sha = file_and_sha(raw)
         return {
             "id": event_id, "time": kst_time(raw_event.get("time")), "hostname": hostname,
-            "dept": identity.get("dept", "미분류"), "username": identity.get("user", "None"),
+            "principal": identity.get("principal", ""), "dept": identity.get("dept", "미분류"), "username": identity.get("user", "None"),
             "privateIp": str(raw.get("meta_ip_address") or "None"), "publicIp": str(raw.get("meta_public_ip") or "None"),
             "file": file_name, "sha256": sha, "rule": str(rule), "lineage": lineage,
         }
@@ -83,7 +90,7 @@ class DetectionService:
                 if sensor_type(event) != "endpoint" or not event.get("time"):
                     continue
                 event_id = self._id(path, index)
-                events.append((event_id, event, self._row(event, event_id, identities)))
+                events.append((event_id, event, {**self._row(event, event_id, identities), "_sourceFile": str(path.resolve())}))
         return events, existing_files
 
     def list_detections(self, start: date, end: date, conditions: list[dict[str, str]], page: int = 1, page_size: int = 50, sort: str = "time", direction: str = "desc") -> dict[str, Any]:
@@ -94,6 +101,10 @@ class DetectionService:
         for condition in conditions:
             if condition.get("field", "all") not in SEARCH_FIELDS:
                 raise ValueError(f"Unsupported detection search field: {condition.get('field')}")
+
+        indexed = self.event_index.list_records("detections", start, end, conditions, page, page_size, sort, direction, SORT_FIELDS)
+        if indexed is not None:
+            return indexed
 
         events, files = self._events(start, end)
         filtered = []

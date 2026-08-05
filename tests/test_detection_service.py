@@ -35,3 +35,19 @@ def test_detection_conditions_are_combined_with_and(tmp_path: Path) -> None:
     }])
     result = DetectionService(tmp_path).list_detections(date(2026, 7, 22), date(2026, 7, 22), [{"field": "hostname", "query": "PC-1"}, {"field": "file", "query": "missing"}])
     assert result["pagination"]["total"] == 0
+
+
+def test_detection_list_uses_events_index_when_available(tmp_path: Path) -> None:
+    from backend.services.indexing import IndexService
+
+    service = IndexService(tmp_path)
+    service._build_events_index([
+        {"kind": "detections", "recordId": "idx-1", "eventTime": "2026-07-22 09:00:00", "rowJson": json.dumps({"id": "idx-1", "time": "2026-07-22 09:00:00", "hostname": "INDEX-PC", "rule": "Indexed"}), "searchText": "indexed index-pc", "sourceFile": "2026-07-22.json"}
+    ])
+    detections = DetectionService(tmp_path)
+    detections._events = lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("raw cache must not be read for list"))
+
+    result = detections.list_detections(date(2026, 7, 22), date(2026, 7, 22), [], 1, 50, "time", "desc")
+
+    assert result["source"]["index"] == "events_index.db"
+    assert result["items"][0]["hostname"] == "INDEX-PC"
