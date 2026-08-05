@@ -242,3 +242,5 @@ nav button.active { position:relative; overflow:hidden; animation:nav-neon 2.4s 
 .content-modal textarea { width:100%; resize:vertical; padding:12px; color:var(--table-head-text); border:1px solid var(--card-border); border-radius:8px; background:#160b25; font:inherit; font-size:12px; font-weight:400; line-height:1.5; outline:none; }
 .content-modal textarea:focus { border-color:var(--accent); box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 20%,transparent); }
 @media (max-width:750px) { .content-modal .content-form { grid-template-columns:1fr; }.content-modal .content-keyword-input { grid-column:auto; } }
+
+.dashboard-loading-inline { margin: 12px 0 0; color: var(--muted); font-weight: 800; }

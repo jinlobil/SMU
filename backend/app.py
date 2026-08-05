@@ -223,14 +223,43 @@ def restart_system_info_laborer() -> dict:
     return {"success": True, "data": data}
 
 
-@app.get("/api/dashboard")
-def get_dashboard(start: date | None = None, end: date | None = None, refresh: bool = False) -> dict:
+def _dashboard_response(loader, start: date | None, end: date | None, *args) -> dict:
     try:
-        data = dashboard_service.summary(start, end, refresh)
+        data = loader(start, end, *args)
     except ValueError as exc:
         request_id = str(uuid.uuid4())
         return error_response(request_id, "INVALID_DASHBOARD_RANGE", str(exc), 400)
     return {"success": True, "data": data}
+
+
+@app.get("/api/dashboard")
+def get_dashboard(start: date | None = None, end: date | None = None, refresh: bool = False) -> dict:
+    return _dashboard_response(dashboard_service.summary, start, end, refresh)
+
+
+@app.get("/api/dashboard/assets")
+def get_dashboard_assets(start: date | None = None, end: date | None = None) -> dict:
+    return _dashboard_response(dashboard_service.assets, start, end)
+
+
+@app.get("/api/dashboard/mix-trend")
+def get_dashboard_mix_trend(start: date | None = None, end: date | None = None) -> dict:
+    return _dashboard_response(dashboard_service.mix_trend, start, end)
+
+
+@app.get("/api/dashboard/top-detection")
+def get_dashboard_top_detection(start: date | None = None, end: date | None = None) -> dict:
+    return _dashboard_response(dashboard_service.top_detection, start, end)
+
+
+@app.get("/api/dashboard/top-mail")
+def get_dashboard_top_mail(start: date | None = None, end: date | None = None) -> dict:
+    return _dashboard_response(dashboard_service.top_mail, start, end)
+
+
+@app.get("/api/dashboard/top-file")
+def get_dashboard_top_file(start: date | None = None, end: date | None = None) -> dict:
+    return _dashboard_response(dashboard_service.top_file, start, end)
 
 
 @app.get("/api/firewall/configuration")

@@ -92,6 +92,25 @@ def test_dashboard_card_titles_have_no_decorative_prefixes():
         assert prefix not in dashboard
 
 
+
+
+def test_dashboard_uses_grouped_async_index_api_calls():
+    dashboard = (ROOT / "frontend/src/pages/DashboardPage.tsx").read_text(encoding="utf-8")
+
+    for endpoint in (
+        "/api/dashboard/assets",
+        "/api/dashboard/mix-trend",
+        "/api/dashboard/top-detection",
+        "/api/dashboard/top-mail",
+        "/api/dashboard/top-file",
+    ):
+        assert endpoint in dashboard
+    assert "fetch(`/api/dashboard${params}`)" not in dashboard
+    assert "topDetection" in dashboard
+    assert "topMail" in dashboard
+    assert "topFile" in dashboard
+    assert "dashboard-loading-inline" in dashboard
+
 def test_sidebar_opens_only_from_title_region_and_uses_full_width_content():
     app = (ROOT / "frontend/src/App.tsx").read_text(encoding="utf-8")
     styles = (ROOT / "frontend/src/styles.css").read_text(encoding="utf-8")

@@ -16,10 +16,18 @@ class EventListIndex:
         if not self.path.exists():
             return False
         try:
-            with sqlite3.connect(self.path) as db:
+            with self._read_connection() as db:
                 return bool(db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='event_list_rows'").fetchone())
         except sqlite3.Error:
             return False
+
+    def _read_connection(self) -> sqlite3.Connection:
+        uri = f"{self.path.resolve().as_uri()}?mode=ro"
+        connection = sqlite3.connect(uri, uri=True, timeout=30)
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA busy_timeout=30000")
+        connection.execute("PRAGMA query_only=ON")
+        return connection
 
     def _source_paths(self, kind: str, start: date, end: date) -> list[Path]:
         specs = {
@@ -45,6 +53,74 @@ class EventListIndex:
         index_mtime = self.path.stat().st_mtime_ns
         return all(not path.exists() or path.stat().st_mtime_ns <= index_mtime for path in self._source_paths(kind, start, end))
 
+    def date_bounds(self) -> tuple[date, date] | None:
+        if not self.available():
+            return None
+        with self._read_connection() as db:
+            row = db.execute("SELECT MIN(substr(event_time,1,10)), MAX(substr(event_time,1,10)) FROM event_list_rows WHERE event_time <> ''").fetchone()
+        if not row or not row[0] or not row[1]:
+            return None
+        return date.fromisoformat(str(row[0])), date.fromisoformat(str(row[1]))
+
+    def count_by_kind(self, start: date, end: date, kinds: list[str]) -> dict[str, int]:
+        if not kinds or not self.available():
+            return {kind: 0 for kind in kinds}
+        placeholders = ",".join("?" for _ in kinds)
+        with self._read_connection() as db:
+            rows = db.execute(
+                f"""
+                SELECT kind, COUNT(*) AS total
+                FROM event_list_rows
+                WHERE kind IN ({placeholders}) AND substr(event_time,1,10) BETWEEN ? AND ?
+                GROUP BY kind
+                """,
+                (*kinds, start.isoformat(), end.isoformat()),
+            ).fetchall()
+        totals = {kind: 0 for kind in kinds}
+        totals.update({str(row["kind"]): int(row["total"] or 0) for row in rows})
+        return totals
+
+    def daily_counts(self, start: date, end: date, kinds: list[str]) -> dict[str, dict[str, int]]:
+        if not kinds or not self.available():
+            return {kind: {} for kind in kinds}
+        placeholders = ",".join("?" for _ in kinds)
+        with self._read_connection() as db:
+            rows = db.execute(
+                f"""
+                SELECT kind, substr(event_time,1,10) AS day, COUNT(*) AS total
+                FROM event_list_rows
+                WHERE kind IN ({placeholders}) AND substr(event_time,1,10) BETWEEN ? AND ?
+                GROUP BY kind, day
+                """,
+                (*kinds, start.isoformat(), end.isoformat()),
+            ).fetchall()
+        output = {kind: {} for kind in kinds}
+        for row in rows:
+            output[str(row["kind"])][str(row["day"])] = int(row["total"] or 0)
+        return output
+
+    def rows_for_kind(self, kind: str, start: date, end: date) -> list[dict[str, str]]:
+        if not self.available():
+            return []
+        with self._read_connection() as db:
+            rows = db.execute(
+                """
+                SELECT row_json
+                FROM event_list_rows
+                WHERE kind=? AND substr(event_time,1,10) BETWEEN ? AND ?
+                """,
+                (kind, start.isoformat(), end.isoformat()),
+            ).fetchall()
+        output: list[dict[str, str]] = []
+        for item in rows:
+            try:
+                row = json.loads(item["row_json"] or "{}")
+            except json.JSONDecodeError:
+                row = {}
+            if isinstance(row, dict):
+                output.append({str(key): str(value) for key, value in row.items()})
+        return output
+
     def require_records(
         self,
         kind: str,
@@ -59,8 +135,7 @@ class EventListIndex:
     ) -> dict[str, Any]:
         if not self.available():
             return {"items": [], "pagination": {"page": page, "pageSize": page_size, "total": 0, "totalPages": 1}, "source": {"directory": str(self.path), "files": [], "index": "events_index.db"}}
-        with sqlite3.connect(self.path) as db:
-            db.row_factory = sqlite3.Row
+        with self._read_connection() as db:
             rows = db.execute(
                 """
                 SELECT record_id, event_time, row_json, search_text, source_file
