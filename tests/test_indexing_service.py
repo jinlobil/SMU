@@ -1,3 +1,4 @@
+import json
 import sqlite3
 from datetime import date
 import pytest
@@ -168,3 +169,31 @@ def test_detection_list_scope_builds_real_list_index_without_raw_payload(tmp_pat
     assert "large" not in row[2]
     assert str(source.resolve()) == row[4]
     assert any("Detection 리스트 인덱스 SQLite 기록" in message for message in messages)
+
+
+def test_incremental_rebuild_updates_detection_list_index_for_scheduler(tmp_path):
+    service = IndexService(tmp_path)
+    service._build_sensitive([], [])
+    service._build_timeline([])
+    service._build_events_index([
+        {"kind": "detections", "recordId": "old", "eventTime": "2026-08-04 01:00:00", "rowJson": json.dumps({"id": "old", "time": "2026-08-04 01:00:00", "hostname": "OLD"}), "searchText": "old", "sourceFile": "old.json"}
+    ])
+    service.sensitive.file_records = lambda sources, start, end, progress: []
+    service.sensitive.site_records = lambda start, end, progress: []
+    service.timeline.events_between = lambda start, end, sources, progress: []
+    service.detections._events = lambda start, end, progress=None: ([
+        ("new", {}, {"id": "new", "time": "2026-08-04 02:00:00", "hostname": "NEW", "_sourceFile": str((tmp_path / "cache/detections/2026-08-04.json").resolve())})
+    ], [])
+    service.email._collect_xdr = lambda start, end, progress=None: ([], [])
+    service.email._collect_inbound = lambda start, end, progress=None: ([], [])
+    service.transfers._collect_outbound = lambda start, end, progress=None: ([], [])
+    service.transfers._collect_dlp = lambda start, end, progress=None: ([], [])
+
+    result = service.rebuild_range(date(2026, 8, 4), date(2026, 8, 4), lambda _message: None)
+
+    assert result["events"] == 1
+    with sqlite3.connect(tmp_path / "cache/index/events_index.db") as db:
+        rows = db.execute("SELECT record_id,row_json FROM event_list_rows ORDER BY record_id").fetchall()
+    assert len(rows) == 1
+    assert rows[0][0] == "new"
+    assert "NEW" in rows[0][1]
