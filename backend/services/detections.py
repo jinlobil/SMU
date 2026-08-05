@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from backend.services.endpoints import EndpointService, endpoint_principal, kst_time, load_json_list, normalize_key
+from backend.services.event_list_index import EventListIndex
 
 
 SEARCH_FIELDS = {"all", "hostname", "dept", "username", "privateIp", "publicIp", "file", "sha256", "rule", "lineage", "rawData"}
@@ -31,6 +32,7 @@ class DetectionService:
         self.project_root = project_root
         self.cache_dir = project_root / "cache" / "detections"
         self.endpoint_service = EndpointService(project_root)
+        self.event_index = EventListIndex(project_root)
 
     def _identity_map(self) -> dict[str, dict[str, str]]:
         context = self.endpoint_service._department_context()
@@ -99,6 +101,10 @@ class DetectionService:
         for condition in conditions:
             if condition.get("field", "all") not in SEARCH_FIELDS:
                 raise ValueError(f"Unsupported detection search field: {condition.get('field')}")
+
+        indexed = self.event_index.list_records("detections", start, end, conditions, page, page_size, sort, direction, SORT_FIELDS)
+        if indexed is not None:
+            return indexed
 
         events, files = self._events(start, end)
         filtered = []

@@ -259,4 +259,5 @@ def test_config_general_and_data_management_cards_are_split() -> None:
     assert '<ConfigPage section="data" />' in app
     assert '{section==="data"&&<>' in page
     assert '{section==="general"&&<>' in page
+    assert page.index('Process Monitor') < page.index('UI Color Settings') < page.index('Runtime & Logs')
     assert '<h1>{section==="data"?"Data Management":"Config"}</h1>' in page

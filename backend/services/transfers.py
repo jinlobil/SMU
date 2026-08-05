@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from backend.services.endpoints import EndpointService, endpoint_principal, load_json_list, normalize_key
+from backend.services.event_list_index import EventListIndex
 
 
 EVENT_NAMES = {"Content Threat Detected": "탐지됨", "Content Threat Blocked": "차단"}
@@ -31,6 +32,7 @@ class TransferService:
         self.dlp_dir = project_root / "cache" / "dlp"
         self.outbound_dir = project_root / "cache" / "mailscreen"
         self.exception_service = self.endpoint_service.exception_service
+        self.event_index = EventListIndex(project_root)
 
     @staticmethod
     def _id(kind: str, path: Path, index: int) -> str:
@@ -90,6 +92,10 @@ class TransferService:
         if kind not in configs or start > end or direction not in {"asc", "desc"}: raise ValueError("Invalid transfer query")
         collector, fields = configs[kind]
         if sort not in fields: raise ValueError(f"Unsupported sort field: {sort}")
+        indexed = self.event_index.list_records(kind, start, end, conditions, page, page_size, sort, direction, fields)
+        if indexed is not None:
+            return indexed
+
         records, files = collector(start, end); output = []
         for _record_id, raw, row in records:
             matches = True
