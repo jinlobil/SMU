@@ -321,7 +321,8 @@ def config_status() -> dict:
     indexes = {}
     for name, relative in {"app": "cache/index/app_cache.db", "timeline": "cache/index/timeline_index.db", "events": "cache/index/events_index.db", "dashboard": "cache/index/web_dashboard_summary.json"}.items():
         path = PROJECT_ROOT / relative
-        indexes[name] = {"exists": path.exists(), "bytes": path.stat().st_size if path.exists() else 0}
+        stat = path.stat() if path.exists() else None
+        indexes[name] = {"exists": path.exists(), "bytes": stat.st_size if stat else 0, "latest": stat.st_mtime if stat else None}
     return {"success": True, "data": {"sources": sources, "indexes": indexes, "indexDatabases": index_maintenance_service.databases(), "logs": str(PROJECT_ROOT / "runtime/logs")}}
 
 

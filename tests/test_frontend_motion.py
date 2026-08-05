@@ -129,6 +129,9 @@ def test_hardware_monitor_shows_indexer_status_and_manual_restart():
     assert 'restartMonitor("indexer")' in page
     assert "monitor.indexer.lastHeartbeatAt" in page
     assert "Process Monitor" in page
+    assert "process-description" in page
+    assert "원본 캐시 수집 작업" in page
+    assert "화면 리스트·타임라인·민감 인덱스" in page
     assert "<h2>Hardware Monitor</h2>" not in page
     assert "스마트 캐시 데이터 인덱싱" in page
     assert "전체 캐시 인덱싱" in page
@@ -238,11 +241,27 @@ def test_app_starts_on_dashboard_and_config_links_share_subnav_hover():
     assert "webbrowser.open" not in launcher
 
 
+
+def test_sophos_detection_pages_hide_manual_refresh_and_use_clear_labels() -> None:
+    detection = (ROOT / "frontend/src/pages/DetectionPage.tsx").read_text(encoding="utf-8")
+    email = (ROOT / "frontend/src/pages/EmailSecurityPage.tsx").read_text(encoding="utf-8")
+    transfer = (ROOT / "frontend/src/pages/TransferPage.tsx").read_text(encoding="utf-8")
+
+    assert "RangeRefreshButton" not in detection
+    assert "RangeRefreshButton" not in email
+    assert "Sophos Detection XDR 탐지 이벤트" in detection
+    assert "Endpoint 센서 탐지" not in detection
+    assert "조회 기간 내 일별 파일" in transfer
+    assert "cache/dlp" not in transfer
+    assert "cache/mailscreen" not in transfer
+
 def test_config_exposes_friendly_index_vacuum_controls() -> None:
     page = (ROOT / "frontend/src/pages/ConfigPage.tsx").read_text(encoding="utf-8")
     assert "민감 콘텐츠 인덱스 DB" in page
     assert "타임라인 인덱스 DB" in page
     assert "Detection 리스트 인덱스 DB" in page
+    assert "Cache & Index Status" in page
+    assert "status.indexes).map" in page
     assert "/api/jobs/index/vacuum" in page
     assert "timeline_index.db VACUUM" not in page
     assert "민감 콘텐츠 전체 캐시 인덱싱" in page
