@@ -10,7 +10,7 @@ import traceback
 import urllib.error
 import urllib.request
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -21,6 +21,8 @@ from system_monitor.logging_utils import configure_agent_logging
 
 
 TARGETS = {"detections", "inbound", "dlp", "outbound", "endpoints", "organizations", "users"}
+DAILY_TARGETS = {"detections", "inbound", "dlp", "outbound"}
+KST = timezone(timedelta(hours=9))
 
 
 class FetcherAgent:
@@ -54,6 +56,7 @@ class FetcherAgent:
     def _initialize_database(self) -> None:
         with self._connect() as db:
             db.execute("CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, status TEXT NOT NULL, message TEXT NOT NULL, targets TEXT NOT NULL, range_start TEXT, range_end TEXT, chain_index INTEGER NOT NULL, result TEXT, error TEXT, created_at TEXT NOT NULL, started_at TEXT, finished_at TEXT)")
+            db.execute("CREATE TABLE IF NOT EXISTS collection_checkpoints (target TEXT PRIMARY KEY, last_finalized_date TEXT NOT NULL, finalized_at TEXT NOT NULL)")
             db.execute("UPDATE jobs SET status='queued', message='Fetcher 재시작 후 수집 작업 복구 중', started_at=NULL WHERE status='running'")
 
     def submit(self, targets: list[str], range_start: str | None, range_end: str | None, chain_index: bool = False) -> dict:
@@ -109,6 +112,41 @@ class FetcherAgent:
         if target == "organizations": return service.refresh_organizations(progress)
         return service.refresh_users(progress)
 
+    @staticmethod
+    def _local_today() -> date:
+        return datetime.now(KST).date()
+
+    def _last_finalized_date(self, target: str) -> date | None:
+        with self._connect() as db:
+            row = db.execute("SELECT last_finalized_date FROM collection_checkpoints WHERE target=?", (target,)).fetchone()
+        return date.fromisoformat(row["last_finalized_date"]) if row else None
+
+    def _mark_finalized(self, target: str, day: date) -> None:
+        with self._connect() as db:
+            db.execute(
+                "INSERT INTO collection_checkpoints(target,last_finalized_date,finalized_at) VALUES(?,?,?) "
+                "ON CONFLICT(target) DO UPDATE SET last_finalized_date=excluded.last_finalized_date, finalized_at=excluded.finalized_at",
+                (target, day.isoformat(), self._now()),
+            )
+
+    def _collect_scheduled_target(self, service: RefreshService, target: str, today: date, progress) -> dict:
+        if target not in DAILY_TARGETS:
+            return self._collect(service, target, today, today, progress)
+        yesterday = today - timedelta(days=1)
+        checkpoint = self._last_finalized_date(target)
+        next_day = checkpoint + timedelta(days=1) if checkpoint else yesterday
+        finalized = []
+        while next_day <= yesterday:
+            progress(f"{next_day.isoformat()} 전일 데이터 최종 수집 중")
+            result = self._collect(service, target, next_day, next_day, progress)
+            self._mark_finalized(target, next_day)
+            finalized.append({"date": next_day.isoformat(), "data": result})
+            progress(f"{next_day.isoformat()} 전일 데이터 확정 완료")
+            next_day += timedelta(days=1)
+        progress(f"{today.isoformat()} 당일 데이터 최신화 중")
+        current = self._collect(service, target, today, today, progress)
+        return {"mode": "daily-rollover", "finalizedDays": finalized, "today": current}
+
     def _notify_watchdog(self, job_id: str) -> dict:
         last_error = ""
         for attempt in range(3):
@@ -132,8 +170,10 @@ class FetcherAgent:
             if not row:
                 self.wake.wait(1); self.wake.clear(); continue
             job_id = row["id"]; targets = json.loads(row["targets"])
-            start = date.fromisoformat(row["range_start"]) if row["range_start"] else date.today()
-            end = date.fromisoformat(row["range_end"]) if row["range_end"] else date.today()
+            today = self._local_today()
+            start = date.fromisoformat(row["range_start"]) if row["range_start"] else today
+            end = date.fromisoformat(row["range_end"]) if row["range_end"] else today
+            scheduled_rollover = bool(row["chain_index"] and not row["range_start"] and not row["range_end"])
             self.current_job_id = job_id
             self._update(job_id, status="running", message="수집 작업 시작", started_at=self._now())
             try:
@@ -142,7 +182,9 @@ class FetcherAgent:
                     prefix = f"FETCHING · {number}/{len(targets)} · {target}"
                     self._update(job_id, message=f"{prefix} · 준비 중")
                     try:
-                        results[target] = {"status": "SUCCESS", "data": self._collect(service, target, start, end, lambda message, p=prefix: self._update(job_id, message=f"{p} · {message}"))}
+                        progress = lambda message, p=prefix: self._update(job_id, message=f"{p} · {message}")
+                        data = self._collect_scheduled_target(service, target, today, progress) if scheduled_rollover else self._collect(service, target, start, end, progress)
+                        results[target] = {"status": "SUCCESS", "data": data}
                         self._update(job_id, message=f"{prefix} · 완료")
                     except Exception as exc:
                         failures[target] = f"{type(exc).__name__}: {exc}"

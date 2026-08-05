@@ -1,5 +1,5 @@
 import json, logging, os, re, threading, time, uuid
-from datetime import date, timedelta
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -140,12 +140,10 @@ class SchedulerService:
                 self.state["lastResult"] = "수집 작업 실행 중"
                 self.state.update(phase="collecting", currentTarget=None, currentMessage="수집 작업 준비 중")
                 self._persist_locked()
-            today = date.today()
-            start = today - timedelta(days=1)
             messages = []; targets = self.get()["targets"]
             if targets and self.index is not None and hasattr(self.index, "start_fetch_job"):
                 try:
-                    fetch_job = self.index.start_fetch_job(targets, start, today, chain_index=True)
+                    fetch_job = self.index.start_fetch_job(targets, None, None, chain_index=True)
                     result = self.index.wait_for_fetch_job(fetch_job, lambda message: self._update_progress("collecting" if "FETCHING" in message or "수집" in message else "indexing", "fetcher", message), wait_for_index=True)
                     for target in targets:
                         target_result = result.get(target) or {"status": "FAIL", "error": "결과 없음"}

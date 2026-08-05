@@ -1,3 +1,7 @@
+from datetime import date
+
+import pytest
+
 from system_monitor.fetcher import FetcherAgent
 
 
@@ -53,3 +57,46 @@ def test_fetcher_single_cache_job_does_not_request_index(tmp_path, monkeypatch):
     assert current["status"] == "completed"
     assert current["result"]["endpoints"]["status"] == "SUCCESS"
     assert "indexJob" not in current["result"]
+
+
+def test_scheduled_daily_collection_finalizes_yesterday_only_once(tmp_path, monkeypatch):
+    agent = FetcherAgent(tmp_path)
+    calls = []
+    monkeypatch.setattr(agent, "_collect", lambda _service, target, start, end, _progress: calls.append((target, start, end)) or {"rows": 1})
+
+    first = agent._collect_scheduled_target(object(), "detections", date(2026, 8, 4), lambda _message: None)
+    second = agent._collect_scheduled_target(object(), "detections", date(2026, 8, 4), lambda _message: None)
+    next_day = agent._collect_scheduled_target(object(), "detections", date(2026, 8, 5), lambda _message: None)
+
+    assert calls == [
+        ("detections", date(2026, 8, 3), date(2026, 8, 3)),
+        ("detections", date(2026, 8, 4), date(2026, 8, 4)),
+        ("detections", date(2026, 8, 4), date(2026, 8, 4)),
+        ("detections", date(2026, 8, 4), date(2026, 8, 4)),
+        ("detections", date(2026, 8, 5), date(2026, 8, 5)),
+    ]
+    assert [item["date"] for item in first["finalizedDays"]] == ["2026-08-03"]
+    assert second["finalizedDays"] == []
+    assert [item["date"] for item in next_day["finalizedDays"]] == ["2026-08-04"]
+
+
+def test_failed_daily_finalization_does_not_advance_checkpoint(tmp_path, monkeypatch):
+    agent = FetcherAgent(tmp_path)
+    monkeypatch.setattr(agent, "_collect", lambda *_args: (_ for _ in ()).throw(RuntimeError("temporary failure")))
+
+    with pytest.raises(RuntimeError, match="temporary failure"):
+        agent._collect_scheduled_target(object(), "inbound", date(2026, 8, 4), lambda _message: None)
+
+    assert agent._last_finalized_date("inbound") is None
+
+
+def test_snapshot_targets_do_not_use_daily_finalization(tmp_path, monkeypatch):
+    agent = FetcherAgent(tmp_path)
+    calls = []
+    monkeypatch.setattr(agent, "_collect", lambda _service, target, start, end, _progress: calls.append((target, start, end)) or {"rows": 1})
+
+    result = agent._collect_scheduled_target(object(), "users", date(2026, 8, 4), lambda _message: None)
+
+    assert result == {"rows": 1}
+    assert calls == [("users", date(2026, 8, 4), date(2026, 8, 4))]
+    assert agent._last_finalized_date("users") is None
