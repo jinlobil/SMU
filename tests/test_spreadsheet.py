@@ -6,6 +6,8 @@ from fastapi.responses import FileResponse, JSONResponse
 
 import backend.app as app_module
 from backend.services.spreadsheet import write_xlsx
+from backend.services.watchdog_client import WatchdogManager
+from system_monitor.laborer import decode_job_query
 
 
 def test_write_xlsx_creates_excel_workbook_with_headers_and_rows(tmp_path: Path) -> None:
@@ -83,3 +85,27 @@ def test_report_job_payload_includes_selected_sections(monkeypatch) -> None:
 
     assert response["data"]["job_type"] == "report"
     assert captured["value"]["sections"] == ["detections", "dlp"]
+
+
+def test_watchdog_transport_preserves_selected_export_columns(tmp_path: Path, monkeypatch) -> None:
+    manager = WatchdogManager(tmp_path)
+    captured = {}
+    monkeypatch.setattr(manager, "ensure", lambda: None)
+    monkeypatch.setattr(manager, "request", lambda path, *args, **kwargs: captured.setdefault("path", path) or {"id": "job"})
+    monkeypatch.setattr(manager, "_report_job_state", lambda result, _label: result)
+
+    manager.start_laborer_job("export", kind="detections", columns=["time", "hostname"], start="2026-08-01", end="2026-08-05")
+
+    job_type, payload = decode_job_query(captured["path"].split("?", 1)[1])
+    assert job_type == "export"
+    assert payload["columns"] == ["time", "hostname"]
+
+
+def test_laborer_query_decoder_keeps_report_sections_as_list() -> None:
+    from urllib.parse import urlencode
+
+    query = urlencode({"type": "report", "sections": ["detections", "dlp"]}, doseq=True)
+    job_type, payload = decode_job_query(query)
+
+    assert job_type == "report"
+    assert payload["sections"] == ["detections", "dlp"]

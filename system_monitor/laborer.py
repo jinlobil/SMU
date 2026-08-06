@@ -24,6 +24,14 @@ from system_monitor.collector import acquire_singleton, atomic_json
 from system_monitor.logging_utils import configure_agent_logging
 
 
+def decode_job_query(query: str) -> tuple[str, dict]:
+    """Decode a job request without flattening list-valued configuration."""
+    parsed = parse_qs(query)
+    job_type = str(parsed.pop("type", [""])[0])
+    structured = {"columns", "sections"}
+    return job_type, {key: values if key in structured else values[0] for key, values in parsed.items()}
+
+
 class LaborerAgent:
     def __init__(self, root: Path):
         self.root = root
@@ -142,8 +150,9 @@ def handler_for(agent: LaborerAgent):
         def do_POST(self):
             parsed = urlparse(self.path)
             if parsed.path == "/jobs":
-                query = parse_qs(parsed.query); payload = {key: values[0] for key, values in query.items()}
-                try: self._send(202, agent.submit(str(payload.pop("type", "")), payload))
+                try:
+                    job_type, payload = decode_job_query(parsed.query)
+                    self._send(202, agent.submit(job_type, payload))
                 except (ValueError, TypeError) as exc: self._send(400, {"error": str(exc)})
                 return
             if parsed.path == "/shutdown": self._send(202, {"accepted": True}); threading.Thread(target=agent.stop.set, daemon=True).start(); return

@@ -156,7 +156,10 @@ class WatchdogManager:
 
     def start_laborer_job(self, job_type: str, **payload) -> dict:
         self.ensure()
-        query = urlencode({"type": job_type, **{key: value for key, value in payload.items() if value is not None}})
+        # Keep structured values (selected export columns/report sections) intact
+        # while the request is proxied through the watchdog and on to Laborer.
+        job_payload = {key: value for key, value in payload.items() if value is not None}
+        query = urlencode({"type": job_type, **job_payload}, doseq=True)
         return self._report_job_state(self.request(f"/laborer/jobs?{query}", "POST", timeout=20), "Laborer")
 
     def laborer_job(self, job_id: str) -> dict | None:

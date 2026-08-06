@@ -263,4 +263,19 @@ nav button.active { position:relative; overflow:hidden; animation:nav-neon 2.4s 
 .export-fields input { accent-color:#ff4d8d; }
 .export-fields span { color:#fff; font-weight:900; }
 .export-fields small { grid-column:2; color:#ad96bf; font-size:10px; }
+.export-content { display:grid; gap:18px; min-width:0; }
+.export-preview { min-width:0; padding:16px; border:1px solid var(--card-border); border-radius:14px; background:rgba(11,5,25,.55); }
+.export-preview>header { display:flex; align-items:center; justify-content:space-between; gap:14px; margin-bottom:12px; }
+.export-preview>header div { display:grid; gap:3px; }
+.export-preview>header b { color:#ffb347; font-size:15px; }
+.export-preview>header small,.export-preview>header span { color:#ad96bf; font-size:11px; }
+.export-preview-table { overflow:auto; border:1px solid var(--card-border); border-radius:10px; }
+.export-preview-table table { width:max-content; min-width:100%; border-collapse:collapse; background:#170a28; }
+.export-preview-table th,.export-preview-table td { max-width:220px; padding:11px 14px; overflow:hidden; border-right:1px solid var(--card-border); text-align:left; text-overflow:ellipsis; white-space:nowrap; }
+.export-preview-table th { color:#ff63aa; background:#251039; font-size:11px; }
+.export-preview-table td { color:#dfcde8; font-size:11px; }
+.export-preview-empty { margin:0; padding:24px; color:#ad96bf; text-align:center; }
+.report-preview { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; }
+.report-preview article { display:grid; gap:5px; padding:14px; border:1px solid var(--card-border); border-radius:10px; background:#1b0d2d; }
+.report-preview article small { color:#ff63aa; font-size:9px; }.report-preview article b { color:#fff; }.report-preview article span { color:#ad96bf; font-size:10px; }
 @media (max-width:1200px) { .export-tabs { grid-template-columns:repeat(3,1fr); }.export-workspace { grid-template-columns:1fr; } }

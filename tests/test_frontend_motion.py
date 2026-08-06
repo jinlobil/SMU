@@ -236,7 +236,11 @@ def test_export_management_is_separate_tab_with_mini_tabs_and_column_selection()
     assert "selectedSections" in page
     assert "columns:" in page
     assert "sections:" in page
+    assert "실시간 출력 미리보기" in page
+    assert "previewColumns" in page
+    assert "previewSections" in page
     assert ".export-tabs" in styles
+    assert ".export-preview-table" in styles
 
 def test_config_process_monitor_includes_fetcher():
     page = (ROOT / "frontend/src/pages/ConfigPage.tsx").read_text(encoding="utf-8")
