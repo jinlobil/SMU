@@ -15,9 +15,10 @@ import { SystemInfoPage } from "./pages/SystemInfoPage";
 import { IntegrationManagementPage } from "./pages/IntegrationManagementPage";
 import { ExceptionManagementPage } from "./pages/ExceptionManagementPage";
 import { ContentManagementPage } from "./pages/ContentManagementPage";
+import { ExportManagementPage } from "./pages/ExportManagementPage";
 
 
-type View = "dashboard" | "endpoint" | "organization" | "detectionEndpoint" | "emailXdr" | "inbound" | "outbound" | "dlp" | "timeline" | "sensitiveFiles" | "sensitiveSites" | "firewall" | "easyQuery" | "layout" | "config" | "dataManagement" | "integrationManagement" | "exceptionManagement" | "contentManagement" | "systemInfo";
+type View = "dashboard" | "endpoint" | "organization" | "detectionEndpoint" | "emailXdr" | "inbound" | "outbound" | "dlp" | "timeline" | "sensitiveFiles" | "sensitiveSites" | "firewall" | "easyQuery" | "layout" | "config" | "dataManagement" | "exportManagement" | "integrationManagement" | "exceptionManagement" | "contentManagement" | "systemInfo";
 type DetectionFilter = { field: string; query: string; start?: string; end?: string };
 const menus = ["Dashboard", "Detection", "Forensics", "Response", "Asset", "Lab", "Config"];
 const particles = Array.from({ length: 36 }, (_, index) => index);
@@ -122,6 +123,7 @@ export function App() {
           {menu === "Config" && activeMenu === "Config" && <div className="subnav">
             <a href="#config-general" className={view === "config" ? "selected" : ""} onClick={(event) => { event.preventDefault(); setView("config"); }}>General</a>
             <a href="#config-data-management" className={view === "dataManagement" ? "selected" : ""} onClick={(event) => { event.preventDefault(); setView("dataManagement"); }}>Data Management</a>
+            <a href="#config-export-management" className={view === "exportManagement" ? "selected" : ""} onClick={(event) => { event.preventDefault(); setView("exportManagement"); }}>Export Management</a>
             <a href="#config-integration-management" className={view === "integrationManagement" ? "selected" : ""} onClick={(event) => { event.preventDefault(); setView("integrationManagement"); }}>Integration Management</a>
             <a href="#config-exception-management" className={view === "exceptionManagement" ? "selected" : ""} onClick={(event) => { event.preventDefault(); setView("exceptionManagement"); }}>Exception Management</a>
             <a href="#config-content-management" className={view === "contentManagement" ? "selected" : ""} onClick={(event) => { event.preventDefault(); setView("contentManagement"); }}>Content Management</a>
@@ -147,6 +149,7 @@ export function App() {
         {view === "layout" && <LayoutPage />}
         {view === "config" && <ConfigPage section="general" />}
         {view === "dataManagement" && <ConfigPage section="data" />}
+        {view === "exportManagement" && <ExportManagementPage />}
         {view === "integrationManagement" && <IntegrationManagementPage />}
         {view === "exceptionManagement" && <ExceptionManagementPage />}
         {view === "contentManagement" && <ContentManagementPage />}

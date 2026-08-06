@@ -35,6 +35,7 @@ from backend.services.integrations import IntegrationService
 from backend.services.index_maintenance import IndexMaintenanceService
 from backend.services.exceptions import ExceptionService
 from backend.services.content import ContentService
+from backend.services.exporting import export_headers, normalize_export_columns, normalize_report_sections, schema_payload
 
 
 configure_logging()
@@ -503,9 +504,10 @@ def start_report(payload: dict = Body()) -> dict:
         start, end = date.fromisoformat(str(payload.get("start", ""))), date.fromisoformat(str(payload.get("end", "")))
         if start > end:
             raise ValueError("start date must not be after end date")
+        sections = normalize_report_sections(payload.get("sections"))
     except ValueError as exc:
         return error_response(str(uuid.uuid4()), "INVALID_REPORT_RANGE", str(exc), 400)
-    return {"success": True, "data": watchdog_manager.start_laborer_job("report", start=start.isoformat(), end=end.isoformat())}
+    return {"success": True, "data": watchdog_manager.start_laborer_job("report", start=start.isoformat(), end=end.isoformat(), sections=sections)}
 
 
 @app.get("/api/config/report/{filename}")
@@ -523,24 +525,32 @@ def export_config_data(kind: str, start: date, end: date):
     collector = collectors.get(kind)
     if collector is None:
         return error_response(str(uuid.uuid4()), "INVALID_EXPORT", "Unknown export type", 400)
+    try:
+        columns = normalize_export_columns(kind, None)
+    except ValueError as exc:
+        return error_response(str(uuid.uuid4()), "INVALID_EXPORT", str(exc), 400)
     rows = [row for _record_id, _raw, row in collector(start, end)[0]]
     export_dir = PROJECT_ROOT / "exports"; export_dir.mkdir(parents=True, exist_ok=True)
     path = export_dir / f"{kind}_{start}_{end}.xlsx"
-    write_xlsx(path, rows)
+    write_xlsx(path, rows, columns=columns, headers=export_headers(kind))
     return FileResponse(path, filename=path.name, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
+@app.get("/api/config/export/schema")
+def export_schema() -> dict:
+    return {"success": True, "data": schema_payload()}
 
 
 @app.post("/api/jobs/export", status_code=202)
 def start_export(payload: dict = Body()) -> dict:
     kind = str(payload.get("kind", ""))
-    if kind not in {"detections", "xdr", "inbound", "outbound", "dlp"}:
-        return error_response(str(uuid.uuid4()), "INVALID_EXPORT", "Unknown export type", 400)
     try:
+        columns = normalize_export_columns(kind, payload.get("columns"))
         start, end = date.fromisoformat(str(payload.get("start", ""))), date.fromisoformat(str(payload.get("end", "")))
         if start > end: raise ValueError("start date must not be after end date")
     except ValueError as exc:
-        return error_response(str(uuid.uuid4()), "INVALID_EXPORT_RANGE", str(exc), 400)
-    return {"success": True, "data": watchdog_manager.start_laborer_job("export", kind=kind, start=start.isoformat(), end=end.isoformat())}
+        return error_response(str(uuid.uuid4()), "INVALID_EXPORT", str(exc), 400)
+    return {"success": True, "data": watchdog_manager.start_laborer_job("export", kind=kind, start=start.isoformat(), end=end.isoformat(), columns=columns)}
 
 
 @app.get("/api/config/export/file/{filename}")

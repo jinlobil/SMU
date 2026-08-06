@@ -11,6 +11,7 @@ from backend.services.endpoints import EndpointService, endpoint_principal, load
 from backend.services.transfers import TransferService
 from backend.services import legacy_report
 from backend.services.exceptions import ExceptionService, normalize_identity
+from backend.services.exporting import normalize_report_sections
 
 
 class ReportService:
@@ -24,7 +25,8 @@ class ReportService:
         self.endpoints = EndpointService(root)
         self.exceptions = ExceptionService(root)
 
-    def _configure_legacy_data(self) -> None:
+    def _configure_legacy_data(self, sections: list[str] | None = None) -> None:
+        sections = normalize_report_sections(sections)
         legacy_report.REPORT_DIR = str(self.root / "reports")
         legacy_report.ENDPOINTS = load_json_list(self.root / "cache/endpoints.json")
         # The renderer receives an in-memory, processed copy.  Apply display-name
@@ -67,16 +69,16 @@ class ReportService:
         def dates(start: str, end: str) -> tuple[date, date]:
             return date.fromisoformat(start), date.fromisoformat(end)
 
-        legacy_report.load_endpoint_detections_by_range = lambda start, end: [raw for _id, raw, _row in self.detections._events(*dates(start, end))[0]]
-        legacy_report.load_xdr_email_detections_by_range = lambda start, end: [raw for _id, raw, _row in self.email._collect_xdr(*dates(start, end))[0]]
-        legacy_report.load_emails_by_range = lambda start, end: [raw for _id, raw, _row in self.email._collect_inbound(*dates(start, end))[0]]
-        legacy_report.load_mailscreen_by_range = lambda start, end: [raw for _id, raw, _row in self.transfers._collect_outbound(*dates(start, end))[0]]
-        legacy_report.load_dlp_by_range = lambda start, end: [raw for _id, raw, _row in self.transfers._collect_dlp(*dates(start, end))[0]]
+        legacy_report.load_endpoint_detections_by_range = lambda start, end: [raw for _id, raw, _row in self.detections._events(*dates(start, end))[0]] if "detections" in sections else []
+        legacy_report.load_xdr_email_detections_by_range = lambda start, end: [raw for _id, raw, _row in self.email._collect_xdr(*dates(start, end))[0]] if "xdr" in sections else []
+        legacy_report.load_emails_by_range = lambda start, end: [raw for _id, raw, _row in self.email._collect_inbound(*dates(start, end))[0]] if "inbound" in sections else []
+        legacy_report.load_mailscreen_by_range = lambda start, end: [raw for _id, raw, _row in self.transfers._collect_outbound(*dates(start, end))[0]] if "outbound" in sections else []
+        legacy_report.load_dlp_by_range = lambda start, end: [raw for _id, raw, _row in self.transfers._collect_dlp(*dates(start, end))[0]] if "dlp" in sections else []
 
-    def build(self, start: date, end: date, progress: Callable[[str], None] = lambda _message: None) -> dict[str, Any]:
+    def build(self, start: date, end: date, progress: Callable[[str], None] = lambda _message: None, sections: list[str] | None = None) -> dict[str, Any]:
         if start > end:
             raise ValueError("start date must not be after end date")
-        self._configure_legacy_data()
+        self._configure_legacy_data(sections)
         renderer = legacy_report.LegacySecurityReport()
         path = renderer._generate_security_report_v2(
             datetime.combine(start, time.min), datetime.combine(end, time.max), progress

@@ -18,6 +18,7 @@ from backend.services.email_security import EmailSecurityService
 from backend.services.index_maintenance import IndexMaintenanceService
 from backend.services.report import ReportService
 from backend.services.spreadsheet import write_xlsx
+from backend.services.exporting import export_headers, normalize_export_columns, normalize_report_sections
 from backend.services.transfers import TransferService
 from system_monitor.collector import acquire_singleton, atomic_json
 from system_monitor.logging_utils import configure_agent_logging
@@ -97,12 +98,13 @@ class LaborerAgent:
         collectors = {"detections": DetectionService(self.root)._events, "xdr": EmailSecurityService(self.root)._collect_xdr, "inbound": EmailSecurityService(self.root)._collect_inbound, "outbound": TransferService(self.root)._collect_outbound, "dlp": TransferService(self.root)._collect_dlp}
         if kind not in collectors: raise ValueError("Unknown export type")
         progress(f"{kind} XLSX 데이터 준비 중")
+        columns = normalize_export_columns(kind, payload.get("columns"))
         rows = [row for _record_id, _raw, row in collectors[kind](start, end)[0]]
         export_dir = self.root / "exports"; export_dir.mkdir(parents=True, exist_ok=True)
         path = export_dir / f"{kind}_{start}_{end}.xlsx"
-        progress(f"{kind} XLSX 파일 생성 중 · {len(rows):,}건")
-        write_xlsx(path, rows)
-        return {"filename": path.name, "path": str(path), "rows": len(rows)}
+        progress(f"{kind} XLSX 파일 생성 중 · {len(rows):,}건 · {len(columns):,}개 항목")
+        write_xlsx(path, rows, columns=columns, headers=export_headers(kind))
+        return {"filename": path.name, "path": str(path), "rows": len(rows), "columns": columns}
 
     def worker_loop(self) -> None:
         while not self.stop.is_set():
@@ -116,7 +118,7 @@ class LaborerAgent:
             try:
                 callback = lambda message: self._update(job_id, message=str(message))
                 if row["type"] == "vacuum": result = IndexMaintenanceService(self.root).vacuum(str(payload.get("target", "all")), callback)
-                elif row["type"] == "report": result = ReportService(self.root).build(date.fromisoformat(str(payload.get("start"))), date.fromisoformat(str(payload.get("end"))), callback)
+                elif row["type"] == "report": result = ReportService(self.root).build(date.fromisoformat(str(payload.get("start"))), date.fromisoformat(str(payload.get("end"))), callback, normalize_report_sections(payload.get("sections")))
                 elif row["type"] == "export": result = self._export(payload, callback)
                 else: raise ValueError(f"Unknown laborer job type: {row['type']}")
                 self._update(job_id, status="completed", message="완료", result=result, finished_at=self._now())

@@ -249,3 +249,18 @@ nav button.active { position:relative; overflow:hidden; animation:nav-neon 2.4s 
 .dashboard-quick-ranges button { min-width:42px; height:34px; padding:0 10px; color:var(--text); border:1px solid var(--card-border); border-radius:9px; background:rgba(255,255,255,.05); font-size:11px; font-weight:900; }
 .dashboard-quick-ranges button:hover:not(:disabled) { border-color:var(--accent); color:var(--accent); }
 .dashboard-range-error { position:absolute; right:0; bottom:-22px; color:#ff9a62; font-size:11px; font-weight:900; white-space:nowrap; }
+.export-management { padding:0; overflow:hidden; }
+.export-tabs { display:grid; grid-template-columns:repeat(6,minmax(130px,1fr)); border-bottom:1px solid var(--card-border); }
+.export-tabs button { padding:16px 10px; border:0; border-right:1px solid var(--card-border); border-radius:0; color:#e8cce4; background:rgba(255,77,141,.08); font-size:13px; font-weight:900; }
+.export-tabs button.active { color:#fff; background:linear-gradient(110deg,#ff4d8d,#7c3aed); box-shadow:inset 0 -3px 0 rgba(255,255,255,.35); }
+.export-workspace { display:grid; grid-template-columns:320px minmax(0,1fr); gap:18px; padding:22px; }
+.export-workspace aside { display:grid; align-content:start; gap:12px; padding:18px; border:1px solid var(--card-border); border-radius:14px; background:#1b0d2d; }
+.export-workspace aside h2 { margin:0 0 4px; color:#ffb347; font-size:20px; }
+.export-workspace aside p { display:flex; justify-content:space-between; margin:4px 0; color:#cdb9da; font-size:12px; }
+.export-workspace aside small { color:#ad96bf; line-height:1.6; }
+.export-fields { display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:10px; align-content:start; }
+.export-fields label { padding:13px 14px; display:grid; grid-template-columns:20px 1fr; gap:3px 10px; align-items:center; border:1px solid var(--card-border); border-radius:11px; background:#1b0d2d; }
+.export-fields input { accent-color:#ff4d8d; }
+.export-fields span { color:#fff; font-weight:900; }
+.export-fields small { grid-column:2; color:#ad96bf; font-size:10px; }
+@media (max-width:1200px) { .export-tabs { grid-template-columns:repeat(3,1fr); }.export-workspace { grid-template-columns:1fr; } }

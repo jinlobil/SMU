@@ -85,15 +85,6 @@ class DashboardService:
             raise ValueError("dashboard range must not exceed 31 days")
         return start, end
 
-    def _normalize_range(self, start: date | None, end: date | None) -> tuple[date, date]:
-        if start is None or end is None:
-            start, end = self.default_range()
-        if start > end:
-            raise ValueError("start date must not be after end date")
-        if (end - start).days > 30:
-            raise ValueError("dashboard range must not exceed 31 days")
-        return start, end
-
     @staticmethod
     def percentage(current: int, comparison: int) -> float | None:
         if comparison == 0:

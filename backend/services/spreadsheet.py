@@ -26,12 +26,14 @@ def _text(value: object) -> str:
     return ILLEGAL_XML.sub("", "" if value is None else str(value))
 
 
-def write_xlsx(path: Path, rows: list[dict]) -> list[str]:
+def write_xlsx(path: Path, rows: list[dict], columns: list[str] | None = None, headers: dict[str, str] | None = None) -> list[str]:
     """Write rows to a single-sheet XLSX workbook and return its columns."""
-    columns = list(dict.fromkeys(key for row in rows for key in row))
+    columns = columns or list(dict.fromkeys(key for row in rows for key in row))
+    headers = headers or {}
     sheet = Element("worksheet", {"xmlns": MAIN_NS})
     sheet_data = SubElement(sheet, "sheetData")
-    values = [columns, *([[_text(row.get(column)) for column in columns] for row in rows])]
+    header_values = [headers.get(column, column) for column in columns]
+    values = [header_values, *([[_text(row.get(column)) for column in columns] for row in rows])]
     for row_index, row_values in enumerate(values, 1):
         row_node = SubElement(sheet_data, "row", {"r": str(row_index)})
         for column_index, value in enumerate(row_values, 1):

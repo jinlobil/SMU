@@ -217,6 +217,27 @@ def test_threat_trend_uses_wide_slow_bubble_layer():
     assert "trend-flow" not in dashboard
 
 
+
+
+def test_export_management_is_separate_tab_with_mini_tabs_and_column_selection():
+    app = (ROOT / "frontend/src/App.tsx").read_text(encoding="utf-8")
+    config = (ROOT / "frontend/src/pages/ConfigPage.tsx").read_text(encoding="utf-8")
+    page = (ROOT / "frontend/src/pages/ExportManagementPage.tsx").read_text(encoding="utf-8")
+    styles = (ROOT / "frontend/src/styles.css").read_text(encoding="utf-8")
+
+    assert "ExportManagementPage" in app
+    assert "exportManagement" in app
+    assert "Export Management" in app
+    assert "Export & Security Report" not in config
+    for label in ("Detection XLSX", "Email XDR XLSX", "Inbound Mail XLSX", "Outbound Mail XLSX", "DLP File XLSX", "Security Report PDF"):
+        assert label in page
+    assert "/api/config/export/schema" in page
+    assert "selectedColumns" in page
+    assert "selectedSections" in page
+    assert "columns:" in page
+    assert "sections:" in page
+    assert ".export-tabs" in styles
+
 def test_config_process_monitor_includes_fetcher():
     page = (ROOT / "frontend/src/pages/ConfigPage.tsx").read_text(encoding="utf-8")
     assert "fetcher:MonitorProcess" in page
