@@ -53,6 +53,19 @@ class ReportService:
                 "dept_name": row.get("dept", "미분류"), "dept_code": ""
             }
         legacy_report.HOSTNAME_DEPT_MAP = hostname_depts
+        legacy_report.ENDPOINT_LOGIN_INDEX = {}
+        legacy_report.MAILBOX_IDENTITY_CACHE = {}
+        legacy_report.MAILSCREEN_IDENTITY_CACHE = {}
+        for endpoint in legacy_report.ENDPOINTS:
+            person = endpoint.get("associatedPerson") if isinstance(endpoint.get("associatedPerson"), dict) else {}
+            principal = endpoint_principal(person, endpoint.get("hostname"))
+            account = principal.split("\\")[-1].strip() if "\\" in principal else principal.strip()
+            if account:
+                legacy_report.ENDPOINT_LOGIN_INDEX.setdefault(account.casefold(), {
+                    "hostname": str(endpoint.get("hostname") or "None"),
+                    "user_id": account,
+                    "user_name": str(person.get("name") or "None"),
+                })
         legacy_report.DIRECTORY_USER_INDEX = {}
         for user in load_json_list(self.root / "cache/users.json"):
             principal = str(user.get("exchangeLogin") or user.get("userId") or "")

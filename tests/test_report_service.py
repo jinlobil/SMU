@@ -76,3 +76,22 @@ def test_report_loaders_do_not_build_discarded_display_rows(tmp_path: Path, monk
     assert len(legacy_report.load_endpoint_detections_by_range("2026-07-22", "2026-07-22")) == 1
     assert len(legacy_report.load_xdr_email_detections_by_range("2026-07-22", "2026-07-22")) == 1
     assert len(legacy_report.load_emails_by_range("2026-07-22", "2026-07-22")) == 1
+
+
+def test_report_builds_constant_time_endpoint_login_index(tmp_path: Path) -> None:
+    endpoints = tmp_path / "cache/endpoints.json"
+    endpoints.parent.mkdir(parents=True)
+    endpoints.write_text(json.dumps([{
+        "hostname": "PC-1",
+        "associatedPerson": {"name": "홍길동", "viaLogin": "DOMAIN\\hong"},
+    }]), encoding="utf-8")
+
+    service = ReportService(tmp_path)
+    service._configure_legacy_data(["xdr", "outbound"])
+
+    from backend.services import legacy_report
+    assert legacy_report.ENDPOINT_LOGIN_INDEX["hong"]["hostname"] == "PC-1"
+    first = legacy_report.resolve_identity_by_mailbox("hong@example.com")
+    second = legacy_report.resolve_identity_by_mailbox("hong@example.com")
+    assert first is second
+    assert first["hostname"] == "PC-1"

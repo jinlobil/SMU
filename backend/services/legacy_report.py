@@ -20,6 +20,9 @@ DEPT_MAP={}
 REPORT_EXCEPTION_MAP={}
 DIRECTORY_USER_INDEX={}
 HOSTNAME_DEPT_MAP={}
+ENDPOINT_LOGIN_INDEX={}
+MAILBOX_IDENTITY_CACHE={}
+MAILSCREEN_IDENTITY_CACHE={}
 MAILSCREEN_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
 MAILSCREEN_BLANK_VALUES = {"", "none", "null", "nan", "미분류", "&nbsp;"}
 
@@ -639,6 +642,10 @@ def resolve_identity_by_mailbox(mailbox_addr: str):
     mailbox_addr = str(mailbox_addr or "").strip()
     mailbox_lower = mailbox_addr.lower()
 
+    cached = MAILBOX_IDENTITY_CACHE.get(mailbox_lower)
+    if cached is not None:
+        return cached
+
     if not mailbox_lower or "@" not in mailbox_lower:
         return {
             "mailbox": mailbox_addr or "None",
@@ -656,24 +663,11 @@ def resolve_identity_by_mailbox(mailbox_addr: str):
     matched_user_id = "None"
     matched_user_name = "None"
 
-    for ep in ENDPOINTS:
-        if not isinstance(ep, dict):
-            continue
-
-        ap = ep.get("associatedPerson") or {}
-        via_login = str(ap.get("viaLogin") or "").strip()
-        if not via_login:
-            continue
-
-        login_user = via_login.split("\\")[-1].strip().lower()
-        if not login_user:
-            continue
-
-        if login_user == mailbox_user:
-            matched_hostname = str(ep.get("hostname") or "None")
-            matched_user_id = via_login.split("\\")[-1].strip() or "None"
-            matched_user_name = str(ap.get("name") or "None")
-            break
+    endpoint_identity = ENDPOINT_LOGIN_INDEX.get(mailbox_user, {})
+    if endpoint_identity:
+        matched_hostname = str(endpoint_identity.get("hostname") or "None")
+        matched_user_id = str(endpoint_identity.get("user_id") or "None")
+        matched_user_name = str(endpoint_identity.get("user_name") or "None")
 
     dept_name = "미분류"
     dept_code = ""
@@ -701,7 +695,7 @@ def resolve_identity_by_mailbox(mailbox_addr: str):
         dept_name = exc_dept
         dept_code = ""
 
-    return {
+    result = {
         "mailbox": mailbox_addr or "None",
         "mailbox_user": mailbox_user,
         "hostname": matched_hostname,
@@ -710,6 +704,8 @@ def resolve_identity_by_mailbox(mailbox_addr: str):
         "dept_name": dept_name or "미분류",
         "dept_code": dept_code or "",
     }
+    MAILBOX_IDENTITY_CACHE[mailbox_lower] = result
+    return result
 
 def resolve_mailscreen_sender_identity(row):
     if not isinstance(row, dict):
@@ -727,6 +723,11 @@ def resolve_mailscreen_sender_identity(row):
     email_addr_text = mailscreen_extract_email(sender, sender_detail)
     local_user_id = email_addr_text.split("@", 1)[0].strip() if email_addr_text else ""
     display_sender = "" if "@" in sender else sender
+
+    cache_key = (email_addr_text.lower(), local_user_id.lower(), display_sender.casefold(), dept.casefold())
+    cached = MAILSCREEN_IDENTITY_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
 
     identity = {}
     if email_addr_text:
@@ -766,13 +767,15 @@ def resolve_mailscreen_sender_identity(row):
     if not dept_name:
         dept_name = "미분류"
 
-    return {
+    result = {
         "email": email_addr_text,
         "user_id": user_id,
         "user_name": user_name,
         "dept_name": dept_name,
         "dept_code": dept_code,
     }
+    MAILSCREEN_IDENTITY_CACHE[cache_key] = result
+    return result
 
 def safe_json_loads(value, default=None):
     if default is None:
@@ -1867,6 +1870,7 @@ class LegacySecurityReport:
                         detection_timeline[kst.strftime("%Y-%m-%d")] += 1
                     except Exception:
                         pass
+            perf.mark("detection timeline")
 
             # ── Email - XDR 부서별 집계 ─────────────────────────────
             _xdr_dept_stats = defaultdict(lambda: {
@@ -1912,6 +1916,7 @@ class LegacySecurityReport:
                 ],
                 key=lambda x: (-x["total"], x["dept_name"])
             )
+            perf.mark("xdr aggregation")
 
             # ── Outbound Mail(MailScreen) 부서/결재 집계 ─────────────────────────
             outbound_rows = []
@@ -2012,6 +2017,7 @@ class LegacySecurityReport:
             ]
             outbound_approval_rows = [x for x in outbound_approval_rows if int(x.get("total", 0) or 0) > 0]
 
+            perf.mark("outbound aggregation")
             perf.mark("pre-metrics aggregation")
             metrics = self.build_security_insight_metrics(
                 endpoint_detections,
