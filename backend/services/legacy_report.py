@@ -3760,6 +3760,7 @@ class LegacySecurityReport:
                     pass
 
         dlp_host_set = set()
+        dlp_host_counter = Counter()
         dlp_date_set = defaultdict(int)
         dlp_category_counter = Counter()
 
@@ -3817,6 +3818,7 @@ class LegacySecurityReport:
 
             if machine_name:
                 dlp_host_set.add(machine_name.lower())
+                dlp_host_counter[machine_name.lower()] += 1
 
             t = str(row.get("eventtimelocal", "") or "").strip()
             if len(t) >= 10:
@@ -3999,13 +4001,7 @@ class LegacySecurityReport:
                     det_cnt = cnt
                     break
 
-            dlp_cnt = 0
-            for row in dlp_rows:
-                if not isinstance(row, dict):
-                    continue
-                mname = str(row.get("machine_name", "") or "").strip().lower()
-                if mname == host:
-                    dlp_cnt += 1
+            dlp_cnt = dlp_host_counter.get(host, 0)
 
             cross_host_rank.append((host.upper(), det_cnt + dlp_cnt))
 
