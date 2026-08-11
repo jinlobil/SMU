@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,6 +30,8 @@ class ExceptionService:
         self.legacy_path = root / "env" / "Report_exception_List.txt"
         self.lock = threading.RLock()
         self._cache: dict[Path, tuple[int, int, dict[str, Any]]] = {}
+        self._cache_checked_at: dict[Path, float] = {}
+        self._compiled: dict[str, tuple[int, object]] = {}
         self._migrate_legacy()
 
     @staticmethod
@@ -36,10 +39,19 @@ class ExceptionService:
         return {"version": 1, "items": []}
 
     def _load(self, path: Path) -> dict[str, Any]:
-        if not path.exists():
-            return self._empty()
-        stat = path.stat()
         cached = self._cache.get(path)
+        now = time.monotonic()
+        # Resolution is a hot path while indexing/exporting. Avoid two filesystem
+        # syscalls per event while still noticing out-of-process edits promptly.
+        if cached and now - self._cache_checked_at.get(path, 0.0) < 0.5:
+            return cached[2]
+        if not path.exists():
+            data = self._empty()
+            self._cache[path] = (-1, 0, data)
+            self._cache_checked_at[path] = now
+            return data
+        stat = path.stat()
+        self._cache_checked_at[path] = now
         if cached and cached[0] == stat.st_mtime_ns and cached[1] == stat.st_size:
             return cached[2]
         try:
@@ -50,6 +62,7 @@ class ExceptionService:
             raise ValueError(f"예외 설정 파일 형식이 올바르지 않습니다: {path.name}")
         data = {"version": int(payload.get("version", 1)), "items": [item for item in payload["items"] if isinstance(item, dict)]}
         self._cache[path] = (stat.st_mtime_ns, stat.st_size, data)
+        self._compiled.clear()
         return data
 
     def _write(self, path: Path, payload: dict[str, Any]) -> None:
@@ -62,6 +75,8 @@ class ExceptionService:
         os.replace(temporary, path)
         stat = path.stat()
         self._cache[path] = (stat.st_mtime_ns, stat.st_size, payload)
+        self._cache_checked_at[path] = time.monotonic()
+        self._compiled.clear()
 
     @staticmethod
     def _now() -> str:
@@ -151,22 +166,40 @@ class ExceptionService:
         key = normalize_identity(principal)
         if not key or "\\" not in key:
             return str(default_name or "None")
-        for item in self._load(self.user_path)["items"]:
-            if item.get("enabled", True) and normalize_identity(item.get("principal")) == key:
-                return str(item.get("displayName") or default_name or "None")
-        return str(default_name or "None")
+        data = self._load(self.user_path)
+        version = int(data.get("version", 1))
+        cached = self._compiled.get("users")
+        if not cached or cached[0] != version:
+            mapping: dict[str, str] = {}
+            for item in data["items"]:
+                if item.get("enabled", True):
+                    mapping.setdefault(normalize_identity(item.get("principal")), str(item.get("displayName") or ""))
+            cached = (version, mapping)
+            self._compiled["users"] = cached
+        return str(cached[1].get(key) or default_name or "None")
 
     def resolve_department(self, *, principal: Any = "", hostname: Any = "", email: Any = "", user_name: Any = "", default_department: Any = "미분류") -> str:
         candidates = {"principal": normalize_identity(principal), "hostname": normalize_identity(hostname), "email": normalize_identity(email), "userName": normalize_identity(user_name)}
-        rules = [item for item in self._load(self.department_path)["items"] if item.get("enabled", True)]
-        for match_type in ("principal", "hostname", "email", "userName", "auto"):
-            for item in rules:
-                if item.get("matchType") != match_type:
-                    continue
+        data = self._load(self.department_path)
+        version = int(data.get("version", 1))
+        cached = self._compiled.get("departments")
+        if not cached or cached[0] != version:
+            mappings: dict[str, dict[str, str]] = {kind: {} for kind in ("principal", "hostname", "email", "userName", "auto")}
+            for item in data["items"]:
+                match_type = str(item.get("matchType") or "")
                 target = normalize_identity(item.get("matchValue"))
-                matched = target in candidates.values() if match_type == "auto" else target == candidates.get(match_type)
-                if target and matched:
-                    return str(item.get("department") or default_department or "미분류")
+                if item.get("enabled", True) and match_type in mappings and target:
+                    mappings[match_type].setdefault(target, str(item.get("department") or ""))
+            cached = (version, mappings)
+            self._compiled["departments"] = cached
+        mappings = cached[1]
+        for match_type in ("principal", "hostname", "email", "userName", "auto"):
+            if match_type == "auto":
+                department = next((mappings[match_type].get(value) for value in candidates.values() if mappings[match_type].get(value)), None)
+            else:
+                department = mappings[match_type].get(candidates.get(match_type, ""))
+            if department:
+                return str(department)
         return str(default_department or "미분류")
 
     def finalize(self, *, principal: Any = "", hostname: Any = "", email: Any = "", user_name: Any = "", department: Any = "미분류") -> dict[str, str]:

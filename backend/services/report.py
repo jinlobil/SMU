@@ -1,14 +1,15 @@
 """Adapter for the security report implementation ported from ``uimain_window.py``."""
 from __future__ import annotations
 
+import json
 from datetime import date, datetime, time
 from pathlib import Path
 from typing import Any, Callable
 
-from backend.services.detections import DetectionService
-from backend.services.email_security import EmailSecurityService
+from backend.services.detections import DetectionService, sensor_type
+from backend.services.email_security import EmailSecurityService, XDR_RULES
 from backend.services.endpoints import EndpointService, endpoint_principal, load_json_list, normalize_key
-from backend.services.transfers import TransferService
+from backend.services.transfers import TransferService, load_jsonl
 from backend.services import legacy_report
 from backend.services.exceptions import ExceptionService, normalize_identity
 from backend.services.exporting import normalize_report_sections
@@ -69,11 +70,48 @@ class ReportService:
         def dates(start: str, end: str) -> tuple[date, date]:
             return date.fromisoformat(start), date.fromisoformat(end)
 
-        legacy_report.load_endpoint_detections_by_range = lambda start, end: [raw for _id, raw, _row in self.detections._events(*dates(start, end))[0]] if "detections" in sections else []
-        legacy_report.load_xdr_email_detections_by_range = lambda start, end: [raw for _id, raw, _row in self.email._collect_xdr(*dates(start, end))[0]] if "xdr" in sections else []
-        legacy_report.load_emails_by_range = lambda start, end: [raw for _id, raw, _row in self.email._collect_inbound(*dates(start, end))[0]] if "inbound" in sections else []
-        legacy_report.load_mailscreen_by_range = lambda start, end: [raw for _id, raw, _row in self.transfers._collect_outbound(*dates(start, end))[0]] if "outbound" in sections else []
-        legacy_report.load_dlp_by_range = lambda start, end: [raw for _id, raw, _row in self.transfers._collect_dlp(*dates(start, end))[0]] if "dlp" in sections else []
+        detection_cache: dict[tuple[date, date], tuple[list[dict], list[dict]]] = {}
+
+        def detection_rows(start: str, end: str) -> tuple[list[dict], list[dict]]:
+            period = dates(start, end)
+            if period not in detection_cache:
+                endpoint_rows, xdr_rows = [], []
+                for path in self.detections._files(*period):
+                    for event in load_json_list(path):
+                        description = event.get("detectionDescription") if isinstance(event.get("detectionDescription"), dict) else {}
+                        rule = str(description.get("createdReasonId") or event.get("detectionRule") or "")
+                        kind = sensor_type(event)
+                        if kind == "endpoint" and event.get("time"):
+                            endpoint_rows.append(event)
+                        if kind == "email" or rule in XDR_RULES:
+                            xdr_rows.append(event)
+                detection_cache[period] = endpoint_rows, xdr_rows
+            return detection_cache[period]
+
+        def inbound_rows(start: str, end: str) -> list[dict]:
+            return [event for path in self.email._files(self.email.email_dir, *dates(start, end)) for event in load_json_list(path)]
+
+        def outbound_rows(start: str, end: str) -> list[dict]:
+            rows = []
+            for day in self.transfers._dates(*dates(start, end)):
+                path = self.transfers.outbound_dir / f"mailscreen_mail_{day.isoformat()}.json"
+                if not path.exists():
+                    continue
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                items = payload.get("items", []) if isinstance(payload, dict) else payload
+                rows.extend(item for item in items if isinstance(item, dict))
+            return rows
+
+        def dlp_rows(start: str, end: str) -> list[dict]:
+            return [row for day in self.transfers._dates(*dates(start, end)) for row in load_jsonl(self.transfers.dlp_dir / f"{day.isoformat()}.jsonl")]
+
+        # The legacy renderer consumes Raw dictionaries. Do not build discarded
+        # display rows or run per-event exception resolution for report input.
+        legacy_report.load_endpoint_detections_by_range = lambda start, end: detection_rows(start, end)[0] if "detections" in sections else []
+        legacy_report.load_xdr_email_detections_by_range = lambda start, end: detection_rows(start, end)[1] if "xdr" in sections else []
+        legacy_report.load_emails_by_range = lambda start, end: inbound_rows(start, end) if "inbound" in sections else []
+        legacy_report.load_mailscreen_by_range = lambda start, end: outbound_rows(start, end) if "outbound" in sections else []
+        legacy_report.load_dlp_by_range = lambda start, end: dlp_rows(start, end) if "dlp" in sections else []
 
     def build(self, start: date, end: date, progress: Callable[[str], None] = lambda _message: None, sections: list[str] | None = None) -> dict[str, Any]:
         if start > end:

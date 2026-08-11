@@ -96,6 +96,24 @@ def test_repeated_resolution_uses_cached_rule_file(tmp_path, monkeypatch):
     assert reads == 0
 
 
+def test_repeated_department_resolution_uses_compiled_lookup(tmp_path, monkeypatch):
+    service = ExceptionService(tmp_path)
+    service.save("departments", {"matchType": "hostname", "matchValue": "PC-1", "department": "보안팀"})
+    normalized_calls = 0
+    original = __import__("backend.services.exceptions", fromlist=["normalize_identity"]).normalize_identity
+
+    def counted(value):
+        nonlocal normalized_calls
+        normalized_calls += 1
+        return original(value)
+
+    monkeypatch.setattr("backend.services.exceptions.normalize_identity", counted)
+    for _ in range(100):
+        assert service.resolve_department(hostname="PC-1") == "보안팀"
+
+    assert normalized_calls < 510
+
+
 def test_detection_prefers_hostname_principal_over_os_generated_via_login(tmp_path):
     raw_endpoint = {
         "id": "endpoint-1",
