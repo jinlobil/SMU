@@ -22,6 +22,24 @@ def test_app_uses_browser_router_and_exposes_direct_screen_routes():
         assert f'path="{route}"' in app
 
 
+def test_router_supports_shareable_detection_queries_and_production_spa_fallback():
+    app = (ROOT / "frontend/src/App.tsx").read_text(encoding="utf-8")
+    detection = (ROOT / "frontend/src/pages/DetectionPage.tsx").read_text(encoding="utf-8")
+    dashboard = (ROOT / "frontend/src/pages/DashboardPage.tsx").read_text(encoding="utf-8")
+    backend = (ROOT / "backend/app.py").read_text(encoding="utf-8")
+    vite = (ROOT / "frontend/vite.config.ts").read_text(encoding="utf-8")
+
+    assert 'navigate(`/detections/xdr?${query}`)' in app
+    assert "useSearchParams()" in detection
+    assert "useSearchParams()" in dashboard
+    for parameter in ('next.set("from"', 'next.set("to"', 'next.set("page"', 'next.set("sort"', 'next.set("direction"'):
+        assert parameter in detection
+    assert 'build: { assetsDir: "static" }' in vite
+    assert 'app.mount("/static"' in backend
+    assert '@app.get("/{frontend_path:path}"' in backend
+    assert 'frontend_path.startswith("api/")' in backend
+
+
 def test_command_center_atmosphere_and_heartbeat_are_rendered():
     app = (ROOT / "frontend/src/App.tsx").read_text(encoding="utf-8")
 

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 
 
 type Detection = { id: string; time: string; hostname: string; dept: string; username: string; privateIp: string; publicIp: string; file: string; sha256: string; rule: string; lineage: string };
@@ -8,12 +9,34 @@ const fields = [["all", "ALL"], ["hostname", "Hostname"], ["dept", "Dept"], ["us
 const columns: [keyof Detection, string][] = [["time", "Time"], ["hostname", "Hostname"], ["dept", "Dept"], ["username", "Username"], ["privateIp", "Private IP"], ["publicIp", "Public IP"], ["file", "File"], ["sha256", "SHA256"], ["rule", "Rule"], ["lineage", "Lineage"]];
 const localDate = (offset = 0) => { const value = new Date(); value.setDate(value.getDate() + offset); return value.toISOString().slice(0, 10); };
 
-export function DetectionPage({ initialFilter }: { initialFilter?: { field: string; query: string; start?: string; end?: string } | null }) {
-  const [start, setStart] = useState(initialFilter?.start || localDate(-6)); const [end, setEnd] = useState(initialFilter?.end || localDate());
-  const [conditions, setConditions] = useState<Condition[]>([{ field: initialFilter?.field || "all", query: initialFilter?.query || "" }]);
+export function DetectionPage() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const initialField = fields.some(([value]) => value === searchParams.get("field")) ? searchParams.get("field")! : "all";
+  let initialConditions: Condition[] = [{ field: initialField, query: searchParams.get("q") || "" }];
+  try {
+    const parsed = JSON.parse(searchParams.get("conditions") || "[]");
+    if (Array.isArray(parsed) && parsed.length) initialConditions = parsed.filter((item) => item && fields.some(([value]) => value === item.field)).map((item) => ({ field: String(item.field), query: String(item.query || "") }));
+  } catch { /* Invalid shared URLs fall back to the first simple condition. */ }
+  const [start, setStart] = useState(searchParams.get("from") || localDate(-6)); const [end, setEnd] = useState(searchParams.get("to") || localDate());
+  const [conditions, setConditions] = useState<Condition[]>(initialConditions);
   const [items, setItems] = useState<Detection[]>([]); const [total, setTotal] = useState(0); const [totalPages, setTotalPages] = useState(1); const [files, setFiles] = useState<string[]>([]);
-  const [page, setPage] = useState(1); const [sort, setSort] = useState<keyof Detection>("time"); const [direction, setDirection] = useState<"asc" | "desc">("desc");
+  const initialPage = Math.max(1, Number.parseInt(searchParams.get("page") || "1", 10) || 1);
+  const initialSort = columns.some(([value]) => value === searchParams.get("sort")) ? searchParams.get("sort") as keyof Detection : "time";
+  const initialDirection = searchParams.get("direction") === "asc" ? "asc" : "desc";
+  const [page, setPage] = useState(initialPage); const [sort, setSort] = useState<keyof Detection>(initialSort); const [direction, setDirection] = useState<"asc" | "desc">(initialDirection);
   const [loading, setLoading] = useState(true); const [detail, setDetail] = useState<Record<string, unknown> | null>(null);
+  useEffect(() => {
+    const first = conditions[0] || { field: "all", query: "" };
+    const next = new URLSearchParams();
+    next.set("from", start); next.set("to", end);
+    if (first.field !== "all") next.set("field", first.field);
+    if (first.query.trim()) next.set("q", first.query.trim());
+    if (page !== 1) next.set("page", String(page));
+    if (sort !== "time") next.set("sort", sort);
+    if (direction !== "desc") next.set("direction", direction);
+    if (conditions.length > 1) next.set("conditions", JSON.stringify(conditions.filter((item) => item.query.trim())));
+    if (next.toString() !== searchParams.toString()) setSearchParams(next, { replace: true });
+  }, [start, end, conditions, page, sort, direction, searchParams, setSearchParams]);
   useEffect(() => {
     const controller = new AbortController(); const timer = window.setTimeout(() => {
       setLoading(true); const active = conditions.filter((condition) => condition.query.trim());

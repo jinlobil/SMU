@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 
 type Pair = [string, number];
 type SummaryRow = [string, Pair[]];
@@ -52,9 +53,10 @@ async function fetchGroup<T>(path: string, rangeStart = "", rangeEnd = ""): Prom
 }
 
 export function DashboardPage({ onOpenDetection }: { onOpenDetection: (filter: { field: string; query: string; start?: string; end?: string }) => void }) {
+  const [searchParams, setSearchParams] = useSearchParams();
   const [snapshot, setSnapshot] = useState<DashboardSnapshot>(dashboardSnapshot || emptySnapshot);
-  const [start, setStart] = useState("");
-  const [end, setEnd] = useState("");
+  const [start, setStart] = useState(searchParams.get("from") || "");
+  const [end, setEnd] = useState(searchParams.get("to") || "");
   const [errors, setErrors] = useState<string[]>([]);
   const [loading, setLoading] = useState<Record<GroupName, boolean>>({ assets: !dashboardSnapshot?.assets, mixTrend: !dashboardSnapshot?.mixTrend, topDetection: !dashboardSnapshot?.topDetection, topMail: !dashboardSnapshot?.topMail, topFile: !dashboardSnapshot?.topFile });
   const [visible, setVisible] = useState(Object.keys(colors));
@@ -87,6 +89,7 @@ export function DashboardPage({ onOpenDetection }: { onOpenDetection: (filter: {
       setErrors([]);
       return;
     }
+    if (rangeStart && rangeEnd) setSearchParams({ from: rangeStart, to: rangeEnd }, { replace: true });
     const groups: [GroupName, string, Promise<DashboardSnapshot[GroupName]>][] = [
       ["assets", "/api/dashboard/assets", fetchGroup<AssetsData>("/api/dashboard/assets", rangeStart, rangeEnd)],
       ["mixTrend", "/api/dashboard/mix-trend", fetchGroup<MixTrendData>("/api/dashboard/mix-trend", rangeStart, rangeEnd)],
@@ -114,6 +117,10 @@ export function DashboardPage({ onOpenDetection }: { onOpenDetection: (filter: {
   };
 
   useEffect(() => {
+    if (start && end) {
+      load(start, end);
+      return;
+    }
     if (dashboardSnapshot?.assets && dashboardSnapshot?.mixTrend && dashboardSnapshot?.topDetection && dashboardSnapshot?.topMail && dashboardSnapshot?.topFile) {
       const range = dashboardSnapshot.mixTrend.range;
       setStart(range.start);

@@ -9,6 +9,7 @@ from pathlib import Path
 from fastapi import Body, FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from backend.config import WEB_ERROR_LOG
 from backend.config import PROJECT_ROOT
@@ -792,3 +793,18 @@ def save_client_error(payload: dict = Body()) -> None:
         payload.get("column"),
         str(payload.get("stack", ""))[:8000],
     )
+
+
+# Optional production host. API routes are registered first and static assets
+# use /static so the frontend /assets/* screen routes remain available.
+FRONTEND_DIST = PROJECT_ROOT / "frontend" / "dist"
+if FRONTEND_DIST.is_dir():
+    static_dir = FRONTEND_DIST / "static"
+    if static_dir.is_dir():
+        app.mount("/static", StaticFiles(directory=static_dir), name="frontend-static")
+
+    @app.get("/{frontend_path:path}", include_in_schema=False)
+    def frontend_spa(frontend_path: str):
+        if frontend_path == "api" or frontend_path.startswith("api/"):
+            return JSONResponse(status_code=404, content={"success": False, "error": {"code": "NOT_FOUND", "message": "API route not found"}})
+        return FileResponse(FRONTEND_DIST / "index.html")

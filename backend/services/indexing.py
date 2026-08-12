@@ -9,6 +9,7 @@ from typing import Callable
 from backend.services.dashboard import DashboardService
 from backend.services.detections import DetectionService
 from backend.services.email_security import EmailSecurityService
+from backend.services.event_list_schema import DISPLAY_COLUMNS, SCHEMA_VERSION, values_for_row
 from backend.services.sensitive import SensitiveService, normalized_identity
 from backend.services.timeline import ALL_SOURCES, TimelineService
 from backend.services.transfers import TransferService
@@ -357,10 +358,12 @@ class IndexService:
         staging = "event_list_rows_web_next"
         with self._connect(final) as db:
             db.execute(f"DROP TABLE IF EXISTS {staging}")
-            db.execute(f"CREATE TABLE {staging} (kind TEXT, record_id TEXT, event_time TEXT, search_text TEXT, row_json TEXT, source_file TEXT, PRIMARY KEY(kind, record_id))")
+            display_definition = ", ".join(f"{column} TEXT NOT NULL DEFAULT ''" for column in DISPLAY_COLUMNS)
+            db.execute(f"CREATE TABLE {staging} (kind TEXT, record_id TEXT, event_time TEXT, search_text TEXT, row_json TEXT, source_file TEXT, {display_definition}, PRIMARY KEY(kind, record_id))")
             for offset in range(0, len(rows), 5000):
                 batch = rows[offset:offset+5000]
-                db.executemany(f"INSERT OR REPLACE INTO {staging} VALUES (?,?,?,?,?,?)", [(row["kind"], row["recordId"], row["eventTime"], row["searchText"], row["rowJson"], row["sourceFile"]) for row in batch])
+                placeholders = ",".join("?" for _ in range(6 + len(DISPLAY_COLUMNS)))
+                db.executemany(f"INSERT OR REPLACE INTO {staging} VALUES ({placeholders})", [self._event_db_values(row) for row in batch])
                 progress(f"Detection 리스트 인덱스 SQLite 기록 {min(offset+len(batch),len(rows)):,}/{len(rows):,}건")
             db.execute("DROP TABLE IF EXISTS event_list_rows")
             db.execute(f"ALTER TABLE {staging} RENAME TO event_list_rows")
@@ -368,6 +371,7 @@ class IndexService:
             db.execute("CREATE INDEX idx_web_event_list_source_file ON event_list_rows(source_file)")
             db.execute("CREATE TABLE IF NOT EXISTS index_metadata (key TEXT PRIMARY KEY, value TEXT)")
             db.execute("INSERT OR REPLACE INTO index_metadata VALUES ('mode','display-list-raw-detail')")
+            db.execute("INSERT OR REPLACE INTO index_metadata VALUES ('event_list_schema_version',?)", (SCHEMA_VERSION,))
             db.execute("INSERT OR REPLACE INTO index_metadata VALUES ('updated_at', datetime('now'))")
         return final
 
@@ -386,7 +390,43 @@ class IndexService:
             exists = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='event_list_rows'").fetchone()
         if not exists:
             return self._build_events_index([], progress)
+        self._migrate_event_list_schema(final, progress)
         return final
+
+    @staticmethod
+    def _event_db_values(row: dict[str, str]) -> tuple[str, ...]:
+        try:
+            display = json.loads(row.get("rowJson", "{}"))
+        except json.JSONDecodeError:
+            display = {}
+        if not isinstance(display, dict):
+            display = {}
+        return (row["kind"], row["recordId"], row["eventTime"], row["searchText"], row["rowJson"], row["sourceFile"], *values_for_row(display))
+
+    def _migrate_event_list_schema(self, final: Path, progress: Callable[[str], None]) -> None:
+        with self._connect(final) as db:
+            db.execute("CREATE TABLE IF NOT EXISTS index_metadata (key TEXT PRIMARY KEY, value TEXT)")
+            version = db.execute("SELECT value FROM index_metadata WHERE key='event_list_schema_version'").fetchone()
+            if version and str(version[0]) == SCHEMA_VERSION:
+                return
+            existing = {str(row[1]) for row in db.execute("PRAGMA table_info(event_list_rows)")}
+            for column in DISPLAY_COLUMNS:
+                if column not in existing:
+                    db.execute(f"ALTER TABLE event_list_rows ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
+            rows = db.execute("SELECT kind, record_id, row_json FROM event_list_rows").fetchall()
+            assignments = ",".join(f"{column}=?" for column in DISPLAY_COLUMNS)
+            for offset in range(0, len(rows), 2000):
+                batch = rows[offset:offset + 2000]
+                updates = []
+                for item in batch:
+                    try:
+                        display = json.loads(item[2] or "{}")
+                    except json.JSONDecodeError:
+                        display = {}
+                    updates.append((*values_for_row(display if isinstance(display, dict) else {}), item[0], item[1]))
+                db.executemany(f"UPDATE event_list_rows SET {assignments} WHERE kind=? AND record_id=?", updates)
+                progress(f"Detection 리스트 검색 스키마 이전 {min(offset + len(batch), len(rows)):,}/{len(rows):,}건")
+            db.execute("INSERT OR REPLACE INTO index_metadata VALUES ('event_list_schema_version',?)", (SCHEMA_VERSION,))
 
     def _update_events_range(self, rows: list[dict[str, str]], start: date, end: date, progress: Callable[[str], None]) -> Path:
         final = self._ensure_events_index(progress)
@@ -395,7 +435,8 @@ class IndexService:
             db.execute("DELETE FROM event_list_rows WHERE event_time >= ? AND event_time < ?", (start.isoformat(), exclusive_end))
             for offset in range(0, len(rows), 5000):
                 batch = rows[offset:offset+5000]
-                db.executemany("INSERT OR REPLACE INTO event_list_rows VALUES (?,?,?,?,?,?)", [(row["kind"], row["recordId"], row["eventTime"], row["searchText"], row["rowJson"], row["sourceFile"]) for row in batch])
+                placeholders = ",".join("?" for _ in range(6 + len(DISPLAY_COLUMNS)))
+                db.executemany(f"INSERT OR REPLACE INTO event_list_rows VALUES ({placeholders})", [self._event_db_values(row) for row in batch])
                 progress(f"증분 인덱싱 · Detection 리스트 SQLite 반영 {min(offset+len(batch),len(rows)):,}/{len(rows):,}건")
         return final
 
@@ -405,7 +446,8 @@ class IndexService:
             db.execute("DELETE FROM event_list_rows WHERE source_file=?", (source_file,))
             for offset in range(0, len(rows), 5000):
                 batch = rows[offset:offset+5000]
-                db.executemany("INSERT OR REPLACE INTO event_list_rows VALUES (?,?,?,?,?,?)", [(row["kind"], row["recordId"], row["eventTime"], row["searchText"], row["rowJson"], row["sourceFile"]) for row in batch])
+                placeholders = ",".join("?" for _ in range(6 + len(DISPLAY_COLUMNS)))
+                db.executemany(f"INSERT OR REPLACE INTO event_list_rows VALUES ({placeholders})", [self._event_db_values(row) for row in batch])
                 progress(f"스마트 증분 · Detection 리스트 SQLite {min(offset+len(batch),len(rows)):,}/{len(rows):,}건")
 
     def _source_snapshot(self) -> dict[str, dict]:

@@ -4,6 +4,8 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
+from backend.services.event_list_schema import FIELD_COLUMNS, SCHEMA_VERSION
+
 
 class EventListIndex:
     """Read display-list rows from cache/index/events_index.db without loading Raw cache payloads."""
@@ -34,12 +36,20 @@ class EventListIndex:
         return start.isoformat(), (end + timedelta(days=1)).isoformat()
 
     @staticmethod
-    def _field_expression(field: str, allowed_fields: set[str]) -> str:
+    def _field_expression(field: str, allowed_fields: set[str], structured: bool) -> str:
         # JSON paths cannot be bound as identifiers. Only service-owned allowlisted
         # field names may reach this expression; request input is never interpolated.
         if field not in allowed_fields or not field.replace("_", "").isalnum():
             raise ValueError(f"Unsupported search field: {field}")
-        return f"json_extract(row_json, '$.{field}')"
+        return FIELD_COLUMNS[field] if structured and field in FIELD_COLUMNS else f"json_extract(row_json, '$.{field}')"
+
+    @staticmethod
+    def _structured_schema(db: sqlite3.Connection) -> bool:
+        try:
+            row = db.execute("SELECT value FROM index_metadata WHERE key='event_list_schema_version'").fetchone()
+            return bool(row and str(row[0]) == SCHEMA_VERSION)
+        except sqlite3.Error:
+            return False
 
     def _source_paths(self, kind: str, start: date, end: date) -> list[Path]:
         specs = {
@@ -154,10 +164,7 @@ class EventListIndex:
 
         where = ["kind=?", "event_time >= ?", "event_time < ?"]
         parameters: list[Any] = [kind, *self._range_bounds(start, end)]
-        all_expression = " || ' ' || ".join(
-            f"COALESCE(CAST({self._field_expression(name, fields)} AS TEXT), '')"
-            for name in sorted(fields)
-        ) or "''"
+        validated_conditions: list[tuple[str, str, str]] = []
         for condition in conditions:
             query = str(condition.get("query", "")).strip().lower()
             if not query:
@@ -166,21 +173,30 @@ class EventListIndex:
             mode = str(condition.get("mode", "include"))
             if mode not in {"include", "exclude"}:
                 raise ValueError(f"Unsupported search mode: {mode}")
-            if field == "rawData":
-                value_expression = "COALESCE(search_text, '')"
-            elif field == "all":
-                value_expression = all_expression
-            else:
-                value_expression = f"COALESCE(CAST({self._field_expression(field, fields)} AS TEXT), '')"
-            predicate = f"instr(lower({value_expression}), ?) > 0"
-            where.append(predicate if mode == "include" else f"NOT ({predicate})")
-            parameters.append(query)
+            if field not in {"all", "rawData"} and field not in fields:
+                raise ValueError(f"Unsupported search field: {field}")
+            validated_conditions.append((field, mode, query))
 
-        where_sql = " AND ".join(where)
-        sort_expression = self._field_expression(sort, fields)
-        order = direction.upper()
-        offset = (page - 1) * page_size
         with self._read_connection() as db:
+            structured = self._structured_schema(db)
+            all_expression = " || ' ' || ".join(
+                f"COALESCE(CAST({self._field_expression(name, fields, structured)} AS TEXT), '')"
+                for name in sorted(fields)
+            ) or "''"
+            for field, mode, query in validated_conditions:
+                if field == "rawData":
+                    value_expression = "COALESCE(search_text, '')"
+                elif field == "all":
+                    value_expression = all_expression
+                else:
+                    value_expression = f"COALESCE(CAST({self._field_expression(field, fields, structured)} AS TEXT), '')"
+                predicate = f"instr(lower({value_expression}), ?) > 0"
+                where.append(predicate if mode == "include" else f"NOT ({predicate})")
+                parameters.append(query)
+            where_sql = " AND ".join(where)
+            sort_expression = self._field_expression(sort, fields, structured)
+            order = direction.upper()
+            offset = (page - 1) * page_size
             total = int(db.execute(f"SELECT COUNT(*) FROM event_list_rows WHERE {where_sql}", parameters).fetchone()[0])
             rows = db.execute(
                 f"""

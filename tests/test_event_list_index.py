@@ -5,6 +5,8 @@ from datetime import date
 import pytest
 
 from backend.services.event_list_index import EventListIndex
+from backend.services.event_list_schema import DISPLAY_COLUMNS, FIELD_COLUMNS, SCHEMA_VERSION
+from backend.services.indexing import IndexService
 
 
 def _make_index(tmp_path):
@@ -92,3 +94,30 @@ def test_all_event_list_kinds_keep_search_sort_and_pagination_contract(tmp_path,
     assert result["pagination"]["total"] == 2
     assert result["pagination"]["totalPages"] == 2
     assert result["items"][0]["id"] == f"{kind}-2"
+
+
+def test_full_build_creates_versioned_structured_display_columns(tmp_path):
+    service = IndexService(tmp_path)
+    service._build_events_index([{
+        "kind": "detections", "recordId": "one", "eventTime": "2026-08-01 01:00:00",
+        "searchText": "alpha", "rowJson": json.dumps({"id": "one", "hostname": "Alpha", "time": "2026-08-01 01:00:00"}),
+        "sourceFile": "/cache/01.json",
+    }])
+    with sqlite3.connect(tmp_path / "cache/index/events_index.db") as db:
+        columns = {row[1] for row in db.execute("PRAGMA table_info(event_list_rows)")}
+        version = db.execute("SELECT value FROM index_metadata WHERE key='event_list_schema_version'").fetchone()[0]
+        hostname = db.execute(f"SELECT {FIELD_COLUMNS['hostname']} FROM event_list_rows").fetchone()[0]
+    assert set(DISPLAY_COLUMNS) <= columns
+    assert version == SCHEMA_VERSION
+    assert hostname == "Alpha"
+
+
+def test_incremental_indexing_migrates_legacy_database_without_raw_reindex(tmp_path):
+    index = _make_index(tmp_path)
+    service = IndexService(tmp_path)
+    service._ensure_events_index(lambda _message: None)
+    with sqlite3.connect(index.path) as db:
+        version = db.execute("SELECT value FROM index_metadata WHERE key='event_list_schema_version'").fetchone()[0]
+        hostname = db.execute(f"SELECT {FIELD_COLUMNS['hostname']} FROM event_list_rows WHERE record_id='b'").fetchone()[0]
+    assert version == SCHEMA_VERSION
+    assert hostname == "beta"

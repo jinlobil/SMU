@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 
 
 type Row = Record<string, string> & { id: string };
@@ -12,10 +13,14 @@ configs.xdr.fields = [["all", "ALL"], ...configs.xdr.columns, ["rawData", "RawDa
 const localDate = (offset = 0) => { const value = new Date(); value.setDate(value.getDate() + offset); return value.toISOString().slice(0, 10); };
 
 export function EmailSecurityPage({ kind }: { kind: "xdr" | "inbound" }) {
-  const config = configs[kind]; const [start, setStart] = useState(localDate(-6)); const [end, setEnd] = useState(localDate());
-  const [conditions, setConditions] = useState<Condition[]>([{ field: "all", query: "" }]); const [rows, setRows] = useState<Row[]>([]); const [total, setTotal] = useState(0); const [totalPages, setTotalPages] = useState(1); const [files, setFiles] = useState<string[]>([]);
-  const [page, setPage] = useState(1); const [sort, setSort] = useState(config.defaultSort); const [direction, setDirection] = useState<"asc" | "desc">("desc"); const [loading, setLoading] = useState(true); const [detail, setDetail] = useState<Record<string, unknown> | null>(null);
-  useEffect(() => { setSort(config.defaultSort); setConditions([{ field: "all", query: "" }]); setPage(1); }, [kind, config.defaultSort]);
+  const config = configs[kind]; const [searchParams, setSearchParams] = useSearchParams();
+  let initialConditions: Condition[] = [{ field: "all", query: "" }];
+  try { const parsed = JSON.parse(searchParams.get("conditions") || "[]"); if (Array.isArray(parsed) && parsed.length) initialConditions = parsed.filter((item) => item && config.fields.some(([field]) => field === item.field)).map((item) => ({ field: String(item.field), query: String(item.query || "") })); } catch { /* Ignore malformed shared filters. */ }
+  const [start, setStart] = useState(searchParams.get("from") || localDate(-6)); const [end, setEnd] = useState(searchParams.get("to") || localDate());
+  const [conditions, setConditions] = useState<Condition[]>(initialConditions); const [rows, setRows] = useState<Row[]>([]); const [total, setTotal] = useState(0); const [totalPages, setTotalPages] = useState(1); const [files, setFiles] = useState<string[]>([]);
+  const initialSort = config.columns.some(([field]) => field === searchParams.get("sort")) ? searchParams.get("sort")! : config.defaultSort;
+  const [page, setPage] = useState(Math.max(1, Number.parseInt(searchParams.get("page") || "1", 10) || 1)); const [sort, setSort] = useState(initialSort); const [direction, setDirection] = useState<"asc" | "desc">(searchParams.get("direction") === "asc" ? "asc" : "desc"); const [loading, setLoading] = useState(true); const [detail, setDetail] = useState<Record<string, unknown> | null>(null);
+  useEffect(() => { const next = new URLSearchParams({ from: start, to: end }); if (conditions.some((item) => item.query.trim())) next.set("conditions", JSON.stringify(conditions.filter((item) => item.query.trim()))); if (page !== 1) next.set("page", String(page)); if (sort !== config.defaultSort) next.set("sort", sort); if (direction !== "desc") next.set("direction", direction); if (next.toString() !== searchParams.toString()) setSearchParams(next, { replace: true }); }, [start, end, conditions, page, sort, direction, config.defaultSort, searchParams, setSearchParams]);
   useEffect(() => { const controller = new AbortController(); const timer = window.setTimeout(() => {
     setLoading(true); const active = conditions.filter((condition) => condition.query.trim()); const params = new URLSearchParams({ start, end, conditions: JSON.stringify(active), page: String(page), pageSize: "50", sort, direction });
     fetch(`/api/email-security/${kind}?${params}`, { signal: controller.signal }).then(async (response) => { const payload = await response.json(); if (!response.ok) throw new Error(payload?.error?.message || `HTTP ${response.status}`); return payload; }).then((payload) => { setRows(payload.data.items); setTotal(payload.data.pagination.total); setTotalPages(payload.data.pagination.totalPages); setFiles(payload.data.source.files); }).catch((reason: unknown) => { if ((reason as Error).name !== "AbortError") { setRows([]); setTotal(0); setTotalPages(1); setFiles([]); } }).finally(() => setLoading(false));
