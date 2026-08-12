@@ -119,11 +119,14 @@ def test_sidebar_opens_only_from_title_region_and_uses_full_width_content():
     app = (ROOT / "frontend/src/App.tsx").read_text(encoding="utf-8")
     styles = (ROOT / "frontend/src/styles.css").read_text(encoding="utf-8")
 
-    assert 'className="sidebar-title-trigger"' in app
+    assert 'className={`sidebar-title-trigger ${sidebarOpen ? "disabled" : ""}`}' in app
     assert 'sidebarOpen ? "open"' in app
     assert "onMouseLeave={scheduleSidebarClose}" in app
-    assert "window.setTimeout(() => setSidebarOpen(false), 300)" in app
+    assert "window.setTimeout(() => setSidebarOpen(false), 110)" in app
     assert ".sidebar-title-trigger {" in styles
+    assert "width:96px; height:60px" in styles
+    assert ".sidebar-title-trigger.disabled { pointer-events:none; }" in styles
+    assert "transition:transform .19s" in styles
     assert ".sidebar.open {" in styles
     assert ".content { grid-column:1;" in styles
 

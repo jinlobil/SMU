@@ -38,7 +38,7 @@ export function App() {
   };
   const scheduleSidebarClose = () => {
     if (sidebarCloseTimer.current !== null) window.clearTimeout(sidebarCloseTimer.current);
-    sidebarCloseTimer.current = window.setTimeout(() => setSidebarOpen(false), 300);
+    sidebarCloseTimer.current = window.setTimeout(() => setSidebarOpen(false), 110);
   };
 
   useEffect(() => {
@@ -95,7 +95,7 @@ export function App() {
   return (
     <div className="app">
       <div className="cyber-atmosphere" aria-hidden="true"><div className="cyber-grid"/>{particles.map((particle) => <i key={particle} style={{ "--px": `${(particle * 47) % 100}%`, "--py": `${(particle * 29) % 100}%`, "--delay": `${-(particle % 13)}s`, "--duration": `${10 + particle % 9}s` } as CSSProperties}/>)}</div>
-      <div className="sidebar-title-trigger" aria-hidden="true" onMouseEnter={openSidebar}/>
+      <div className={`sidebar-title-trigger ${sidebarOpen ? "disabled" : ""}`} aria-hidden="true" onMouseEnter={openSidebar}/>
       <aside className={`sidebar ${sidebarOpen ? "open" : ""}`} onMouseEnter={openSidebar} onMouseLeave={scheduleSidebarClose}>
         <div className="brand"><span>SMU</span><strong>Monitoring</strong></div>
         <nav>{menus.map((menu) => <div key={menu}>
