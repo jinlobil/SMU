@@ -73,6 +73,20 @@ class TimelineService:
         return self.project_root / "cache" / "index" / "timeline_index.db"
 
     def indexed_events(self, user: str, keyword: str, sources: set[str]) -> list[dict[str, str]] | None:
+        result = self._indexed_search(user, keyword, sources, 0, 1_000_000)
+        if result is None:
+            return None
+        return [item for group in result["groups"] for item in group["items"]]
+
+    def _read_connection(self) -> sqlite3.Connection:
+        uri = f"{self.index_path.resolve().as_uri()}?mode=ro"
+        connection = sqlite3.connect(uri, uri=True, timeout=30)
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA busy_timeout=30000")
+        connection.execute("PRAGMA query_only=ON")
+        return connection
+
+    def _indexed_search(self, user: str, keyword: str, sources: set[str], offset: int, limit: int) -> dict[str, Any] | None:
         if not self.index_path.exists():
             return None
         clauses = []
@@ -93,7 +107,7 @@ class TimelineService:
             params.append(f"%{keyword_key}%")
         where = " AND ".join(clauses) if clauses else "1 = 1"
         try:
-            with sqlite3.connect(self.index_path) as connection:
+            with self._read_connection() as connection:
                 table_exists = connection.execute(
                     "SELECT 1 FROM sqlite_master WHERE type='table' AND name='timeline_events'"
                 ).fetchone()
@@ -101,26 +115,55 @@ class TimelineService:
                     return None
                 columns = {row[1] for row in connection.execute("PRAGMA table_info(timeline_events)").fetchall()}
                 raw_column = "raw_json" if "raw_json" in columns else "'{}'"
+                bound_row = connection.execute("SELECT MIN(substr(time,1,10)), MAX(substr(time,1,10)) FROM timeline_events WHERE time <> ''").fetchone()
+                index_bounds = (date.fromisoformat(str(bound_row[0])), date.fromisoformat(str(bound_row[1]))) if bound_row and bound_row[0] and bound_row[1] else None
+                total_events = int(connection.execute(f"SELECT COUNT(*) FROM timeline_events WHERE {where}", params).fetchone()[0])
+                total_groups = int(connection.execute(
+                    f"SELECT COUNT(*) FROM (SELECT 1 FROM timeline_events WHERE {where} GROUP BY substr(time,1,16), source, event)", params,
+                ).fetchone()[0])
+                group_rows = connection.execute(
+                    f"""SELECT substr(time,1,16) AS bucket, source, event, COUNT(*) AS count
+                    FROM timeline_events WHERE {where}
+                    GROUP BY bucket, source, event
+                    ORDER BY bucket DESC, source ASC, event ASC LIMIT ? OFFSET ?""",
+                    (*params, limit, offset),
+                ).fetchall()
+                if not group_rows:
+                    return {"groups": [], "pagination": {"offset": offset, "limit": limit, "totalGroups": total_groups, "totalEvents": total_events}, "bounds": index_bounds, "source": "sqlite-index"}
+                group_clauses = []
+                group_params: list[str] = []
+                for group in group_rows:
+                    group_clauses.append("(substr(time,1,16)=? AND source=? AND event=?)")
+                    group_params.extend((str(group["bucket"]), str(group["source"]), str(group["event"])))
                 rows = connection.execute(
-                    f"""SELECT time, source, user, user_id, dept, asset, event, direction, peer, summary, indicator, {raw_column}
-                    FROM timeline_events WHERE {where} ORDER BY time DESC""",
-                    params,
+                    f"""WITH selected AS (
+                        SELECT rowid AS timeline_rowid, *,
+                               ROW_NUMBER() OVER (PARTITION BY substr(time,1,16), source, event ORDER BY time DESC, rowid DESC) AS item_rank
+                        FROM timeline_events WHERE {where} AND ({' OR '.join(group_clauses)})
+                    )
+                    SELECT time, source, user, user_id, dept, asset, event, direction, peer, summary, indicator, {raw_column}
+                    FROM selected WHERE item_rank <= 100 ORDER BY time DESC, timeline_rowid DESC""",
+                    (*params, *group_params),
                 ).fetchall()
         except sqlite3.Error:
             return None
         identities, _aliases = self._identities()
-        return [self._apply_identity(event, identities) for event in [
+        events = [self._apply_identity(event, identities) for event in [
             {
-                "time": str(row[0] or "None"), "source": str(row[1] or "None"),
-                "user": str(row[2] or "None"), "userId": str(row[3] or "None"),
-                "dept": str(row[4] or "미분류"), "asset": str(row[5] or "None"),
-                "event": str(row[6] or "None"), "direction": str(row[7] or "None"),
-                "peer": str(row[8] or "None"), "summary": str(row[9] or "None"),
-                "indicator": str(row[10] or "None"),
-                "raw": json.loads(row[11]) if row[11] else {},
+                "time": str(row[0] or "None"), "source": str(row[1] or "None"), "user": str(row[2] or "None"),
+                "userId": str(row[3] or "None"), "dept": str(row[4] or "미분류"), "asset": str(row[5] or "None"),
+                "event": str(row[6] or "None"), "direction": str(row[7] or "None"), "peer": str(row[8] or "None"),
+                "summary": str(row[9] or "None"), "indicator": str(row[10] or "None"), "raw": json.loads(row[11]) if row[11] else {},
             }
             for row in rows
         ]]
+        grouped: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
+        for event in events:
+            grouped[(event["time"][:16], event["source"], event["event"])].append(event)
+        groups = [{"bucket": str(group["bucket"]), "source": str(group["source"]), "event": str(group["event"]),
+                   "count": int(group["count"]), "items": grouped.get((str(group["bucket"]), str(group["source"]), str(group["event"])), [])}
+                  for group in group_rows]
+        return {"groups": groups, "pagination": {"offset": offset, "limit": limit, "totalGroups": total_groups, "totalEvents": total_events}, "bounds": index_bounds, "source": "sqlite-index"}
 
     def date_bounds(self) -> tuple[date, date] | None:
         dates = []
@@ -175,7 +218,7 @@ class TimelineService:
     def search(self, user: str, keyword: str, sources: set[str], offset: int = 0, limit: int = 250) -> dict[str, Any]:
         invalid = sources - ALL_SOURCES
         if invalid: raise ValueError(f"Unsupported timeline source: {sorted(invalid)}")
-        indexed = self.indexed_events(user, keyword, sources)
+        indexed = self._indexed_search(user, keyword, sources, offset, limit)
         if indexed is None:
             user_key = user.strip().lower(); keyword_key = keyword.strip().lower()
             events = []
@@ -187,17 +230,18 @@ class TimelineService:
                 events.append(event)
             data_source = "cache-scan"
         else:
-            events = indexed
-            data_source = "sqlite-index"
+            events = [item for group in indexed["groups"] for item in group["items"]]
             # Indexes made before raw_json was introduced remain readable.  Do
             # not, however, expose an empty object to the UI: recover the
             # original record from the cache until the next full rebuild.
             if any(not event.get("raw") for event in events):
-                raw_events = self.all_events(sources)
+                page_dates = [date.fromisoformat(event["time"][:10]) for event in events if DATE_PATTERN.match(event.get("time", ""))]
+                raw_events = self.events_between(min(page_dates), max(page_dates), sources) if page_dates else []
                 raw_by_key = {self._event_key(event): event.get("raw", {}) for event in raw_events}
                 for event in events:
                     if not event.get("raw"):
                         event["raw"] = raw_by_key.get(self._event_key(event), {})
+            return indexed
         groups: dict[tuple[str, str, str], list[dict[str, str]]] = defaultdict(list)
         for event in events:
             bucket = event["time"][:16] if len(event["time"]) >= 16 else event["time"]

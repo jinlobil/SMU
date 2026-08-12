@@ -1,6 +1,7 @@
 import datetime as dt
 import logging
 import shutil
+import socket
 import subprocess
 import sys
 import threading
@@ -83,12 +84,44 @@ def hold_terminal() -> None:
         input("터미널을 닫지 않았습니다. 오류를 복사한 뒤 Enter를 누르면 종료합니다... ")
 
 
+def ensure_port_available(port: int, service: str) -> None:
+    """Fail before spawning when an older SMU process still owns the port."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.settimeout(0.5)
+        if probe.connect_ex(("127.0.0.1", port)) == 0:
+            raise RuntimeError(
+                f"{service} port {port} is already in use. Close the previous SMU window/process and start again."
+            )
+
+
+def ensure_frontend_dependencies(npm_command: str) -> None:
+    """Repair stale node_modules left behind after package.json changes."""
+    frontend = ROOT / "frontend"
+    check = subprocess.run(
+        [npm_command, "list", "react-router-dom", "--depth=0"],
+        cwd=frontend,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    if check.returncode == 0:
+        return
+    write_line("Frontend dependencies changed; running npm install...")
+    install = subprocess.run([npm_command, "install"], cwd=frontend, check=False)
+    if install.returncode != 0:
+        raise RuntimeError("Frontend dependency installation failed. See the npm output above and runtime/logs/setup.log.")
+
+
 def main() -> int:
     processes: list[tuple[str, subprocess.Popen[str]]] = []
     try:
         npm_command = shutil.which("npm")
         if npm_command is None:
             raise RuntimeError("npm을 찾을 수 없습니다. Node.js를 설치해주세요.")
+
+        ensure_frontend_dependencies(npm_command)
+        ensure_port_available(8765, "Backend")
+        ensure_port_available(5173, "Frontend")
 
         backend = start_process(
             "backend",

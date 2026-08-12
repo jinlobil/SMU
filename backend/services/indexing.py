@@ -592,6 +592,7 @@ class IndexService:
             db.execute(f"ALTER TABLE {staging} RENAME TO timeline_events")
             db.execute("CREATE INDEX idx_web_timeline_time ON timeline_events(time DESC)")
             db.execute("CREATE INDEX idx_web_timeline_source ON timeline_events(source, time DESC)")
+            db.execute("CREATE INDEX idx_web_timeline_groups ON timeline_events(source, substr(time,1,16), event, time DESC)")
             db.execute("CREATE INDEX idx_web_timeline_source_file ON timeline_events(source_file)")
         return final
 
@@ -608,7 +609,9 @@ class IndexService:
             message = "증분 인덱싱 중단 · 기존 타임라인 인덱스 형식이 호환되지 않습니다. 전체 캐시 인덱싱을 수동 실행하세요."
             progress(message); raise RuntimeError(message)
         with self._connect(final) as db:
-            db.execute("DELETE FROM timeline_events WHERE substr(time,1,10) BETWEEN ? AND ?", (start.isoformat(), end.isoformat()))
+            db.execute("CREATE INDEX IF NOT EXISTS idx_web_timeline_groups ON timeline_events(source, substr(time,1,16), event, time DESC)")
+            exclusive_end = (end + timedelta(days=1)).isoformat()
+            db.execute("DELETE FROM timeline_events WHERE time >= ? AND time < ?", (start.isoformat(), exclusive_end))
             for offset in range(0, len(events), 5000):
                 batch = events[offset:offset+5000]
                 db.executemany("INSERT INTO timeline_events VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", [tuple(event.get(key, "") for key in fields) + (json.dumps(event.get("raw", {}), ensure_ascii=False), event.get("sourceFile", "")) for event in batch])

@@ -12,6 +12,7 @@ def test_start_launcher_uses_explicit_virtualenv_python() -> None:
     assert "python run_local.py" not in script
     assert "bootstrap.log" in script
     assert 'import fastapi,psutil,uvicorn' in script
+    assert 'npm.cmd list react-router-dom --depth=0' in script
     assert "pause" in script.lower()
     assert "browser will open" not in script.lower()
     assert all(byte < 128 for byte in raw)
@@ -53,3 +54,6 @@ def test_python_launcher_does_not_open_a_browser() -> None:
     assert "webbrowser.open" not in script
     assert "open_browser_when_ready" not in script
     assert '"--no-access-log"' in script
+    assert '"list", "react-router-dom", "--depth=0"' in script
+    assert "ensure_port_available(8765" in script
+    assert "ensure_port_available(5173" in script
