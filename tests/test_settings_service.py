@@ -1,7 +1,7 @@
 from pathlib import Path
 import pytest
 import os
-from backend.services.settings import ThemeService, SchedulerService
+from backend.services.settings import DEFAULT_THEME, SchedulerService, ThemePresetService, ThemeService
 
 def test_theme_service_persists_valid_colors(tmp_path: Path):
     service=ThemeService(tmp_path); theme=service.load(); theme["Primary_Blue"]="#123456"
@@ -28,6 +28,27 @@ def test_theme_service_migrates_legacy_blue_ui_colors(tmp_path: Path):
     assert theme["Primary_Blue"]=="#ff4d8d"
     assert theme["Card_Title_Text"]=="#ffb347"
     assert theme["Table_Header_Text"]=="#e4d4f2"
+
+def test_theme_has_all_role_tokens_and_old_files_receive_defaults(tmp_path: Path):
+    path=tmp_path/"env/Color_env.txt";path.parent.mkdir(parents=True)
+    path.write_text("Primary_Blue=#123456\n",encoding="utf-8")
+    theme=ThemeService(tmp_path).load()
+    assert len(DEFAULT_THEME)==59
+    assert theme["Primary_Blue"]=="#123456"
+    assert theme["UI_Background_Deep"]==DEFAULT_THEME["UI_Background_Deep"]
+    assert theme["Glow_Accent"]==DEFAULT_THEME["Glow_Accent"]
+
+def test_theme_presets_are_complete_separate_and_replace_by_name(tmp_path: Path):
+    service=ThemePresetService(tmp_path)
+    first={**DEFAULT_THEME,"Primary_Blue":"#112233"}
+    saved=service.save("My Purple Theme",first)
+    assert saved[0]["theme"]["Primary_Blue"]=="#112233"
+    assert len(saved[0]["theme"])==59
+    assert not (tmp_path/"env/Color_env.txt").exists()
+    saved=service.save("my purple theme",{**first,"Primary_Blue":"#334455"})
+    assert len(saved)==1
+    assert saved[0]["theme"]["Primary_Blue"]=="#334455"
+    assert service.delete("my purple theme")==[]
 
 class ScheduledRefresh:
     def __init__(self): self.calls=[]

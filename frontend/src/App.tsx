@@ -17,6 +17,8 @@ import { IntegrationManagementPage } from "./pages/IntegrationManagementPage";
 import { ExceptionManagementPage } from "./pages/ExceptionManagementPage";
 import { ContentManagementPage } from "./pages/ContentManagementPage";
 import { ExportManagementPage } from "./pages/ExportManagementPage";
+import { UIManagementPage } from "./pages/UIManagementPage";
+import { applyTheme } from "./theme";
 
 
 type DetectionFilter = { field: string; query: string; start?: string; end?: string };
@@ -45,7 +47,7 @@ const submenus: Record<string, { label: string; route: string }[]> = {
   Response: [{ label: "Firewall", route: "/response/firewall" }, { label: "Easy Query", route: "/response/easy-query" }],
   Lab: [{ label: "Layout - User", route: "/lab/layout" }],
   Config: [
-    { label: "General", route: "/config/general" }, { label: "Data Management", route: "/config/data" },
+    { label: "General", route: "/config/general" }, { label: "UI Management", route: "/config/ui" }, { label: "Data Management", route: "/config/data" },
     { label: "Export Management", route: "/config/export" }, { label: "Integration Management", route: "/config/integrations" },
     { label: "Exception Management", route: "/config/exceptions" }, { label: "Content Management", route: "/config/content" },
     { label: "System Management", route: "/config/system" },
@@ -82,24 +84,7 @@ export function App() {
 
   useEffect(() => {
     fetch("/api/config/theme").then((response) => response.json()).then((payload) => {
-      const theme = payload.data || {};
-      const root = document.documentElement;
-      root.style.setProperty("--accent", theme.Primary_Blue);
-      root.style.setProperty("--accent-dark", theme.Primary_Blue_Dark);
-      root.style.setProperty("--app-bg", theme.UI_Background);
-      root.style.setProperty("--surface", theme.UI_Surface);
-      root.style.setProperty("--card-border", theme.Card_Border);
-      root.style.setProperty("--card-title", theme.Card_Title_Text);
-      root.style.setProperty("--table-head-bg", theme.Table_Header_Background);
-      root.style.setProperty("--table-head-text", theme.Table_Header_Text);
-      root.style.setProperty("--table-selection-bg", theme.Table_Selection_Background);
-      root.style.setProperty("--table-selection-text", theme.Table_Selection_Text);
-      root.style.setProperty("--trend-detection", theme.Threat_trend_Detection);
-      root.style.setProperty("--trend-xdr", theme.Threat_trend_Detection_XDR);
-      root.style.setProperty("--trend-email", theme.Threat_trend_Email);
-      root.style.setProperty("--trend-outbound", theme.Threat_trend_Outbound_Mail);
-      root.style.setProperty("--trend-file", theme.Threat_trend_File);
-      window.dispatchEvent(new CustomEvent("smu-theme", { detail: theme }));
+      applyTheme(payload.data || {});
     }).catch(() => undefined);
     fetch("/api/health").then((response) => {
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -153,6 +138,7 @@ export function App() {
           <Route path="/response/easy-query" element={<EasyQueryPage />} />
           <Route path="/lab/layout" element={<LayoutPage />} />
           <Route path="/config/general" element={<ConfigPage section="general" />} />
+          <Route path="/config/ui" element={<UIManagementPage />} />
           <Route path="/config/data" element={<ConfigPage section="data" />} />
           <Route path="/config/export" element={<ExportManagementPage />} />
           <Route path="/config/integrations" element={<IntegrationManagementPage />} />

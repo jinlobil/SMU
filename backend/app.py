@@ -27,7 +27,7 @@ from backend.services.dashboard import DashboardService
 from backend.services.firewall import FirewallService
 from backend.services.easy_query import EasyQueryService
 from backend.services.layout import LayoutService
-from backend.services.settings import SchedulerService, ThemeService
+from backend.services.settings import DEFAULT_THEME, SchedulerService, ThemePresetService, ThemeService
 from backend.services.report import ReportService
 from backend.services.system_metrics import SystemMetricsService
 from backend.services.watchdog_client import WatchdogManager
@@ -60,6 +60,7 @@ firewall_service = FirewallService(PROJECT_ROOT)
 easy_query_service = EasyQueryService(PROJECT_ROOT)
 layout_service = LayoutService(PROJECT_ROOT)
 theme_service = ThemeService(PROJECT_ROOT)
+theme_preset_service = ThemePresetService(PROJECT_ROOT)
 report_service = ReportService(PROJECT_ROOT)
 system_metrics_service = SystemMetricsService(PROJECT_ROOT)
 watchdog_manager = WatchdogManager(PROJECT_ROOT)
@@ -384,6 +385,30 @@ def save_theme(payload: dict = Body()) -> dict:
     except ValueError as exc:
         return error_response(str(uuid.uuid4()), "INVALID_THEME", str(exc), 400)
     return {"success": True, "data": data}
+
+
+@app.get("/api/config/theme/default")
+def get_default_theme() -> dict:
+    return {"success": True, "data": {"name": "SMU Neon Purple", "theme": dict(DEFAULT_THEME)}}
+
+
+@app.get("/api/config/theme/presets")
+def get_theme_presets() -> dict:
+    return {"success": True, "data": {"items": theme_preset_service.load()}}
+
+
+@app.post("/api/config/theme/presets")
+def save_theme_preset(payload: dict = Body()) -> dict:
+    try:
+        data = theme_preset_service.save(payload.get("name", ""), payload.get("theme", {}))
+    except ValueError as exc:
+        return error_response(str(uuid.uuid4()), "INVALID_THEME_PRESET", str(exc), 400)
+    return {"success": True, "data": {"items": data}}
+
+
+@app.delete("/api/config/theme/presets/{name}")
+def delete_theme_preset(name: str) -> dict:
+    return {"success": True, "data": {"items": theme_preset_service.delete(name)}}
 
 
 @app.get("/api/config/integrations")

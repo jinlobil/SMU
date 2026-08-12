@@ -124,8 +124,9 @@ def test_config_ranges_exports_and_easy_query_follow_requested_ui_behavior():
     assert "{label} XLSX" in config
     assert "브라우저 다운로드 폴더를 확인하세요" in config
     assert 'type:"COMPLETED"' in config
-    assert '"--table-selection-bg"' in app
-    assert '"--table-selection-text"' in app
+    theme = (ROOT / "frontend/src/theme.ts").read_text(encoding="utf-8")
+    assert '"--table-selection-bg"' in theme
+    assert '"--table-selection-text"' in theme
     assert ".query-detail tbody tr:hover td" in styles
     assert "var(--table-selection-bg)" in styles
 
@@ -379,5 +380,8 @@ def test_config_general_and_data_management_cards_are_split() -> None:
     assert '<ConfigPage section="data" />' in app
     assert '{section==="data"&&<>' in page
     assert '{section==="general"&&<>' in page
-    assert page.index('Process Monitor') < page.index('UI Color Settings') < page.index('Runtime & Logs')
+    ui_page = (ROOT / "frontend/src/pages/UIManagementPage.tsx").read_text(encoding="utf-8")
+    assert page.index('Process Monitor') < page.index('Runtime & Logs')
+    assert 'route: "/config/ui"' in app
+    assert "UI Management" in ui_page
     assert '<h1>{section==="data"?"Data Management":"Config"}</h1>' in page
