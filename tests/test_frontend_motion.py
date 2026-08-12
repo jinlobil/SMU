@@ -40,6 +40,17 @@ def test_router_supports_shareable_detection_queries_and_production_spa_fallback
     assert 'frontend_path.startswith("api/")' in backend
 
 
+def test_search_query_updates_do_not_remount_detection_pages():
+    app = (ROOT / "frontend/src/App.tsx").read_text(encoding="utf-8")
+
+    # Query synchronization runs while typing. A location.search key remounts
+    # the page for every character, aborting the request and stealing focus.
+    assert "key={location.search}" not in app
+    assert '<Route path="/detections/xdr" element={<DetectionPage />} />' in app
+    assert '<EmailSecurityPage kind="xdr" />' in app
+    assert '<TransferPage kind="dlp" />' in app
+
+
 def test_command_center_atmosphere_and_heartbeat_are_rendered():
     app = (ROOT / "frontend/src/App.tsx").read_text(encoding="utf-8")
 

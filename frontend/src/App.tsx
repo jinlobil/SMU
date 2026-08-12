@@ -138,14 +138,14 @@ export function App() {
       </aside>
       <main className="content"><div key={location.pathname} className="page-stage">
         <Routes>
-          <Route path="/dashboard" element={<DashboardPage key={location.search} onOpenDetection={openDetection} />} />
+          <Route path="/dashboard" element={<DashboardPage onOpenDetection={openDetection} />} />
           <Route path="/assets/endpoints" element={<EndpointPage />} />
           <Route path="/assets/organization" element={<OrganizationPage />} />
-          <Route path="/detections/xdr" element={<DetectionPage key={location.search} />} />
-          <Route path="/detections/email-xdr" element={<EmailSecurityPage key={location.search} kind="xdr" />} />
-          <Route path="/detections/inbound" element={<EmailSecurityPage key={location.search} kind="inbound" />} />
-          <Route path="/detections/outbound" element={<TransferPage key={location.search} kind="outbound" />} />
-          <Route path="/detections/dlp" element={<TransferPage key={location.search} kind="dlp" />} />
+          <Route path="/detections/xdr" element={<DetectionPage />} />
+          <Route path="/detections/email-xdr" element={<EmailSecurityPage kind="xdr" />} />
+          <Route path="/detections/inbound" element={<EmailSecurityPage kind="inbound" />} />
+          <Route path="/detections/outbound" element={<TransferPage kind="outbound" />} />
+          <Route path="/detections/dlp" element={<TransferPage kind="dlp" />} />
           <Route path="/forensics/timeline" element={<TimelinePage />} />
           <Route path="/forensics/sensitive-files" element={<SensitivePage kind="files" />} />
           <Route path="/forensics/sensitive-sites" element={<SensitivePage kind="sites" />} />
