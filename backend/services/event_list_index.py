@@ -1,6 +1,6 @@
 import json
 import sqlite3
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +28,18 @@ class EventListIndex:
         connection.execute("PRAGMA busy_timeout=30000")
         connection.execute("PRAGMA query_only=ON")
         return connection
+
+    @staticmethod
+    def _range_bounds(start: date, end: date) -> tuple[str, str]:
+        return start.isoformat(), (end + timedelta(days=1)).isoformat()
+
+    @staticmethod
+    def _field_expression(field: str, allowed_fields: set[str]) -> str:
+        # JSON paths cannot be bound as identifiers. Only service-owned allowlisted
+        # field names may reach this expression; request input is never interpolated.
+        if field not in allowed_fields or not field.replace("_", "").isalnum():
+            raise ValueError(f"Unsupported search field: {field}")
+        return f"json_extract(row_json, '$.{field}')"
 
     def _source_paths(self, kind: str, start: date, end: date) -> list[Path]:
         specs = {
@@ -71,10 +83,10 @@ class EventListIndex:
                 f"""
                 SELECT kind, COUNT(*) AS total
                 FROM event_list_rows
-                WHERE kind IN ({placeholders}) AND substr(event_time,1,10) BETWEEN ? AND ?
+                WHERE kind IN ({placeholders}) AND event_time >= ? AND event_time < ?
                 GROUP BY kind
                 """,
-                (*kinds, start.isoformat(), end.isoformat()),
+                (*kinds, *self._range_bounds(start, end)),
             ).fetchall()
         totals = {kind: 0 for kind in kinds}
         totals.update({str(row["kind"]): int(row["total"] or 0) for row in rows})
@@ -89,10 +101,10 @@ class EventListIndex:
                 f"""
                 SELECT kind, substr(event_time,1,10) AS day, COUNT(*) AS total
                 FROM event_list_rows
-                WHERE kind IN ({placeholders}) AND substr(event_time,1,10) BETWEEN ? AND ?
+                WHERE kind IN ({placeholders}) AND event_time >= ? AND event_time < ?
                 GROUP BY kind, day
                 """,
-                (*kinds, start.isoformat(), end.isoformat()),
+                (*kinds, *self._range_bounds(start, end)),
             ).fetchall()
         output = {kind: {} for kind in kinds}
         for row in rows:
@@ -107,9 +119,9 @@ class EventListIndex:
                 """
                 SELECT row_json
                 FROM event_list_rows
-                WHERE kind=? AND substr(event_time,1,10) BETWEEN ? AND ?
+                WHERE kind=? AND event_time >= ? AND event_time < ?
                 """,
-                (kind, start.isoformat(), end.isoformat()),
+                (kind, *self._range_bounds(start, end)),
             ).fetchall()
         output: list[dict[str, str]] = []
         for item in rows:
@@ -135,47 +147,62 @@ class EventListIndex:
     ) -> dict[str, Any]:
         if not self.available():
             return {"items": [], "pagination": {"page": page, "pageSize": page_size, "total": 0, "totalPages": 1}, "source": {"directory": str(self.path), "files": [], "index": "events_index.db"}}
-        with self._read_connection() as db:
-            rows = db.execute(
-                """
-                SELECT record_id, event_time, row_json, search_text, source_file
-                FROM event_list_rows
-                WHERE kind=? AND substr(event_time,1,10) BETWEEN ? AND ?
-                """,
-                (kind, start.isoformat(), end.isoformat()),
-            ).fetchall()
-        output: list[dict[str, str]] = []
-        files = set()
-        for item in rows:
-            row = json.loads(item["row_json"] or "{}")
-            if item["source_file"]:
-                files.add(Path(str(item["source_file"])).name)
-            matched = True
-            for condition in conditions:
-                query = str(condition.get("query", "")).strip().lower()
-                if not query:
-                    continue
-                field = condition.get("field", "all")
-                mode = condition.get("mode", "include")
-                if field == "rawData":
-                    value = str(item["search_text"] or "")
-                elif field == "all":
-                    value = " ".join(str(row.get(name, "")) for name in fields).lower()
-                elif field in fields:
-                    value = str(row.get(field, "")).lower()
-                else:
-                    raise ValueError(f"Unsupported search field: {field}")
-                found = query in value
-                if (mode == "include" and not found) or (mode == "exclude" and found):
-                    matched = False
-                    break
-            if matched:
-                output.append(row)
-        output.sort(key=lambda row: (str(row.get(sort, "")).lower(), str(row.get("id", ""))), reverse=direction == "desc")
-        total = len(output)
+        if sort not in fields:
+            raise ValueError(f"Unsupported sort: {sort}")
+        if direction not in {"asc", "desc"}:
+            raise ValueError(f"Unsupported direction: {direction}")
+
+        where = ["kind=?", "event_time >= ?", "event_time < ?"]
+        parameters: list[Any] = [kind, *self._range_bounds(start, end)]
+        all_expression = " || ' ' || ".join(
+            f"COALESCE(CAST({self._field_expression(name, fields)} AS TEXT), '')"
+            for name in sorted(fields)
+        ) or "''"
+        for condition in conditions:
+            query = str(condition.get("query", "")).strip().lower()
+            if not query:
+                continue
+            field = str(condition.get("field", "all"))
+            mode = str(condition.get("mode", "include"))
+            if mode not in {"include", "exclude"}:
+                raise ValueError(f"Unsupported search mode: {mode}")
+            if field == "rawData":
+                value_expression = "COALESCE(search_text, '')"
+            elif field == "all":
+                value_expression = all_expression
+            else:
+                value_expression = f"COALESCE(CAST({self._field_expression(field, fields)} AS TEXT), '')"
+            predicate = f"instr(lower({value_expression}), ?) > 0"
+            where.append(predicate if mode == "include" else f"NOT ({predicate})")
+            parameters.append(query)
+
+        where_sql = " AND ".join(where)
+        sort_expression = self._field_expression(sort, fields)
+        order = direction.upper()
         offset = (page - 1) * page_size
+        with self._read_connection() as db:
+            total = int(db.execute(f"SELECT COUNT(*) FROM event_list_rows WHERE {where_sql}", parameters).fetchone()[0])
+            rows = db.execute(
+                f"""
+                SELECT row_json
+                FROM event_list_rows
+                WHERE {where_sql}
+                ORDER BY lower(COALESCE(CAST({sort_expression} AS TEXT), '')) {order}, record_id {order}
+                LIMIT ? OFFSET ?
+                """,
+                (*parameters, page_size, offset),
+            ).fetchall()
+            source_rows = db.execute(
+                """
+                SELECT DISTINCT source_file FROM event_list_rows
+                WHERE kind=? AND event_time >= ? AND event_time < ? AND source_file <> ''
+                """,
+                (kind, *self._range_bounds(start, end)),
+            ).fetchall()
+        output = [json.loads(item["row_json"] or "{}") for item in rows]
+        files = {Path(str(item["source_file"])).name for item in source_rows}
         return {
-            "items": output[offset:offset + page_size],
+            "items": output,
             "pagination": {"page": page, "pageSize": page_size, "total": total, "totalPages": max(1, (total + page_size - 1) // page_size)},
             "source": {"directory": str(self.path), "files": sorted(files), "index": "events_index.db"},
         }

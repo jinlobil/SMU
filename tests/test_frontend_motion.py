@@ -4,12 +4,30 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_app_uses_browser_router_and_exposes_direct_screen_routes():
+    app = (ROOT / "frontend/src/App.tsx").read_text(encoding="utf-8")
+    main = (ROOT / "frontend/src/main.tsx").read_text(encoding="utf-8")
+    package = (ROOT / "frontend/package.json").read_text(encoding="utf-8")
+
+    assert "react-router-dom" in package
+    assert "<BrowserRouter><App /></BrowserRouter>" in main
+    for route in (
+        "/dashboard", "/assets/endpoints", "/assets/organization", "/detections/xdr",
+        "/detections/email-xdr", "/detections/inbound", "/detections/outbound", "/detections/dlp",
+        "/forensics/timeline", "/forensics/sensitive-files", "/forensics/sensitive-sites",
+        "/response/firewall", "/response/easy-query", "/lab/layout", "/config/general",
+        "/config/data", "/config/export", "/config/integrations", "/config/exceptions",
+        "/config/content", "/config/system",
+    ):
+        assert f'path="{route}"' in app
+
+
 def test_command_center_atmosphere_and_heartbeat_are_rendered():
     app = (ROOT / "frontend/src/App.tsx").read_text(encoding="utf-8")
 
     assert 'className="cyber-atmosphere"' in app
     assert 'className="connection-heartbeat"' in app
-    assert "page-stage page-${view}" in app
+    assert 'key={location.pathname} className="page-stage"' in app
 
 
 def test_motion_layer_covers_cards_tables_and_feature_pages():
@@ -40,9 +58,9 @@ def test_system_info_uses_hover_tooltips_without_bottom_time_labels():
     assert 'className="hover-guide visible"' in page
     assert "<title>" not in page
     assert 'textAnchor="middle"' not in page
-    assert 'href="#config-general"' in app
-    assert 'href="#config-data-management"' in app
-    assert 'href="#config-system-management"' in app
+    assert 'route: "/config/general"' in app
+    assert 'route: "/config/data"' in app
+    assert 'route: "/config/system"' in app
     assert ">General</button>" not in app
     assert ">System-Info</button>" not in app
     assert ">General</button>" not in config
@@ -136,7 +154,7 @@ def test_integration_management_is_a_config_subpage_with_card_modal_ui():
     page = (ROOT / "frontend/src/pages/IntegrationManagementPage.tsx").read_text(encoding="utf-8")
     styles = (ROOT / "frontend/src/styles.css").read_text(encoding="utf-8")
 
-    assert 'href="#config-integration-management"' in app
+    assert 'route: "/config/integrations"' in app
     assert "<IntegrationManagementPage />" in app
     assert "＋ 연동 추가" in page
     assert 'className="integration-card"' in page
@@ -169,7 +187,7 @@ def test_exception_management_uses_department_and_full_principal_tabs():
     page = (ROOT / "frontend/src/pages/ExceptionManagementPage.tsx").read_text(encoding="utf-8")
     styles = (ROOT / "frontend/src/styles.css").read_text(encoding="utf-8")
 
-    assert 'href="#config-exception-management"' in app
+    assert 'route: "/config/exceptions"' in app
     assert "<ExceptionManagementPage />" in app
     assert "부서 예외처리" in page
     assert "사용자 예외처리" in page
@@ -229,7 +247,7 @@ def test_export_management_is_separate_tab_with_mini_tabs_and_column_selection()
     styles = (ROOT / "frontend/src/styles.css").read_text(encoding="utf-8")
 
     assert "ExportManagementPage" in app
-    assert "exportManagement" in app
+    assert 'path="/config/export"' in app
     assert "Export Management" in app
     assert "Export & Security Report" not in config
     for label in ("Detection XLSX", "Email XDR XLSX", "Inbound Mail XLSX", "Outbound Mail XLSX", "DLP File XLSX", "Security Report PDF"):
@@ -285,8 +303,11 @@ def test_app_starts_on_dashboard_and_config_links_share_subnav_hover():
     app = (ROOT / "frontend/src/App.tsx").read_text(encoding="utf-8")
     styles = (ROOT / "frontend/src/styles.css").read_text(encoding="utf-8")
     launcher = (ROOT / "run_local.py").read_text(encoding="utf-8")
-    assert 'useState("Dashboard")' in app
-    assert 'useState<View>("dashboard")' in app
+    assert '<Route path="/dashboard"' in app
+    assert '<Navigate to="/dashboard" replace' in app
+    assert "useLocation()" in app
+    assert "useNavigate()" in app
+    assert "setView" not in app
     assert ".subnav button:hover,.subnav a:hover" in styles
     assert "import webbrowser" not in launcher
     assert "webbrowser.open" not in launcher

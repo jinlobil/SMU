@@ -2,7 +2,7 @@ import json
 import os
 import re
 import sqlite3
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Callable
 
@@ -391,7 +391,8 @@ class IndexService:
     def _update_events_range(self, rows: list[dict[str, str]], start: date, end: date, progress: Callable[[str], None]) -> Path:
         final = self._ensure_events_index(progress)
         with self._connect(final) as db:
-            db.execute("DELETE FROM event_list_rows WHERE substr(event_time,1,10) BETWEEN ? AND ?", (start.isoformat(), end.isoformat()))
+            exclusive_end = (end + timedelta(days=1)).isoformat()
+            db.execute("DELETE FROM event_list_rows WHERE event_time >= ? AND event_time < ?", (start.isoformat(), exclusive_end))
             for offset in range(0, len(rows), 5000):
                 batch = rows[offset:offset+5000]
                 db.executemany("INSERT OR REPLACE INTO event_list_rows VALUES (?,?,?,?,?,?)", [(row["kind"], row["recordId"], row["eventTime"], row["searchText"], row["rowJson"], row["sourceFile"]) for row in batch])
