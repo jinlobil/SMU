@@ -1,0 +1,82 @@
+import json
+from backend.services.learner.gate import FREQUENCY,NOVELTY_RARITY,SPREAD,evaluate
+from backend.services.learner.store import LearnerStore
+
+
+def finding(kind="NEW_BEHAVIOR",global_prior=0,behavior="destination",value="example.test",group=0):
+    observed={"behaviorType":behavior,"value":value}
+    if kind=="NEW_BEHAVIOR":observed={"newBehaviors":[observed]}
+    return {"finding_type":kind,"observed_json":json.dumps(observed),"baseline_json":json.dumps({"behaviors":[{"counts":{"user":0,"device":0,"department":0,"global":global_prior}}],"groupCount":group})}
+
+
+def test_novelty_family_alone_is_analysis_only():
+    gate=evaluate(finding())
+    assert gate["visible"] is False and gate["category"]=="ANALYSIS_ONLY"
+    assert gate["evidenceFamilies"]==[NOVELTY_RARITY]
+
+
+def test_multiple_first_seen_scopes_remain_one_novelty_family():
+    gate=evaluate(finding(global_prior=0))
+    assert gate["visible"] is False and len(gate["evidenceFamilies"])==1
+
+
+def test_global_first_plus_frequency_is_visible():
+    gate=evaluate(finding(),{("destination","example.test")},set())
+    assert gate["visible"] and gate["evidenceFamilies"]==[NOVELTY_RARITY,FREQUENCY]
+
+
+def test_global_first_plus_similar_group_is_visible():
+    gate=evaluate(finding(),set(),{("destination","example.test")})
+    assert gate["visible"] and gate["evidenceFamilies"]==[NOVELTY_RARITY,SPREAD]
+
+
+def test_global_rare_device_first_plus_frequency_is_visible():
+    gate=evaluate(finding(global_prior=5),{("destination","example.test")},set())
+    assert gate["visible"] and gate["evidence"]["globalRare"] is True
+
+
+def test_high_global_prior_user_first_is_hidden():
+    gate=evaluate(finding(global_prior=82000))
+    assert not gate["visible"] and not gate["evidence"]["globalRare"]
+
+
+def test_gate_persists_reasons_and_hidden_query_remains_available(tmp_path):
+    store=LearnerStore(tmp_path);gate=evaluate(finding())
+    with store.connect() as db:
+        db.execute("INSERT INTO learner_findings(finding_id,source,event_id,finding_type,title,summary,observed_json,reasons_json,baseline_json,related_event_ids_json,created_at,gate_visible,gate_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",("hidden","dlp","e1","NEW_BEHAVIOR","새로운 행동","요약","{}","[]","{}","[]","2026-01-01",0,json.dumps(gate,ensure_ascii=False)))
+    assert store.findings(source="dlp",visible_only=True)["total"]==0
+    all_results=store.findings(source="dlp",visible_only=False)
+    assert all_results["total"]==1 and all_results["items"][0]["gate"]["reasons"]
+
+
+def _event_db(root, rows):
+    import sqlite3
+    path=root/"cache/index/events_index.db";path.parent.mkdir(parents=True,exist_ok=True)
+    with sqlite3.connect(path) as db:
+        db.execute("CREATE TABLE event_list_rows(kind TEXT,record_id TEXT,event_time TEXT,row_json TEXT,source_file TEXT)")
+        db.executemany("INSERT INTO event_list_rows VALUES(?,?,?,?,?)",[(source,event_id,time,json.dumps(row),"") for source,event_id,time,row in rows])
+
+
+def test_similar_group_promotes_new_behavior_without_changing_stats(tmp_path):
+    from backend.services.learner.service import LearnerService
+    rows=[("detections",f"e{i}",f"2026-01-01T00:{i:02d}:00",{"rule":"Rare Rule"}) for i in range(10)]
+    _event_db(tmp_path,rows);service=LearnerService(tmp_path);service.run("full",["detections"])
+    store=LearnerStore(tmp_path);review=store.findings(source="detections",visible_only=True)
+    new=next(item for item in review["items"] if item["finding_type"]=="NEW_BEHAVIOR")
+    assert new["gate"]["evidenceFamilies"]==[NOVELTY_RARITY,SPREAD]
+    with store.connect() as db:
+        stat=db.execute("SELECT count_all FROM behavior_stats WHERE source='detections' AND scope_type='global' AND behavior_type='detection_rule'").fetchone()
+    assert stat[0]==10
+
+
+def test_incremental_run_reapplies_gate_to_preserved_findings(tmp_path):
+    import sqlite3
+    from backend.services.learner.service import LearnerService
+    _event_db(tmp_path,[("detections","first","2026-01-01T00:00:00",{"rule":"R"})])
+    service=LearnerService(tmp_path);service.run("full",["detections"]);store=LearnerStore(tmp_path)
+    assert store.findings(source="detections",visible_only=True)["total"]==0
+    with sqlite3.connect(tmp_path/"cache/index/events_index.db") as db:
+        db.executemany("INSERT INTO event_list_rows VALUES(?,?,?,?,?)",[("detections",f"next{i}",f"2026-01-02T00:{i:02d}:00",json.dumps({"rule":"R"}),"") for i in range(10)])
+    service.run("incremental",["detections"])
+    new=next(item for item in store.findings(source="detections",visible_only=True)["items"] if item["finding_type"]=="NEW_BEHAVIOR")
+    assert new["gate"]["visible"] is True
