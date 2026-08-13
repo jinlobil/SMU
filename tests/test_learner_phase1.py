@@ -55,3 +55,31 @@ def test_learner_main_uses_keyword_only_logging_retention():
     source=Path("system_monitor/learner.py").read_text(encoding="utf-8")
     assert 'configure_agent_logging(a.root/"runtime/logs/learner.log", retention_days=60)' in source
     assert 'configure_agent_logging(a.root/"runtime/logs/learner.log",60)' not in source
+
+
+def test_new_behaviors_are_merged_into_one_primary_event_finding(tmp_path):
+    row={"from":"external@outside.test","senderIp":"203.0.113.7","to":"internal@corp.test","user":"내부 사용자","userId":"internal","dept":"보안팀","subject":"새 메일"}
+    events_db(tmp_path,[("inbound","mail-1","2026-03-01T09:00:00",row)])
+    LearnerService(tmp_path).run("full",["inbound"])
+    findings=LearnerStore(tmp_path).findings(source="inbound",finding_type="NEW_BEHAVIOR")
+    assert len(findings)==1
+    finding=findings[0]
+    assert finding["event_id"]=="mail-1"
+    assert len(finding["reasons"])==5
+    assert len(finding["observed"]["newBehaviors"])==5
+    assert finding["user_name"]=="내부 사용자"
+    assert finding["user_id"]=="internal"
+    assert finding["email"]=="internal@corp.test"
+    assert "external@outside.test" in json.dumps(finding["observed"],ensure_ascii=False)
+
+
+def test_email_xdr_identity_prefers_internal_recipient_over_external_sender():
+    row={"from":"attacker@outside.test","to":"employee@corp.test","user":"사내 사용자","userId":"employee","dept":"재무팀","subject":"검증"}
+    output=ADAPTERS["xdr"]("xdr-1","2026-03-01T10:00:00",row)
+    assert output
+    assert all(item.user_name=="사내 사용자" for item in output)
+    assert all(item.user_id=="employee" for item in output)
+    assert all(item.email=="employee@corp.test" for item in output)
+    sender=next(item for item in output if item.behavior_type=="sender")
+    assert sender.behavior_key=="attacker@outside.test"
+    assert "attacker@outside.test" not in {sender.person_key,sender.email,sender.user_id}

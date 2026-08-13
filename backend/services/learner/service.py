@@ -59,14 +59,21 @@ class LearnerService:
     row=json.loads(raw["row_json"]); event_time=raw["event_time"];event_id=raw["record_id"]
     bs=ADAPTERS[source](event_id,event_time,row)
     in_target=(not target_start or event_time>=target_start) and (not target_end or event_time<target_end+"T99")
+    new_behaviors=[]
     for b in bs:
      histories={}
      for st,sk in b.scopes():
       past=d.execute("SELECT event_time,event_id FROM processed_behaviors WHERE source=? AND scope_type=? AND scope_key=? AND behavior_type=? AND behavior_key=? AND event_time<? ORDER BY event_time",(source,st,sk,b.behavior_type,b.behavior_key,event_time)).fetchall();histories[st]=[x[0] for x in past]
       d.execute("INSERT OR IGNORE INTO processed_behaviors VALUES(?,?,?,?,?,?,?)",(source,event_id,event_time,st,sk,b.behavior_type,b.behavior_key))
      if in_target and not histories.get("device") and not histories.get("user") and not histories.get("global"):
-      self._finding(d,b,"NEW_BEHAVIOR","새로운 행동",f"{BEHAVIOR_LABELS.get(b.behavior_type,b.behavior_type)}이(가) 처음 확인되었습니다.",["전체 보유 이력에서 이전 기록이 없습니다.","현재 이벤트보다 미래의 데이터는 기준에 포함하지 않았습니다."],{k:len(v) for k,v in histories.items()},[event_id])
+      new_behaviors.append((b,histories))
      groups[(event_time[:10],b.behavior_type,b.behavior_key)].append(b)
+    if new_behaviors:
+     primary=new_behaviors[0][0]
+     reasons=[f"{BEHAVIOR_LABELS.get(b.behavior_type,b.behavior_type)} '{b.observed.get('value','')}'이(가) 전체 과거 이력에서 처음 확인되었습니다." for b,_history in new_behaviors]
+     behavior_baselines=[{"behaviorType":b.behavior_type,"behaviorKey":b.behavior_key,"counts":{scope:len(values) for scope,values in history.items()}} for b,history in new_behaviors]
+     first_counts=behavior_baselines[0]["counts"]
+     self._finding(d,primary,"NEW_BEHAVIOR","새로운 행동",f"하나의 이벤트에서 새로운 행동 {len(new_behaviors):,}개가 확인되었습니다.",reasons,{**first_counts,"behaviors":behavior_baselines},[event_id],observed={"event":row,"newBehaviors":[b.observed for b,_history in new_behaviors]})
    for (_,bt,bk),items in groups.items():
     if len(items)>=10:
      b=items[0];self._finding(d,b,"SIMILAR_GROUP","비슷한 이벤트",f"동일한 {BEHAVIOR_LABELS.get(bt,bt)}이(가) {len(items):,}건 확인되었습니다.",[f"같은 분석일에 정규화된 행동 값이 {len(items):,}건 일치했습니다."],{"groupCount":len(items)},[x.event_id for x in items[:100]])
@@ -77,9 +84,10 @@ class LearnerService:
     prior=d.execute("SELECT COUNT(DISTINCT event_id) FROM processed_behaviors WHERE source=? AND behavior_type=? AND behavior_key=? AND event_time>=? AND event_time<?",(source,bt,bk,start,day)).fetchone()[0]
     avg=prior/7
     if avg>0 and len(items)>=max(10,avg*3):self._finding(d,b,"FREQUENCY_SPIKE","최근 활동 증가",f"하루 {len(items):,}건으로 최근 7일 평균보다 크게 증가했습니다.",[f"최근 1일 {len(items):,}건",f"이전 7일 일평균 {avg:.1f}건","최소 10건 및 3배 증가 기준을 충족했습니다."],{"count1d":len(items),"prior7d":prior,"priorDailyAverage":avg},[x.event_id for x in items[:100]])
- def _finding(self,d,b,kind,title,summary,reasons,baseline,related):
-  fid=hashlib.sha256(f"{kind}:{b.source}:{b.event_id}:{b.behavior_type}:{b.behavior_key}".encode()).hexdigest()[:32]
-  d.execute("INSERT OR REPLACE INTO learner_findings VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(fid,b.source,b.event_id,kind,title,summary,b.person_key,b.endpoint_key,b.user_name,b.user_id,b.email,b.hostname,b.department,json.dumps(b.observed,ensure_ascii=False),json.dumps(reasons,ensure_ascii=False),json.dumps(baseline,ensure_ascii=False),json.dumps(related),b.event_time))
+ def _finding(self,d,b,kind,title,summary,reasons,baseline,related,observed=None):
+  signature=f"{kind}:{b.source}:{b.event_id}" if kind=="NEW_BEHAVIOR" else f"{kind}:{b.source}:{b.event_id}:{b.behavior_type}:{b.behavior_key}"
+  fid=hashlib.sha256(signature.encode()).hexdigest()[:32]
+  d.execute("INSERT OR REPLACE INTO learner_findings VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(fid,b.source,b.event_id,kind,title,summary,b.person_key,b.endpoint_key,b.user_name,b.user_id,b.email,b.hostname,b.department,json.dumps(observed if observed is not None else b.observed,ensure_ascii=False),json.dumps(reasons,ensure_ascii=False),json.dumps(baseline,ensure_ascii=False),json.dumps(related),b.event_time))
  def _refresh_stats(self,sources):
   updated=datetime.now(timezone.utc).isoformat()
   with self.store.connect() as d:
