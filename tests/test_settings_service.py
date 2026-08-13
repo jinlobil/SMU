@@ -21,6 +21,15 @@ def test_scheduler_settings_are_persistent(tmp_path: Path):
     loaded=SchedulerService(tmp_path,Refresh()).get()
     assert loaded["enabled"] is True
 
+
+def test_scheduler_migrates_legacy_logical_detection_targets(tmp_path: Path):
+    path = tmp_path / "runtime/scheduler.json"
+    path.parent.mkdir(parents=True)
+    path.write_text('{"enabled": false, "targets": ["xdr", "firewall", "inbound"]}', encoding="utf-8")
+    service = SchedulerService(tmp_path, Refresh())
+    assert service.get()["targets"] == ["detections", "inbound"]
+
+
 def test_theme_service_migrates_legacy_blue_ui_colors(tmp_path: Path):
     path=tmp_path/"env/Color_env.txt";path.parent.mkdir(parents=True)
     path.write_text("Primary_Blue=#0863e2\nCard_Title_Text=#007fc7\nTable_Header_Text=#0088e2\n",encoding="utf-8")
@@ -103,3 +112,9 @@ def test_scheduler_retries_windows_permission_error(tmp_path: Path, monkeypatch)
 
     assert attempts["count"] == 3
     assert service.path.exists()
+
+
+def test_scheduler_exposes_only_physical_collection_targets(tmp_path: Path):
+    service = SchedulerService(tmp_path, Refresh())
+    saved = service.save({"enabled": False, "interval": 10, "targets": ["detections", "xdr", "firewall"]})
+    assert saved["targets"] == ["detections"]

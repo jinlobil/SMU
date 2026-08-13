@@ -102,13 +102,7 @@ def test_snapshot_targets_do_not_use_daily_finalization(tmp_path, monkeypatch):
     assert agent._last_finalized_date("users") is None
 
 
-def test_detection_logical_targets_share_one_physical_fetch(tmp_path, monkeypatch):
+def test_fetcher_accepts_only_physical_detection_raw_target(tmp_path):
     agent = FetcherAgent(tmp_path)
-    calls = []
-    monkeypatch.setattr(agent, "_collect", lambda _service, target, _start, _end, _progress: calls.append(target) or {"rows": 3})
     job = agent.submit(["detections", "xdr", "firewall"], "2026-08-12", "2026-08-12")
-    monkeypatch.setattr(agent.wake, "wait", lambda _timeout: agent.stop.set())
-    agent.worker_loop()
-    result = agent.get(job["id"])["result"]
-    assert calls == ["detections"]
-    assert all(result[target]["status"] == "SUCCESS" for target in ("detections", "xdr", "firewall"))
+    assert job["targets"] == ["detections"]

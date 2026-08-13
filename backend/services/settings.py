@@ -104,7 +104,8 @@ class ThemePresetService:
         temporary.write_text(json.dumps(presets, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         os.replace(temporary, self.path)
 class SchedulerService:
-    TARGETS = {"detections", "xdr", "firewall", "inbound", "dlp", "outbound", "endpoints", "organizations", "users"}
+    TARGETS = {"detections", "inbound", "dlp", "outbound", "endpoints", "organizations", "users"}
+    LEGACY_DETECTION_TARGETS = {"xdr", "firewall"}
 
     def __init__(self, root: Path, refresh_service, index_service=None):
         self.path = root / "runtime/scheduler.json"
@@ -130,7 +131,10 @@ class SchedulerService:
         try:
             loaded = json.loads(self.path.read_text(encoding="utf-8"))
             self.state.update(loaded)
-            self.state["targets"] = [target for target in self.state["targets"] if target in self.TARGETS]
+            targets = list(self.state["targets"])
+            if any(target in self.LEGACY_DETECTION_TARGETS for target in targets) and "detections" not in targets:
+                targets.insert(0, "detections")
+            self.state["targets"] = list(dict.fromkeys(target for target in targets if target in self.TARGETS))
             if not isinstance(self.state.get("targetStatus"), dict):
                 self.state["targetStatus"] = {}
             self.state["running"] = False
@@ -172,7 +176,10 @@ class SchedulerService:
 
     def save(self, data):
         interval = max(1, min(1440, int(data.get("interval", 10))))
-        targets = [target for target in data.get("targets", []) if target in self.TARGETS]
+        requested = list(data.get("targets", []))
+        if any(target in self.LEGACY_DETECTION_TARGETS for target in requested) and "detections" not in requested:
+            requested.insert(0, "detections")
+        targets = list(dict.fromkeys(target for target in requested if target in self.TARGETS))
         enabled = bool(data.get("enabled"))
         with self.lock:
             self.state.update(enabled=enabled, interval=interval, targets=targets)
