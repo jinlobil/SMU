@@ -48,7 +48,7 @@ def test_learner_health_job_and_watchdog_surface(tmp_path,monkeypatch):
 def test_fastapi_and_frontend_expose_learner_contract():
     app=Path("backend/app.py").read_text(encoding="utf-8");ui=Path("frontend/src/pages/MachineLearningPage.tsx").read_text(encoding="utf-8")
     for route in ("/api/learner/jobs","/api/learner/findings","/api/learner/history"): assert route in app
-    for label in ("새로운 행동","활동 증가","비슷한 이벤트","왜 표시됐나요?"): assert label in ui
+    for label in ("새로운 행동","활동 증가","비슷한 이벤트","왜 확인해야 하나요?"): assert label in ui
 
 
 def test_learner_main_uses_keyword_only_logging_retention():
@@ -154,8 +154,8 @@ def test_frontend_disables_analysis_buttons_and_exposes_graceful_cancel():
     ui=Path("frontend/src/pages/MachineLearningPage.tsx").read_text(encoding="utf-8")
     assert "disabled={busy}" in ui
     assert 'global-job-progress scheduler-progress indexing learner-job-progress' in ui
-    assert 'className="config-card learner-toolbar"' in ui
-    for action in ('primary-action','secondary-action','danger-action'): assert f'className="{action}"' in ui
+    assert 'className="panel"' in ui
+    assert 'className="refresh-button"' in ui and 'className="danger-action"' in ui
     assert "분석 중단" in ui and "/cancel" in ui
     for field in ("sourceProcessed","sourceTotal","totalProcessed","totalEvents","progressPercent"):assert field in ui
 
@@ -165,7 +165,7 @@ def test_learner_findings_are_server_paginated(tmp_path):
     with store.connect() as db:
         for index in range(65):
             db.execute("INSERT INTO learner_findings(finding_id,source,event_id,finding_type,title,summary,observed_json,reasons_json,baseline_json,related_event_ids_json,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",(f"f{index}","inbound",f"e{index}","NEW_BEHAVIOR","새로운 행동","요약","{}","[]","{}","[]",f"2026-01-{index%28+1:02d}T00:00:{index:02d}"))
-    first=store.findings(source="inbound",limit=30,offset=0);third=store.findings(source="inbound",limit=30,offset=60)
+    first=store.findings(source="inbound",limit=30,offset=0,visible_only=False);third=store.findings(source="inbound",limit=30,offset=60,visible_only=False)
     assert first["total"]==65 and len(first["items"])==30
     assert third["total"]==65 and len(third["items"])==5
 
@@ -184,6 +184,16 @@ def test_machine_learning_render_boundaries_and_progress_math():
 
 def test_machine_learning_uses_shared_action_tokens_without_learner_colors():
     css=Path("frontend/src/styles.css").read_text(encoding="utf-8")
-    learner_css=css[css.index(".learner-toolbar-controls"):]
-    assert "--learner" not in learner_css
-    assert ".primary-action" in css and ".secondary-action" in css and ".danger-action" in css
+    assert "--learner" not in css
+    assert ".refresh-button" in css and ".danger-action" in css
+    assert ".secondary-action" not in css
+
+
+def test_machine_learning_reuses_existing_smu_ui_patterns():
+    ui=Path("frontend/src/pages/MachineLearningPage.tsx").read_text(encoding="utf-8")
+    for shared in ('className="source-filters"','className="date-range"','className="condition-list"','className="condition-row"','className="refresh-button"','className="pagination learner-pagination"','className="config-card learner-finding"','className="detail-modal"','className="timeline-empty"'):
+        assert shared in ui
+    for forbidden in ('learner-date-input','ml-date-picker','learner-filter-button','learner-dropdown'):
+        assert forbidden not in ui
+    assert 'busy&&job&&<LearnerJobStatus' in ui
+    assert 'view:filters.view' in ui

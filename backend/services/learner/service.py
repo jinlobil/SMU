@@ -5,6 +5,7 @@ from pathlib import Path
 from .common import SOURCES,WINDOWS
 from .store import LearnerStore,SCHEMA_VERSION
 from .adapters import ADAPTERS
+from .gate import apply_gate
 BEHAVIOR_LABELS={"process":"프로세스 실행","parent_process":"상위 프로세스","parent_child":"프로세스 실행 조합","command_line":"명령줄 실행","file_path":"파일 접근","detection_rule":"탐지 규칙","sender":"메일 발신자","sender_domain":"발신 도메인","sender_ip":"발신 IP","recipient":"메일 수신자","subject":"메일 제목","url":"URL","url_domain":"접속 도메인","attachment_extension":"첨부파일 형식","receiver":"메일 수신자","receiver_domain":"수신 도메인","mail_size":"메일 크기","hour":"발송 시간대","user":"사용자 활동","device":"장비 활동","event_type":"이벤트 유형","destination":"전송 대상","destination_domain":"대상 도메인","destination_type":"대상 유형","file_extension":"파일 형식","file_size":"파일 크기","destination_ip":"목적지 IP","destination_port":"목적지 포트","protocol":"통신 프로토콜","application":"애플리케이션","source_zone":"출발지 구역","destination_zone":"목적지 구역"}
 class LearnerCancelled(Exception): pass
 class LearnerService:
@@ -47,6 +48,7 @@ class LearnerService:
      overall=processed+done
      progress({"message":f"{source} 분석 중","currentSource":source,"sourceProcessed":done,"sourceTotal":len(rows),"totalProcessed":overall,"totalEvents":total_events,"progressPercent":round(overall*100/total_events,1) if total_events else 100.0})
     self._process_source(source,rows,target_start,target_end,source_progress,cancelled)
+    with self.store.connect() as d:apply_gate(d,source)
     with self.store.connect() as d:
      for r in rows:d.execute("INSERT OR REPLACE INTO learner_processed_events VALUES(?,?,?,?)",(source,r["record_id"],r["event_time"],hashlib.sha256((r["event_time"]+r["row_json"]).encode()).hexdigest()))
     processed+=len(rows)
@@ -103,7 +105,7 @@ class LearnerService:
  def _finding(self,d,b,kind,title,summary,reasons,baseline,related,observed=None):
   signature=f"{kind}:{b.source}:{b.event_id}" if kind=="NEW_BEHAVIOR" else f"{kind}:{b.source}:{b.event_id}:{b.behavior_type}:{b.behavior_key}"
   fid=hashlib.sha256(signature.encode()).hexdigest()[:32]
-  d.execute("INSERT OR REPLACE INTO learner_findings VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(fid,b.source,b.event_id,kind,title,summary,b.person_key,b.endpoint_key,b.user_name,b.user_id,b.email,b.hostname,b.department,json.dumps(observed if observed is not None else b.observed,ensure_ascii=False),json.dumps(reasons,ensure_ascii=False),json.dumps(baseline,ensure_ascii=False),json.dumps(related),b.event_time))
+  d.execute("INSERT OR REPLACE INTO learner_findings(finding_id,source,event_id,finding_type,title,summary,person_key,endpoint_key,user_name,user_id,email,hostname,department,observed_json,reasons_json,baseline_json,related_event_ids_json,created_at,gate_visible,gate_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,NULL)",(fid,b.source,b.event_id,kind,title,summary,b.person_key,b.endpoint_key,b.user_name,b.user_id,b.email,b.hostname,b.department,json.dumps(observed if observed is not None else b.observed,ensure_ascii=False),json.dumps(reasons,ensure_ascii=False),json.dumps(baseline,ensure_ascii=False),json.dumps(related),b.event_time))
  def _refresh_stats(self,sources):
   updated=datetime.now(timezone.utc).isoformat()
   with self.store.connect() as d:

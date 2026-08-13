@@ -693,9 +693,6 @@ def vacuum_indexes(payload: dict | None = Body(default=None)) -> dict:
     target = str((payload or {}).get("target", "all"))
     return {"success": True, "data": watchdog_manager.start_laborer_job("vacuum", target=target)}
 
-@app.get("/api/learner/history")
-def learner_history(source: str, scopeType: str, scopeKey: str, behaviorType: str, behaviorKey: str) -> dict:
-    return {"success":True,"data":LearnerService(PROJECT_ROOT).history(source,scopeType,scopeKey,behaviorType,behaviorKey)}
 
 @app.post("/api/learner/jobs", status_code=202)
 def start_learner_job(payload: dict = Body(default={})) -> dict:
@@ -722,8 +719,8 @@ def cancel_learner_job(job_id: str):
     except Exception as exc:return error_response(str(uuid.uuid4()),"LEARNER_UNAVAILABLE",str(exc),503)
 
 @app.get("/api/learner/findings")
-def learner_findings(source: str="", findingType: str="", start: str="", end: str="", page: int=Query(1,ge=1), pageSize: int=Query(30,ge=1,le=100)) -> dict:
-    result=LearnerStore(PROJECT_ROOT).findings(source,findingType,start,(end+"T99") if end else "",pageSize,(page-1)*pageSize)
+def learner_findings(source: str="", findingType: str="", start: str="", end: str="", view: str="review", page: int=Query(1,ge=1), pageSize: int=Query(30,ge=1,le=100)) -> dict:
+    result=LearnerStore(PROJECT_ROOT).findings(source,findingType,start,(end+"T99") if end else "",pageSize,(page-1)*pageSize,view != "all")
     total=result["total"]
     return {"success":True,"data":{"items":result["items"],"pagination":{"page":page,"pageSize":pageSize,"total":total,"totalPages":max(1,(total+pageSize-1)//pageSize)}}}
 
