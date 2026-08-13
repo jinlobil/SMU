@@ -191,9 +191,11 @@ def test_machine_learning_uses_shared_action_tokens_without_learner_colors():
 
 def test_machine_learning_reuses_existing_smu_ui_patterns():
     ui=Path("frontend/src/pages/MachineLearningPage.tsx").read_text(encoding="utf-8")
-    for shared in ('className="source-filters"','className="date-range"','className="condition-list"','className="condition-row"','className="refresh-button"','className="pagination learner-pagination"','className="config-card learner-finding"','className="detail-modal"','className="timeline-empty"'):
+    for shared in ('className="source-filters"','<DateRange','className="condition-list"','className="condition-row"','className="refresh-button"','className="pagination"','className="config-card learner-finding"','className="detail-modal"','className="timeline-empty"'):
         assert shared in ui
-    for forbidden in ('learner-date-input','ml-date-picker','learner-filter-button','learner-dropdown'):
+    for forbidden in ('learner-date-input','ml-date-picker','learner-filter-button','learner-dropdown','learner-actions','learner-pagination'):
         assert forbidden not in ui
     assert 'busy&&job&&<LearnerJobStatus' in ui
+    detection=Path("frontend/src/pages/DetectionPage.tsx").read_text(encoding="utf-8")
+    assert '<DateRange' in detection and 'from "../components/DateRange"' in detection
     assert 'view:filters.view' in ui
