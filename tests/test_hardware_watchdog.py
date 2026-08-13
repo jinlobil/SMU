@@ -155,3 +155,26 @@ def test_watchdog_checks_learner_health_before_submitting_job(tmp_path, monkeypa
     monkeypatch.setattr(watchdog,"_learner_request",lambda path,method="GET",timeout=3:calls.append((path,method)) or {"id":"learn-1"})
     assert watchdog.submit_learner_job("mode=full")["id"]=="learn-1"
     assert calls==["health",("/jobs?mode=full","POST")]
+
+
+def test_watchdog_manager_does_not_replace_healthy_watchdog_for_missing_worker_keys(tmp_path, monkeypatch):
+    from backend.services.watchdog_client import WatchdogManager
+    manager = WatchdogManager(tmp_path)
+    monkeypatch.setattr(manager, "status", lambda: {"watchdog": {"status": "running"}})
+    monkeypatch.setattr(manager, "_spawn", lambda: (_ for _ in ()).throw(AssertionError("healthy watchdog must not be replaced")))
+    assert manager.ensure() is True
+
+
+def test_learner_command_upgrades_old_watchdog_only_after_learner_404(tmp_path, monkeypatch):
+    import urllib.error
+    from backend.services.watchdog_client import WatchdogManager
+    manager = WatchdogManager(tmp_path); calls=[]
+    monkeypatch.setattr(manager, "ensure", lambda: True)
+    def request(path, method="GET", timeout=2):
+        calls.append((path, method))
+        if len(calls) == 1: raise urllib.error.HTTPError(path, 404, "missing", {}, None)
+        return {"id": "learner-1"}
+    monkeypatch.setattr(manager, "request", request)
+    monkeypatch.setattr(manager, "restart_watchdog", lambda: calls.append(("restart", "POST")) or {})
+    assert manager.start_learner_job()["id"] == "learner-1"
+    assert calls[1] == ("restart", "POST")

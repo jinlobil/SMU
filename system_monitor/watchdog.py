@@ -320,15 +320,17 @@ class HardwareWatchdog:
 
     def loop(self) -> None:
         while not self.stop.is_set():
+            for name, ensure in (("collector",self.ensure_collector),("fetcher",self.ensure_fetcher),("indexer",self.ensure_indexer),("laborer",self.ensure_laborer),("learner",self.ensure_learner)):
+                try:
+                    ensure()
+                except Exception:
+                    # One unavailable worker must never prevent health checks or
+                    # recovery of the remaining workers.
+                    self.log.exception("Watchdog %s health check failed", name)
             try:
-                self.ensure_collector()
-                self.ensure_fetcher()
-                self.ensure_indexer()
-                self.ensure_laborer()
-                self.ensure_learner()
                 atomic_json(self.status_path, self.snapshot())
             except Exception:
-                self.log.exception("Watchdog check failed")
+                self.log.exception("Watchdog status write failed")
             self.stop.wait(5)
 
 

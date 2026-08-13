@@ -58,26 +58,20 @@ class WatchdogManager:
         self.log.warning("Watchdog process launched pid=%s", process.pid)
 
     def ensure(self) -> bool:
+        """Ensure only the watchdog itself.
+
+        Worker compatibility is handled by each worker command. Treating a
+        temporarily missing worker key as a dead watchdog caused repeated
+        watchdog replacement while a worker was still starting.
+        """
         current = self.status()
-        if current["watchdog"].get("status") == "running" and "indexer" in current and "fetcher" in current and "laborer" in current and "learner" in current:
+        if current["watchdog"].get("status") == "running":
             return True
         with self.lock:
-            current = self.status()
-            if current["watchdog"].get("status") == "running" and ("indexer" not in current or "fetcher" not in current or "laborer" not in current or "learner" not in current):
-                # Replace a detached watchdog left by a previous application
-                # version so the current Fetcher/Indexer control API is available.
-                try:
-                    self.request("/shutdown", "POST")
-                except OSError:
-                    pass
-                for _ in range(20):
-                    time.sleep(0.25)
-                    if self.status()["watchdog"].get("status") != "running":
-                        break
-            elif current["watchdog"].get("status") == "running":
+            if self.status()["watchdog"].get("status") == "running":
                 return True
             self._spawn()
-            for _ in range(20):
+            for _ in range(40):
                 time.sleep(0.25)
                 if self.status()["watchdog"].get("status") == "running":
                     return True
@@ -95,12 +89,24 @@ class WatchdogManager:
         self.ensure()
         return self.request("/fetcher/restart", "POST", timeout=20)
 
+    def _learner_command(self, path: str, method: str, timeout: float) -> dict:
+        self.ensure()
+        try:
+            return self.request(path, method, timeout=timeout)
+        except urllib.error.HTTPError as exc:
+            if exc.code != 404:
+                raise
+            # Upgrade a healthy watchdog from an older build only when the
+            # Learner route is actually requested. Never recycle it from polling.
+            self.restart_watchdog()
+            return self.request(path, method, timeout=timeout)
+
     def restart_learner(self) -> dict:
-        self.ensure();return self.request("/learner/restart","POST",timeout=20)
+        return self._learner_command("/learner/restart", "POST", 15)
 
     def start_learner_job(self, mode="incremental", sources=None, start=None, end=None) -> dict:
-        self.ensure();query=urlencode({"mode":mode,"sources":",".join(sources or []),"start":start or "","end":end or ""})
-        return self._report_job_state(self.request(f"/learner/jobs?{query}","POST",timeout=20),"Learner")
+        query=urlencode({"mode":mode,"sources":",".join(sources or []),"start":start or "","end":end or ""})
+        return self._report_job_state(self._learner_command(f"/learner/jobs?{query}","POST",10),"Learner")
 
     def learner_job(self, job_id: str) -> dict | None:
         try:return self._report_job_state(self.request(f"/learner/jobs/{job_id}",timeout=10),"Learner")

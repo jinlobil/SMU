@@ -685,6 +685,18 @@ def rebuild_indexes(payload: dict | None = Body(default=None)) -> dict:
     return {"success": True, "data": data}
 
 
+@app.get("/api/learner/findings")
+def learner_findings(source: str="", findingType: str="", start: str="", end: str="", limit: int=Query(200,ge=1,le=1000)) -> dict:
+    return {"success":True,"data":LearnerStore(PROJECT_ROOT).findings(source,findingType,start,(end+"T99") if end else "",limit)}
+
+@app.get("/api/learner/findings/{finding_id}")
+def learner_finding(finding_id: str) -> dict:
+    data=LearnerStore(PROJECT_ROOT).finding(finding_id)
+    return {"success":True,"data":data} if data else error_response(str(uuid.uuid4()),"LEARNER_FINDING_NOT_FOUND","Finding not found",404)
+
+@app.get("/api/learner/history")
+def learner_history(source: str, scopeType: str, scopeKey: str, behaviorType: str, behaviorKey: str) -> dict:
+    return {"success":True,"data":LearnerService(PROJECT_ROOT).history(source,scopeType,scopeKey,behaviorType,behaviorKey)}
 
 
 @app.post("/api/jobs/index/vacuum", status_code=202)
@@ -695,7 +707,12 @@ def vacuum_indexes(payload: dict | None = Body(default=None)) -> dict:
 
 @app.post("/api/learner/jobs", status_code=202)
 def start_learner_job(payload: dict = Body(default={})) -> dict:
-    return {"success":True,"data":watchdog_manager.start_learner_job(str(payload.get("mode","incremental")),payload.get("sources"),payload.get("start"),payload.get("end"))}
+    try:
+        data=watchdog_manager.start_learner_job(str(payload.get("mode","incremental")),payload.get("sources"),payload.get("start"),payload.get("end"))
+    except Exception as exc:
+        log.exception("Learner job submission failed")
+        return error_response(str(uuid.uuid4()),"LEARNER_UNAVAILABLE",str(exc),503)
+    return {"success":True,"data":data}
 
 @app.get("/api/learner/findings")
 def learner_findings(source: str="", findingType: str="", start: str="", end: str="", limit: int=Query(200,ge=1,le=1000)) -> dict:

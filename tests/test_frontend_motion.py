@@ -402,3 +402,12 @@ def test_data_status_is_grouped_by_raw_database_and_event_index():
     assert "검색 인덱스 DB (INDEX DATABASE)" in page
     assert "화면별 이벤트 인덱스 (EVENT INDEX)" in page
     assert 'route: "/lab/machine-learning"' in (ROOT/"frontend/src/App.tsx").read_text(encoding="utf-8")
+
+def test_learner_reuses_existing_process_monitor_and_controls():
+    config=(ROOT/"frontend/src/pages/ConfigPage.tsx").read_text(encoding="utf-8")
+    machine=(ROOT/"frontend/src/pages/MachineLearningPage.tsx").read_text(encoding="utf-8")
+    assert config.count('<h2>Process Monitor</h2>') == 1
+    assert '<h2>Learner</h2>' not in config
+    assert '<p><b>Learner</b>' in config
+    assert 'className="source-filters learner-source-filters"' in machine
+    assert 'className="refresh-button"' in machine
