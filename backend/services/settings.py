@@ -195,7 +195,7 @@ class SchedulerService:
 
     def _refresh_target(self, target: str, start: date, today: date):
         progress = lambda message: self._update_progress("collecting", target, message)
-        if target == "detections":
+        if target in {"detections", "xdr", "firewall"}:
             return self.refresh.refresh_detections(start, today, progress)
         if target == "inbound":
             return self.refresh.refresh_inbound(start, today, progress)
