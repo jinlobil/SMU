@@ -25,7 +25,7 @@ def test_schema_full_incremental_windows_and_idempotence(tmp_path:Path):
 
 def test_historical_baseline_never_uses_future_and_reasons_exist(tmp_path):
  events_db(tmp_path,[("dlp","old","2026-01-01T00:00:00",{"destination":"usb","username":"a"}),("dlp","future","2026-02-01T00:00:00",{"destination":"usb","username":"a"})]);LearnerService(tmp_path).run("full",["dlp"])
- findings=LearnerStore(tmp_path).findings(source="dlp",finding_type="NEW_BEHAVIOR")
+ findings=LearnerStore(tmp_path).finding_rows(source="dlp",finding_type="NEW_BEHAVIOR")
  old=next(x for x in findings if x["event_id"]=="old");assert old["baseline"]["global"]==0;assert old["reasons"]
  assert not any(x["event_id"]=="future" for x in findings)
 
@@ -33,7 +33,7 @@ def test_similar_group_and_frequency_spike(tmp_path):
  rows=[]
  for i in range(7):rows.append(("detections",f"p{i}",f"2026-01-{i+1:02d}T00:00:00",{"rule":"R"}))
  for i in range(21):rows.append(("detections",f"n{i}",f"2026-01-08T{i%24:02d}:00:00",{"rule":"R"}))
- events_db(tmp_path,rows);LearnerService(tmp_path).run("full",["detections"]);types={x["finding_type"] for x in LearnerStore(tmp_path).findings(source="detections")};assert {"SIMILAR_GROUP","FREQUENCY_SPIKE"}<=types
+ events_db(tmp_path,rows);LearnerService(tmp_path).run("full",["detections"]);types={x["finding_type"] for x in LearnerStore(tmp_path).finding_rows(source="detections")};assert {"SIMILAR_GROUP","FREQUENCY_SPIKE"}<=types
 
 def test_all_source_adapters_keep_unmapped_events():
  rows={"detections":{"rule":"r"},"xdr":{"from":"a@x.test"},"inbound":{"senderIp":"1.2.3.4"},"outbound":{"receiver":"b@y.test"},"dlp":{"destination":"usb"},"firewall":{"destinationIp":"8.8.8.8"}}
@@ -61,7 +61,7 @@ def test_new_behaviors_are_merged_into_one_primary_event_finding(tmp_path):
     row={"from":"external@outside.test","senderIp":"203.0.113.7","to":"internal@corp.test","user":"내부 사용자","userId":"internal","dept":"보안팀","subject":"새 메일"}
     events_db(tmp_path,[("inbound","mail-1","2026-03-01T09:00:00",row)])
     LearnerService(tmp_path).run("full",["inbound"])
-    findings=LearnerStore(tmp_path).findings(source="inbound",finding_type="NEW_BEHAVIOR")
+    findings=LearnerStore(tmp_path).finding_rows(source="inbound",finding_type="NEW_BEHAVIOR")
     assert len(findings)==1
     finding=findings[0]
     assert finding["event_id"]=="mail-1"
@@ -153,5 +153,37 @@ def test_job_cancel_keeps_pid_releases_current_job_and_allows_next(tmp_path,monk
 def test_frontend_disables_analysis_buttons_and_exposes_graceful_cancel():
     ui=Path("frontend/src/pages/MachineLearningPage.tsx").read_text(encoding="utf-8")
     assert "disabled={busy}" in ui
+    assert 'global-job-progress scheduler-progress indexing learner-job-progress' in ui
+    assert 'className="config-card learner-toolbar"' in ui
+    for action in ('primary-action','secondary-action','danger-action'): assert f'className="{action}"' in ui
     assert "분석 중단" in ui and "/cancel" in ui
     for field in ("sourceProcessed","sourceTotal","totalProcessed","totalEvents","progressPercent"):assert field in ui
+
+
+def test_learner_findings_are_server_paginated(tmp_path):
+    store=LearnerStore(tmp_path)
+    with store.connect() as db:
+        for index in range(65):
+            db.execute("INSERT INTO learner_findings(finding_id,source,event_id,finding_type,title,summary,observed_json,reasons_json,baseline_json,related_event_ids_json,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",(f"f{index}","inbound",f"e{index}","NEW_BEHAVIOR","새로운 행동","요약","{}","[]","{}","[]",f"2026-01-{index%28+1:02d}T00:00:{index:02d}"))
+    first=store.findings(source="inbound",limit=30,offset=0);third=store.findings(source="inbound",limit=30,offset=60)
+    assert first["total"]==65 and len(first["items"])==30
+    assert third["total"]==65 and len(third["items"])==5
+
+
+def test_machine_learning_render_boundaries_and_progress_math():
+    ui=Path("frontend/src/pages/MachineLearningPage.tsx").read_text(encoding="utf-8")
+    assert "const LearnerJobStatus=memo" in ui
+    assert "const FindingList=memo" in ui and "const FindingCard=memo" in ui
+    assert "processed/total*100:0" in ui
+    assert "pageSize:String(PAGE_SIZE)" in ui and "const PAGE_SIZE=30" in ui
+    assert "setInterval(()=>void poll(),1500)" in ui
+    # Finding data is fetched only by the list effect, never by progress polling.
+    assert ui.count("/api/learner/findings?")==1
+    assert "onResultsReady()" in ui and "['completed','cancelled'].includes(current)" in ui
+
+
+def test_machine_learning_uses_shared_action_tokens_without_learner_colors():
+    css=Path("frontend/src/styles.css").read_text(encoding="utf-8")
+    learner_css=css[css.index(".learner-toolbar-controls"):]
+    assert "--learner" not in learner_css
+    assert ".primary-action" in css and ".secondary-action" in css and ".danger-action" in css

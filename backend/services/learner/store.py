@@ -14,13 +14,16 @@ CREATE TABLE IF NOT EXISTS processed_behaviors(source TEXT,event_id TEXT,event_t
 CREATE TABLE IF NOT EXISTS learner_processed_events(source TEXT,event_id TEXT,event_time TEXT,row_hash TEXT,PRIMARY KEY(source,event_id));
 CREATE TABLE IF NOT EXISTS learner_watermarks(source TEXT PRIMARY KEY,last_event_time TEXT,last_event_id TEXT,updated_at TEXT);
 CREATE INDEX IF NOT EXISTS idx_finding_source_time ON learner_findings(source,created_at DESC);CREATE INDEX IF NOT EXISTS idx_finding_type_time ON learner_findings(finding_type,created_at DESC);CREATE INDEX IF NOT EXISTS idx_behavior_scope ON behavior_stats(scope_type,scope_key,source);CREATE INDEX IF NOT EXISTS idx_processed_signature ON processed_behaviors(source,scope_type,scope_key,behavior_type,behavior_key,event_time);''')
- def findings(self,source="",finding_type="",start="",end="",limit=200):
+ def findings(self,source="",finding_type="",start="",end="",limit=30,offset=0):
   q="SELECT * FROM learner_findings WHERE 1=1";p=[]
   for clause,value in (("source=?",source),("finding_type=?",finding_type),("created_at>=?",start),("created_at<?",end)):
    if value:q+=" AND "+clause;p.append(value)
-  q+=" ORDER BY created_at DESC LIMIT ?";p.append(limit)
-  with self.connect() as d: rows=d.execute(q,p).fetchall()
-  return [self.decode(row) for row in rows]
+  count_q=q.replace("SELECT *","SELECT COUNT(*)",1)
+  q+=" ORDER BY created_at DESC LIMIT ? OFFSET ?";page_params=[*p,limit,offset]
+  with self.connect() as d: total=d.execute(count_q,p).fetchone()[0];rows=d.execute(q,page_params).fetchall()
+  return {"items":[self.decode(row) for row in rows],"total":total}
+ def finding_rows(self,source="",finding_type="",start="",end="",limit=200):
+  return self.findings(source,finding_type,start,end,limit,0)["items"]
  def finding(self,fid):
   with self.connect() as d:r=d.execute("SELECT * FROM learner_findings WHERE finding_id=?",(fid,)).fetchone()
   return self.decode(r) if r else None

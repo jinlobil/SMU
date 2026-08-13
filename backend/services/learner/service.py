@@ -56,7 +56,7 @@ class LearnerService:
    self._refresh_stats(sources)
    with self.store.connect() as d:
     bounds=d.execute("SELECT MIN(event_time),MAX(event_time) FROM processed_behaviors").fetchone();d.execute("UPDATE learner_runs SET history_start=?,history_end=?,status='completed',finished_at=?,processed_events=? WHERE run_id=?",(bounds[0],bounds[1],datetime.now(timezone.utc).isoformat(),processed,run_id))
-   return {"runId":run_id,"processedEvents":processed,"findings":len(self.store.findings(limit=100000))}
+   return {"runId":run_id,"processedEvents":processed,"findings":len(self.store.finding_rows(limit=100000))}
   except LearnerCancelled:
    with self.store.connect() as d:d.execute("UPDATE learner_runs SET status='cancelled',finished_at=?,last_error=? WHERE run_id=?",(datetime.now(timezone.utc).isoformat(),"사용자 요청으로 중단됨",run_id))
    raise
