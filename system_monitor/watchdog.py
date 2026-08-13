@@ -166,6 +166,9 @@ class HardwareWatchdog:
     def learner_job(self, job_id: str) -> dict:
         self.ensure_learner();return self._learner_request(f"/jobs/{job_id}",timeout=5)
 
+    def cancel_learner_job(self, job_id: str) -> dict:
+        self.ensure_learner();return self._learner_request(f"/jobs/{job_id}/cancel","POST",timeout=5)
+
     def read_laborer(self) -> dict:
         try:
             status = self._laborer_request("/health")
@@ -390,8 +393,20 @@ def handler_for(watchdog: HardwareWatchdog):
             elif self.path.startswith("/indexer/jobs"):
                 try: self._send(202, watchdog.submit_index_job(urlparse(self.path).query))
                 except Exception as exc: self._send(503, {"accepted": False, "error": f"{type(exc).__name__}: {exc}"})
+            elif self.path.startswith("/learner/jobs/") and self.path.endswith("/cancel"):
+                job_id=urlparse(self.path).path.removeprefix("/learner/jobs/").removesuffix("/cancel")
+                try: self._send(202,watchdog.cancel_learner_job(job_id))
+                except urllib.error.HTTPError as exc:
+                    try: payload=json.loads(exc.read())
+                    except Exception: payload={"error":str(exc)}
+                    self._send(exc.code,payload)
+                except Exception as exc:self._send(503,{"accepted":False,"error":f"{type(exc).__name__}: {exc}"})
             elif self.path.startswith("/learner/jobs"):
                 try: self._send(202,watchdog.submit_learner_job(urlparse(self.path).query))
+                except urllib.error.HTTPError as exc:
+                    try: payload=json.loads(exc.read())
+                    except Exception: payload={"error":str(exc)}
+                    self._send(exc.code,payload)
                 except Exception as exc: self._send(503,{"accepted":False,"error":f"{type(exc).__name__}: {exc}"})
             elif self.path.startswith("/laborer/jobs"):
                 try: self._send(202, watchdog.submit_laborer_job(urlparse(self.path).query))

@@ -2,6 +2,7 @@ import logging
 import json
 import time
 import uuid
+import urllib.error
 from contextlib import asynccontextmanager
 from datetime import date
 from pathlib import Path
@@ -685,9 +686,6 @@ def rebuild_indexes(payload: dict | None = Body(default=None)) -> dict:
     return {"success": True, "data": data}
 
 
-@app.get("/api/learner/history")
-def learner_history(source: str, scopeType: str, scopeKey: str, behaviorType: str, behaviorKey: str) -> dict:
-    return {"success":True,"data":LearnerService(PROJECT_ROOT).history(source,scopeType,scopeKey,behaviorType,behaviorKey)}
 
 
 @app.post("/api/jobs/index/vacuum", status_code=202)
@@ -700,10 +698,25 @@ def vacuum_indexes(payload: dict | None = Body(default=None)) -> dict:
 def start_learner_job(payload: dict = Body(default={})) -> dict:
     try:
         data=watchdog_manager.start_learner_job(str(payload.get("mode","incremental")),payload.get("sources"),payload.get("start"),payload.get("end"))
+    except urllib.error.HTTPError as exc:
+        if exc.code == 409:
+            try: busy=json.loads(exc.read())
+            except Exception: busy={}
+            return JSONResponse(status_code=409,content={"success":False,"error":"LEARNER_BUSY","message":busy.get("message","현재 분석 작업이 실행 중입니다."),"currentJobId":busy.get("currentJobId"),"status":busy.get("status")})
+        return error_response(str(uuid.uuid4()),"LEARNER_UNAVAILABLE",str(exc),503)
     except Exception as exc:
         log.exception("Learner job submission failed")
         return error_response(str(uuid.uuid4()),"LEARNER_UNAVAILABLE",str(exc),503)
     return {"success":True,"data":data}
+
+@app.post("/api/learner/jobs/{job_id}/cancel", status_code=202)
+def cancel_learner_job(job_id: str):
+    try:
+        data=watchdog_manager.cancel_learner_job(job_id)
+        return {"success":True,"jobId":data.get("id",job_id),"status":data.get("status","cancelling")}
+    except urllib.error.HTTPError as exc:
+        return error_response(str(uuid.uuid4()),"LEARNER_CANCEL_CONFLICT","분석을 중단할 수 없는 상태입니다.",exc.code)
+    except Exception as exc:return error_response(str(uuid.uuid4()),"LEARNER_UNAVAILABLE",str(exc),503)
 
 @app.get("/api/learner/findings")
 def learner_findings(source: str="", findingType: str="", start: str="", end: str="", limit: int=Query(200,ge=1,le=1000)) -> dict:

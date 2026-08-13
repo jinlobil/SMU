@@ -1,6 +1,6 @@
-import json,sqlite3
+import json,sqlite3,threading,time
 from pathlib import Path
-from backend.services.learner.service import LearnerService
+from backend.services.learner.service import LearnerService,LearnerCancelled
 from backend.services.learner.store import LearnerStore
 from backend.services.learner.adapters import ADAPTERS
 from system_monitor.learner import LearnerAgent,handler_for
@@ -83,3 +83,75 @@ def test_email_xdr_identity_prefers_internal_recipient_over_external_sender():
     sender=next(item for item in output if item.behavior_type=="sender")
     assert sender.behavior_key=="attacker@outside.test"
     assert "attacker@outside.test" not in {sender.person_key,sender.email,sender.user_id}
+
+
+def test_learner_rejects_all_submissions_while_job_is_active(tmp_path):
+    agent=LearnerAgent(tmp_path)
+    first=agent.submit({"mode":"full","sources":["inbound"]})
+    assert first["status"]=="queued"
+    for mode in ("full","incremental"):
+        rejected=agent.submit({"mode":mode})
+        assert rejected=={"busy":True,"currentJobId":first["id"],"status":"queued"}
+    with agent._db() as db:
+        assert db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]==1
+        db.execute("UPDATE jobs SET status='running' WHERE id=?",(first["id"],))
+    assert agent.submit({"mode":"incremental"})["status"]=="running"
+
+
+def test_learner_fast_double_submit_creates_only_one_job(tmp_path):
+    agent=LearnerAgent(tmp_path);results=[]
+    threads=[threading.Thread(target=lambda:results.append(agent.submit({"mode":"full"}))) for _ in range(2)]
+    for thread in threads:thread.start()
+    for thread in threads:thread.join()
+    assert sum("id" in result for result in results)==1
+    assert sum(result.get("busy",False) for result in results)==1
+
+
+def test_existing_duplicate_queued_job_is_cancelled_on_startup(tmp_path):
+    agent=LearnerAgent(tmp_path);first=agent.submit({"mode":"full"})
+    with agent._db() as db:
+        db.execute("INSERT INTO jobs(id,status,message,payload,created_at) VALUES(?,?,?,?,?)",("duplicate","queued","대기 중",json.dumps({"mode":"full"}),agent.now()))
+    recovered=LearnerAgent(tmp_path)
+    assert recovered.get(first["id"])["status"]=="queued"
+    assert recovered.get("duplicate")["status"]=="cancelled"
+    assert recovered.get("duplicate")["message"]=="중복 요청으로 취소됨"
+
+
+def test_job_cancel_keeps_pid_releases_current_job_and_allows_next(tmp_path,monkeypatch):
+    from backend.services.learner.store import LearnerStore
+    import system_monitor.learner as learner_module
+    store=LearnerStore(tmp_path)
+    with store.connect() as db:
+        db.execute("INSERT INTO learner_findings(finding_id,source,event_id,finding_type,title,summary,reasons_json,baseline_json,related_event_ids_json,observed_json,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",("existing","inbound","e","NEW_BEHAVIOR","기존","기존","[]","{}","[]","{}","2026-01-01"))
+    class SlowFull:
+        def __init__(self,root):self.store=LearnerStore(root)
+        def run(self,*args):
+            progress,cancelled=args[-2:]
+            with self.store.connect() as db:db.execute("DELETE FROM learner_findings")
+            progress({"message":"inbound 분석 중","currentSource":"inbound","sourceProcessed":500,"sourceTotal":1000,"totalProcessed":500,"totalEvents":1000,"progressPercent":50.0})
+            while not cancelled():time.sleep(.01)
+            raise LearnerCancelled("cancel")
+    monkeypatch.setattr(learner_module,"LearnerService",SlowFull)
+    agent=LearnerAgent(tmp_path);pid=agent.snapshot()["pid"];job=agent.submit({"mode":"full"})
+    worker=threading.Thread(target=agent.worker_loop,daemon=True);worker.start()
+    deadline=time.time()+2
+    while agent.current_job_id is None and time.time()<deadline:time.sleep(.01)
+    while agent.get(job["id"])["progressPercent"]<50 and time.time()<deadline:time.sleep(.01)
+    assert agent.get(job["id"])["progressPercent"]==50.0
+    assert agent.cancel(job["id"])["status"]=="cancelling"
+    assert agent.cancel(job["id"])["status"]=="cancelling"
+    deadline=time.time()+2
+    while agent.current_job_id is not None and time.time()<deadline:time.sleep(.01)
+    assert agent.get(job["id"])["status"]=="cancelled"
+    assert agent.cancel(job["id"])["conflict"] is True
+    assert agent.snapshot()["pid"]==pid and agent.snapshot()["currentJobId"] is None
+    assert LearnerStore(tmp_path).finding("existing") is not None
+    following=agent.submit({"mode":"incremental"});assert following["status"]=="queued"
+    agent.stop.set();agent.wake.set();worker.join(1)
+
+
+def test_frontend_disables_analysis_buttons_and_exposes_graceful_cancel():
+    ui=Path("frontend/src/pages/MachineLearningPage.tsx").read_text(encoding="utf-8")
+    assert "disabled={busy}" in ui
+    assert "분석 중단" in ui and "/cancel" in ui
+    for field in ("sourceProcessed","sourceTotal","totalProcessed","totalEvents","progressPercent"):assert field in ui

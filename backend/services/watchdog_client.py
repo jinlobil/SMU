@@ -108,6 +108,9 @@ class WatchdogManager:
         query=urlencode({"mode":mode,"sources":",".join(sources or []),"start":start or "","end":end or ""})
         return self._report_job_state(self._learner_command(f"/learner/jobs?{query}","POST",10),"Learner")
 
+    def cancel_learner_job(self, job_id: str) -> dict:
+        return self._learner_command(f"/learner/jobs/{job_id}/cancel", "POST", 10)
+
     def learner_job(self, job_id: str) -> dict | None:
         try:return self._report_job_state(self.request(f"/learner/jobs/{job_id}",timeout=10),"Learner")
         except urllib.error.HTTPError as exc:
