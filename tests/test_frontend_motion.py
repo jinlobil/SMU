@@ -410,5 +410,5 @@ def test_learner_reuses_existing_process_monitor_and_controls():
     assert '<h2>Learner</h2>' not in config
     assert '<p><b>Learner</b>' in config
     assert 'className="source-filters"' in machine
-    assert 'className="refresh-button"' in machine
+    assert 'className="primary-action"' in machine
     assert 'className="danger-action"' in machine
