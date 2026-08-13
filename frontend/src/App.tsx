@@ -1,4 +1,5 @@
-import { useEffect, useState, type CSSProperties } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { EndpointPage } from "./pages/EndpointPage";
 import { OrganizationPage } from "./pages/OrganizationPage";
 import { DetectionPage } from "./pages/DetectionPage";
@@ -11,106 +12,145 @@ import { FirewallPage } from "./pages/FirewallPage";
 import { EasyQueryPage } from "./pages/EasyQueryPage";
 import { LayoutPage } from "./pages/LayoutPage";
 import { ConfigPage } from "./pages/ConfigPage";
+import { SystemInfoPage } from "./pages/SystemInfoPage";
+import { IntegrationManagementPage } from "./pages/IntegrationManagementPage";
+import { ExceptionManagementPage } from "./pages/ExceptionManagementPage";
+import { ContentManagementPage } from "./pages/ContentManagementPage";
+import { ExportManagementPage } from "./pages/ExportManagementPage";
+import { UIManagementPage } from "./pages/UIManagementPage";
+import { FirewallDetectionPage } from "./pages/FirewallDetectionPage";
+import { applyTheme } from "./theme";
 
 
-type View = "dashboard" | "endpoint" | "organization" | "detectionEndpoint" | "emailXdr" | "inbound" | "outbound" | "dlp" | "timeline" | "sensitiveFiles" | "sensitiveSites" | "firewall" | "easyQuery" | "layout" | "config";
 type DetectionFilter = { field: string; query: string; start?: string; end?: string };
-const menus = ["Dashboard", "Detection", "Forensics", "Response", "Asset", "Lab", "Config"];
 const particles = Array.from({ length: 36 }, (_, index) => index);
+
+const menuRoutes = [
+  { label: "Dashboard", route: "/dashboard" },
+  { label: "Detection", route: "/detections/xdr" },
+  { label: "Forensics", route: "/forensics/timeline" },
+  { label: "Response", route: "/response/firewall" },
+  { label: "Asset", route: "/assets/endpoints" },
+  { label: "Lab", route: "/lab/layout" },
+  { label: "Config", route: "/config/general" },
+];
+const submenus: Record<string, { label: string; route: string }[]> = {
+  Asset: [{ label: "Endpoint", route: "/assets/endpoints" }, { label: "Organization", route: "/assets/organization" }],
+  Detection: [
+    { label: "Detection - XDR", route: "/detections/xdr" }, { label: "Email - XDR", route: "/detections/email-xdr" },
+    { label: "Firewall", route: "/detections/firewall" },
+    { label: "Inbound Mail", route: "/detections/inbound" }, { label: "Outbound Mail", route: "/detections/outbound" },
+    { label: "File", route: "/detections/dlp" },
+  ],
+  Forensics: [
+    { label: "Timeline", route: "/forensics/timeline" }, { label: "Sensitive Files", route: "/forensics/sensitive-files" },
+    { label: "Sensitive Sites", route: "/forensics/sensitive-sites" },
+  ],
+  Response: [{ label: "Firewall", route: "/response/firewall" }, { label: "Easy Query", route: "/response/easy-query" }],
+  Lab: [{ label: "Layout - User", route: "/lab/layout" }],
+  Config: [
+    { label: "General", route: "/config/general" }, { label: "UI Management", route: "/config/ui" }, { label: "Data Management", route: "/config/data" },
+    { label: "Export Management", route: "/config/export" }, { label: "Integration Management", route: "/config/integrations" },
+    { label: "Exception Management", route: "/config/exceptions" }, { label: "Content Management", route: "/config/content" },
+    { label: "System Management", route: "/config/system" },
+  ],
+};
+
+function menuForPath(pathname: string) {
+  if (pathname.startsWith("/detections/")) return "Detection";
+  if (pathname.startsWith("/forensics/")) return "Forensics";
+  if (pathname.startsWith("/response/")) return "Response";
+  if (pathname.startsWith("/assets/")) return "Asset";
+  if (pathname.startsWith("/lab/")) return "Lab";
+  if (pathname.startsWith("/config/")) return "Config";
+  return "Dashboard";
+}
 
 export function App() {
   const [health, setHealth] = useState<"loading" | "ok" | "error">("loading");
-  const [activeMenu, setActiveMenu] = useState("Asset");
-  const [view, setView] = useState<View>("endpoint");
-  const [detectionFilter, setDetectionFilter] = useState<DetectionFilter | null>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const sidebarCloseTimer = useRef<number | null>(null);
+  const location = useLocation();
+  const navigate = useNavigate();
+  const activeMenu = menuForPath(location.pathname);
+
+  const openSidebar = () => {
+    if (sidebarCloseTimer.current !== null) window.clearTimeout(sidebarCloseTimer.current);
+    sidebarCloseTimer.current = null;
+    setSidebarOpen(true);
+  };
+  const scheduleSidebarClose = () => {
+    if (sidebarCloseTimer.current !== null) window.clearTimeout(sidebarCloseTimer.current);
+    sidebarCloseTimer.current = window.setTimeout(() => setSidebarOpen(false), 110);
+  };
 
   useEffect(() => {
     fetch("/api/config/theme").then((response) => response.json()).then((payload) => {
-      const theme = payload.data || {};
-      const root = document.documentElement;
-      root.style.setProperty("--accent", theme.Primary_Blue);
-      root.style.setProperty("--accent-dark", theme.Primary_Blue_Dark);
-      root.style.setProperty("--app-bg", theme.UI_Background);
-      root.style.setProperty("--surface", theme.UI_Surface);
-      root.style.setProperty("--card-border", theme.Card_Border);
-      root.style.setProperty("--card-title", theme.Card_Title_Text);
-      root.style.setProperty("--table-head-bg", theme.Table_Header_Background);
-      root.style.setProperty("--table-head-text", theme.Table_Header_Text);
-      root.style.setProperty("--trend-detection", theme.Threat_trend_Detection);
-      root.style.setProperty("--trend-xdr", theme.Threat_trend_Detection_XDR);
-      root.style.setProperty("--trend-email", theme.Threat_trend_Email);
-      root.style.setProperty("--trend-outbound", theme.Threat_trend_Outbound_Mail);
-      root.style.setProperty("--trend-file", theme.Threat_trend_File);
-      window.dispatchEvent(new CustomEvent("smu-theme", { detail: theme }));
+      applyTheme(payload.data || {});
     }).catch(() => undefined);
     fetch("/api/health").then((response) => {
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       setHealth("ok");
     }).catch(() => setHealth("error"));
   }, []);
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === "Escape") setSidebarOpen(false); };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      window.removeEventListener("keydown", closeOnEscape);
+      if (sidebarCloseTimer.current !== null) window.clearTimeout(sidebarCloseTimer.current);
+    };
+  }, []);
 
-  const selectMenu = (menu: string) => {
-    setActiveMenu(menu);
-    if (menu === "Dashboard") setView("dashboard");
-    else if (menu === "Asset") setView("endpoint");
-    else if (menu === "Detection") { setDetectionFilter(null); setView("detectionEndpoint"); }
-    else if (menu === "Forensics") setView("timeline");
-    else if (menu === "Response") setView("firewall");
-    else if (menu === "Lab") setView("layout");
-    else setView("config");
-  };
   const openDetection = (filter: DetectionFilter) => {
-    setDetectionFilter(filter);
-    setActiveMenu("Detection");
-    setView("detectionEndpoint");
+    const query = new URLSearchParams({ field: filter.field, q: filter.query });
+    if (filter.start) query.set("from", filter.start);
+    if (filter.end) query.set("to", filter.end);
+    navigate(`/detections/xdr?${query}`);
   };
 
   return (
     <div className="app">
       <div className="cyber-atmosphere" aria-hidden="true"><div className="cyber-grid"/>{particles.map((particle) => <i key={particle} style={{ "--px": `${(particle * 47) % 100}%`, "--py": `${(particle * 29) % 100}%`, "--delay": `${-(particle % 13)}s`, "--duration": `${10 + particle % 9}s` } as CSSProperties}/>)}</div>
-      <aside className="sidebar">
+      <div className={`sidebar-title-trigger ${sidebarOpen ? "disabled" : ""}`} aria-hidden="true" onMouseEnter={openSidebar}/>
+      <aside className={`sidebar ${sidebarOpen ? "open" : ""}`} onMouseEnter={openSidebar} onMouseLeave={scheduleSidebarClose}>
         <div className="brand"><span>SMU</span><strong>Monitoring</strong></div>
-        <nav>{menus.map((menu) => <div key={menu}>
-          <button className={menu === activeMenu ? "active" : ""} onClick={() => selectMenu(menu)}>{menu}<span>›</span></button>
-          {menu === "Asset" && activeMenu === "Asset" && <div className="subnav">
-            <button className={view === "endpoint" ? "selected" : ""} onClick={() => setView("endpoint")}>Endpoint</button>
-            <button className={view === "organization" ? "selected" : ""} onClick={() => setView("organization")}>Organization</button>
+        <nav>{menuRoutes.map((menu) => <div key={menu.label}>
+          <button className={menu.label === activeMenu ? "active" : ""} onClick={() => navigate(menu.route)}>{menu.label}<span>›</span></button>
+          {menu.label === activeMenu && submenus[menu.label] && <div className="subnav">
+            {submenus[menu.label].map((item) => <button key={item.route} className={location.pathname === item.route ? "selected" : ""} onClick={() => navigate(item.route)}>{item.label}</button>)}
           </div>}
-          {menu === "Detection" && activeMenu === "Detection" && <div className="subnav">
-            <button className={view === "detectionEndpoint" ? "selected" : ""} onClick={() => { setDetectionFilter(null); setView("detectionEndpoint"); }}>Detection - XDR</button>
-            <button className={view === "emailXdr" ? "selected" : ""} onClick={() => setView("emailXdr")}>Email - XDR</button>
-            <button className={view === "inbound" ? "selected" : ""} onClick={() => setView("inbound")}>Inbound Mail</button>
-            <button className={view === "outbound" ? "selected" : ""} onClick={() => setView("outbound")}>Outbound Mail</button>
-            <button className={view === "dlp" ? "selected" : ""} onClick={() => setView("dlp")}>File</button>
-          </div>}
-          {menu === "Forensics" && activeMenu === "Forensics" && <div className="subnav">
-            <button className={view === "timeline" ? "selected" : ""} onClick={() => setView("timeline")}>Timeline</button>
-            <button className={view === "sensitiveFiles" ? "selected" : ""} onClick={() => setView("sensitiveFiles")}>Sensitive Files</button><button className={view === "sensitiveSites" ? "selected" : ""} onClick={() => setView("sensitiveSites")}>Sensitive Sites</button>
-          </div>}
-          {menu === "Response" && activeMenu === "Response" && <div className="subnav">
-            <button className={view === "firewall" ? "selected" : ""} onClick={() => setView("firewall")}>Firewall</button>
-            <button className={view === "easyQuery" ? "selected" : ""} onClick={() => setView("easyQuery")}>Easy Query</button>
-          </div>}
-          {menu === "Lab" && activeMenu === "Lab" && <div className="subnav"><button className={view === "layout" ? "selected" : ""} onClick={() => setView("layout")}>Layout - User</button></div>}
         </div>)}</nav>
         <div className={`connection ${health}`}><span className="connection-orb"/><svg className="connection-heartbeat" viewBox="0 0 92 22" aria-hidden="true"><polyline points="0,11 15,11 21,4 27,18 34,7 40,11 55,11 61,5 67,17 73,11 92,11"/></svg><b>{health === "ok" ? "백엔드 연결됨" : health === "error" ? "연결 오류" : "연결 확인 중"}</b></div>
       </aside>
-      <main className="content"><div key={view} className={`page-stage page-${view}`}>
-        {view === "dashboard" && <DashboardPage onOpenDetection={openDetection} />}
-        {view === "endpoint" && <EndpointPage />}
-        {view === "organization" && <OrganizationPage />}
-        {view === "detectionEndpoint" && <DetectionPage initialFilter={detectionFilter} />}
-        {view === "emailXdr" && <EmailSecurityPage kind="xdr" />}
-        {view === "inbound" && <EmailSecurityPage kind="inbound" />}
-        {view === "outbound" && <TransferPage kind="outbound" />}
-        {view === "dlp" && <TransferPage kind="dlp" />}
-        {view === "timeline" && <TimelinePage />}
-        {view === "sensitiveFiles" && <SensitivePage kind="files" />}
-        {view === "sensitiveSites" && <SensitivePage kind="sites" />}
-        {view === "firewall" && <FirewallPage />}
-        {view === "easyQuery" && <EasyQueryPage />}
-        {view === "layout" && <LayoutPage />}
-        {view === "config" && <ConfigPage />}
+      <main className="content"><div key={location.pathname} className="page-stage">
+        <Routes>
+          <Route path="/dashboard" element={<DashboardPage onOpenDetection={openDetection} />} />
+          <Route path="/assets/endpoints" element={<EndpointPage />} />
+          <Route path="/assets/organization" element={<OrganizationPage />} />
+          <Route path="/detections/xdr" element={<DetectionPage />} />
+          <Route path="/detections/email-xdr" element={<EmailSecurityPage kind="xdr" />} />
+          <Route path="/detections/firewall" element={<FirewallDetectionPage />} />
+          <Route path="/detections/inbound" element={<EmailSecurityPage kind="inbound" />} />
+          <Route path="/detections/outbound" element={<TransferPage kind="outbound" />} />
+          <Route path="/detections/dlp" element={<TransferPage kind="dlp" />} />
+          <Route path="/forensics/timeline" element={<TimelinePage />} />
+          <Route path="/forensics/sensitive-files" element={<SensitivePage kind="files" />} />
+          <Route path="/forensics/sensitive-sites" element={<SensitivePage kind="sites" />} />
+          <Route path="/response/firewall" element={<FirewallPage />} />
+          <Route path="/response/easy-query" element={<EasyQueryPage />} />
+          <Route path="/lab/layout" element={<LayoutPage />} />
+          <Route path="/config/general" element={<ConfigPage section="general" />} />
+          <Route path="/config/ui" element={<UIManagementPage />} />
+          <Route path="/config/data" element={<ConfigPage section="data" />} />
+          <Route path="/config/export" element={<ExportManagementPage />} />
+          <Route path="/config/integrations" element={<IntegrationManagementPage />} />
+          <Route path="/config/exceptions" element={<ExceptionManagementPage />} />
+          <Route path="/config/content" element={<ContentManagementPage />} />
+          <Route path="/config/system" element={<SystemInfoPage />} />
+          <Route path="/" element={<Navigate to="/dashboard" replace />} />
+          <Route path="*" element={<Navigate to="/dashboard" replace />} />
+        </Routes>
       </div></main>
     </div>
   );

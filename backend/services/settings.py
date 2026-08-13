@@ -1,9 +1,34 @@
 import json, logging, os, re, threading, time, uuid
-from datetime import date, timedelta
+from datetime import date
 from pathlib import Path
 from typing import Any
 
-DEFAULT_THEME={"Primary_Blue":"#ff4d8d","Primary_Blue_Dark":"#7c3aed","UI_Background":"#120b20","UI_Surface":"#211238","Card_Border":"#4c2864","Card_Title_Text":"#ffb347","Table_Header_Background":"#2c1746","Table_Header_Text":"#e4d4f2","Table_Selection_Background":"#3b1c55","Table_Selection_Text":"#ffffff","Status_Success_Text":"#41e6a1","Status_Fail_Text":"#ff5f79","Threat_trend_Detection":"#ff4d8d","Threat_trend_Detection_XDR":"#ff8a3d","Threat_trend_Email":"#30d5c8","Threat_trend_Outbound_Mail":"#c45cff","Threat_trend_File":"#ffd166"}
+DEFAULT_THEME = {
+    "Primary_Blue": "#ff4d8d", "Primary_Blue_Dark": "#7c3aed",
+    "Accent_Soft": "#ff75b1", "Accent_Bright": "#ff7aad", "Accent_Secondary_Soft": "#c45cff",
+    "UI_Background": "#120b20", "UI_Background_Deep": "#10091d", "UI_Background_Mid": "#1b0e2d",
+    "UI_Background_Glow": "#34205b", "UI_Surface": "#211238", "UI_Surface_Raised": "#28153f",
+    "UI_Surface_Secondary": "#1b0e2d", "UI_Surface_Toolbar": "#241239",
+    "UI_Input_Background": "#170c29", "UI_Modal_Background": "#211238", "UI_Raw_Background": "#0c1c31",
+    "Card_Border": "#4c2864", "Border_Soft": "#56306c", "Border_Strong": "#653582",
+    "Border_Action": "#94406f", "Border_Danger": "#ff4d6d", "Border_Table_Row": "#3d2252",
+    "Card_Title_Text": "#ffb347", "Text_Primary": "#f4eefa", "Text_Bright": "#ffffff",
+    "Text_Secondary": "#cdb9da", "Text_Muted": "#ad96bf", "Text_Subtle": "#927ca4",
+    "Text_Table_Accent": "#ff5bb0", "Text_Entity": "#ffb347", "Text_Department": "#b68cff",
+    "Table_Header_Background": "#2c1746", "Table_Header_Text": "#e4d4f2",
+    "Table_Selection_Background": "#3b1c55", "Table_Selection_Text": "#ffffff",
+    "Table_Row_Hover": "#321b48", "Control_Hover_Background": "#351b4d", "Focus_Color": "#ff4d8d",
+    "Status_Success_Text": "#41e6a1", "Status_Success_Bright": "#59efad",
+    "Status_Warning_Text": "#ffb347", "Status_Warning_Bright": "#ffcc74",
+    "Status_Fail_Text": "#ff5f79", "Status_Fail_Bright": "#ff899c",
+    "Sidebar_Background_Start": "#200f36", "Sidebar_Background_End": "#11091f",
+    "Sidebar_Text": "#c6afd8", "Sidebar_Text_Muted": "#aa91bf", "Sidebar_Hover_Background": "#32194c",
+    "Sidebar_Selected_Text": "#ffb7d0", "Sidebar_Selected_Background": "#34194e",
+    "Modal_Overlay": "#051224", "Glow_Accent": "#ff4d8d", "Glow_Secondary": "#7c3aed",
+    "Threat_trend_Detection": "#ff4d8d", "Threat_trend_Detection_XDR": "#ff8a3d",
+    "Threat_trend_Email": "#30d5c8", "Threat_trend_Outbound_Mail": "#c45cff",
+    "Threat_trend_File": "#ffd166",
+}
 HEX=re.compile(r"^#[0-9a-fA-F]{6}$")
 class ThemeService:
  def __init__(self,root:Path):self.path=root/"env/Color_env.txt"
@@ -25,8 +50,61 @@ class ThemeService:
    if not HEX.fullmatch(value):raise ValueError(f"Invalid color: {key}")
    result[key]=value
   self.path.parent.mkdir(parents=True,exist_ok=True);tmp=self.path.with_suffix(".tmp");tmp.write_text("# UI Color Settings\n"+"\n".join(f"{k}={v}" for k,v in result.items())+"\n",encoding="utf-8");os.replace(tmp,self.path);return result
+
+
+class ThemePresetService:
+    """Stores complete user theme snapshots separately from the applied theme."""
+
+    def __init__(self, root: Path):
+        self.path = root / "env/theme_presets.json"
+        self.lock = threading.Lock()
+
+    def load(self) -> list[dict[str, Any]]:
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return []
+        presets = []
+        for item in data if isinstance(data, list) else []:
+            if isinstance(item, dict) and isinstance(item.get("name"), str) and isinstance(item.get("theme"), dict):
+                presets.append({"name": item["name"], "theme": self._normalize(item["theme"])})
+        return presets
+
+    @staticmethod
+    def _normalize(data: dict[str, Any]) -> dict[str, str]:
+        result = dict(DEFAULT_THEME)
+        for key in result:
+            value = str(data.get(key, result[key]))
+            if not HEX.fullmatch(value):
+                raise ValueError(f"Invalid color: {key}")
+            result[key] = value
+        return result
+
+    def save(self, name: str, theme: dict[str, Any]) -> list[dict[str, Any]]:
+        name = str(name).strip()
+        if not name or len(name) > 60 or any(char in name for char in "\\/\r\n\t"):
+            raise ValueError("Invalid preset name")
+        normalized = self._normalize(theme)
+        with self.lock:
+            presets = [item for item in self.load() if item["name"].casefold() != name.casefold()]
+            presets.append({"name": name, "theme": normalized})
+            presets.sort(key=lambda item: item["name"].casefold())
+            self._write(presets)
+        return presets
+
+    def delete(self, name: str) -> list[dict[str, Any]]:
+        with self.lock:
+            presets = [item for item in self.load() if item["name"] != name]
+            self._write(presets)
+        return presets
+
+    def _write(self, presets: list[dict[str, Any]]) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(presets, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        os.replace(temporary, self.path)
 class SchedulerService:
-    TARGETS = {"detections", "inbound", "dlp", "outbound", "endpoints", "organizations", "users"}
+    TARGETS = {"detections", "xdr", "firewall", "inbound", "dlp", "outbound", "endpoints", "organizations", "users"}
 
     def __init__(self, root: Path, refresh_service, index_service=None):
         self.path = root / "runtime/scheduler.json"
@@ -110,7 +188,7 @@ class SchedulerService:
 
     def _refresh_target(self, target: str, start: date, today: date):
         progress = lambda message: self._update_progress("collecting", target, message)
-        if target == "detections":
+        if target in {"detections", "xdr", "firewall"}:
             return self.refresh.refresh_detections(start, today, progress)
         if target == "inbound":
             return self.refresh.refresh_inbound(start, today, progress)
@@ -140,30 +218,24 @@ class SchedulerService:
                 self.state["lastResult"] = "수집 작업 실행 중"
                 self.state.update(phase="collecting", currentTarget=None, currentMessage="수집 작업 준비 중")
                 self._persist_locked()
-            today = date.today()
-            start = today - timedelta(days=1)
-            messages = []
-            for target in self.get()["targets"]:
+            messages = []; targets = self.get()["targets"]
+            if targets and self.index is not None and hasattr(self.index, "start_fetch_job"):
                 try:
-                    self._refresh_target(target, start, today)
-                    messages.append(f"{target}:OK")
-                    with self.lock:
-                        self.state["targetStatus"][target] = {"time": self._display_time(time.time()), "status": "SUCCESS", "message": ""}
-                        self._persist_locked()
-                except Exception as exc:
-                    self.log.exception("Scheduled refresh failed target=%s", target)
-                    messages.append(f"{target}:FAIL {type(exc).__name__}: {exc}")
-                    with self.lock:
-                        self.state["targetStatus"][target] = {"time": self._display_time(time.time()), "status": "FAIL", "message": f"{type(exc).__name__}: {exc}"}
-                        self._persist_locked()
-            if self.index is not None:
-                try:
-                    self._update_progress("indexing", "index", "전체 인덱싱 준비 중")
-                    self.index.rebuild_all(lambda message: self._update_progress("indexing", "index", message))
+                    fetch_job = self.index.start_fetch_job(targets, None, None, chain_index=True)
+                    result = self.index.wait_for_fetch_job(fetch_job, lambda message: self._update_progress("collecting" if "FETCHING" in message or "수집" in message else "indexing", "fetcher", message), wait_for_index=True)
+                    for target in targets:
+                        target_result = result.get(target) or {"status": "FAIL", "error": "결과 없음"}
+                        state = target_result.get("status", "FAIL"); detail = target_result.get("error", "")
+                        messages.append(f"{target}:{'OK' if state == 'SUCCESS' else 'FAIL ' + detail}")
+                        with self.lock:
+                            self.state["targetStatus"][target] = {"time": self._display_time(time.time()), "status": state, "message": detail}
+                            self._persist_locked()
                     messages.append("index:OK")
                 except Exception as exc:
-                    self.log.exception("Scheduled indexing failed")
-                    messages.append(f"index:FAIL {type(exc).__name__}: {exc}")
+                    self.log.exception("Scheduled Fetcher/Indexer chain failed")
+                    messages.append(f"fetch/index:FAIL {type(exc).__name__}: {exc}")
+            elif not targets:
+                messages.append("선택된 수집 대상 없음")
             with self.lock:
                 self.state["lastRun"] = self._display_time(time.time())
                 self.state["lastResult"] = " / ".join(messages) or "선택된 수집 대상 없음"
