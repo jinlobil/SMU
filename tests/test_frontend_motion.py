@@ -394,3 +394,11 @@ def test_data_management_distinguishes_raw_cache_and_logical_indexes():
     assert 'detections:"Detection Event Index"' in page
     assert 'xdr:"Email XDR Event Index"' in page
     assert 'firewall:"Firewall Event Index"' in page
+
+def test_data_status_is_grouped_by_raw_database_and_event_index():
+    page=(ROOT/"frontend/src/pages/ConfigPage.tsx").read_text(encoding="utf-8")
+    assert "Raw Cache & Index Status" in page
+    assert "원본 데이터 (RAW DATA)" in page
+    assert "검색 인덱스 DB (INDEX DATABASE)" in page
+    assert "화면별 이벤트 인덱스 (EVENT INDEX)" in page
+    assert 'route: "/lab/machine-learning"' in (ROOT/"frontend/src/App.tsx").read_text(encoding="utf-8")

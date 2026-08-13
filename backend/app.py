@@ -38,6 +38,8 @@ from backend.services.integrations import IntegrationService
 from backend.services.index_maintenance import IndexMaintenanceService
 from backend.services.exceptions import ExceptionService
 from backend.services.content import ContentService
+from backend.services.learner.store import LearnerStore
+from backend.services.learner import LearnerService
 from backend.services.exporting import export_headers, normalize_export_columns, normalize_report_sections, schema_payload
 
 
@@ -73,6 +75,7 @@ integration_service = IntegrationService(PROJECT_ROOT)
 exception_service = ExceptionService(PROJECT_ROOT)
 content_service = ContentService(PROJECT_ROOT)
 index_maintenance_service = IndexMaintenanceService(PROJECT_ROOT)
+learner_store = None  # Learner DB is opened lazily; normal UI requests never trigger analysis storage.
 try:
     dashboard_service.warm_default()
 except Exception:
@@ -219,6 +222,13 @@ def restart_system_info_fetcher() -> dict:
     except Exception as exc:
         return error_response(str(uuid.uuid4()), "FETCHER_RESTART_FAILED", str(exc), 503)
     return {"success": True, "data": data}
+
+
+@app.post("/api/system-info/learner/restart", status_code=202)
+def restart_system_info_learner() -> dict:
+    try: data=watchdog_manager.restart_learner()
+    except Exception as exc: return error_response(str(uuid.uuid4()),"LEARNER_RESTART_FAILED",str(exc),503)
+    return {"success":True,"data":data}
 
 
 @app.post("/api/system-info/laborer/restart", status_code=202)
@@ -683,12 +693,29 @@ def vacuum_indexes(payload: dict | None = Body(default=None)) -> dict:
     return {"success": True, "data": watchdog_manager.start_laborer_job("vacuum", target=target)}
 
 
+@app.post("/api/learner/jobs", status_code=202)
+def start_learner_job(payload: dict = Body(default={})) -> dict:
+    return {"success":True,"data":watchdog_manager.start_learner_job(str(payload.get("mode","incremental")),payload.get("sources"),payload.get("start"),payload.get("end"))}
+
+@app.get("/api/learner/findings")
+def learner_findings(source: str="", findingType: str="", start: str="", end: str="", limit: int=Query(200,ge=1,le=1000)) -> dict:
+    return {"success":True,"data":LearnerStore(PROJECT_ROOT).findings(source,findingType,start,(end+"T99") if end else "",limit)}
+
+@app.get("/api/learner/findings/{finding_id}")
+def learner_finding(finding_id: str) -> dict:
+    data=LearnerStore(PROJECT_ROOT).finding(finding_id)
+    return {"success":True,"data":data} if data else error_response(str(uuid.uuid4()),"LEARNER_FINDING_NOT_FOUND","Finding not found",404)
+
+@app.get("/api/learner/history")
+def learner_history(source: str, scopeType: str, scopeKey: str, behaviorType: str, behaviorKey: str) -> dict:
+    return {"success":True,"data":LearnerService(PROJECT_ROOT).history(source,scopeType,scopeKey,behaviorType,behaviorKey)}
+
 @app.get("/api/jobs/{job_id}")
 def get_job(job_id: str) -> dict:
     job = job_manager.get(job_id)
     if job is None:
         try:
-            job = watchdog_manager.fetch_job(job_id) or watchdog_manager.index_job(job_id) or watchdog_manager.laborer_job(job_id)
+            job = watchdog_manager.fetch_job(job_id) or watchdog_manager.index_job(job_id) or watchdog_manager.laborer_job(job_id) or watchdog_manager.learner_job(job_id)
         except Exception as exc:
             return error_response(str(uuid.uuid4()), "INDEXER_STATUS_FAILED", str(exc), 503)
     if job is None:

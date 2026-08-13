@@ -45,7 +45,7 @@ class WatchdogManager:
         try:
             return self.request("/status")
         except (OSError, urllib.error.URLError, json.JSONDecodeError):
-            return {"watchdog": {"status": "missing"}, "collector": {"status": "unknown"}, "fetcher": {"status": "unknown"}, "indexer": {"status": "unknown"}, "laborer": {"status": "unknown"}}
+            return {"watchdog": {"status": "missing"}, "collector": {"status": "unknown"}, "fetcher": {"status": "unknown"}, "indexer": {"status": "unknown"}, "laborer": {"status": "unknown"}, "learner": {"status": "unknown"}}
 
     def _spawn(self) -> None:
         log_path = dated_process_log(self.root / "runtime/logs", "hardware_watchdog_process")
@@ -59,11 +59,11 @@ class WatchdogManager:
 
     def ensure(self) -> bool:
         current = self.status()
-        if current["watchdog"].get("status") == "running" and "indexer" in current and "fetcher" in current and "laborer" in current:
+        if current["watchdog"].get("status") == "running" and "indexer" in current and "fetcher" in current and "laborer" in current and "learner" in current:
             return True
         with self.lock:
             current = self.status()
-            if current["watchdog"].get("status") == "running" and ("indexer" not in current or "fetcher" not in current or "laborer" not in current):
+            if current["watchdog"].get("status") == "running" and ("indexer" not in current or "fetcher" not in current or "laborer" not in current or "learner" not in current):
                 # Replace a detached watchdog left by a previous application
                 # version so the current Fetcher/Indexer control API is available.
                 try:
@@ -94,6 +94,19 @@ class WatchdogManager:
     def restart_fetcher(self) -> dict:
         self.ensure()
         return self.request("/fetcher/restart", "POST", timeout=20)
+
+    def restart_learner(self) -> dict:
+        self.ensure();return self.request("/learner/restart","POST",timeout=20)
+
+    def start_learner_job(self, mode="incremental", sources=None, start=None, end=None) -> dict:
+        self.ensure();query=urlencode({"mode":mode,"sources":",".join(sources or []),"start":start or "","end":end or ""})
+        return self._report_job_state(self.request(f"/learner/jobs?{query}","POST",timeout=20),"Learner")
+
+    def learner_job(self, job_id: str) -> dict | None:
+        try:return self._report_job_state(self.request(f"/learner/jobs/{job_id}",timeout=10),"Learner")
+        except urllib.error.HTTPError as exc:
+            if exc.code==404:return None
+            raise
 
     def restart_laborer(self) -> dict:
         self.ensure()

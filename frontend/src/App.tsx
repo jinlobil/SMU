@@ -17,6 +17,7 @@ import { IntegrationManagementPage } from "./pages/IntegrationManagementPage";
 import { ExceptionManagementPage } from "./pages/ExceptionManagementPage";
 import { ContentManagementPage } from "./pages/ContentManagementPage";
 import { ExportManagementPage } from "./pages/ExportManagementPage";
+import { MachineLearningPage } from "./pages/MachineLearningPage";
 import { UIManagementPage } from "./pages/UIManagementPage";
 import { FirewallDetectionPage } from "./pages/FirewallDetectionPage";
 import { applyTheme } from "./theme";
@@ -47,7 +48,7 @@ const submenus: Record<string, { label: string; route: string }[]> = {
     { label: "Sensitive Sites", route: "/forensics/sensitive-sites" },
   ],
   Response: [{ label: "Firewall", route: "/response/firewall" }, { label: "Easy Query", route: "/response/easy-query" }],
-  Lab: [{ label: "Layout - User", route: "/lab/layout" }],
+  Lab: [{ label: "Layout - User", route: "/lab/layout" }, { label: "Machine Learning", route: "/lab/machine-learning" }],
   Config: [
     { label: "General", route: "/config/general" }, { label: "UI Management", route: "/config/ui" }, { label: "Data Management", route: "/config/data" },
     { label: "Export Management", route: "/config/export" }, { label: "Integration Management", route: "/config/integrations" },
@@ -140,6 +141,7 @@ export function App() {
           <Route path="/response/firewall" element={<FirewallPage />} />
           <Route path="/response/easy-query" element={<EasyQueryPage />} />
           <Route path="/lab/layout" element={<LayoutPage />} />
+          <Route path="/lab/machine-learning" element={<MachineLearningPage />} />
           <Route path="/config/general" element={<ConfigPage section="general" />} />
           <Route path="/config/ui" element={<UIManagementPage />} />
           <Route path="/config/data" element={<ConfigPage section="data" />} />

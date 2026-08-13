@@ -147,3 +147,11 @@ def test_watchdog_checks_laborer_health_before_submitting_job(tmp_path, monkeypa
 
     assert result["id"] == "labor-1"
     assert calls == ["health", ("/jobs?type=vacuum&target=all", "POST")]
+
+
+def test_watchdog_checks_learner_health_before_submitting_job(tmp_path, monkeypatch):
+    watchdog=HardwareWatchdog(tmp_path);calls=[]
+    monkeypatch.setattr(watchdog,"ensure_learner",lambda:calls.append("health") or {"status":"running"})
+    monkeypatch.setattr(watchdog,"_learner_request",lambda path,method="GET",timeout=3:calls.append((path,method)) or {"id":"learn-1"})
+    assert watchdog.submit_learner_job("mode=full")["id"]=="learn-1"
+    assert calls==["health",("/jobs?mode=full","POST")]
