@@ -3,6 +3,8 @@ import sqlite3
 from datetime import date
 from pathlib import Path
 
+import pytest
+
 from backend.services.timeline import TimelineService
 
 
@@ -65,6 +67,38 @@ def test_timeline_index_returns_raw_payload_when_available(tmp_path: Path):
     result = TimelineService(tmp_path).search("김범수", "", {"File"})
 
     assert result["groups"][0]["items"][0]["raw"]["filename"] == "계약서.pdf"
+
+
+def test_timeline_sql_paginates_groups_before_loading_items(tmp_path: Path):
+    database = tmp_path / "cache/index/timeline_index.db"
+    database.parent.mkdir(parents=True)
+    with sqlite3.connect(database) as connection:
+        connection.execute("CREATE TABLE timeline_events (time TEXT, source TEXT, user TEXT, user_id TEXT, dept TEXT, asset TEXT, event TEXT, direction TEXT, peer TEXT, summary TEXT, indicator TEXT, raw_json TEXT)")
+        rows = []
+        for minute in range(3):
+            for second in range(120):
+                rows.append((f"2026-07-24 14:0{minute}:{second % 60:02d}", "Detection", "kim", "kim", "IT", "PC1", f"Rule-{minute}", "Host", "10.0.0.1", "needle", "hash", "{}"))
+        connection.executemany("INSERT INTO timeline_events VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+
+    result = TimelineService(tmp_path).search("kim", "needle", {"Detection"}, offset=1, limit=1)
+
+    assert result["pagination"] == {"offset": 1, "limit": 1, "totalGroups": 3, "totalEvents": 360}
+    assert len(result["groups"]) == 1
+    assert result["groups"][0]["count"] == 120
+    assert len(result["groups"][0]["items"]) == 100
+    assert result["source"] == "sqlite-index"
+
+
+def test_timeline_index_uses_read_only_query_connection(tmp_path: Path):
+    database = tmp_path / "cache/index/timeline_index.db"
+    database.parent.mkdir(parents=True)
+    with sqlite3.connect(database) as connection:
+        connection.execute("CREATE TABLE timeline_events (time TEXT, source TEXT, user TEXT, user_id TEXT, dept TEXT, asset TEXT, event TEXT, direction TEXT, peer TEXT, summary TEXT, indicator TEXT)")
+    service = TimelineService(tmp_path)
+    with service._read_connection() as connection:
+        assert connection.execute("PRAGMA query_only").fetchone()[0] == 1
+        with pytest.raises(sqlite3.OperationalError):
+            connection.execute("DELETE FROM timeline_events")
 
 
 def test_timeline_hydrates_raw_payload_from_cache_for_legacy_index(tmp_path: Path):
