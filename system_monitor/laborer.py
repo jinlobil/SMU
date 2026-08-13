@@ -19,6 +19,7 @@ from backend.services.index_maintenance import IndexMaintenanceService
 from backend.services.report import ReportService
 from backend.services.spreadsheet import write_xlsx
 from backend.services.exporting import export_headers, normalize_export_columns, normalize_report_sections
+from backend.services.firewall_detections import FirewallDetectionService
 from backend.services.transfers import TransferService
 from system_monitor.collector import acquire_singleton, atomic_json
 from system_monitor.logging_utils import configure_agent_logging
@@ -103,7 +104,7 @@ class LaborerAgent:
 
     def _export(self, payload: dict, progress) -> dict:
         kind, start, end = str(payload.get("kind", "")), date.fromisoformat(str(payload.get("start"))), date.fromisoformat(str(payload.get("end")))
-        collectors = {"detections": DetectionService(self.root)._events, "xdr": EmailSecurityService(self.root)._collect_xdr, "inbound": EmailSecurityService(self.root)._collect_inbound, "outbound": TransferService(self.root)._collect_outbound, "dlp": TransferService(self.root)._collect_dlp}
+        collectors = {"detections": DetectionService(self.root)._events, "xdr": EmailSecurityService(self.root)._collect_xdr, "firewall": FirewallDetectionService(self.root)._collect, "inbound": EmailSecurityService(self.root)._collect_inbound, "outbound": TransferService(self.root)._collect_outbound, "dlp": TransferService(self.root)._collect_dlp}
         if kind not in collectors: raise ValueError("Unknown export type")
         progress(f"{kind} XLSX 데이터 준비 중")
         columns = normalize_export_columns(kind, payload.get("columns"))

@@ -11,16 +11,17 @@ from backend.services.endpoints import load_json_list
 from backend.services.event_list_index import EventListIndex
 
 
-SERIES_NAMES = ("Detection - XDR", "Email - XDR", "Inbound Mail", "Outbound Mail", "File")
+SERIES_NAMES = ("Detection - XDR", "Email - XDR", "Inbound Mail", "Outbound Mail", "File", "Firewall")
 KIND_TO_SERIES = {
     "detections": "Detection - XDR",
     "xdr": "Email - XDR",
     "inbound": "Inbound Mail",
     "outbound": "Outbound Mail",
     "dlp": "File",
+    "firewall": "Firewall",
 }
 EVENT_KINDS = tuple(KIND_TO_SERIES.keys())
-DASHBOARD_CACHE_VERSION = 3
+DASHBOARD_CACHE_VERSION = 4
 
 
 class DashboardService:

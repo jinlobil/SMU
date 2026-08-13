@@ -12,7 +12,7 @@ type TopFileData = { range: Range; summary: { file: SummaryRow[] } };
 type DashboardSnapshot = { assets: AssetsData | null; mixTrend: MixTrendData | null; topDetection: TopDetectionData | null; topMail: TopMailData | null; topFile: TopFileData | null };
 type GroupName = keyof DashboardSnapshot;
 
-const colors: Record<string, string> = { "Detection - XDR": "var(--trend-detection)", "Email - XDR": "var(--trend-xdr)", "Inbound Mail": "var(--trend-email)", "Outbound Mail": "var(--trend-outbound)", File: "var(--trend-file)" };
+const colors: Record<string, string> = { "Detection - XDR": "var(--trend-detection)", "Email - XDR": "var(--trend-xdr)", "Inbound Mail": "var(--trend-email)", "Outbound Mail": "var(--trend-outbound)", File: "var(--trend-file)", Firewall: "var(--status-warning-bright)" };
 const seriesId = (name: string) => name.replaceAll(" ", "").replaceAll("-", "");
 const emptySnapshot: DashboardSnapshot = { assets: null, mixTrend: null, topDetection: null, topMail: null, topFile: null };
 const emptyTotals = Object.fromEntries(Object.keys(colors).map((name) => [name, 0])) as Record<string, number>;

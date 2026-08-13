@@ -18,6 +18,7 @@ import { ExceptionManagementPage } from "./pages/ExceptionManagementPage";
 import { ContentManagementPage } from "./pages/ContentManagementPage";
 import { ExportManagementPage } from "./pages/ExportManagementPage";
 import { UIManagementPage } from "./pages/UIManagementPage";
+import { FirewallDetectionPage } from "./pages/FirewallDetectionPage";
 import { applyTheme } from "./theme";
 
 
@@ -37,6 +38,7 @@ const submenus: Record<string, { label: string; route: string }[]> = {
   Asset: [{ label: "Endpoint", route: "/assets/endpoints" }, { label: "Organization", route: "/assets/organization" }],
   Detection: [
     { label: "Detection - XDR", route: "/detections/xdr" }, { label: "Email - XDR", route: "/detections/email-xdr" },
+    { label: "Firewall", route: "/detections/firewall" },
     { label: "Inbound Mail", route: "/detections/inbound" }, { label: "Outbound Mail", route: "/detections/outbound" },
     { label: "File", route: "/detections/dlp" },
   ],
@@ -128,6 +130,7 @@ export function App() {
           <Route path="/assets/organization" element={<OrganizationPage />} />
           <Route path="/detections/xdr" element={<DetectionPage />} />
           <Route path="/detections/email-xdr" element={<EmailSecurityPage kind="xdr" />} />
+          <Route path="/detections/firewall" element={<FirewallDetectionPage />} />
           <Route path="/detections/inbound" element={<EmailSecurityPage kind="inbound" />} />
           <Route path="/detections/outbound" element={<TransferPage kind="outbound" />} />
           <Route path="/detections/dlp" element={<TransferPage kind="dlp" />} />

@@ -55,6 +55,7 @@ class EventListIndex:
         specs = {
             "detections": (self.project_root / "cache" / "detections", "{day}.json"),
             "xdr": (self.project_root / "cache" / "detections", "{day}.json"),
+            "firewall": (self.project_root / "cache" / "detections", "{day}.json"),
             "inbound": (self.project_root / "cache" / "emails", "{day}.json"),
             "outbound": (self.project_root / "cache" / "mailscreen", "mailscreen_mail_{day}.json"),
             "dlp": (self.project_root / "cache" / "dlp", "{day}.jsonl"),
@@ -101,6 +102,18 @@ class EventListIndex:
         totals = {kind: 0 for kind in kinds}
         totals.update({str(row["kind"]): int(row["total"] or 0) for row in rows})
         return totals
+
+    def kind_status(self, kinds: list[str]) -> dict[str, dict[str, Any]]:
+        output = {kind: {"indexedEvents": 0, "lastIndexed": None, "status": "missing", "indexFileBytes": 0} for kind in kinds}
+        if not self.available():
+            return output
+        size = self.path.stat().st_size
+        with self._read_connection() as db:
+            placeholders = ",".join("?" for _ in kinds)
+            rows = db.execute(f"SELECT kind, COUNT(*), MAX(event_time) FROM event_list_rows WHERE kind IN ({placeholders}) GROUP BY kind", kinds).fetchall()
+        for row in rows:
+            output[str(row[0])] = {"indexedEvents": int(row[1]), "lastIndexed": row[2], "status": "ready", "indexFileBytes": size}
+        return output
 
     def daily_counts(self, start: date, end: date, kinds: list[str]) -> dict[str, dict[str, int]]:
         if not kinds or not self.available():

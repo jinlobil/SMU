@@ -96,7 +96,7 @@ class ReportService:
                         kind = sensor_type(event)
                         if kind == "endpoint" and event.get("time"):
                             endpoint_rows.append(event)
-                        if kind == "email" or rule in XDR_RULES:
+                        if kind == "email" or (not kind and rule in XDR_RULES):
                             xdr_rows.append(event)
                 detection_cache[period] = endpoint_rows, xdr_rows
             return detection_cache[period]

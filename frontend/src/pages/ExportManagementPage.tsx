@@ -4,17 +4,18 @@ type Column = { key: string; label: string; default: boolean };
 type ExportSpec = { label: string; columns: Column[] };
 type ReportSection = { key: string; label: string; default: boolean };
 type Schema = { exports: Record<string, ExportSpec>; report: { label: string; sections: ReportSection[] } };
-type Tab = "detections" | "xdr" | "inbound" | "outbound" | "dlp" | "report";
+type Tab = "detections" | "xdr" | "firewall" | "inbound" | "outbound" | "dlp" | "report";
 
 const exportJobKey = "smu.export.activeJob";
-const tabOrder: Tab[] = ["detections", "xdr", "inbound", "outbound", "dlp", "report"];
-const tabLabels: Record<Tab, string> = { detections: "Detection XLSX", xdr: "Email XDR XLSX", inbound: "Inbound Mail XLSX", outbound: "Outbound Mail XLSX", dlp: "DLP File XLSX", report: "Security Report PDF" };
+const tabOrder: Tab[] = ["detections", "xdr", "firewall", "inbound", "outbound", "dlp", "report"];
+const tabLabels: Record<Tab, string> = { detections: "Detection XLSX", xdr: "Email XDR XLSX", firewall: "Firewall Detection XLSX", inbound: "Inbound Mail XLSX", outbound: "Outbound Mail XLSX", dlp: "DLP File XLSX", report: "Security Report PDF" };
 const fallbackSchema: Schema = { exports: {}, report: { label: "Security Report PDF", sections: [] } };
 const previewValues: Record<string, string> = {
   time: "2026-08-06 09:42:18", hostname: "PC-001", dept: "보안팀", username: "홍길동", privateIp: "10.10.1.25", publicIp: "203.0.113.25", file: "sample.exe", sha256: "a91f…e204", rule: "WIN-DETECTION-RULE", lineage: "System → sample.exe", _sourceFile: "2026-08-06.json",
   mailbox: "hong@example.com", userId: "hong", user: "홍길동", from: "sender@example.net", to: "hong@example.com", subject: "보안 알림 예시", senderIp: "198.51.100.17", ioc: "sample.example", iocSha256: "b72c…91af", detail: "탐지 상세 예시",
   received: "2026-08-06 09:42:18", cc: "security@example.com", reason: "Malware", date: "2026-08-06 09:42:18", mailProcess: "발송", sendResult: "성공", senderEmail: "hong@example.com", senderName: "홍길동", receiver: "user@example.net", size: "128 KB", policy: "외부메일 정책", attachment: "sample.pdf",
   event: "탐지됨", computer: "PC-001", sourceIp: "10.10.1.25", source: "Web Upload", destination: "Chrome", destinationType: "Web Browser", destinationDetail: "example.com", fileSize: "128 KB", fileHash: "c31d…80e2",
+  severity: "7", sourcePort: "53326", destinationIp: "8.8.8.8", destinationPort: "53", protocol: "UDP", application: "DNS", url: "disorderstatus.ru", action: "drop destination match", threat: "C2/Generic-A",
 };
 const today = () => new Date().toISOString().slice(0, 10);
 const week = () => new Date(Date.now() - 6 * 86400000).toISOString().slice(0, 10);

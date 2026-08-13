@@ -40,6 +40,18 @@ EXPORT_SCHEMAS: dict[str, dict[str, object]] = {
             {"key": "_sourceFile", "label": "Source File", "default": False},
         ],
     },
+    "firewall": {
+        "label": "Firewall Detection XLSX",
+        "columns": [
+            {"key": "time", "label": "Time", "default": True}, {"key": "severity", "label": "Severity", "default": True},
+            {"key": "rule", "label": "Rule", "default": True}, {"key": "sourceIp", "label": "Source IP", "default": True},
+            {"key": "sourcePort", "label": "Source Port", "default": True}, {"key": "destinationIp", "label": "Destination IP", "default": True},
+            {"key": "destinationPort", "label": "Destination Port", "default": True}, {"key": "protocol", "label": "Protocol", "default": True},
+            {"key": "application", "label": "Application", "default": True}, {"key": "url", "label": "URL / Domain", "default": True},
+            {"key": "action", "label": "Action", "default": True}, {"key": "threat", "label": "Threat", "default": True},
+            {"key": "_sourceFile", "label": "Source File", "default": False},
+        ],
+    },
     "inbound": {
         "label": "Inbound Mail XLSX",
         "columns": [
@@ -95,6 +107,7 @@ EXPORT_SCHEMAS: dict[str, dict[str, object]] = {
 REPORT_SECTIONS: list[dict[str, object]] = [
     {"key": "detections", "label": "Detection", "default": True},
     {"key": "xdr", "label": "Email XDR", "default": True},
+    {"key": "firewall", "label": "Firewall Detection", "default": True},
     {"key": "inbound", "label": "Inbound Mail", "default": True},
     {"key": "outbound", "label": "Outbound Mail", "default": True},
     {"key": "dlp", "label": "DLP File", "default": True},

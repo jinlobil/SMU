@@ -20,8 +20,9 @@ from system_monitor.collector import acquire_singleton, atomic_json
 from system_monitor.logging_utils import configure_agent_logging
 
 
-TARGETS = {"detections", "inbound", "dlp", "outbound", "endpoints", "organizations", "users"}
-DAILY_TARGETS = {"detections", "inbound", "dlp", "outbound"}
+TARGETS = {"detections", "xdr", "firewall", "inbound", "dlp", "outbound", "endpoints", "organizations", "users"}
+DAILY_TARGETS = {"detections", "xdr", "firewall", "inbound", "dlp", "outbound"}
+PHYSICAL_TARGET = {"xdr": "detections", "firewall": "detections"}
 KST = timezone(timedelta(hours=9))
 
 
@@ -104,6 +105,7 @@ class FetcherAgent:
             self.stop.wait(2)
 
     def _collect(self, service: RefreshService, target: str, start: date, end: date, progress) -> dict:
+        target = PHYSICAL_TARGET.get(target, target)
         if target == "detections": return service.refresh_detections(start, end, progress)
         if target == "inbound": return service.refresh_inbound(start, end, progress)
         if target == "dlp": return service.refresh_dlp_range(start, end, progress)
@@ -178,12 +180,19 @@ class FetcherAgent:
             self._update(job_id, status="running", message="수집 작업 시작", started_at=self._now())
             try:
                 service = RefreshService(self.root); results = {}; failures = {}
+                fetched: dict[str, dict] = {}
                 for number, target in enumerate(targets, 1):
                     prefix = f"FETCHING · {number}/{len(targets)} · {target}"
                     self._update(job_id, message=f"{prefix} · 준비 중")
                     try:
                         progress = lambda message, p=prefix: self._update(job_id, message=f"{p} · {message}")
-                        data = self._collect_scheduled_target(service, target, today, progress) if scheduled_rollover else self._collect(service, target, start, end, progress)
+                        physical = PHYSICAL_TARGET.get(target, target)
+                        if physical in fetched:
+                            data = fetched[physical]
+                            progress("공유 Detection Raw 수집 결과 재사용")
+                        else:
+                            data = self._collect_scheduled_target(service, physical, today, progress) if scheduled_rollover else self._collect(service, physical, start, end, progress)
+                            fetched[physical] = data
                         results[target] = {"status": "SUCCESS", "data": data}
                         self._update(job_id, message=f"{prefix} · 완료")
                     except Exception as exc:

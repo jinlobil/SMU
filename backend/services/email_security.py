@@ -104,7 +104,8 @@ class EmailSecurityService:
             for index, event in enumerate(load_json_list(path)):
                 description = event.get("detectionDescription") if isinstance(event.get("detectionDescription"), dict) else {}
                 rule = str(description.get("createdReasonId") or event.get("detectionRule") or "")
-                if sensor_type(event) != "email" and rule not in XDR_RULES: continue
+                sensor = sensor_type(event)
+                if sensor != "email" and not (not sensor and rule in XDR_RULES): continue
                 event_id = self._id("xdr", path, index); records.append((event_id, event, {**self._xdr_row(event, event_id, identities), "_sourceFile": str(path.resolve())}))
         return records, files
 

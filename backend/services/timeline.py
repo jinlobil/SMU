@@ -10,10 +10,11 @@ from backend.services.detections import DetectionService
 from backend.services.email_security import EmailSecurityService
 from backend.services.endpoints import EndpointService, endpoint_principal, load_json_list, normalize_key
 from backend.services.exceptions import ExceptionService
+from backend.services.firewall_detections import FirewallDetectionService
 from backend.services.transfers import TransferService
 
 
-ALL_SOURCES = {"Detection", "XDR", "Email", "Outbound Mail", "File"}
+ALL_SOURCES = {"Detection", "XDR", "Firewall", "Email", "Outbound Mail", "File"}
 DATE_PATTERN = re.compile(r"(\d{4}-\d{2}-\d{2})")
 
 
@@ -22,6 +23,7 @@ class TimelineService:
         self.project_root = project_root
         self.detections = DetectionService(project_root)
         self.email = EmailSecurityService(project_root)
+        self.firewall = FirewallDetectionService(project_root)
         self.transfers = TransferService(project_root)
         self.endpoints = EndpointService(project_root)
         self.exception_service = ExceptionService(project_root)
@@ -180,6 +182,7 @@ class TimelineService:
     def event(source: str, row: dict[str, str], raw: dict[str, Any] | None = None) -> dict[str, Any]:
         if source == "Detection": result = {"time": row["time"], "source": source, "principal": row.get("principal", ""), "user": row["username"], "userId": "None", "dept": row["dept"], "asset": row["hostname"], "event": row["rule"], "direction": "Host", "peer": row["privateIp"], "summary": row["file"], "indicator": row["sha256"] if row["sha256"] != "None" else row["publicIp"]}
         elif source == "XDR": result = {"time": row["time"], "source": source, "principal": row.get("principal", ""), "email": row["mailbox"], "user": row["user"], "userId": row["userId"], "dept": row["dept"], "asset": row["mailbox"], "event": row["rule"], "direction": f"{row['from']} → {row['to']}", "peer": row["senderIp"], "summary": row["subject"], "indicator": row["iocSha256"] if row["iocSha256"] != "None" else row["ioc"]}
+        elif source == "Firewall": result = {"time": row["time"], "source": source, "principal": row.get("principal", ""), "user": row.get("user", "None"), "userId": "None", "dept": row.get("dept", "미분류"), "asset": row.get("hostname", row.get("deviceName", "None")), "event": row.get("rule", "None"), "direction": f"{row.get('sourceIp', 'None')}:{row.get('sourcePort', 'None')} → {row.get('destinationIp', 'None')}:{row.get('destinationPort', 'None')}", "peer": row.get("destinationIp", "None"), "summary": row.get("url", "None"), "indicator": row.get("threat", "None")}
         elif source == "Email": result = {"time": row["received"], "source": source, "principal": row.get("principal", ""), "email": row["to"], "user": row.get("user", row["to"]), "userId": row.get("userId", row["to"].split("@", 1)[0]), "dept": row.get("dept", "미분류"), "asset": row["to"], "event": row["reason"], "direction": f"{row['from']} → {row['to']}", "peer": row["senderIp"], "summary": row["subject"], "indicator": row["senderIp"]}
         elif source == "Outbound Mail": result = {"time": row["date"], "source": source, "email": row["senderEmail"], "user": row["senderName"], "userId": row["senderEmail"].split("@", 1)[0], "dept": row["dept"], "asset": row["senderEmail"], "event": row["sendResult"], "direction": f"{row['senderEmail']} → {row['receiver']}", "peer": row["receiver"], "summary": row["subject"], "indicator": row["attachment"]}
         else: result = {"time": row["time"], "source": source, "principal": row.get("principal", ""), "user": row["username"], "userId": row["username"], "dept": row["dept"], "asset": row["computer"], "event": row["event"], "direction": f"{row['source']} → {row['destination']}", "peer": row["sourceIp"], "summary": row["destinationDetail"], "indicator": row["fileHash"]}
@@ -198,6 +201,9 @@ class TimelineService:
         if "XDR" in sources:
             rows = self.email._collect_xdr(start, end)[0]; output.extend(self.event("XDR", row, raw) for _id, raw, row in rows)
             if progress: progress(f"통합 타임라인 · Email XDR {len(rows):,}건 변환 완료")
+        if "Firewall" in sources:
+            rows = self.firewall._collect(start, end)[0]; output.extend(self.event("Firewall", row, raw) for _id, raw, row in rows)
+            if progress: progress(f"통합 타임라인 · Firewall {len(rows):,}건 변환 완료")
         if "Email" in sources:
             rows = self.email._collect_inbound(start, end)[0]; output.extend(self.event("Email", row, raw) for _id, raw, row in rows)
             if progress: progress(f"통합 타임라인 · Inbound Mail {len(rows):,}건 변환 완료")

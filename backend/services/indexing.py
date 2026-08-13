@@ -10,6 +10,7 @@ from backend.services.dashboard import DashboardService
 from backend.services.detections import DetectionService
 from backend.services.email_security import EmailSecurityService
 from backend.services.event_list_schema import DISPLAY_COLUMNS, SCHEMA_VERSION, values_for_row
+from backend.services.firewall_detections import FirewallDetectionService
 from backend.services.sensitive import SensitiveService, normalized_identity
 from backend.services.timeline import ALL_SOURCES, TimelineService
 from backend.services.transfers import TransferService
@@ -27,6 +28,7 @@ class IndexService:
         self.dashboard = DashboardService(project_root)
         self.detections = DetectionService(project_root)
         self.email = EmailSecurityService(project_root)
+        self.firewall_detections = FirewallDetectionService(project_root)
         self.transfers = TransferService(project_root)
 
     @staticmethod
@@ -131,7 +133,7 @@ class IndexService:
             exists = Path(source_file).exists()
             progress(f"Fetcher 증분 · {number}/{len(source_files)} · {source} · {Path(source_file).name}")
             if source == "detections":
-                events = self.timeline.events_between(day, day, {"Detection", "XDR"}, progress) if exists else []
+                events = self.timeline.events_between(day, day, {"Detection", "XDR", "Firewall"}, progress) if exists else []
                 self._replace_timeline_file(key, events, progress)
                 rows = self._event_rows_for_source_file(source, day, key, progress) if exists else []
                 self._replace_event_file(key, rows, progress)
@@ -206,7 +208,7 @@ class IndexService:
             progress(f"스마트 증분 · {number}/{len(affected)} · {source} · {Path(path).name}")
             exists = path in current
             if source == "detections":
-                events = self.timeline.events_between(day, day, {"Detection", "XDR"}, progress) if exists else []
+                events = self.timeline.events_between(day, day, {"Detection", "XDR", "Firewall"}, progress) if exists else []
                 self._replace_timeline_file(path, events, progress)
                 self._replace_event_file(path, self._event_rows_for_source_file(source, day, path, progress) if exists else [], progress)
             elif source == "emails":
@@ -314,7 +316,7 @@ class IndexService:
 
     @staticmethod
     def _event_time(kind: str, row: dict[str, str]) -> str:
-        if kind in {"detections", "xdr"}:
+        if kind in {"detections", "xdr", "firewall"}:
             return str(row.get("time") or "")
         if kind == "inbound":
             return str(row.get("received") or "")
@@ -326,6 +328,7 @@ class IndexService:
         collectors = (
             ("detections", "Detection", self.detections._events),
             ("xdr", "Email XDR", self.email._collect_xdr),
+            ("firewall", "Firewall Detection", self.firewall_detections._collect),
             ("inbound", "Inbound Mail", self.email._collect_inbound),
             ("outbound", "Outbound Mail", self.transfers._collect_outbound),
             ("dlp", "DLP", self.transfers._collect_dlp),
@@ -376,7 +379,7 @@ class IndexService:
         return final
 
     def _event_rows_for_source_file(self, source: str, day: date, source_file: str, progress: Callable[[str], None]) -> list[dict[str, str]]:
-        kinds = {"detections": {"detections", "xdr"}, "emails": {"inbound"}, "mailscreen": {"outbound"}, "dlp": {"dlp"}}.get(source, set())
+        kinds = {"detections": {"detections", "xdr", "firewall"}, "emails": {"inbound"}, "mailscreen": {"outbound"}, "dlp": {"dlp"}}.get(source, set())
         if not kinds:
             return []
         resolved = str(source_file)

@@ -104,7 +104,7 @@ class ThemePresetService:
         temporary.write_text(json.dumps(presets, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         os.replace(temporary, self.path)
 class SchedulerService:
-    TARGETS = {"detections", "inbound", "dlp", "outbound", "endpoints", "organizations", "users"}
+    TARGETS = {"detections", "xdr", "firewall", "inbound", "dlp", "outbound", "endpoints", "organizations", "users"}
 
     def __init__(self, root: Path, refresh_service, index_service=None):
         self.path = root / "runtime/scheduler.json"
@@ -188,7 +188,7 @@ class SchedulerService:
 
     def _refresh_target(self, target: str, start: date, today: date):
         progress = lambda message: self._update_progress("collecting", target, message)
-        if target == "detections":
+        if target in {"detections", "xdr", "firewall"}:
             return self.refresh.refresh_detections(start, today, progress)
         if target == "inbound":
             return self.refresh.refresh_inbound(start, today, progress)

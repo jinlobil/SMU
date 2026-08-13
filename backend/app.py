@@ -25,6 +25,8 @@ from backend.services.timeline import TimelineService
 from backend.services.sensitive import SensitiveService
 from backend.services.dashboard import DashboardService
 from backend.services.firewall import FirewallService
+from backend.services.firewall_detections import FirewallDetectionService
+from backend.services.event_list_index import EventListIndex
 from backend.services.easy_query import EasyQueryService
 from backend.services.layout import LayoutService
 from backend.services.settings import DEFAULT_THEME, SchedulerService, ThemePresetService, ThemeService
@@ -57,6 +59,8 @@ timeline_service = TimelineService(PROJECT_ROOT)
 sensitive_service = SensitiveService(PROJECT_ROOT)
 dashboard_service = DashboardService(PROJECT_ROOT)
 firewall_service = FirewallService(PROJECT_ROOT)
+firewall_detection_service = FirewallDetectionService(PROJECT_ROOT)
+event_list_index = EventListIndex(PROJECT_ROOT)
 easy_query_service = EasyQueryService(PROJECT_ROOT)
 layout_service = LayoutService(PROJECT_ROOT)
 theme_service = ThemeService(PROJECT_ROOT)
@@ -355,7 +359,8 @@ def config_status() -> dict:
         path = PROJECT_ROOT / relative
         stat = path.stat() if path.exists() else None
         indexes[name] = {"exists": path.exists(), "bytes": stat.st_size if stat else 0, "latest": stat.st_mtime if stat else None}
-    return {"success": True, "data": {"sources": sources, "indexes": indexes, "indexDatabases": index_maintenance_service.databases(), "logs": str(PROJECT_ROOT / "runtime/logs")}}
+    event_kinds = event_list_index.kind_status(["detections", "xdr", "firewall", "inbound", "outbound", "dlp"])
+    return {"success": True, "data": {"sources": sources, "indexes": indexes, "eventKinds": event_kinds, "indexDatabases": index_maintenance_service.databases(), "logs": str(PROJECT_ROOT / "runtime/logs")}}
 
 
 @app.get("/api/config/scheduler")
@@ -547,7 +552,7 @@ def download_report(filename: str):
 def export_config_data(kind: str, start: date, end: date):
     if start > end:
         return error_response(str(uuid.uuid4()), "INVALID_EXPORT_RANGE", "start date must not be after end date", 400)
-    collectors = {"detections": detection_service._events, "xdr": email_security_service._collect_xdr, "inbound": email_security_service._collect_inbound, "outbound": transfer_service._collect_outbound, "dlp": transfer_service._collect_dlp}
+    collectors = {"detections": detection_service._events, "xdr": email_security_service._collect_xdr, "firewall": firewall_detection_service._collect, "inbound": email_security_service._collect_inbound, "outbound": transfer_service._collect_outbound, "dlp": transfer_service._collect_dlp}
     collector = collectors.get(kind)
     if collector is None:
         return error_response(str(uuid.uuid4()), "INVALID_EXPORT", "Unknown export type", 400)
@@ -747,6 +752,27 @@ def get_email_security(kind: str, record_id: str, start: date, end: date) -> dic
     data = email_security_service.get_record(kind, record_id, start, end)
     if data is None:
         request_id = str(uuid.uuid4()); return error_response(request_id, "EMAIL_SECURITY_RECORD_NOT_FOUND", "Record not found", 404)
+    return {"success": True, "data": data}
+
+
+@app.get("/api/firewall-detections")
+def list_firewall_detections(start: date, end: date, conditions: str = "[]", page: int = Query(default=1, ge=1), page_size: int = Query(default=50, alias="pageSize", ge=10, le=200), sort: str = "time", direction: str = "desc") -> dict:
+    try:
+        parsed = json.loads(conditions)
+        if not isinstance(parsed, list):
+            raise ValueError("conditions must be a list")
+        data = firewall_detection_service.list_records(start, end, parsed, page, page_size, sort, direction)
+    except (ValueError, json.JSONDecodeError) as exc:
+        request_id = str(uuid.uuid4())
+        return error_response(request_id, "INVALID_FIREWALL_DETECTION_QUERY", str(exc), 400)
+    return {"success": True, "data": data}
+
+
+@app.get("/api/firewall-detections/{record_id}")
+def get_firewall_detection(record_id: str, start: date, end: date) -> dict:
+    data = firewall_detection_service.get_record(record_id, start, end)
+    if data is None:
+        return error_response(str(uuid.uuid4()), "FIREWALL_DETECTION_NOT_FOUND", "Firewall detection not found", 404)
     return {"success": True, "data": data}
 
 
