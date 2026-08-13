@@ -385,3 +385,12 @@ def test_config_general_and_data_management_cards_are_split() -> None:
     assert 'route: "/config/ui"' in app
     assert "UI Management" in ui_page
     assert '<h1>{section==="data"?"Data Management":"Config"}</h1>' in page
+
+
+def test_data_management_distinguishes_raw_cache_and_logical_indexes():
+    page = (ROOT / "frontend/src/pages/ConfigPage.tsx").read_text(encoding="utf-8")
+    assert "Sophos Detection Raw는 1회만 수집하며" not in page
+    assert 'detections:"Sophos Detection Raw Cache"' in page
+    assert 'detections:"Detection Event Index"' in page
+    assert 'xdr:"Email XDR Event Index"' in page
+    assert 'firewall:"Firewall Event Index"' in page
