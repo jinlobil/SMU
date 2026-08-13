@@ -53,7 +53,7 @@ def handler_for(agent):
   def log_message(self,*_):pass
  return H
 def main():
- p=argparse.ArgumentParser();p.add_argument("--root",type=Path,required=True);p.add_argument("--port",type=int,default=8770);a=p.parse_args();configure_agent_logging(a.root/"runtime/logs/learner.log",60);lock=acquire_singleton(a.root/"runtime/learner/learner.lock");
+ p=argparse.ArgumentParser();p.add_argument("--root",type=Path,required=True);p.add_argument("--port",type=int,default=8770);a=p.parse_args();configure_agent_logging(a.root/"runtime/logs/learner.log", retention_days=60);lock=acquire_singleton(a.root/"runtime/learner/learner.lock");
  if lock is None:return 0
  agent=LearnerAgent(a.root);signal.signal(signal.SIGTERM,lambda *_:agent.stop.set());signal.signal(signal.SIGINT,lambda *_:agent.stop.set());threading.Thread(target=agent.heartbeat_loop,daemon=True).start();threading.Thread(target=agent.worker_loop,daemon=True).start();server=ThreadingHTTPServer(("127.0.0.1",a.port),handler_for(agent));server.timeout=1
  while not agent.stop.is_set():server.handle_request()

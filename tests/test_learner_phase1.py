@@ -49,3 +49,9 @@ def test_fastapi_and_frontend_expose_learner_contract():
     app=Path("backend/app.py").read_text(encoding="utf-8");ui=Path("frontend/src/pages/MachineLearningPage.tsx").read_text(encoding="utf-8")
     for route in ("/api/learner/jobs","/api/learner/findings","/api/learner/history"): assert route in app
     for label in ("새로운 행동","활동 증가","비슷한 이벤트","왜 표시됐나요?"): assert label in ui
+
+
+def test_learner_main_uses_keyword_only_logging_retention():
+    source=Path("system_monitor/learner.py").read_text(encoding="utf-8")
+    assert 'configure_agent_logging(a.root/"runtime/logs/learner.log", retention_days=60)' in source
+    assert 'configure_agent_logging(a.root/"runtime/logs/learner.log",60)' not in source
