@@ -29,6 +29,15 @@ CREATE INDEX IF NOT EXISTS idx_finding_source_time ON learner_findings(source,cr
   return {"items":[self.decode(row) for row in rows],"total":total}
  def finding_rows(self,source="",finding_type="",start="",end="",limit=200):
   return self.findings(source,finding_type,start,end,limit,0,False)["items"]
+ def summary(self,start="",end=""):
+  where=" WHERE 1=1";params=[]
+  for clause,value in (("created_at>=?",start),("created_at<?",end)):
+   if value:where+=" AND "+clause;params.append(value)
+  with self.connect() as d:
+   row=d.execute("SELECT COUNT(*) total, SUM(CASE WHEN gate_visible=1 THEN 1 ELSE 0 END) review, SUM(CASE WHEN finding_type='NEW_BEHAVIOR' THEN 1 ELSE 0 END) new_behavior, SUM(CASE WHEN finding_type='FREQUENCY_SPIKE' THEN 1 ELSE 0 END) frequency_spike FROM learner_findings"+where,params).fetchone()
+   daily=d.execute("SELECT substr(created_at,1,10) day, COUNT(*) count FROM learner_findings"+where+" GROUP BY day ORDER BY day DESC LIMIT 14",params).fetchall()
+   source=d.execute("SELECT source, COUNT(*) count FROM learner_findings"+where+" GROUP BY source ORDER BY count DESC",params).fetchall()
+  return {"review":row["review"] or 0,"total":row["total"] or 0,"newBehavior":row["new_behavior"] or 0,"frequencySpike":row["frequency_spike"] or 0,"daily":[dict(item) for item in reversed(daily)],"sources":[dict(item) for item in source]}
  def finding(self,fid):
   with self.connect() as d:r=d.execute("SELECT * FROM learner_findings WHERE finding_id=?",(fid,)).fetchone()
   return self.decode(r) if r else None

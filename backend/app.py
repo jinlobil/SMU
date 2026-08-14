@@ -729,6 +729,10 @@ def learner_finding(finding_id: str) -> dict:
     data=LearnerStore(PROJECT_ROOT).finding(finding_id)
     return {"success":True,"data":data} if data else error_response(str(uuid.uuid4()),"LEARNER_FINDING_NOT_FOUND","Finding not found",404)
 
+@app.get("/api/learner/summary")
+def learner_summary(start: str="", end: str="") -> dict:
+    return {"success":True,"data":LearnerStore(PROJECT_ROOT).summary(start,(end+"T99") if end else "")}
+
 @app.get("/api/learner/history")
 def learner_history(source: str, scopeType: str, scopeKey: str, behaviorType: str, behaviorKey: str) -> dict:
     return {"success":True,"data":LearnerService(PROJECT_ROOT).history(source,scopeType,scopeKey,behaviorType,behaviorKey)}

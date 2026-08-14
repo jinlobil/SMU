@@ -203,3 +203,32 @@ def test_machine_learning_reuses_existing_smu_ui_patterns():
     assert 'view:filters.view' in ui
     assert "catch(error=>{if(!isAbortError(error))" in ui
     assert "if(!controller.signal.aborted)setLoading(false)" in ui
+
+def test_learner_summary_aggregates_gate_type_day_and_source(tmp_path):
+    from backend.services.learner.store import LearnerStore
+    store = LearnerStore(tmp_path)
+    with store.connect() as db:
+        rows = [
+            ("one", "detections", "NEW_BEHAVIOR", 1, "2026-08-12T10:00:00"),
+            ("two", "inbound", "FREQUENCY_SPIKE", 0, "2026-08-13T10:00:00"),
+            ("three", "inbound", "NEW_BEHAVIOR", 1, "2026-08-13T11:00:00"),
+        ]
+        db.executemany("INSERT INTO learner_findings(finding_id,source,finding_type,gate_visible,created_at) VALUES(?,?,?,?,?)", rows)
+    summary = store.summary()
+    assert summary["review"] == 2
+    assert summary["total"] == 3
+    assert summary["newBehavior"] == 2
+    assert summary["frequencySpike"] == 1
+    assert summary["daily"] == [{"day": "2026-08-12", "count": 1}, {"day": "2026-08-13", "count": 2}]
+    assert summary["sources"][0] == {"source": "inbound", "count": 2}
+
+
+def test_machine_learning_uses_seven_three_overview_and_dashboard_charts():
+    ui = Path("frontend/src/pages/MachineLearningPage.tsx").read_text(encoding="utf-8")
+    css = Path("frontend/src/styles.css").read_text(encoding="utf-8")
+    assert 'className="learner-overview-workspace"' in ui
+    assert 'className="dash-card threat-card learner-trend"' in ui
+    assert 'className="dash-card mix-card learner-source-mix"' in ui
+    assert 'className="learner-control-panel"' in ui
+    assert "grid-template-columns:minmax(0,7fr) minmax(320px,3fr)" in css
+    assert "/api/learner/summary?" in ui
