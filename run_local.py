@@ -1,25 +1,42 @@
 import datetime as dt
+import logging
 import shutil
+import socket
 import subprocess
 import sys
 import threading
 import time
 import urllib.request
-import webbrowser
 from pathlib import Path
+
+from system_monitor.logging_utils import daily_file_handler
 
 
 ROOT = Path(__file__).resolve().parent
 LOG_DIR = ROOT / "runtime" / "logs"
 LAUNCH_LOG = LOG_DIR / "launcher.log"
+launcher_log = logging.getLogger("smu.launcher")
+launcher_log.setLevel(logging.INFO)
+launcher_log.propagate = False
+
+
+def configure_launcher_log() -> None:
+    expected = str(LAUNCH_LOG.resolve())
+    current = next((handler for handler in launcher_log.handlers if getattr(handler, "baseFilename", None) == expected), None)
+    if current is not None:
+        return
+    for handler in launcher_log.handlers:
+        handler.close()
+    launcher_log.handlers.clear()
+    launcher_log.addHandler(daily_file_handler(LAUNCH_LOG, retention_days=30))
 
 
 def write_line(message: str) -> None:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
+    configure_launcher_log()
     line = f"{dt.datetime.now().isoformat(timespec='seconds')} {message}"
     print(line, flush=True)
-    with LAUNCH_LOG.open("a", encoding="utf-8") as stream:
-        stream.write(line + "\n")
+    launcher_log.info(message)
 
 
 def relay_output(name: str, process: subprocess.Popen[str]) -> None:
@@ -60,20 +77,39 @@ def wait_for_service(url: str, process: subprocess.Popen[str], name: str, attemp
     return False
 
 
-def open_browser_when_ready(frontend: subprocess.Popen[str]) -> None:
-    """Open the UI only after both the backend and Vite are accepting requests."""
-    url = "http://127.0.0.1:5173"
-    if wait_for_service(url, frontend, "frontend"):
-        webbrowser.open(url)
-    else:
-        write_line(f"WARNING Frontend did not become ready within 30 seconds: {url}")
-
-
 def hold_terminal() -> None:
     message = f"오류 내용이 저장되었습니다: {LAUNCH_LOG}"
     write_line(message)
     if sys.stdin.isatty():
         input("터미널을 닫지 않았습니다. 오류를 복사한 뒤 Enter를 누르면 종료합니다... ")
+
+
+def ensure_port_available(port: int, service: str) -> None:
+    """Fail before spawning when an older SMU process still owns the port."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.settimeout(0.5)
+        if probe.connect_ex(("127.0.0.1", port)) == 0:
+            raise RuntimeError(
+                f"{service} port {port} is already in use. Close the previous SMU window/process and start again."
+            )
+
+
+def ensure_frontend_dependencies(npm_command: str) -> None:
+    """Repair stale node_modules left behind after package.json changes."""
+    frontend = ROOT / "frontend"
+    check = subprocess.run(
+        [npm_command, "list", "react-router-dom", "--depth=0"],
+        cwd=frontend,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    if check.returncode == 0:
+        return
+    write_line("Frontend dependencies changed; running npm install...")
+    install = subprocess.run([npm_command, "install"], cwd=frontend, check=False)
+    if install.returncode != 0:
+        raise RuntimeError("Frontend dependency installation failed. See the npm output above and runtime/logs/setup.log.")
 
 
 def main() -> int:
@@ -83,9 +119,13 @@ def main() -> int:
         if npm_command is None:
             raise RuntimeError("npm을 찾을 수 없습니다. Node.js를 설치해주세요.")
 
+        ensure_frontend_dependencies(npm_command)
+        ensure_port_available(8765, "Backend")
+        ensure_port_available(5173, "Frontend")
+
         backend = start_process(
             "backend",
-            [sys.executable, "-m", "uvicorn", "backend.app:app", "--host", "127.0.0.1", "--port", "8765"],
+            [sys.executable, "-m", "uvicorn", "backend.app:app", "--host", "127.0.0.1", "--port", "8765", "--no-access-log"],
             ROOT,
         )
         processes.append(("backend", backend))
@@ -98,8 +138,7 @@ def main() -> int:
         processes.append(("frontend", frontend))
         write_line(f"Launcher log: {LAUNCH_LOG}")
         write_line(f"Backend error log: {LOG_DIR / 'web_errors.log'}")
-        write_line("Starting SMU local web. The browser will open when it is ready.")
-        threading.Thread(target=open_browser_when_ready, args=(frontend,), daemon=True).start()
+        write_line("Starting SMU local web. Open http://127.0.0.1:5173 in a browser when needed.")
 
         while True:
             for name, process in processes:
