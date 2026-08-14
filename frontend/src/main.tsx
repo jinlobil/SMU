@@ -14,8 +14,9 @@ function reportClientError(payload: Record<string, unknown>) {
 window.addEventListener("error", (event) => reportClientError({
   message: event.message, source: event.filename, line: event.lineno, column: event.colno, stack: event.error?.stack,
 }));
-window.addEventListener("unhandledrejection", (event) => reportClientError({
-  message: String(event.reason), stack: event.reason?.stack,
-}));
+window.addEventListener("unhandledrejection", (event) => {
+  if (event.reason instanceof DOMException && event.reason.name === "AbortError") { event.preventDefault(); return; }
+  reportClientError({ message: String(event.reason), stack: event.reason?.stack });
+});
 
 createRoot(document.getElementById("root")!).render(<React.StrictMode><BrowserRouter><App /></BrowserRouter></React.StrictMode>);

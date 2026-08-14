@@ -154,8 +154,8 @@ def test_frontend_disables_analysis_buttons_and_exposes_graceful_cancel():
     ui=Path("frontend/src/pages/MachineLearningPage.tsx").read_text(encoding="utf-8")
     assert "disabled={busy}" in ui
     assert 'global-job-progress scheduler-progress indexing learner-job-progress' in ui
-    assert 'className="panel"' in ui
-    assert 'className="refresh-button"' in ui and 'className="danger-action"' in ui
+    assert 'className="config-card"' in ui
+    assert 'className="primary-action"' in ui and 'className="danger-action"' in ui
     assert "분석 중단" in ui and "/cancel" in ui
     for field in ("sourceProcessed","sourceTotal","totalProcessed","totalEvents","progressPercent"):assert field in ui
 
@@ -191,11 +191,15 @@ def test_machine_learning_uses_shared_action_tokens_without_learner_colors():
 
 def test_machine_learning_reuses_existing_smu_ui_patterns():
     ui=Path("frontend/src/pages/MachineLearningPage.tsx").read_text(encoding="utf-8")
-    for shared in ('className="source-filters"','<DateRange','className="condition-list"','className="condition-row"','className="refresh-button"','className="pagination"','className="config-card learner-finding"','className="detail-modal"','className="timeline-empty"'):
+    for shared in ('className="source-filters"','<DateRange','className="condition-list"','className="filter-action-row"','className="primary-action"','className="pagination"','className="config-card learner-finding"','className="detail-modal"','className="timeline-empty"'):
         assert shared in ui
     for forbidden in ('learner-date-input','ml-date-picker','learner-filter-button','learner-dropdown','learner-actions','learner-pagination'):
         assert forbidden not in ui
     assert 'busy&&job&&<LearnerJobStatus' in ui
+    assert 'className="config-card"' in ui
+    assert 'className="primary-action"' in ui
     detection=Path("frontend/src/pages/DetectionPage.tsx").read_text(encoding="utf-8")
     assert '<DateRange' in detection and 'from "../components/DateRange"' in detection
     assert 'view:filters.view' in ui
+    assert "catch(error=>{if(!isAbortError(error))" in ui
+    assert "if(!controller.signal.aborted)setLoading(false)" in ui
