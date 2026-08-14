@@ -371,6 +371,7 @@ class IndexService:
             db.execute("DROP TABLE IF EXISTS event_list_rows")
             db.execute(f"ALTER TABLE {staging} RENAME TO event_list_rows")
             db.execute("CREATE INDEX idx_web_event_list_kind_time ON event_list_rows(kind, event_time DESC)")
+            db.execute("CREATE INDEX idx_web_event_list_learner_stream ON event_list_rows(kind, event_time ASC, record_id ASC)")
             db.execute("CREATE INDEX idx_web_event_list_source_file ON event_list_rows(source_file)")
             db.execute("CREATE TABLE IF NOT EXISTS index_metadata (key TEXT PRIMARY KEY, value TEXT)")
             db.execute("INSERT OR REPLACE INTO index_metadata VALUES ('mode','display-list-raw-detail')")
@@ -394,6 +395,8 @@ class IndexService:
         if not exists:
             return self._build_events_index([], progress)
         self._migrate_event_list_schema(final, progress)
+        with self._connect(final) as db:
+            db.execute("CREATE INDEX IF NOT EXISTS idx_web_event_list_learner_stream ON event_list_rows(kind, event_time ASC, record_id ASC)")
         return final
 
     @staticmethod

@@ -1,8 +1,8 @@
 import hashlib,json,sqlite3
 from pathlib import Path
-SCHEMA_VERSION="2"
+SCHEMA_VERSION="3"
 class LearnerStore:
- def __init__(self,root:Path): self.path=root/"cache/index/learner_cache.db";self.initialize()
+ def __init__(self,root:Path,path:Path|None=None): self.path=path or root/"cache/index/learner_cache.db";self.initialize()
  def connect(self):
   self.path.parent.mkdir(parents=True,exist_ok=True);db=sqlite3.connect(self.path,timeout=30);db.row_factory=sqlite3.Row;db.execute("PRAGMA busy_timeout=30000");db.execute("PRAGMA journal_mode=WAL");return db
  def initialize(self):
@@ -13,11 +13,16 @@ CREATE TABLE IF NOT EXISTS learner_findings(finding_id TEXT PRIMARY KEY,source T
 CREATE TABLE IF NOT EXISTS processed_behaviors(source TEXT,event_id TEXT,event_time TEXT,scope_type TEXT,scope_key TEXT,behavior_type TEXT,behavior_key TEXT,PRIMARY KEY(source,event_id,scope_type,scope_key,behavior_type,behavior_key));
 CREATE TABLE IF NOT EXISTS learner_processed_events(source TEXT,event_id TEXT,event_time TEXT,row_hash TEXT,PRIMARY KEY(source,event_id));
 CREATE TABLE IF NOT EXISTS learner_watermarks(source TEXT PRIMARY KEY,last_event_time TEXT,last_event_id TEXT,updated_at TEXT);
+CREATE TABLE IF NOT EXISTS learner_analysis_state(source TEXT,scope_type TEXT,scope_key TEXT,behavior_type TEXT,behavior_key TEXT,total_count INTEGER,first_seen TEXT,last_seen TEXT,daily_json TEXT,PRIMARY KEY(source,scope_type,scope_key,behavior_type,behavior_key));
+CREATE TABLE IF NOT EXISTS learner_group_state(source TEXT,event_day TEXT,behavior_type TEXT,behavior_key TEXT,event_count INTEGER,users_json TEXT,devices_json TEXT,departments_json TEXT,related_json TEXT,representative_json TEXT,PRIMARY KEY(source,event_day,behavior_type,behavior_key));
+CREATE TABLE IF NOT EXISTS learner_finding_signatures(source TEXT,behavior_type TEXT,behavior_key TEXT,finding_id TEXT,PRIMARY KEY(source,behavior_type,behavior_key,finding_id));
+CREATE TABLE IF NOT EXISTS learner_source_state(source TEXT PRIMARY KEY,event_count INTEGER,last_event_time TEXT,last_event_id TEXT,updated_at TEXT,engine_version TEXT);
 CREATE INDEX IF NOT EXISTS idx_finding_source_time ON learner_findings(source,created_at DESC);CREATE INDEX IF NOT EXISTS idx_finding_type_time ON learner_findings(finding_type,created_at DESC);CREATE INDEX IF NOT EXISTS idx_behavior_scope ON behavior_stats(scope_type,scope_key,source);CREATE INDEX IF NOT EXISTS idx_processed_signature ON processed_behaviors(source,scope_type,scope_key,behavior_type,behavior_key,event_time);''')
    columns={row[1] for row in d.execute("PRAGMA table_info(learner_findings)")}
    if "gate_visible" not in columns:d.execute("ALTER TABLE learner_findings ADD COLUMN gate_visible INTEGER DEFAULT 0")
    if "gate_json" not in columns:d.execute("ALTER TABLE learner_findings ADD COLUMN gate_json TEXT")
    d.execute("CREATE INDEX IF NOT EXISTS idx_finding_gate_time ON learner_findings(gate_visible,created_at DESC)")
+   d.execute("CREATE INDEX IF NOT EXISTS idx_learner_signature_lookup ON learner_finding_signatures(source,behavior_type,behavior_key)")
  def findings(self,source="",finding_type="",start="",end="",limit=30,offset=0,visible_only=True):
   q="SELECT * FROM learner_findings WHERE 1=1";p=[]
   if visible_only:q+=" AND gate_visible=1"

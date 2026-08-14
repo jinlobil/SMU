@@ -17,6 +17,50 @@ class LearnerService:
   if after:q+=" AND (event_time>? OR (event_time=? AND record_id>?))";p += [after[0],after[0],after[1]]
   q+=" ORDER BY event_time,record_id";rows=db.execute(q,p).fetchall();db.close();return rows
  def run(self,mode="incremental",sources=None,target_start="",target_end="",progress=lambda x:None,cancelled=lambda:False):
+  """Production Engine v2: stream into a hidden staging DB, then activate."""
+  from .engine_v2 import StreamingLearnerEngine
+  sources=[s for s in (sources or SOURCES) if s in SOURCES];run_id=str(uuid.uuid4());now=datetime.now(timezone.utc).isoformat()
+  staging=self.root/"runtime/learner"/f"{run_id}.staging.db";staging.parent.mkdir(parents=True,exist_ok=True)
+  for suffix in ("","-wal","-shm"):Path(str(staging)+suffix).unlink(missing_ok=True)
+  try:
+   if mode!="full" and self.store.path.exists():
+    with self.store.connect() as source,sqlite3.connect(staging) as target:source.backup(target)
+   stage=LearnerStore(self.root,staging);engine=StreamingLearnerEngine(self.root,stage)
+   progress({"phase":"PREPARE","message":"증분 상태 검증","currentSource":None,"sourceProcessed":0,"sourceTotal":0,"totalProcessed":0,"totalEvents":0,"progressPercent":0.0})
+   plans={}
+   for source in sources:
+    if mode=="full":plans[source]=(True,None)
+    else:plans[source]=engine.incremental_plan(source,cancelled)
+   totals={source:engine.count(source,None if plans[source][0] else plans[source][1]) for source in sources};total_events=sum(totals.values());processed=0
+   with stage.connect() as db:db.execute("INSERT OR REPLACE INTO learner_runs VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",(run_id,mode,",".join(sources),None,None,target_start or None,target_end or None,"running",now,None,0,None,SCHEMA_VERSION))
+   progress({"phase":"PREPARE","message":"분석 준비 완료","currentSource":None,"sourceProcessed":0,"sourceTotal":0,"totalProcessed":0,"totalEvents":total_events,"progressPercent":0.0})
+   for source in sources:
+    if cancelled():raise LearnerCancelled("분석 중단 요청")
+    rebuild,after=plans[source]
+    if rebuild:
+     with stage.connect() as db:
+      for table in ("behavior_stats","learner_findings","processed_behaviors","learner_processed_events","learner_watermarks","learner_analysis_state","learner_group_state","learner_finding_signatures","learner_source_state"):
+       column="finding_id" if table=="learner_finding_signatures" else "source"
+       if column=="source":db.execute(f"DELETE FROM {table} WHERE source=?",(source,))
+       else:db.execute("DELETE FROM learner_finding_signatures WHERE source=?",(source,))
+    def report(value,source=source):
+     nonlocal processed
+     done=int(value.get("sourceProcessed",0));overall=processed+done
+     progress({**value,"currentSource":source,"totalProcessed":overall,"totalEvents":total_events,"progressPercent":round(overall*100/total_events,1) if total_events else 100.0})
+    done=engine.source(source,after,target_start,target_end,report,cancelled,rebuild);processed+=done
+   progress({"phase":"ACTIVATE","message":"분석 결과 활성화","currentSource":None,"sourceProcessed":0,"sourceTotal":0,"totalProcessed":processed,"totalEvents":total_events,"progressPercent":100.0})
+   with stage.connect() as db:
+    bounds=db.execute("SELECT MIN(first_seen),MAX(last_seen) FROM learner_analysis_state").fetchone();db.execute("UPDATE learner_runs SET history_start=?,history_end=?,status='completed',finished_at=?,processed_events=? WHERE run_id=?",(bounds[0],bounds[1],datetime.now(timezone.utc).isoformat(),processed,run_id))
+   if cancelled():raise LearnerCancelled("분석 중단 요청")
+   with stage.connect() as source,self.store.connect() as target:source.backup(target)
+   with self.store.connect() as db:db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+   with self.store.connect() as db:finding_count=db.execute("SELECT COUNT(*) FROM learner_findings").fetchone()[0]
+   return {"runId":run_id,"processedEvents":processed,"findings":finding_count,"engineVersion":"2","sqlCounts":dict(engine.sql_counts)}
+  except LearnerCancelled:
+   raise
+  finally:
+   for suffix in ("","-wal","-shm"):Path(str(staging)+suffix).unlink(missing_ok=True)
+ def run_v1(self,mode="incremental",sources=None,target_start="",target_end="",progress=lambda x:None,cancelled=lambda:False):
   sources=[s for s in (sources or SOURCES) if s in SOURCES];run_id=str(uuid.uuid4());now=datetime.now(timezone.utc).isoformat();
   with self.store.connect() as d:
    if mode=="full": d.execute("DELETE FROM behavior_stats");d.execute("DELETE FROM learner_findings");d.execute("DELETE FROM processed_behaviors");d.execute("DELETE FROM learner_watermarks");d.execute("DELETE FROM learner_processed_events")

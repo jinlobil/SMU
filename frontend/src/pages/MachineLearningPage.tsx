@@ -15,7 +15,7 @@ const isAbortError=(error:unknown)=>error instanceof DOMException?error.name==='
 const LearnerJobStatus=memo(function LearnerJobStatus({job,cancelling,onCancel}:{job:LearnerJob;cancelling:boolean;onCancel:()=>void}){
  const sourcePercent=percent(job.sourceProcessed,job.sourceTotal),totalPercent=percent(job.totalProcessed,job.totalEvents);
  return <div className="global-job-progress scheduler-progress indexing learner-job-progress">
-  <div><b>{sourceLabel(job.currentSource)} 분석 중</b><span>{(job.sourceProcessed||0).toLocaleString()} / {(job.sourceTotal||0).toLocaleString()} ({sourcePercent.toFixed(1)}%)</span></div>
+  <div><b>{job.message||`${sourceLabel(job.currentSource)} 분석 중`}</b><span>{(job.sourceProcessed||0).toLocaleString()} / {(job.sourceTotal||0).toLocaleString()} ({sourcePercent.toFixed(1)}%)</span></div>
   <div><b>전체 진행률</b><span>{(job.totalProcessed||0).toLocaleString()} / {(job.totalEvents||0).toLocaleString()} ({totalPercent.toFixed(1)}%)</span></div><button className="danger-action" disabled={cancelling||job.status==='cancelling'} onClick={onCancel}>{cancelling||job.status==='cancelling'?'분석 중단 중...':'분석 중단'}</button><i/>
  </div>;
 });
