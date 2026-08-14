@@ -1,0 +1,85 @@
+import { useEffect, useState } from "react";
+
+type Kind = "departments" | "users";
+type DepartmentRule = { id:string; matchType:string; matchValue:string; department:string; description:string; enabled:boolean; updatedAt:string };
+type UserRule = { id:string; principal:string; displayName:string; description:string; enabled:boolean; updatedAt:string };
+type Rule = DepartmentRule | UserRule;
+
+const typeLabels:Record<string,string> = { principal:"전체 사용자 식별값", hostname:"호스트명", email:"Email", userName:"사용자명", auto:"자동/기존" };
+const emptyDepartment = ():DepartmentRule => ({ id:"", matchType:"principal", matchValue:"", department:"", description:"", enabled:true, updatedAt:"" });
+const emptyUser = ():UserRule => ({ id:"", principal:"", displayName:"", description:"", enabled:true, updatedAt:"" });
+
+export function ExceptionManagementPage() {
+  const [kind,setKind] = useState<Kind>("departments");
+  const [items,setItems] = useState<Rule[]>([]);
+  const [query,setQuery] = useState("");
+  const [modal,setModal] = useState(false);
+  const [editing,setEditing] = useState<Rule|null>(null);
+  const [form,setForm] = useState<Rule>(emptyDepartment());
+  const [message,setMessage] = useState("");
+  const [loading,setLoading] = useState(true);
+  const [saving,setSaving] = useState(false);
+
+  const load = async (target:Kind=kind, clearMessage=true) => {
+    setLoading(true);
+    try {
+      const response = await fetch(`/api/config/exceptions/${target}`);
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload?.error?.message || "예외 목록 조회 실패");
+      setItems(payload.data.items || []);
+      if (clearMessage) setMessage("");
+    } catch (error) { setMessage(String(error)); }
+    finally { setLoading(false); }
+  };
+  useEffect(() => { load(kind); }, [kind]);
+
+  const changeKind = (target:Kind) => { setKind(target); setQuery(""); setModal(false); };
+  const openAdd = () => { setEditing(null); setForm(kind === "departments" ? emptyDepartment() : emptyUser()); setMessage(""); setModal(true); };
+  const openEdit = (item:Rule) => { setEditing(item); setForm({...item}); setMessage(""); setModal(true); };
+  const update = (field:string,value:string|boolean) => setForm({...form,[field]:value} as Rule);
+  const save = async () => {
+    setSaving(true); setMessage("");
+    try {
+      const url = editing ? `/api/config/exceptions/${kind}/${editing.id}` : `/api/config/exceptions/${kind}`;
+      const response = await fetch(url,{ method:editing ? "PUT" : "POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(form) });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload?.error?.message || "예외 저장 실패");
+      setModal(false); await load(kind,false);
+      setMessage("예외 규칙을 저장했습니다. 기존 인덱스 데이터는 General에서 갱신해주세요.");
+    } catch (error) { setMessage(String(error)); }
+    finally { setSaving(false); }
+  };
+  const remove = async (item:Rule) => {
+    const label = kind === "departments" ? (item as DepartmentRule).matchValue : (item as UserRule).principal;
+    if (!confirm(`${label} 예외 규칙을 삭제하시겠습니까?\n원본 Raw 데이터와 Cache는 삭제되지 않습니다.`)) return;
+    const response = await fetch(`/api/config/exceptions/${kind}/${item.id}`,{method:"DELETE"});
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) { setMessage(payload?.error?.message || "삭제 실패"); return; }
+    await load(kind,false); setMessage("예외 규칙을 삭제했습니다. 원본 Raw 데이터는 변경되지 않았습니다.");
+  };
+  const normalizedQuery = query.trim().replaceAll("/","\\").toLocaleLowerCase();
+  const filtered = items.filter(item => {
+    if (!normalizedQuery) return true;
+    const values = kind === "departments"
+      ? Object.values(item as DepartmentRule)
+      : Object.values(item as UserRule);
+    return values.some(value => String(value ?? "").replaceAll("/","\\").toLocaleLowerCase().includes(normalizedQuery));
+  });
+
+  return <>
+    <header className="topbar"><div><p className="breadcrumb">System / Config / Exception Management</p><h1>Exception Management</h1></div><button className="refresh-button" onClick={openAdd}>＋ 예외 추가</button></header>
+    <section className="panel exception-management">
+      <div className="detection-tools exception-heading"><div><h2>예외 규칙 관리</h2></div><div className="source-filters exception-tabs"><button className={kind === "departments" ? "active" : ""} onClick={() => changeKind("departments")}>부서 예외처리</button><button className={kind === "users" ? "active" : ""} onClick={() => changeKind("users")}>사용자 예외처리</button></div></div>
+      <div className="condition-list exception-condition-list"><div className="condition-row exception-filter-row"><input value={query} onChange={event => setQuery(event.target.value)} placeholder={kind === "departments" ? "식별값 또는 부서명 검색" : "전체 사용자 식별값 또는 표시 사용자명 검색"}/><span>{filtered.length.toLocaleString()}개 규칙</span></div></div>
+      {message && <div className="error-banner exception-message">{message}</div>}
+      <div className="table-wrap exception-table"><table><thead>{kind === "departments" ? <tr><th>매칭 유형</th><th>식별값</th><th>최종 부서</th><th>설명</th><th>수정일</th><th>작업</th></tr> : <tr><th>전체 사용자 식별값</th><th>표시 사용자명</th><th>설명</th><th>수정일</th><th>작업</th></tr>}</thead><tbody>
+        {loading ? <tr><td className="state-cell" colSpan={6}>예외 규칙을 불러오는 중입니다...</td></tr> : filtered.map(item => kind === "departments" ? (() => { const rule=item as DepartmentRule; return <tr key={rule.id}><td>{typeLabels[rule.matchType] || rule.matchType}</td><td className="entity-name">{rule.matchValue}</td><td className="dept-name">{rule.department}</td><td>{rule.description || "-"}</td><td>{new Date(rule.updatedAt).toLocaleString("ko-KR")}</td><td><button onClick={() => openEdit(rule)}>수정</button><button className="danger" onClick={() => remove(rule)}>삭제</button></td></tr>; })() : (() => { const rule=item as UserRule; return <tr key={rule.id}><td className="entity-name">{rule.principal}</td><td>{rule.displayName}</td><td>{rule.description || "-"}</td><td>{new Date(rule.updatedAt).toLocaleString("ko-KR")}</td><td><button onClick={() => openEdit(rule)}>수정</button><button className="danger" onClick={() => remove(rule)}>삭제</button></td></tr>; })())}
+        {!loading && !filtered.length && <tr><td className="state-cell" colSpan={6}>등록된 예외 규칙이 없습니다.</td></tr>}
+      </tbody></table></div>
+    </section>
+    {modal && <div className="modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) setModal(false); }}><section className="integration-modal exception-modal"><header><div><p>{editing ? "예외 규칙 수정" : "새 예외 규칙"}</p><h2>{kind === "departments" ? "부서 예외처리" : "사용자 예외처리"}</h2></div><button onClick={() => setModal(false)}>×</button></header><div className="integration-form exception-form">
+      {kind === "departments" ? <><label><span>매칭 유형</span><select value={(form as DepartmentRule).matchType} onChange={event => update("matchType",event.target.value)}>{Object.entries(typeLabels).map(([value,label]) => <option key={value} value={value}>{label}</option>)}</select></label><label><span>식별값</span><input value={(form as DepartmentRule).matchValue} onChange={event => update("matchValue",event.target.value)} placeholder="장비명, 전체 사용자 식별값 또는 이메일"/></label><label><span>최종 부서</span><input value={(form as DepartmentRule).department} onChange={event => update("department",event.target.value)} placeholder="적용할 부서명"/></label></> : <><label><span>전체 사용자 식별값</span><input value={(form as UserRule).principal} onChange={event => update("principal",event.target.value)} placeholder="PREFIX\account"/><small>계정명만 입력할 수 없습니다. Prefix를 포함한 전체 식별값을 입력하세요.</small></label><label><span>표시 사용자명</span><input value={(form as UserRule).displayName} onChange={event => update("displayName",event.target.value)} placeholder="화면에 표시할 사용자명"/></label></>}
+      <label><span>설명</span><input value={form.description} onChange={event => update("description",event.target.value)} placeholder="규칙 설명 (선택)"/></label><label className="integration-check"><input type="checkbox" checked={form.enabled} onChange={event => update("enabled",event.target.checked)}/><span>규칙 사용</span></label>
+    </div>{message && <div className="integration-modal-message">{message}</div>}<footer><button onClick={() => setModal(false)}>취소</button><button className="primary-action" disabled={saving} onClick={save}>{saving ? "저장 중..." : "저장"}</button></footer></section></div>}
+  </>;
+}
