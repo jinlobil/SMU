@@ -720,7 +720,7 @@ def cancel_learner_job(job_id: str):
 
 @app.get("/api/learner/findings")
 def learner_findings(source: str="", findingType: str="", start: str="", end: str="", view: str="review", page: int=Query(1,ge=1), pageSize: int=Query(30,ge=1,le=100)) -> dict:
-    result=LearnerStore(PROJECT_ROOT).findings(source,findingType,start,(end+"T99") if end else "",pageSize,(page-1)*pageSize,view != "all")
+    result=LearnerStore(PROJECT_ROOT).operational_findings(source,findingType,start,(end+"T99") if end else "",pageSize,(page-1)*pageSize,view != "all")
     total=result["total"]
     return {"success":True,"data":{"items":result["items"],"pagination":{"page":page,"pageSize":pageSize,"total":total,"totalPages":max(1,(total+pageSize-1)//pageSize)}}}
 

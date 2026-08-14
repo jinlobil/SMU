@@ -94,7 +94,11 @@ class LearnerService:
    if cancelled(): raise LearnerCancelled("분석 중단 요청")
    for (_,bt,bk),items in groups.items():
     if len(items)>=10:
-     b=items[0];self._finding(d,b,"SIMILAR_GROUP","비슷한 이벤트",f"동일한 {BEHAVIOR_LABELS.get(bt,bt)}이(가) {len(items):,}건 확인되었습니다.",[f"같은 분석일에 정규화된 행동 값이 {len(items):,}건 일치했습니다."],{"groupCount":len(items)},[x.event_id for x in items[:100]])
+     b=items[0]
+     users={x.person_key for x in items if x.person_key};devices={x.endpoint_key for x in items if x.endpoint_key};departments={x.department for x in items if x.department}
+     spread=len(users)>=2 or len(devices)>=2
+     diversity={"groupCount":len(items),"eventCount":len({x.event_id for x in items}),"distinctUsers":len(users),"distinctDevices":len(devices),"distinctDepartments":len(departments),"spread":spread,"entitySpreadCount":max(len(users),len(devices))}
+     self._finding(d,b,"SIMILAR_GROUP","비슷한 이벤트",f"동일한 {BEHAVIOR_LABELS.get(bt,bt)}이(가) {len(items):,}건 확인되었습니다.",[f"같은 분석일에 정규화된 행동 값이 {len(items):,}건 일치했습니다."],diversity,[x.event_id for x in items[:100]])
    # Explainable spike: at least 10 today and >=3x prior seven-day daily average.
    for (day,bt,bk),items in groups.items():
     if len(items)<10:continue

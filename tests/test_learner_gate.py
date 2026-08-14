@@ -62,8 +62,10 @@ def test_similar_group_promotes_new_behavior_without_changing_stats(tmp_path):
     rows=[("detections",f"e{i}",f"2026-01-01T00:{i:02d}:00",{"rule":"Rare Rule"}) for i in range(10)]
     _event_db(tmp_path,rows);service=LearnerService(tmp_path);service.run("full",["detections"])
     store=LearnerStore(tmp_path);review=store.findings(source="detections",visible_only=True)
-    new=next(item for item in review["items"] if item["finding_type"]=="NEW_BEHAVIOR")
-    assert new["gate"]["evidenceFamilies"]==[NOVELTY_RARITY,SPREAD]
+    assert review["total"]==0
+    similar=next(item for item in store.finding_rows(source="detections") if item["finding_type"]=="SIMILAR_GROUP")
+    assert similar["baseline"]["spread"] is False
+    assert similar["baseline"]["eventCount"]==10
     with store.connect() as db:
         stat=db.execute("SELECT count_all FROM behavior_stats WHERE source='detections' AND scope_type='global' AND behavior_type='detection_rule'").fetchone()
     assert stat[0]==10
@@ -76,7 +78,40 @@ def test_incremental_run_reapplies_gate_to_preserved_findings(tmp_path):
     service=LearnerService(tmp_path);service.run("full",["detections"]);store=LearnerStore(tmp_path)
     assert store.findings(source="detections",visible_only=True)["total"]==0
     with sqlite3.connect(tmp_path/"cache/index/events_index.db") as db:
-        db.executemany("INSERT INTO event_list_rows VALUES(?,?,?,?,?)",[("detections",f"next{i}",f"2026-01-02T00:{i:02d}:00",json.dumps({"rule":"R"}),"") for i in range(10)])
+        db.executemany("INSERT INTO event_list_rows VALUES(?,?,?,?,?)",[("detections",f"next{i}",f"2026-01-02T00:{i:02d}:00",json.dumps({"rule":"R","userId":f"user-{i}"}),"") for i in range(10)])
     service.run("incremental",["detections"])
     new=next(item for item in store.findings(source="detections",visible_only=True)["items"] if item["finding_type"]=="NEW_BEHAVIOR")
     assert new["gate"]["visible"] is True
+
+
+def test_frequency_and_entity_spread_are_independent_families():
+    frequency=evaluate(finding(kind="FREQUENCY_SPIKE",group=100))
+    assert frequency["evidenceFamilies"]==[FREQUENCY]
+    assert frequency["category"]=="ANALYSIS_ONLY"
+    spread_finding=finding(kind="SIMILAR_GROUP",group=20)
+    spread_finding["baseline_json"]=json.dumps({"groupCount":20,"eventCount":20,"distinctUsers":5,"distinctDevices":1,"spread":True,"entitySpreadCount":5})
+    spread=evaluate(spread_finding)
+    assert spread["evidenceFamilies"]==[SPREAD]
+    assert spread["evidence"]["distinctUsers"]==5
+    combined=evaluate(spread_finding,{("destination","example.test")},set())
+    assert combined["evidenceFamilies"]==[FREQUENCY,SPREAD]
+    assert combined["category"]=="REVIEW_REQUIRED"
+
+
+def test_wehago_style_same_entity_repetition_is_frequency_only():
+    runtime=finding(kind="SIMILAR_GROUP",behavior="process",value="WehagoUpdater.exe",group=10)
+    runtime["baseline_json"]=json.dumps({"groupCount":10,"eventCount":10,"distinctUsers":1,"distinctDevices":1,"distinctDepartments":1,"spread":False,"entitySpreadCount":1})
+    gate=evaluate(runtime,{("process","wehagoupdater.exe")},set())
+    assert gate["evidenceFamilies"]==[FREQUENCY]
+    assert gate["evidence"]["spread"] is False
+    assert gate["category"]=="ANALYSIS_ONLY" and gate["visible"] is False
+
+
+def test_legacy_similar_group_gate_is_preserved_without_identity_backfill(tmp_path):
+    from backend.services.learner.gate import apply_gate
+    store=LearnerStore(tmp_path);legacy={"visible":True,"category":"REVIEW_REQUIRED","evidenceFamilies":["FREQUENCY","SPREAD"],"reasons":["legacy"]}
+    with store.connect() as db:
+        db.execute("INSERT INTO learner_findings(finding_id,source,event_id,finding_type,observed_json,reasons_json,baseline_json,related_event_ids_json,gate_visible,gate_json) VALUES(?,?,?,?,?,?,?,?,?,?)",("legacy","detections","event","SIMILAR_GROUP",json.dumps({"behaviorType":"process","value":"tool.exe"}),"[]",json.dumps({"groupCount":20}),"[]",1,json.dumps(legacy)))
+        apply_gate(db,"detections")
+    preserved=store.finding("legacy")
+    assert preserved["gate_visible"]==1 and preserved["gate"]==legacy

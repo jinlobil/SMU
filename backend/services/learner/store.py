@@ -1,4 +1,4 @@
-import json,sqlite3
+import hashlib,json,sqlite3
 from pathlib import Path
 SCHEMA_VERSION="2"
 class LearnerStore:
@@ -27,6 +27,46 @@ CREATE INDEX IF NOT EXISTS idx_finding_source_time ON learner_findings(source,cr
   q+=" ORDER BY created_at DESC LIMIT ? OFFSET ?";page_params=[*p,limit,offset]
   with self.connect() as d: total=d.execute(count_q,p).fetchone()[0];rows=d.execute(q,page_params).fetchall()
   return {"items":[self.decode(row) for row in rows],"total":total}
+ def operational_findings(self,source="",finding_type="",start="",end="",limit=30,offset=0,visible_only=True):
+  """Page by source + primary event and batch-load its behavior findings."""
+  group_key="CASE WHEN event_id IS NULL OR event_id='' THEN finding_id ELSE event_id END"
+  where=" WHERE 1=1";params=[]
+  if visible_only:where+=" AND gate_visible=1"
+  for clause,value in (("source=?",source),("finding_type=?",finding_type),("created_at>=?",start),("created_at<?",end)):
+   if value:where+=" AND "+clause;params.append(value)
+  grouped=f" FROM learner_findings{where} GROUP BY source,{group_key}"
+  with self.connect() as d:
+   total=d.execute("SELECT COUNT(*) FROM (SELECT 1"+grouped+")",params).fetchone()[0]
+   keys=d.execute(f"SELECT source,{group_key} operational_key,MAX(created_at) sort_time"+grouped+" ORDER BY sort_time DESC LIMIT ? OFFSET ?",[*params,limit,offset]).fetchall()
+   if not keys:return {"items":[],"total":total}
+   key_where=" OR ".join(f"(source=? AND {group_key}=?)" for _ in keys);key_params=[value for row in keys for value in (row["source"],row["operational_key"])]
+   rows=d.execute(f"SELECT * FROM learner_findings WHERE {key_where} ORDER BY created_at DESC",key_params).fetchall()
+  buckets={}
+  for row in rows:buckets.setdefault((row["source"],row["event_id"] or row["finding_id"]),[]).append(row)
+  return {"items":[self._operational(buckets[(row["source"],row["operational_key"])],finding_type,visible_only) for row in keys],"total":total}
+ @classmethod
+ def _operational(cls,rows,preferred_type="",visible_only=False):
+  decoded=[cls.decode(row) for row in rows]
+  candidates=[item for item in decoded if (not preferred_type or item["finding_type"]==preferred_type) and (not visible_only or item.get("gate_visible"))] or decoded
+  representative=candidates[0].copy();behaviors=[];seen_behaviors=set();related=[];seen_related=set();gate_reasons=[];seen_reasons=set();families=[];finding_ids=[];finding_types=[]
+  for item in decoded:
+   finding_ids.append(item["finding_id"])
+   if item["finding_type"] not in finding_types:finding_types.append(item["finding_type"])
+   observed=item.get("observed") or {};values=observed.get("newBehaviors") or [observed]
+   for value in values:
+    pair=(str(value.get("behaviorType", "")),str(value.get("value", "")))
+    if all(pair) and pair not in seen_behaviors:seen_behaviors.add(pair);behaviors.append({"type":pair[0],"value":pair[1]})
+   for event_id in item.get("related_event_ids") or []:
+    if event_id not in seen_related:seen_related.add(event_id);related.append(event_id)
+   gate=item.get("gate") or {}
+   for family in gate.get("evidenceFamilies") or []:
+    if family not in families:families.append(family)
+   for reason in gate.get("reasons") or []:
+    if reason not in seen_reasons:seen_reasons.add(reason);gate_reasons.append(reason)
+  visible=any(bool(item.get("gate_visible")) for item in decoded);primary=representative.get("event_id") or representative["finding_id"]
+  originals=[{"findingId":item["finding_id"],"findingType":item["finding_type"],"observed":item.get("observed"),"baseline":item.get("baseline"),"gate":item.get("gate"),"reasons":item.get("reasons"),"relatedEvents":item.get("related_event_ids")} for item in decoded]
+  representative.update(finding_id="operational-"+hashlib.sha256(f'{representative["source"]}:{primary}'.encode()).hexdigest()[:24],primaryEventId=primary,originalFindingIds=finding_ids,originalFindingTypes=finding_types,originalFindings=originals,behaviors=behaviors,evidenceFamilies=families,gateReasons=gate_reasons,relatedEvents=related,related_event_ids=related,gate_visible=int(visible),gate={"visible":visible,"category":"REVIEW_REQUIRED" if visible else "ANALYSIS_ONLY","evidenceFamilies":families,"reasons":gate_reasons})
+  return representative
  def finding_rows(self,source="",finding_type="",start="",end="",limit=200):
   return self.findings(source,finding_type,start,end,limit,0,False)["items"]
  def summary(self,start="",end=""):

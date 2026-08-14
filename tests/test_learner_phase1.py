@@ -35,6 +35,22 @@ def test_similar_group_and_frequency_spike(tmp_path):
  for i in range(21):rows.append(("detections",f"n{i}",f"2026-01-08T{i%24:02d}:00:00",{"rule":"R"}))
  events_db(tmp_path,rows);LearnerService(tmp_path).run("full",["detections"]);types={x["finding_type"] for x in LearnerStore(tmp_path).finding_rows(source="detections")};assert {"SIMILAR_GROUP","FREQUENCY_SPIKE"}<=types
 
+def test_similar_group_spread_uses_distinct_canonical_entities(tmp_path):
+ same=[("detections",f"same-{i}",f"2026-02-01T00:{i:02d}:00",{"rule":"Same","userId":"one","endpointId":"pc-one","dept":"A"}) for i in range(10)]
+ events_db(tmp_path,same);LearnerService(tmp_path).run("full",["detections"]);store=LearnerStore(tmp_path)
+ group=next(item for item in store.finding_rows(source="detections",finding_type="SIMILAR_GROUP") if item["observed"]["value"]=="Same")
+ assert group["baseline"]=={"groupCount":10,"eventCount":10,"distinctUsers":1,"distinctDevices":1,"distinctDepartments":1,"spread":False,"entitySpreadCount":1}
+ assert "SPREAD" not in group["gate"]["evidenceFamilies"]
+
+def test_similar_group_spreads_across_users_or_devices(tmp_path):
+ rows=[]
+ for i in range(10):rows.append(("detections",f"users-{i}",f"2026-02-01T00:{i:02d}:00",{"rule":"Users","userId":f"u{i}","endpointId":"one"}))
+ for i in range(10):rows.append(("detections",f"devices-{i}",f"2026-02-02T00:{i:02d}:00",{"rule":"Devices","userId":"one","endpointId":f"pc{i}"}))
+ events_db(tmp_path,rows);LearnerService(tmp_path).run("full",["detections"]);groups=LearnerStore(tmp_path).finding_rows(source="detections",finding_type="SIMILAR_GROUP")
+ users=next(item for item in groups if item["observed"]["value"]=="Users");devices=next(item for item in groups if item["observed"]["value"]=="Devices")
+ assert users["baseline"]["spread"] and users["baseline"]["distinctUsers"]==10
+ assert devices["baseline"]["spread"] and devices["baseline"]["distinctDevices"]==10
+
 def test_all_source_adapters_keep_unmapped_events():
  rows={"detections":{"rule":"r"},"xdr":{"from":"a@x.test"},"inbound":{"senderIp":"1.2.3.4"},"outbound":{"receiver":"b@y.test"},"dlp":{"destination":"usb"},"firewall":{"destinationIp":"8.8.8.8"}}
  for source,row in rows.items():
@@ -168,6 +184,29 @@ def test_learner_findings_are_server_paginated(tmp_path):
     first=store.findings(source="inbound",limit=30,offset=0,visible_only=False);third=store.findings(source="inbound",limit=30,offset=60,visible_only=False)
     assert first["total"]==65 and len(first["items"])==30
     assert third["total"]==65 and len(third["items"])==5
+
+def test_operational_findings_aggregate_before_server_pagination(tmp_path):
+ store=LearnerStore(tmp_path);gate={"visible":True,"category":"REVIEW_REQUIRED","evidenceFamilies":["FREQUENCY"],"reasons":["중복 이유"]}
+ with store.connect() as db:
+  for index,(behavior,value,related) in enumerate((("process","WehagoUpdater.exe",["a","b"]),("file_path","WehagoUpdater.exe",["b","c"]),("detection_rule","RULE-1",["c","d"]))):
+   observed=json.dumps({"behaviorType":behavior,"value":value});db.execute("INSERT INTO learner_findings(finding_id,source,event_id,finding_type,title,summary,observed_json,reasons_json,baseline_json,related_event_ids_json,created_at,gate_visible,gate_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",(f"shared-{index}","detections","primary","SIMILAR_GROUP","비슷한 이벤트","요약",observed,"[]","{}",json.dumps(related),"2026-08-13T08:47:29",1,json.dumps(gate)))
+  for index in range(30):
+   db.execute("INSERT INTO learner_findings(finding_id,source,event_id,finding_type,title,summary,observed_json,reasons_json,baseline_json,related_event_ids_json,created_at,gate_visible,gate_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",(f"other-{index}","detections",f"event-{index}","NEW_BEHAVIOR","새로운 행동","요약","{}","[]","{}","[]",f"2026-08-12T00:00:{index:02d}",1,json.dumps(gate)))
+ first=store.operational_findings(source="detections",limit=30,offset=0);second=store.operational_findings(source="detections",limit=30,offset=30)
+ assert first["total"]==31 and len(first["items"])==30 and len(second["items"])==1
+ merged=first["items"][0]
+ assert merged["primaryEventId"]=="primary" and len(merged["originalFindingIds"])==3
+ assert len(merged["originalFindings"])==3 and {item["findingType"] for item in merged["originalFindings"]}=={"SIMILAR_GROUP"}
+ assert merged["behaviors"]==[{"type":"process","value":"WehagoUpdater.exe"},{"type":"file_path","value":"WehagoUpdater.exe"},{"type":"detection_rule","value":"RULE-1"}]
+ assert merged["relatedEvents"]==["a","b","c","d"] and merged["gateReasons"]==["중복 이유"]
+
+def test_operational_findings_never_merge_different_primary_events(tmp_path):
+ store=LearnerStore(tmp_path)
+ with store.connect() as db:
+  for event_id in ("one","two"):
+   db.execute("INSERT INTO learner_findings(finding_id,source,event_id,finding_type,created_at,gate_visible) VALUES(?,?,?,?,?,?)",(f"finding-{event_id}","detections",event_id,"SIMILAR_GROUP","2026-08-13",1))
+ result=store.operational_findings(source="detections")
+ assert result["total"]==2 and {item["primaryEventId"] for item in result["items"]}=={"one","two"}
 
 
 def test_machine_learning_render_boundaries_and_progress_math():

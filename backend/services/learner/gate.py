@@ -27,9 +27,12 @@ def evaluate(finding, frequency_signatures=frozenset(), spread_signatures=frozen
     if kind=="FREQUENCY_SPIKE" or signatures & frequency_signatures:
         families.append(FREQUENCY);evidence["frequencySpike"]=True
         reasons.append("최근 짧은 시간 동안 발생 빈도가 크게 증가했습니다.")
-    if kind=="SIMILAR_GROUP" or signatures & spread_signatures:
-        families.append(SPREAD);evidence["similarGroup"]=True;evidence["spreadCount"]=int(baseline.get("groupCount",0) or 0)
-        reasons.append("같은 행동이 여러 이벤트에서 반복 확인되었습니다.")
+    actual_spread=bool(baseline.get("spread"))
+    if kind=="SIMILAR_GROUP":
+        evidence.update(similarGroup=True,eventCount=int(baseline.get("eventCount",baseline.get("groupCount",0)) or 0),distinctUsers=int(baseline.get("distinctUsers",0) or 0),distinctDevices=int(baseline.get("distinctDevices",0) or 0),distinctDepartments=int(baseline.get("distinctDepartments",0) or 0),spread=actual_spread,entitySpreadCount=int(baseline.get("entitySpreadCount",0) or 0))
+    if actual_spread or signatures & spread_signatures:
+        families.append(SPREAD);evidence["spread"]=True
+        reasons.append("같은 행동이 서로 다른 사용자 또는 장비에서 확인되었습니다.")
     families=list(dict.fromkeys(families));visible=len(families)>=2
     if not visible:
         reasons=["새로운 행동의 근거는 보존하지만, 서로 다른 유형의 추가 변화가 확인되지 않아 기본 화면에서는 숨깁니다."]
@@ -47,11 +50,17 @@ REVIEW_TITLES={
 
 def apply_gate(connection, source):
     rows=connection.execute("SELECT * FROM learner_findings WHERE source=?",(source,)).fetchall()
-    frequency=set();spread=set()
+    frequency=set();spread=set();legacy_spread=set()
     for row in rows:
         if row["finding_type"]=="FREQUENCY_SPIKE":frequency.update(behavior_signatures(row))
-        elif row["finding_type"]=="SIMILAR_GROUP":spread.update(behavior_signatures(row))
+        elif row["finding_type"]=="SIMILAR_GROUP":
+            baseline=json.loads(row["baseline_json"] or "{}")
+            if "spread" not in baseline:legacy_spread.update(behavior_signatures(row))
+            elif baseline.get("spread"):spread.update(behavior_signatures(row))
     for row in rows:
+        # The old schema has no entity identity per related event. Keep its gate
+        # unchanged until a normal full run can calculate Spread v2 safely.
+        if behavior_signatures(row) & legacy_spread:continue
         gate=evaluate(row,frequency,spread)
         title=REVIEW_TITLES.get((source,row["finding_type"]),row["title"]) if gate["visible"] else row["title"]
         connection.execute("UPDATE learner_findings SET gate_visible=?,gate_json=?,title=? WHERE finding_id=?",(int(gate["visible"]),json.dumps(gate,ensure_ascii=False),title,row["finding_id"]))
