@@ -1,0 +1,2 @@
+type DateRangeProps={start:string;end:string;onStartChange:(value:string)=>void;onEndChange:(value:string)=>void};
+export function DateRange({start,end,onStartChange,onEndChange}:DateRangeProps){return <div className="date-range"><label>시작<input type="date" value={start} onChange={event=>onStartChange(event.target.value)}/></label><span>~</span><label>종료<input type="date" value={end} onChange={event=>onEndChange(event.target.value)}/></label></div>}
