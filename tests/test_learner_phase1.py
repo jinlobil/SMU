@@ -308,9 +308,15 @@ def test_machine_learning_restores_grouped_comparison_and_source_color_roles():
     assert 'className="source-indicator"' in ui
     assert 'background:sourceColor(x.source)' in ui
     assert 'learner-kpi-sparkline' in ui
-    assert 'from "react-apexcharts"' in ui
-    assert 'sparkline:{enabled:true}' in ui
+    assert 'from "echarts-for-react"' in ui
+    assert 'type "EChartsOption"' not in ui
+    assert 'import type {EChartsOption}' in ui
+    assert 'react-apexcharts' not in ui
+    assert 'ApexOptions' not in ui
     assert 'function MiniSparkline' not in ui
+    assert 'type:"bar"' in ui
+    assert 'smooth:.42' in ui
+    assert 'markPoint:peakIndex' in ui
     assert '<polyline points={points}' not in ui
     assert "data.trend.map(r=>r.currentCount)" in ui
     assert "data.trend.map(r=>r.monthChangePct)" in ui
