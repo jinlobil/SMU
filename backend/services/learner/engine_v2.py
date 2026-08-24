@@ -256,7 +256,7 @@ class StreamingLearnerEngine:
         if full_source:
             with self.store.connect() as db:
                 db.execute("DELETE FROM learner_findings WHERE source=?", (source,));db.execute("DELETE FROM learner_finding_signatures WHERE source=?", (source,))
-        rows=[]; mappings=[]
+        rows=[]; mappings=[]; affected_event_ids={finding["event_id"] for finding in findings if finding.get("event_id")}
         for finding in findings:
             raw={"finding_type":finding["finding_type"],"observed_json":json.dumps(finding["observed"],ensure_ascii=False),"baseline_json":json.dumps(finding["baseline"],ensure_ascii=False)}
             gate=evaluate(raw,frequency,spread)
@@ -279,6 +279,7 @@ class StreamingLearnerEngine:
                 db.execute("CREATE TEMP TABLE changed_signatures(behavior_type TEXT,behavior_key TEXT,PRIMARY KEY(behavior_type,behavior_key))")
                 db.executemany("INSERT OR IGNORE INTO changed_signatures VALUES(?,?)",changed_signatures)
                 affected=db.execute("SELECT DISTINCT f.* FROM learner_findings f JOIN learner_finding_signatures s ON s.finding_id=f.finding_id JOIN changed_signatures c ON c.behavior_type=s.behavior_type AND c.behavior_key=s.behavior_key WHERE f.source=?",(source,)).fetchall()
+                affected_event_ids.update(row["event_id"] for row in affected if row["event_id"])
                 updates=[]
                 for index,row in enumerate(affected,1):
                     if index%500==0 and cancelled():
@@ -287,6 +288,11 @@ class StreamingLearnerEngine:
                     gate=evaluate(row,frequency,spread);updates.append((int(gate["visible"]),json.dumps(gate,ensure_ascii=False),row["finding_id"]))
                 db.executemany("UPDATE learner_findings SET gate_visible=?,gate_json=? WHERE finding_id=?",updates)
                 self.sql_counts["gate_update"]+=len(updates)
+        if cancelled():
+            from .service import LearnerCancelled
+            raise LearnerCancelled("분석 중단 요청")
+        self.store.rebuild_operational(source, None if full_source else affected_event_ids)
+        self.store.rebuild_daily_metrics(source)
 
     def source(self, source: str, after: tuple[str,str]|None, target_start: str, target_end: str, progress: Callable, cancelled: Callable, full_source: bool):
         states={} if full_source else self.load_state(source)

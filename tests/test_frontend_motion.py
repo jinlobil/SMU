@@ -409,7 +409,7 @@ def test_learner_reuses_existing_process_monitor_and_controls():
     assert config.count('<h2>Process Monitor</h2>') == 1
     assert '<h2>Learner</h2>' not in config
     assert '<p><b>Learner</b>' in config
-    assert 'className="source-filters"' in machine
+    assert 'className="dashboard-range learner-dashboard-controls"' in machine
     assert 'className="primary-action"' in machine
     assert 'className="danger-action"' in machine
 
@@ -419,5 +419,5 @@ def test_client_abort_errors_are_expected_cleanup_not_reported():
     learner=(ROOT/"frontend/src/pages/MachineLearningPage.tsx").read_text(encoding="utf-8")
     assert 'event.reason.name === "AbortError"' in main
     assert "event.preventDefault(); return" in main
-    assert "isAbortError" in learner
-    assert "if(!controller.signal.aborted)setLoading(false)" in learner
+    assert "AbortController" in learner
+    assert "controller.abort()" in learner

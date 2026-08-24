@@ -1,4 +1,5 @@
-import hashlib,json,sqlite3,uuid
+import hashlib,json,logging,sqlite3,time,uuid
+from contextlib import closing
 from collections import defaultdict
 from datetime import datetime,timedelta,timezone
 from pathlib import Path
@@ -22,9 +23,10 @@ class LearnerService:
   sources=[s for s in (sources or SOURCES) if s in SOURCES];run_id=str(uuid.uuid4());now=datetime.now(timezone.utc).isoformat()
   staging=self.root/"runtime/learner"/f"{run_id}.staging.db";staging.parent.mkdir(parents=True,exist_ok=True)
   for suffix in ("","-wal","-shm"):Path(str(staging)+suffix).unlink(missing_ok=True)
+  cleanup_warning=None
   try:
    if mode!="full" and self.store.path.exists():
-    with self.store.connect() as source,sqlite3.connect(staging) as target:source.backup(target)
+    with self.store.connect() as source,closing(sqlite3.connect(staging)) as target:source.backup(target)
    stage=LearnerStore(self.root,staging);engine=StreamingLearnerEngine(self.root,stage)
    progress({"phase":"PREPARE","message":"증분 상태 검증","currentSource":None,"sourceProcessed":0,"sourceTotal":0,"totalProcessed":0,"totalEvents":0,"progressPercent":0.0})
    plans={}
@@ -55,11 +57,30 @@ class LearnerService:
    with stage.connect() as source,self.store.connect() as target:source.backup(target)
    with self.store.connect() as db:db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
    with self.store.connect() as db:finding_count=db.execute("SELECT COUNT(*) FROM learner_findings").fetchone()[0]
-   return {"runId":run_id,"processedEvents":processed,"findings":finding_count,"engineVersion":"2","sqlCounts":dict(engine.sql_counts)}
+   cleanup_warning=self._cleanup_staging(staging)
+   return {"runId":run_id,"processedEvents":processed,"findings":finding_count,"engineVersion":"2","sqlCounts":dict(engine.sql_counts),"cleanupWarning":cleanup_warning}
   except LearnerCancelled:
    raise
   finally:
-   for suffix in ("","-wal","-shm"):Path(str(staging)+suffix).unlink(missing_ok=True)
+   if staging.exists() or Path(str(staging)+"-wal").exists() or Path(str(staging)+"-shm").exists():
+    self._cleanup_staging(staging)
+
+ def _cleanup_staging(self,staging:Path):
+  """Best-effort cleanup after every DB handle has been closed.
+
+  A cleanup warning must not convert an already activated analysis into failure.
+  """
+  warning=None
+  for suffix in ("-wal","-shm",""):
+   path=Path(str(staging)+suffix)
+   for attempt in range(4):
+    try:path.unlink(missing_ok=True);break
+    except PermissionError as exc:
+     if attempt<3:time.sleep(0.2)
+     else:
+      warning=f"{type(exc).__name__}: {exc}"
+      logging.getLogger(__name__).warning("Staging cleanup deferred path=%s error=%s",path,exc)
+  return warning
  def run_v1(self,mode="incremental",sources=None,target_start="",target_end="",progress=lambda x:None,cancelled=lambda:False):
   sources=[s for s in (sources or SOURCES) if s in SOURCES];run_id=str(uuid.uuid4());now=datetime.now(timezone.utc).isoformat();
   with self.store.connect() as d:
