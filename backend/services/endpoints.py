@@ -4,6 +4,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from backend.services.exceptions import ExceptionService
+
 
 SEARCH_FIELDS = {"all", "hostname", "userId", "user", "dept", "ip", "ztna"}
 SORT_FIELDS = {"hostname", "userId", "user", "dept", "ip", "ztna", "lastSeen"}
@@ -34,6 +36,17 @@ def load_key_value_file(path: Path) -> dict[str, str]:
 
 def normalize_key(value: object) -> str:
     return re.sub(r"\s+", "", str(value or "")).strip().lower()
+
+
+def endpoint_principal(person: dict[str, Any], hostname: Any = "") -> str:
+    """Return a full device/domain principal, never an account-only alias."""
+    candidates = []
+    for value in (person.get("viaLogin"), person.get("name"), person.get("id")):
+        candidate = str(value or "").strip().replace("/", "\\")
+        if "\\" in candidate and all(part.strip() for part in candidate.split("\\", 1)):
+            candidates.append(candidate)
+    host_key = normalize_key(hostname)
+    return next((value for value in candidates if normalize_key(value.split("\\", 1)[0]) == host_key), candidates[0] if candidates else "")
 
 
 def normalize_org_name(value: object) -> str:
@@ -112,6 +125,7 @@ class EndpointService:
         self.project_root = project_root
         self.cache_dir = project_root / "cache"
         self.env_dir = project_root / "env"
+        self.exception_service = ExceptionService(project_root)
 
     @property
     def endpoints_path(self) -> Path:
@@ -129,7 +143,7 @@ class EndpointService:
         hostname = str(endpoint.get("hostname", "None") or "None")
         person = endpoint.get("associatedPerson") if isinstance(endpoint.get("associatedPerson"), dict) else {}
         user = str(person.get("name", "None") or "None")
-        via_login = str(person.get("viaLogin", "") or "")
+        via_login = endpoint_principal(person, hostname)
         user_id = via_login.split("\\")[-1] if "\\" in via_login else via_login
         ips = endpoint.get("ipv4Addresses", [])
         ip_text = ", ".join(str(ip) for ip in ips) if isinstance(ips, list) and ips else "None"
@@ -149,18 +163,14 @@ class EndpointService:
         if not dept_info:
             dept_info = directory_index.get(normalize_key(user_id))
         dept = (dept_info or {}).get("dept", "미분류")
-        for exception_key in (match_name, user_id, hostname):
-            exception_dept = exceptions.get(normalize_key(exception_key))
-            if exception_dept:
-                dept = exception_dept
-                break
+        final_identity = self.exception_service.finalize(principal=via_login, hostname=hostname, user_name=user, department=dept)
 
         return {
             "id": str(endpoint.get("id", "") or fallback_id or hostname),
             "hostname": hostname,
             "userId": user_id or "None",
-            "user": user,
-            "dept": dept,
+            "user": final_identity["user"],
+            "dept": final_identity["dept"],
             "ip": ip_text,
             "ztna": ztna,
             "lastSeen": kst_time(endpoint.get("lastSeenAt")),

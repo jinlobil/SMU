@@ -54,3 +54,44 @@ def test_report_service_builds_downloadable_pdf(tmp_path: Path) -> None:
     assert output.read_bytes().startswith(b"%PDF")
     assert output.stat().st_size > 20_000
     assert progress == ["데이터 로딩 중...", "DLP 분석 중...", "PDF 생성 중...", "저장 완료"]
+
+
+def test_report_loaders_do_not_build_discarded_display_rows(tmp_path: Path, monkeypatch) -> None:
+    detection = tmp_path / "cache/detections/2026-07-22.json"
+    detection.parent.mkdir(parents=True)
+    detection.write_text(json.dumps([
+        {"time": "2026-07-22T01:00:00Z", "sensor": {"type": "endpoint"}, "rawData": {}},
+        {"time": "2026-07-22T02:00:00Z", "sensor": {"type": "email"}, "detectionDescription": {"createdReasonId": "XDR-sophos-email-virus"}},
+    ]), encoding="utf-8")
+    inbound = tmp_path / "cache/emails/2026-07-22.json"
+    inbound.parent.mkdir(parents=True)
+    inbound.write_text(json.dumps([{"to": [{"localAddress": "one", "domainAddress": "example.com"}, {"localAddress": "two", "domainAddress": "example.com"}]}]), encoding="utf-8")
+    service = ReportService(tmp_path)
+    monkeypatch.setattr(service.detections, "_events", lambda *_args: (_ for _ in ()).throw(AssertionError("display collector called")))
+    monkeypatch.setattr(service.email, "_collect_inbound", lambda *_args: (_ for _ in ()).throw(AssertionError("display collector called")))
+
+    service._configure_legacy_data(["detections", "xdr", "inbound"])
+
+    from backend.services import legacy_report
+    assert len(legacy_report.load_endpoint_detections_by_range("2026-07-22", "2026-07-22")) == 1
+    assert len(legacy_report.load_xdr_email_detections_by_range("2026-07-22", "2026-07-22")) == 1
+    assert len(legacy_report.load_emails_by_range("2026-07-22", "2026-07-22")) == 1
+
+
+def test_report_builds_constant_time_endpoint_login_index(tmp_path: Path) -> None:
+    endpoints = tmp_path / "cache/endpoints.json"
+    endpoints.parent.mkdir(parents=True)
+    endpoints.write_text(json.dumps([{
+        "hostname": "PC-1",
+        "associatedPerson": {"name": "홍길동", "viaLogin": "DOMAIN\\hong"},
+    }]), encoding="utf-8")
+
+    service = ReportService(tmp_path)
+    service._configure_legacy_data(["xdr", "outbound"])
+
+    from backend.services import legacy_report
+    assert legacy_report.ENDPOINT_LOGIN_INDEX["hong"]["hostname"] == "PC-1"
+    first = legacy_report.resolve_identity_by_mailbox("hong@example.com")
+    second = legacy_report.resolve_identity_by_mailbox("hong@example.com")
+    assert first is second
+    assert first["hostname"] == "PC-1"
