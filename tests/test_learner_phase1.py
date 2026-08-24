@@ -229,7 +229,7 @@ def test_machine_learning_uses_shared_action_tokens_without_learner_colors():
 
 def test_machine_learning_reuses_existing_smu_ui_patterns():
     ui=Path("frontend/src/pages/MachineLearningPage.tsx").read_text(encoding="utf-8")
-    for shared in ('type="month"','className="refresh-button"','className="dash-card threat-card"','className="dash-card top-analysis learner-anomaly-table"','className="detail-modal learner-drilldown"'):
+    for shared in ('<MonthPicker','className="refresh-button"','className="dash-card threat-card"','className="dash-card top-analysis learner-anomaly-table"','className="detail-modal learner-drilldown"'):
         assert shared in ui
     for forbidden in ('learner-date-input','ml-date-picker','learner-filter-button','learner-dropdown','learner-actions','learner-pagination'):
         assert forbidden not in ui
@@ -274,7 +274,8 @@ def test_machine_learning_toolbar_and_detail_reuse_shared_ui_patterns():
     ui = Path("frontend/src/pages/MachineLearningPage.tsx").read_text(encoding="utf-8")
     css = Path("frontend/src/styles.css").read_text(encoding="utf-8")
     assert 'className="dashboard-range filter-action-row learner-dashboard-controls"' in ui
-    assert 'type="month"' in ui
+    assert "<MonthPicker" in ui
+    assert 'type="month"' not in ui
     assert ui.count('className="refresh-button"') >= 2
     assert 'className="primary-action"' not in ui
     assert ".filter-action-row.learner-dashboard-controls" in css
@@ -288,7 +289,8 @@ def test_machine_learning_toolbar_and_detail_reuse_shared_ui_patterns():
 def test_machine_learning_month_comparison_and_lazy_cause_ui_contract():
     ui = Path("frontend/src/pages/MachineLearningPage.tsx").read_text(encoding="utf-8")
     css = Path("frontend/src/styles.css").read_text(encoding="utf-8")
-    assert 'type="month"' in ui and "DateRange" not in ui
+    assert 'type="month"' not in ui and "DateRange" not in ui
+    assert '<MonthPicker value={month}' in ui
     assert "previousCount" in ui and "currentCount" in ui and "monthChangePct" in ui
     assert "전월 동일 일자" in ui and "왜 이 날짜의 탐지량이 증가했나요?" in ui
     assert "원본 분석 결과 보기" in ui
@@ -323,6 +325,23 @@ def test_machine_learning_restores_grouped_comparison_and_source_color_roles():
     assert "Math.max(0,r.currentCount-r.upper)" in ui
     assert "r.currentCount==null||r.upper==null?null" in ui
     assert 'highlightPeak={Boolean(highlightPeak)}' in ui
+    assert 'className="learner-kpi-copy"' in ui
+    assert 'className="learner-kpi-chart"' in ui
+    assert 'className="metric-cell-content"' in ui
+    assert 'className="status-cell-content"' in ui
     for role in ("average", "change", "anomaly", "peak"):
         assert f".learner-kpi.{role}" in css
     assert "font-variant-numeric:tabular-nums" in css
+
+
+def test_custom_month_picker_reuses_shared_context_menu_surface():
+    picker = Path("frontend/src/components/MonthPicker.tsx").read_text(encoding="utf-8")
+    css = Path("frontend/src/styles.css").read_text(encoding="utf-8")
+    assert 'type="month"' not in picker
+    assert 'context-menu month-picker-popover' in picker
+    assert 'aria-label="이전 연도"' in picker and 'aria-label="다음 연도"' in picker
+    assert 'Array.from({length:12}' in picker
+    assert 'grid-template-columns:minmax(0,56%) minmax(0,44%)' in css
+    assert '.learner-kpi-sparkline{position:static!important' in css
+    assert '.metric-cell-content,.status-cell-content' in css
+    assert 'justify-content:center' in css
