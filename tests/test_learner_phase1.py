@@ -296,3 +296,18 @@ def test_machine_learning_month_comparison_and_lazy_cause_ui_contract():
     assert "anomaly-high pulse" in ui and "animation:status-breathe" in css
     for status in ("similar", "up", "down", "insufficient"):
         assert f".source-status.{status}" in css
+
+
+def test_machine_learning_restores_grouped_comparison_and_source_color_roles():
+    ui = Path("frontend/src/pages/MachineLearningPage.tsx").read_text(encoding="utf-8")
+    css = Path("frontend/src/styles.css").read_text(encoding="utf-8")
+    for token in ("--trend-detection", "--trend-xdr", "--trend-email", "--trend-outbound", "--trend-file", "--status-fail-bright"):
+        assert token in ui
+    for label in ('colSpan={2}>전월', 'colSpan={2}>당월', 'colSpan={2}>전월 대비', '>총 탐지</th>', '>일평균</th>', '>증감</th>', '>증감률</th>'):
+        assert label in ui
+    assert 'className="source-indicator"' in ui
+    assert 'background:sourceColor(x.source)' in ui
+    assert 'learner-kpi-sparkline' in ui
+    for role in ("average", "change", "anomaly", "peak"):
+        assert f".learner-kpi.{role}" in css
+    assert "font-variant-numeric:tabular-nums" in css
