@@ -70,3 +70,22 @@ def test_dashboard_hot_path_never_reads_large_finding_tables(tmp_path):
     result = LearnerDashboardService(store).dashboard(end="2026-08-14")
     assert result["kpi"]["currentTotal"] > 0
     assert not any("learner_findings" in statement.lower() or "learner_operational_findings" in statement.lower() for statement in statements)
+
+
+def test_lazy_store_wiring_does_not_open_or_migrate_database(tmp_path):
+    store = LearnerStore(tmp_path, initialize=False)
+    assert not store.path.exists()
+    assert store.dashboard_readiness() == "warming"
+
+
+def test_schema_migration_never_backfills_derived_tables(tmp_path):
+    store = LearnerStore(tmp_path)
+    with store.connect() as db:
+        db.execute("INSERT INTO learner_processed_events VALUES('detections','event','2026-08-01','hash')")
+        db.execute("INSERT INTO learner_findings(finding_id,source,event_id,finding_type,observed_json,reasons_json,baseline_json,related_event_ids_json,created_at) VALUES('finding','detections','event','NEW_BEHAVIOR','{}','[]','{}','[]','2026-08-01')")
+        db.execute("DELETE FROM learner_schema_meta")
+    LearnerStore(tmp_path)
+    with store.connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM learner_daily_metrics").fetchone()[0] == 0
+        assert db.execute("SELECT COUNT(*) FROM learner_operational_findings").fetchone()[0] == 0
+        assert db.execute("SELECT value FROM learner_schema_meta WHERE key='schema_version'").fetchone()[0] == "5"

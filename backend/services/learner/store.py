@@ -1,9 +1,12 @@
 import hashlib
 import json
+import logging
 import sqlite3
+import time
 from pathlib import Path
 
 SCHEMA_VERSION = "5"
+log = logging.getLogger("smu.startup")
 
 
 class ClosingConnection(sqlite3.Connection):
@@ -17,9 +20,10 @@ class ClosingConnection(sqlite3.Connection):
 
 
 class LearnerStore:
-    def __init__(self, root: Path, path: Path | None = None):
+    def __init__(self, root: Path, path: Path | None = None, initialize: bool = True):
         self.path = path or root / "cache/index/learner_cache.db"
-        self.initialize()
+        if initialize:
+            self.initialize()
 
     def connect(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -30,9 +34,15 @@ class LearnerStore:
         return db
 
     def initialize(self):
-        needs_backfill = False
-        needs_daily_backfill = False
+        """Apply each schema version once; derived backfills are analysis work, not migration work."""
+        total_started = time.perf_counter()
         with self.connect() as db:
+            db.execute("CREATE TABLE IF NOT EXISTS learner_schema_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL)")
+            row = db.execute("SELECT value FROM learner_schema_meta WHERE key='schema_version'").fetchone()
+            if row and row[0] == SCHEMA_VERSION:
+                log.info("Startup timing phase=learner_schema_already_current elapsed_ms=%.1f", (time.perf_counter()-total_started)*1000)
+                return
+            schema_started = time.perf_counter()
             db.executescript("""
 CREATE TABLE IF NOT EXISTS learner_runs(run_id TEXT PRIMARY KEY,mode TEXT,source TEXT,history_start TEXT,history_end TEXT,target_start TEXT,target_end TEXT,status TEXT,started_at TEXT,finished_at TEXT,processed_events INTEGER DEFAULT 0,last_error TEXT,schema_version TEXT);
 CREATE TABLE IF NOT EXISTS behavior_stats(source TEXT,scope_type TEXT,scope_key TEXT,behavior_type TEXT,behavior_key TEXT,count_1d INTEGER,count_7d INTEGER,count_30d INTEGER,count_90d INTEGER,count_180d INTEGER,count_all INTEGER,first_seen TEXT,last_seen TEXT,updated_at TEXT,PRIMARY KEY(source,scope_type,scope_key,behavior_type,behavior_key));
@@ -44,22 +54,21 @@ CREATE TABLE IF NOT EXISTS learner_analysis_state(source TEXT,scope_type TEXT,sc
 CREATE TABLE IF NOT EXISTS learner_group_state(source TEXT,event_day TEXT,behavior_type TEXT,behavior_key TEXT,event_count INTEGER,users_json TEXT,devices_json TEXT,departments_json TEXT,related_json TEXT,representative_json TEXT,PRIMARY KEY(source,event_day,behavior_type,behavior_key));
 CREATE TABLE IF NOT EXISTS learner_finding_signatures(source TEXT,behavior_type TEXT,behavior_key TEXT,finding_id TEXT,PRIMARY KEY(source,behavior_type,behavior_key,finding_id));
 CREATE TABLE IF NOT EXISTS learner_source_state(source TEXT PRIMARY KEY,event_count INTEGER,last_event_time TEXT,last_event_id TEXT,updated_at TEXT,engine_version TEXT);
-CREATE TABLE IF NOT EXISTS learner_daily_metrics(
- day TEXT NOT NULL,source TEXT NOT NULL,event_count INTEGER NOT NULL DEFAULT 0,
- new_behavior_count INTEGER NOT NULL DEFAULT 0,frequency_count INTEGER NOT NULL DEFAULT 0,
- spread_count INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(day,source)
-);
-CREATE TABLE IF NOT EXISTS learner_operational_findings(
- operational_id TEXT PRIMARY KEY,source TEXT NOT NULL,primary_event_id TEXT,created_at TEXT,
- gate_visible INTEGER NOT NULL DEFAULT 0,gate_category TEXT,title TEXT,summary TEXT,
- person_key TEXT,endpoint_key TEXT,user_name TEXT,user_id TEXT,email TEXT,hostname TEXT,department TEXT,
- representative_type TEXT,has_new_behavior INTEGER DEFAULT 0,has_frequency_spike INTEGER DEFAULT 0,has_similar_group INTEGER DEFAULT 0,
- observed_json TEXT,baseline_json TEXT,reasons_json TEXT,evidence_json TEXT,gate_reasons_json TEXT,
- behaviors_json TEXT,related_events_json TEXT,original_finding_ids_json TEXT
-);
+CREATE TABLE IF NOT EXISTS learner_daily_metrics(day TEXT NOT NULL,source TEXT NOT NULL,event_count INTEGER NOT NULL DEFAULT 0,new_behavior_count INTEGER NOT NULL DEFAULT 0,frequency_count INTEGER NOT NULL DEFAULT 0,spread_count INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(day,source));
+CREATE TABLE IF NOT EXISTS learner_operational_findings(operational_id TEXT PRIMARY KEY,source TEXT NOT NULL,primary_event_id TEXT,created_at TEXT,gate_visible INTEGER NOT NULL DEFAULT 0,gate_category TEXT,title TEXT,summary TEXT,person_key TEXT,endpoint_key TEXT,user_name TEXT,user_id TEXT,email TEXT,hostname TEXT,department TEXT,representative_type TEXT,has_new_behavior INTEGER DEFAULT 0,has_frequency_spike INTEGER DEFAULT 0,has_similar_group INTEGER DEFAULT 0,observed_json TEXT,baseline_json TEXT,reasons_json TEXT,evidence_json TEXT,gate_reasons_json TEXT,behaviors_json TEXT,related_events_json TEXT,original_finding_ids_json TEXT);
+""")
+            columns = {item[1] for item in db.execute("PRAGMA table_info(learner_findings)")}
+            if "gate_visible" not in columns:
+                db.execute("ALTER TABLE learner_findings ADD COLUMN gate_visible INTEGER DEFAULT 0")
+            if "gate_json" not in columns:
+                db.execute("ALTER TABLE learner_findings ADD COLUMN gate_json TEXT")
+            log.info("Startup timing phase=learner_schema_migration elapsed_ms=%.1f", (time.perf_counter()-schema_started)*1000)
+            index_started = time.perf_counter()
+            db.executescript("""
 CREATE INDEX IF NOT EXISTS idx_finding_source_time ON learner_findings(source,created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_finding_type_time ON learner_findings(finding_type,created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_finding_source_event ON learner_findings(source,event_id);
+CREATE INDEX IF NOT EXISTS idx_finding_gate_time ON learner_findings(gate_visible,created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_behavior_scope ON behavior_stats(scope_type,scope_key,source);
 CREATE INDEX IF NOT EXISTS idx_processed_signature ON processed_behaviors(source,scope_type,scope_key,behavior_type,behavior_key,event_time);
 CREATE INDEX IF NOT EXISTS idx_operational_gate_time ON learner_operational_findings(gate_visible,created_at DESC);
@@ -69,24 +78,11 @@ CREATE INDEX IF NOT EXISTS idx_operational_new_time ON learner_operational_findi
 CREATE INDEX IF NOT EXISTS idx_operational_frequency_time ON learner_operational_findings(has_frequency_spike,created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_operational_similar_time ON learner_operational_findings(has_similar_group,created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_learner_daily_source_day ON learner_daily_metrics(source,day);
+CREATE INDEX IF NOT EXISTS idx_learner_signature_lookup ON learner_finding_signatures(source,behavior_type,behavior_key);
 """)
-            columns = {row[1] for row in db.execute("PRAGMA table_info(learner_findings)")}
-            if "gate_visible" not in columns:
-                db.execute("ALTER TABLE learner_findings ADD COLUMN gate_visible INTEGER DEFAULT 0")
-            if "gate_json" not in columns:
-                db.execute("ALTER TABLE learner_findings ADD COLUMN gate_json TEXT")
-            db.execute("CREATE INDEX IF NOT EXISTS idx_finding_gate_time ON learner_findings(gate_visible,created_at DESC)")
-            db.execute("CREATE INDEX IF NOT EXISTS idx_learner_signature_lookup ON learner_finding_signatures(source,behavior_type,behavior_key)")
-            raw = db.execute("SELECT EXISTS(SELECT 1 FROM learner_findings)").fetchone()[0]
-            materialized = db.execute("SELECT EXISTS(SELECT 1 FROM learner_operational_findings)").fetchone()[0]
-            needs_backfill = bool(raw and not materialized)
-            processed = db.execute("SELECT EXISTS(SELECT 1 FROM learner_processed_events)").fetchone()[0]
-            daily = db.execute("SELECT EXISTS(SELECT 1 FROM learner_daily_metrics)").fetchone()[0]
-            needs_daily_backfill = bool(processed and not daily)
-        if needs_backfill:
-            self.rebuild_operational()
-        if needs_daily_backfill:
-            self.rebuild_daily_metrics()
+            log.info("Startup timing phase=learner_create_indexes elapsed_ms=%.1f", (time.perf_counter()-index_started)*1000)
+            db.execute("INSERT OR REPLACE INTO learner_schema_meta VALUES('schema_version',?)", (SCHEMA_VERSION,))
+        log.info("Startup timing phase=learner_store_initialize_complete elapsed_ms=%.1f", (time.perf_counter()-total_started)*1000)
 
     def findings(self, source="", finding_type="", start="", end="", limit=30, offset=0, visible_only=True):
         query = "SELECT * FROM learner_findings WHERE 1=1"
@@ -156,6 +152,7 @@ CREATE INDEX IF NOT EXISTS idx_learner_daily_source_day ON learner_daily_metrics
 
     def rebuild_operational(self, source="", event_ids=None):
         """Materialize UI rows outside the request path; optionally refresh affected events."""
+        started = time.perf_counter()
         where, params = " WHERE 1=1", []
         with self.connect() as db:
             if source:
@@ -190,7 +187,9 @@ CREATE INDEX IF NOT EXISTS idx_learner_daily_source_day ON learner_daily_metrics
                 output.append(self._materialize_group(group))
             if output:
                 db.executemany("INSERT OR REPLACE INTO learner_operational_findings VALUES(" + ",".join("?" * 27) + ")", output)
-            return db.execute("SELECT changes()").fetchone()[0]
+            changed = db.execute("SELECT changes()").fetchone()[0]
+        log.info("Startup timing phase=operational_finding_backfill source=%s elapsed_ms=%.1f", source or "all", (time.perf_counter()-started)*1000)
+        return changed
 
     def operational_findings(self, source="", finding_type="", start="", end="", limit=30, offset=0, visible_only=True):
         query = "SELECT * FROM learner_operational_findings WHERE 1=1"
@@ -256,6 +255,7 @@ CREATE INDEX IF NOT EXISTS idx_learner_daily_source_day ON learner_daily_metrics
 
     def rebuild_daily_metrics(self, source=""):
         """Refresh compact count aggregates after analysis; raw events are not copied."""
+        started = time.perf_counter()
         source_where = " WHERE source=?" if source else ""
         params = (source,) if source else ()
         with self.connect() as db:
@@ -280,11 +280,27 @@ CREATE INDEX IF NOT EXISTS idx_learner_daily_source_day ON learner_daily_metrics
                 "ON CONFLICT(day,source) DO UPDATE SET new_behavior_count=excluded.new_behavior_count,frequency_count=excluded.frequency_count,spread_count=excluded.spread_count",
                 [(row["day"], row["source"], row["new_count"], row["frequency_count"], row["spread_count"]) for row in finding_rows if row["day"]],
             )
+        log.info("Startup timing phase=learner_daily_metrics_backfill source=%s elapsed_ms=%.1f", source or "all", (time.perf_counter()-started)*1000)
 
     def daily_metric_bounds(self):
-        with self.connect() as db:
-            row = db.execute("SELECT MIN(day),MAX(day) FROM learner_daily_metrics").fetchone()
+        try:
+            with self.connect() as db:
+                row = db.execute("SELECT MIN(day),MAX(day) FROM learner_daily_metrics").fetchone()
+        except sqlite3.OperationalError:
+            return None
         return (row[0], row[1]) if row and row[0] and row[1] else None
+
+    def dashboard_readiness(self):
+        if not self.path.exists():
+            return "warming"
+        try:
+            uri = f"{self.path.resolve().as_uri()}?mode=ro"
+            with sqlite3.connect(uri, uri=True, timeout=0.05, factory=ClosingConnection) as db:
+                table = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='learner_daily_metrics'").fetchone()
+                ready = table and db.execute("SELECT 1 FROM learner_daily_metrics LIMIT 1").fetchone()
+            return "ready" if ready else "warming"
+        except sqlite3.Error:
+            return "warming"
 
     def daily_metrics(self, start, end):
         with self.connect() as db:

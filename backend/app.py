@@ -7,6 +7,8 @@ from contextlib import asynccontextmanager
 from datetime import date
 from pathlib import Path
 
+APP_IMPORT_STARTED = time.perf_counter()
+
 from fastapi import Body, FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
@@ -44,9 +46,10 @@ from backend.services.learner.dashboard import LearnerDashboardService
 from backend.services.learner import LearnerService
 from backend.services.exporting import export_headers, normalize_export_columns, normalize_report_sections, schema_payload
 
-
 configure_logging()
 log = logging.getLogger("smu.web")
+startup_log = logging.getLogger("smu.startup")
+startup_log.info("Startup timing phase=backend_app_import_started elapsed_ms=0.0")
 QUIET_POLL_PATHS = {
     "/api/health", "/api/config/status", "/api/config/scheduler",
     "/api/system-info/process-status", "/api/system-info/current",
@@ -61,7 +64,9 @@ email_security_service = EmailSecurityService(PROJECT_ROOT)
 transfer_service = TransferService(PROJECT_ROOT)
 timeline_service = TimelineService(PROJECT_ROOT)
 sensitive_service = SensitiveService(PROJECT_ROOT)
+phase_started = time.perf_counter()
 dashboard_service = DashboardService(PROJECT_ROOT)
+startup_log.info("Startup timing phase=dashboard_service_created elapsed_ms=%.1f", (time.perf_counter()-phase_started)*1000)
 firewall_service = FirewallService(PROJECT_ROOT)
 firewall_detection_service = FirewallDetectionService(PROJECT_ROOT)
 event_list_index = EventListIndex(PROJECT_ROOT)
@@ -77,26 +82,28 @@ integration_service = IntegrationService(PROJECT_ROOT)
 exception_service = ExceptionService(PROJECT_ROOT)
 content_service = ContentService(PROJECT_ROOT)
 index_maintenance_service = IndexMaintenanceService(PROJECT_ROOT)
-learner_store = LearnerStore(PROJECT_ROOT)  # Schema/backfill once; requests only execute indexed reads.
+phase_started = time.perf_counter()
+learner_store = LearnerStore(PROJECT_ROOT, initialize=False)
 learner_dashboard_service = LearnerDashboardService(learner_store)
-try:
-    dashboard_service.warm_default()
-except Exception:
-    log.exception("Dashboard startup pre-aggregation failed; the API will retry on demand")
+startup_log.info("Startup timing phase=learner_store_wired_no_initialize elapsed_ms=%.1f", (time.perf_counter()-phase_started)*1000)
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    phase_started = time.perf_counter()
+    startup_log.info("Startup timing phase=fastapi_startup_started elapsed_ms=0.0")
     watchdog_manager.start()
+    startup_log.info("Startup timing phase=fastapi_startup_complete elapsed_ms=%.1f", (time.perf_counter()-phase_started)*1000)
     yield
     watchdog_manager.stop.set()
 
-
+phase_started = time.perf_counter()
 app = FastAPI(
     title="SMU Local Web API",
     version="0.1.0",
     description="Local API used by the SMU JavaScript frontend.",
     lifespan=lifespan,
 )
+startup_log.info("Startup timing phase=fastapi_app_created elapsed_ms=%.1f", (time.perf_counter()-phase_started)*1000)
 
 
 def error_response(request_id: str, code: str, message: str, status_code: int) -> JSONResponse:
@@ -167,6 +174,7 @@ def health() -> dict:
         "data": {
             "status": "ok",
             "service": "smu-local-web",
+            "learnerDashboard": learner_store.dashboard_readiness(),
             "errorLog": str(WEB_ERROR_LOG),
         },
     }
@@ -695,6 +703,54 @@ def vacuum_indexes(payload: dict | None = Body(default=None)) -> dict:
     target = str((payload or {}).get("target", "all"))
     return {"success": True, "data": watchdog_manager.start_laborer_job("vacuum", target=target)}
 
+@app.post("/api/jobs/index/vacuum", status_code=202)
+def vacuum_indexes(payload: dict | None = Body(default=None)) -> dict:
+    target = str((payload or {}).get("target", "all"))
+    return {"success": True, "data": watchdog_manager.start_laborer_job("vacuum", target=target)}
+
+
+@app.post("/api/learner/jobs", status_code=202)
+def start_learner_job(payload: dict = Body(default={})) -> dict:
+    try:
+        data=watchdog_manager.start_learner_job(str(payload.get("mode","incremental")),payload.get("sources"),payload.get("start"),payload.get("end"))
+    except urllib.error.HTTPError as exc:
+        if exc.code == 409:
+            try: busy=json.loads(exc.read())
+            except Exception: busy={}
+            return JSONResponse(status_code=409,content={"success":False,"error":"LEARNER_BUSY","message":busy.get("message","현재 분석 작업이 실행 중입니다."),"currentJobId":busy.get("currentJobId"),"status":busy.get("status")})
+        return error_response(str(uuid.uuid4()),"LEARNER_UNAVAILABLE",str(exc),503)
+    except Exception as exc:
+        log.exception("Learner job submission failed")
+        return error_response(str(uuid.uuid4()),"LEARNER_UNAVAILABLE",str(exc),503)
+    return {"success":True,"data":data}
+
+@app.post("/api/learner/jobs/{job_id}/cancel", status_code=202)
+def cancel_learner_job(job_id: str):
+    try:
+        data=watchdog_manager.cancel_learner_job(job_id)
+        return {"success":True,"jobId":data.get("id",job_id),"status":data.get("status","cancelling")}
+    except urllib.error.HTTPError as exc:
+        return error_response(str(uuid.uuid4()),"LEARNER_CANCEL_CONFLICT","분석을 중단할 수 없는 상태입니다.",exc.code)
+    except Exception as exc:return error_response(str(uuid.uuid4()),"LEARNER_UNAVAILABLE",str(exc),503)
+
+@app.get("/api/learner/findings")
+def learner_findings(source: str="", findingType: str="", start: str="", end: str="", view: str="review", page: int=Query(1,ge=1), pageSize: int=Query(30,ge=1,le=100)) -> dict:
+    result=LearnerStore(PROJECT_ROOT).operational_findings(source,findingType,start,(end+"T99") if end else "",pageSize,(page-1)*pageSize,view != "all")
+    total=result["total"]
+    return {"success":True,"data":{"items":result["items"],"pagination":{"page":page,"pageSize":pageSize,"total":total,"totalPages":max(1,(total+pageSize-1)//pageSize)}}}
+
+@app.get("/api/learner/findings/{finding_id}")
+def learner_finding(finding_id: str) -> dict:
+    data=LearnerStore(PROJECT_ROOT).finding(finding_id)
+    return {"success":True,"data":data} if data else error_response(str(uuid.uuid4()),"LEARNER_FINDING_NOT_FOUND","Finding not found",404)
+
+@app.get("/api/learner/summary")
+def learner_summary(start: str="", end: str="") -> dict:
+    return {"success":True,"data":LearnerStore(PROJECT_ROOT).summary(start,(end+"T99") if end else "")}
+
+@app.get("/api/learner/history")
+def learner_history(source: str, scopeType: str, scopeKey: str, behaviorType: str, behaviorKey: str) -> dict:
+    return {"success":True,"data":LearnerService(PROJECT_ROOT).history(source,scopeType,scopeKey,behaviorType,behaviorKey)}
 
 @app.post("/api/learner/jobs", status_code=202)
 def start_learner_job(payload: dict = Body(default={})) -> dict:
@@ -743,57 +799,6 @@ def learner_finding(finding_id: str) -> dict:
 @app.get("/api/learner/summary")
 def learner_summary(start: str="", end: str="") -> dict:
     return {"success":True,"data":learner_store.summary(start,(end+"T99") if end else "")}
-
-@app.get("/api/learner/history")
-def learner_history(source: str, scopeType: str, scopeKey: str, behaviorType: str, behaviorKey: str) -> dict:
-    return {"success":True,"data":LearnerService(PROJECT_ROOT).history(source,scopeType,scopeKey,behaviorType,behaviorKey)}
-
-
-
-@app.post("/api/jobs/index/vacuum", status_code=202)
-def vacuum_indexes(payload: dict | None = Body(default=None)) -> dict:
-    target = str((payload or {}).get("target", "all"))
-    return {"success": True, "data": watchdog_manager.start_laborer_job("vacuum", target=target)}
-
-
-@app.post("/api/learner/jobs", status_code=202)
-def start_learner_job(payload: dict = Body(default={})) -> dict:
-    try:
-        data=watchdog_manager.start_learner_job(str(payload.get("mode","incremental")),payload.get("sources"),payload.get("start"),payload.get("end"))
-    except urllib.error.HTTPError as exc:
-        if exc.code == 409:
-            try: busy=json.loads(exc.read())
-            except Exception: busy={}
-            return JSONResponse(status_code=409,content={"success":False,"error":"LEARNER_BUSY","message":busy.get("message","현재 분석 작업이 실행 중입니다."),"currentJobId":busy.get("currentJobId"),"status":busy.get("status")})
-        return error_response(str(uuid.uuid4()),"LEARNER_UNAVAILABLE",str(exc),503)
-    except Exception as exc:
-        log.exception("Learner job submission failed")
-        return error_response(str(uuid.uuid4()),"LEARNER_UNAVAILABLE",str(exc),503)
-    return {"success":True,"data":data}
-
-@app.post("/api/learner/jobs/{job_id}/cancel", status_code=202)
-def cancel_learner_job(job_id: str):
-    try:
-        data=watchdog_manager.cancel_learner_job(job_id)
-        return {"success":True,"jobId":data.get("id",job_id),"status":data.get("status","cancelling")}
-    except urllib.error.HTTPError as exc:
-        return error_response(str(uuid.uuid4()),"LEARNER_CANCEL_CONFLICT","분석을 중단할 수 없는 상태입니다.",exc.code)
-    except Exception as exc:return error_response(str(uuid.uuid4()),"LEARNER_UNAVAILABLE",str(exc),503)
-
-@app.get("/api/learner/findings")
-def learner_findings(source: str="", findingType: str="", start: str="", end: str="", view: str="review", page: int=Query(1,ge=1), pageSize: int=Query(30,ge=1,le=100)) -> dict:
-    result=LearnerStore(PROJECT_ROOT).operational_findings(source,findingType,start,(end+"T99") if end else "",pageSize,(page-1)*pageSize,view != "all")
-    total=result["total"]
-    return {"success":True,"data":{"items":result["items"],"pagination":{"page":page,"pageSize":pageSize,"total":total,"totalPages":max(1,(total+pageSize-1)//pageSize)}}}
-
-@app.get("/api/learner/findings/{finding_id}")
-def learner_finding(finding_id: str) -> dict:
-    data=LearnerStore(PROJECT_ROOT).finding(finding_id)
-    return {"success":True,"data":data} if data else error_response(str(uuid.uuid4()),"LEARNER_FINDING_NOT_FOUND","Finding not found",404)
-
-@app.get("/api/learner/summary")
-def learner_summary(start: str="", end: str="") -> dict:
-    return {"success":True,"data":LearnerStore(PROJECT_ROOT).summary(start,(end+"T99") if end else "")}
 
 @app.get("/api/learner/history")
 def learner_history(source: str, scopeType: str, scopeKey: str, behaviorType: str, behaviorKey: str) -> dict:
@@ -975,3 +980,5 @@ if FRONTEND_DIST.is_dir():
         if frontend_path == "api" or frontend_path.startswith("api/"):
             return JSONResponse(status_code=404, content={"success": False, "error": {"code": "NOT_FOUND", "message": "API route not found"}})
         return FileResponse(FRONTEND_DIST / "index.html")
+
+startup_log.info("Startup timing phase=backend_app_import_complete elapsed_ms=%.1f", (time.perf_counter()-APP_IMPORT_STARTED)*1000)

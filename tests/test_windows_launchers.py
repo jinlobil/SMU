@@ -58,3 +58,15 @@ def test_python_launcher_does_not_open_a_browser() -> None:
     assert '"list", "react-router-dom", "--depth=0"' in script
     assert "ensure_port_available(8765" in script
     assert "ensure_port_available(5173" in script
+    assert "BACKEND_READY_TIMEOUT_SECONDS = 30.0" in script
+    assert "attempts=60" not in script
+    assert "deadline = time.monotonic() + timeout_seconds" in script
+    assert script.index("stop_processes(processes)\n        processes.clear()") < script.index("        hold_terminal()")
+
+
+def test_backend_import_does_not_initialize_or_warm_large_stores() -> None:
+    app = (ROOT / "backend/app.py").read_text(encoding="utf-8")
+    assert "LearnerStore(PROJECT_ROOT, initialize=False)" in app
+    assert "dashboard_service.warm_default()" not in app
+    assert "learner_store_wired_no_initialize" in app
+    assert "backend_app_import_complete" in app

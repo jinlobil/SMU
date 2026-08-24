@@ -18,6 +18,7 @@ LAUNCH_LOG = LOG_DIR / "launcher.log"
 launcher_log = logging.getLogger("smu.launcher")
 launcher_log.setLevel(logging.INFO)
 launcher_log.propagate = False
+BACKEND_READY_TIMEOUT_SECONDS = 30.0
 
 
 def configure_launcher_log() -> None:
@@ -61,20 +62,36 @@ def start_process(name: str, command: list[str], cwd: Path) -> subprocess.Popen[
     return process
 
 
-def wait_for_service(url: str, process: subprocess.Popen[str], name: str, attempts: int = 60) -> bool:
+def wait_for_service(url: str, process: subprocess.Popen[str], name: str, timeout_seconds: float = BACKEND_READY_TIMEOUT_SECONDS) -> bool:
     """Wait for an HTTP service while also detecting an early process exit."""
-    for _ in range(attempts):
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
         return_code = process.poll()
         if return_code is not None:
             raise RuntimeError(f"{name} process exited during startup: code={return_code}")
         try:
-            with urllib.request.urlopen(url, timeout=1) as response:
+            remaining = max(0.05, deadline - time.monotonic())
+            with urllib.request.urlopen(url, timeout=min(1.0, remaining)) as response:
                 if response.status == 200:
                     write_line(f"{name.capitalize()} ready: {url}")
                     return True
         except OSError:
-            time.sleep(0.5)
+            time.sleep(min(0.5, max(0.0, deadline - time.monotonic())))
     return False
+
+
+def stop_processes(processes: list[tuple[str, subprocess.Popen[str]]]) -> None:
+    """Leave no half-started backend behind when launcher readiness fails."""
+    for name, process in reversed(processes):
+        if process.poll() is not None:
+            continue
+        write_line(f"Stopping {name} after launcher shutdown...")
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
 
 
 def hold_terminal() -> None:
@@ -131,8 +148,8 @@ def main() -> int:
         processes.append(("backend", backend))
         backend_url = "http://127.0.0.1:8765/api/health"
         write_line("Waiting for backend before starting frontend...")
-        if not wait_for_service(backend_url, backend, "backend"):
-            raise RuntimeError(f"Backend did not become ready within 30 seconds: {backend_url}")
+        if not wait_for_service(backend_url, backend, "backend", BACKEND_READY_TIMEOUT_SECONDS):
+            raise RuntimeError(f"Backend did not become ready within {BACKEND_READY_TIMEOUT_SECONDS:.0f} seconds: {backend_url}")
 
         frontend = start_process("frontend", [npm_command, "run", "dev"], ROOT / "frontend")
         processes.append(("frontend", frontend))
@@ -151,12 +168,12 @@ def main() -> int:
         return 0
     except Exception as exc:
         write_line(f"FATAL {type(exc).__name__}: {exc}")
+        stop_processes(processes)
+        processes.clear()
         hold_terminal()
         return 1
     finally:
-        for _, process in processes:
-            if process.poll() is None:
-                process.terminate()
+        stop_processes(processes)
 
 
 if __name__ == "__main__":
