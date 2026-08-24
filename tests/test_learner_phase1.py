@@ -312,7 +312,11 @@ def test_machine_learning_restores_grouped_comparison_and_source_color_roles():
     assert 'sparkline:{enabled:true}' in ui
     assert 'function MiniSparkline' not in ui
     assert '<polyline points={points}' not in ui
-    assert "r.currentCount==null?null" in ui
+    assert "data.trend.map(r=>r.currentCount)" in ui
+    assert "data.trend.map(r=>r.monthChangePct)" in ui
+    assert "Math.max(0,r.currentCount-r.upper)" in ui
+    assert "r.currentCount==null||r.upper==null?null" in ui
+    assert 'highlightPeak={Boolean(highlightPeak)}' in ui
     for role in ("average", "change", "anomaly", "peak"):
         assert f".learner-kpi.{role}" in css
     assert "font-variant-numeric:tabular-nums" in css
