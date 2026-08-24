@@ -292,6 +292,7 @@ class StreamingLearnerEngine:
             from .service import LearnerCancelled
             raise LearnerCancelled("분석 중단 요청")
         self.store.rebuild_operational(source, None if full_source else affected_event_ids)
+        self.store.rebuild_daily_metrics(source)
 
     def source(self, source: str, after: tuple[str,str]|None, target_start: str, target_end: str, progress: Callable, cancelled: Callable, full_source: bool):
         states={} if full_source else self.load_state(source)

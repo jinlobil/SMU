@@ -3,7 +3,7 @@ import json
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = "4"
+SCHEMA_VERSION = "5"
 
 
 class ClosingConnection(sqlite3.Connection):
@@ -31,6 +31,7 @@ class LearnerStore:
 
     def initialize(self):
         needs_backfill = False
+        needs_daily_backfill = False
         with self.connect() as db:
             db.executescript("""
 CREATE TABLE IF NOT EXISTS learner_runs(run_id TEXT PRIMARY KEY,mode TEXT,source TEXT,history_start TEXT,history_end TEXT,target_start TEXT,target_end TEXT,status TEXT,started_at TEXT,finished_at TEXT,processed_events INTEGER DEFAULT 0,last_error TEXT,schema_version TEXT);
@@ -43,6 +44,11 @@ CREATE TABLE IF NOT EXISTS learner_analysis_state(source TEXT,scope_type TEXT,sc
 CREATE TABLE IF NOT EXISTS learner_group_state(source TEXT,event_day TEXT,behavior_type TEXT,behavior_key TEXT,event_count INTEGER,users_json TEXT,devices_json TEXT,departments_json TEXT,related_json TEXT,representative_json TEXT,PRIMARY KEY(source,event_day,behavior_type,behavior_key));
 CREATE TABLE IF NOT EXISTS learner_finding_signatures(source TEXT,behavior_type TEXT,behavior_key TEXT,finding_id TEXT,PRIMARY KEY(source,behavior_type,behavior_key,finding_id));
 CREATE TABLE IF NOT EXISTS learner_source_state(source TEXT PRIMARY KEY,event_count INTEGER,last_event_time TEXT,last_event_id TEXT,updated_at TEXT,engine_version TEXT);
+CREATE TABLE IF NOT EXISTS learner_daily_metrics(
+ day TEXT NOT NULL,source TEXT NOT NULL,event_count INTEGER NOT NULL DEFAULT 0,
+ new_behavior_count INTEGER NOT NULL DEFAULT 0,frequency_count INTEGER NOT NULL DEFAULT 0,
+ spread_count INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(day,source)
+);
 CREATE TABLE IF NOT EXISTS learner_operational_findings(
  operational_id TEXT PRIMARY KEY,source TEXT NOT NULL,primary_event_id TEXT,created_at TEXT,
  gate_visible INTEGER NOT NULL DEFAULT 0,gate_category TEXT,title TEXT,summary TEXT,
@@ -62,6 +68,7 @@ CREATE INDEX IF NOT EXISTS idx_operational_source_time ON learner_operational_fi
 CREATE INDEX IF NOT EXISTS idx_operational_new_time ON learner_operational_findings(has_new_behavior,created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_operational_frequency_time ON learner_operational_findings(has_frequency_spike,created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_operational_similar_time ON learner_operational_findings(has_similar_group,created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_learner_daily_source_day ON learner_daily_metrics(source,day);
 """)
             columns = {row[1] for row in db.execute("PRAGMA table_info(learner_findings)")}
             if "gate_visible" not in columns:
@@ -73,8 +80,13 @@ CREATE INDEX IF NOT EXISTS idx_operational_similar_time ON learner_operational_f
             raw = db.execute("SELECT EXISTS(SELECT 1 FROM learner_findings)").fetchone()[0]
             materialized = db.execute("SELECT EXISTS(SELECT 1 FROM learner_operational_findings)").fetchone()[0]
             needs_backfill = bool(raw and not materialized)
+            processed = db.execute("SELECT EXISTS(SELECT 1 FROM learner_processed_events)").fetchone()[0]
+            daily = db.execute("SELECT EXISTS(SELECT 1 FROM learner_daily_metrics)").fetchone()[0]
+            needs_daily_backfill = bool(processed and not daily)
         if needs_backfill:
             self.rebuild_operational()
+        if needs_daily_backfill:
+            self.rebuild_daily_metrics()
 
     def findings(self, source="", finding_type="", start="", end="", limit=30, offset=0, visible_only=True):
         query = "SELECT * FROM learner_findings WHERE 1=1"
@@ -241,6 +253,46 @@ CREATE INDEX IF NOT EXISTS idx_operational_similar_time ON learner_operational_f
             daily = db.execute("SELECT substr(created_at,1,10) day,COUNT(*) count FROM learner_operational_findings" + where + " GROUP BY day ORDER BY day DESC LIMIT 14", params).fetchall()
             sources = db.execute("SELECT source,COUNT(*) count FROM learner_operational_findings" + where + " GROUP BY source ORDER BY count DESC", params).fetchall()
         return {"review": operational["review"] or 0, "total": operational["total"] or 0, "newBehavior": behavior["new_behavior"] or 0, "frequencySpike": behavior["frequency_spike"] or 0, "daily": [dict(item) for item in reversed(daily)], "sources": [dict(item) for item in sources]}
+
+    def rebuild_daily_metrics(self, source=""):
+        """Refresh compact count aggregates after analysis; raw events are not copied."""
+        source_where = " WHERE source=?" if source else ""
+        params = (source,) if source else ()
+        with self.connect() as db:
+            if source:
+                db.execute("DELETE FROM learner_daily_metrics WHERE source=?", params)
+            else:
+                db.execute("DELETE FROM learner_daily_metrics")
+            db.execute(
+                "INSERT INTO learner_daily_metrics(day,source,event_count) "
+                "SELECT substr(event_time,1,10),source,COUNT(*) FROM learner_processed_events" + source_where +
+                " GROUP BY source,substr(event_time,1,10)", params,
+            )
+            finding_rows = db.execute(
+                "SELECT substr(created_at,1,10) day,source,"
+                "COUNT(DISTINCT CASE WHEN finding_type='NEW_BEHAVIOR' THEN COALESCE(NULLIF(event_id,''),finding_id) END) new_count,"
+                "COUNT(DISTINCT CASE WHEN finding_type='FREQUENCY_SPIKE' THEN COALESCE(NULLIF(event_id,''),finding_id) END) frequency_count,"
+                "COUNT(DISTINCT CASE WHEN instr(COALESCE(gate_json,''),'\"SPREAD\"')>0 THEN COALESCE(NULLIF(event_id,''),finding_id) END) spread_count "
+                "FROM learner_findings" + source_where + " GROUP BY source,substr(created_at,1,10)", params,
+            ).fetchall()
+            db.executemany(
+                "INSERT INTO learner_daily_metrics(day,source,event_count,new_behavior_count,frequency_count,spread_count) VALUES(?,?,0,?,?,?) "
+                "ON CONFLICT(day,source) DO UPDATE SET new_behavior_count=excluded.new_behavior_count,frequency_count=excluded.frequency_count,spread_count=excluded.spread_count",
+                [(row["day"], row["source"], row["new_count"], row["frequency_count"], row["spread_count"]) for row in finding_rows if row["day"]],
+            )
+
+    def daily_metric_bounds(self):
+        with self.connect() as db:
+            row = db.execute("SELECT MIN(day),MAX(day) FROM learner_daily_metrics").fetchone()
+        return (row[0], row[1]) if row and row[0] and row[1] else None
+
+    def daily_metrics(self, start, end):
+        with self.connect() as db:
+            rows = db.execute(
+                "SELECT day,source,event_count,new_behavior_count,frequency_count,spread_count "
+                "FROM learner_daily_metrics WHERE day>=? AND day<=? ORDER BY day,source", (start, end),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def finding(self, fid):
         operational = self.operational_finding(fid)

@@ -40,6 +40,7 @@ from backend.services.index_maintenance import IndexMaintenanceService
 from backend.services.exceptions import ExceptionService
 from backend.services.content import ContentService
 from backend.services.learner.store import LearnerStore
+from backend.services.learner.dashboard import LearnerDashboardService
 from backend.services.learner import LearnerService
 from backend.services.exporting import export_headers, normalize_export_columns, normalize_report_sections, schema_payload
 
@@ -77,6 +78,7 @@ exception_service = ExceptionService(PROJECT_ROOT)
 content_service = ContentService(PROJECT_ROOT)
 index_maintenance_service = IndexMaintenanceService(PROJECT_ROOT)
 learner_store = LearnerStore(PROJECT_ROOT)  # Schema/backfill once; requests only execute indexed reads.
+learner_dashboard_service = LearnerDashboardService(learner_store)
 try:
     dashboard_service.warm_default()
 except Exception:
@@ -723,6 +725,15 @@ def learner_findings(source: str="", findingType: str="", start: str="", end: st
     result=learner_store.operational_findings(source,findingType,start,(end+"T99") if end else "",pageSize,(page-1)*pageSize,view != "all")
     total=result["total"]
     return {"success":True,"data":{"items":result["items"],"pagination":{"page":page,"pageSize":pageSize,"total":total,"totalPages":max(1,(total+pageSize-1)//pageSize)}}}
+
+@app.get("/api/learner/dashboard")
+def learner_dashboard(source: str="", start: str="", end: str="") -> dict:
+    if source and source not in {"detections","xdr","inbound","outbound","dlp","firewall"}:
+        return error_response(str(uuid.uuid4()),"LEARNER_SOURCE_INVALID",f"Unsupported source: {source}",400)
+    try:
+        return {"success":True,"data":learner_dashboard_service.dashboard(source,start,end)}
+    except ValueError as exc:
+        return error_response(str(uuid.uuid4()),"LEARNER_DATE_INVALID",str(exc),400)
 
 @app.get("/api/learner/findings/{finding_id}")
 def learner_finding(finding_id: str) -> dict:

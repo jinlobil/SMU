@@ -75,6 +75,8 @@ def test_v2_reports_real_engine_phases(tmp_path):
     event_db(tmp_path,[("detections",f"e-{i}",f"2026-01-01T00:{i:02d}:00",{"rule":"R"}) for i in range(10)])
     phases=[];LearnerService(tmp_path).run("full",["detections"],progress=lambda value:phases.append(value.get("phase")))
     assert {"PREPARE","STREAM","FINALIZE_GROUPS","FINALIZE_FINDINGS","WRITE","ACTIVATE"}<=set(phases)
+    with LearnerStore(tmp_path).connect() as db:
+        assert db.execute("SELECT event_count FROM learner_daily_metrics WHERE source='detections' AND day='2026-01-01'").fetchone()[0] == 10
 
 
 def test_v2_cleanup_warning_does_not_overwrite_successful_activation(tmp_path, monkeypatch):

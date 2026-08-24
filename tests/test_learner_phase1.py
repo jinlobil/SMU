@@ -63,8 +63,8 @@ def test_learner_health_job_and_watchdog_surface(tmp_path,monkeypatch):
 
 def test_fastapi_and_frontend_expose_learner_contract():
     app=Path("backend/app.py").read_text(encoding="utf-8");ui=Path("frontend/src/pages/MachineLearningPage.tsx").read_text(encoding="utf-8")
-    for route in ("/api/learner/jobs","/api/learner/findings","/api/learner/history"): assert route in app
-    for label in ("새로운 행동","활동 증가","비슷한 이벤트","왜 확인해야 하나요?"): assert label in ui
+    for route in ("/api/learner/jobs","/api/learner/dashboard","/api/learner/findings","/api/learner/history"): assert route in app
+    for label in ("당월 총 탐지","일별 탐지량 추이","이상 탐지 일자 TOP 5","원인 분석 열기"): assert label in ui
 
 
 def test_learner_main_uses_keyword_only_logging_retention():
@@ -170,10 +170,9 @@ def test_frontend_disables_analysis_buttons_and_exposes_graceful_cancel():
     ui=Path("frontend/src/pages/MachineLearningPage.tsx").read_text(encoding="utf-8")
     assert "disabled={busy}" in ui
     assert 'global-job-progress scheduler-progress indexing learner-job-progress' in ui
-    assert 'className="config-card"' in ui
     assert 'className="primary-action"' in ui and 'className="danger-action"' in ui
     assert "분석 중단" in ui and "/cancel" in ui
-    for field in ("sourceProcessed","sourceTotal","totalProcessed","totalEvents","progressPercent"):assert field in ui
+    for field in ("sourceProcessed","sourceTotal","totalProcessed","totalEvents"):assert field in ui
 
 
 def test_learner_findings_are_server_paginated(tmp_path):
@@ -213,14 +212,12 @@ def test_operational_findings_never_merge_different_primary_events(tmp_path):
 
 def test_machine_learning_render_boundaries_and_progress_math():
     ui=Path("frontend/src/pages/MachineLearningPage.tsx").read_text(encoding="utf-8")
-    assert "const LearnerJobStatus=memo" in ui
-    assert "const FindingList=memo" in ui and "const FindingCard=memo" in ui
-    assert "processed/total*100:0" in ui
-    assert "pageSize:String(PAGE_SIZE)" in ui and "const PAGE_SIZE=30" in ui
-    assert "setInterval(()=>void poll(),1500)" in ui
-    # Finding data is fetched only by the list effect, never by progress polling.
+    assert "function JobProgress" in ui
+    assert "FindingList" not in ui and "FindingCard" not in ui
+    assert "/api/learner/dashboard?" in ui
+    # Finding data is lazy-loaded only inside the drill-down.
     assert ui.count("/api/learner/findings?")==1
-    assert "onResultsReady()" in ui and "['completed','cancelled'].includes(current)" in ui
+    assert "function Drilldown" in ui and "setInterval" in ui
 
 
 def test_machine_learning_uses_shared_action_tokens_without_learner_colors():
@@ -232,18 +229,15 @@ def test_machine_learning_uses_shared_action_tokens_without_learner_colors():
 
 def test_machine_learning_reuses_existing_smu_ui_patterns():
     ui=Path("frontend/src/pages/MachineLearningPage.tsx").read_text(encoding="utf-8")
-    for shared in ('className="source-filters"','<DateRange','className="condition-list"','className="filter-action-row"','className="primary-action"','className="pagination"','className="config-card learner-finding"','className="detail-modal"','className="timeline-empty"'):
+    for shared in ('<DateRange','className="primary-action"','className="dash-card threat-card"','className="dash-card top-analysis learner-anomaly-table"','className="detail-modal learner-drilldown"'):
         assert shared in ui
     for forbidden in ('learner-date-input','ml-date-picker','learner-filter-button','learner-dropdown','learner-actions','learner-pagination'):
         assert forbidden not in ui
-    assert 'busy&&job&&<LearnerJobStatus' in ui
-    assert 'className="config-card"' in ui
+    assert 'busy&&job&&<JobProgress' in ui
     assert 'className="primary-action"' in ui
     detection=Path("frontend/src/pages/DetectionPage.tsx").read_text(encoding="utf-8")
     assert '<DateRange' in detection and 'from "../components/DateRange"' in detection
-    assert 'view:filters.view' in ui
-    assert "catch(error=>{if(!isAbortError(error))" in ui
-    assert "if(!controller.signal.aborted)setLoading(false)" in ui
+    assert "FindingList" not in ui and "learner-finding" not in ui
 
 def test_learner_summary_aggregates_gate_type_day_and_source(tmp_path):
     from backend.services.learner.store import LearnerStore
@@ -265,12 +259,12 @@ def test_learner_summary_aggregates_gate_type_day_and_source(tmp_path):
     assert summary["sources"][0] == {"source": "inbound", "count": 2}
 
 
-def test_machine_learning_uses_seven_three_overview_and_dashboard_charts():
+def test_machine_learning_uses_count_anomaly_dashboard():
     ui = Path("frontend/src/pages/MachineLearningPage.tsx").read_text(encoding="utf-8")
     css = Path("frontend/src/styles.css").read_text(encoding="utf-8")
-    assert 'className="learner-overview-workspace"' in ui
-    assert 'className="dash-card threat-card learner-trend"' in ui
-    assert 'className="dash-card mix-card learner-source-mix"' in ui
-    assert 'className="learner-control-panel"' in ui
-    assert "grid-template-columns:minmax(0,7fr) minmax(320px,3fr)" in css
-    assert "/api/learner/summary?" in ui
+    for label in ("당월 총 탐지","당월 일평균","전월 대비 일평균","이상 탐지 일자","소스별 월간 비교","원인 분석 열기"):
+        assert label in ui
+    assert 'className="learner-dashboard-main"' in ui
+    assert ".learner-dashboard-main" in css
+    assert "/api/learner/dashboard?" in ui
+    assert "/api/learner/summary?" not in ui
