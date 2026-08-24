@@ -13,11 +13,11 @@
     "vite": "latest",
     "typescript": "latest",
     "react": "latest",
-    "react-dom": "latest"
+    "react-dom": "latest",
+    "react-router-dom": "^6.30.1"
   },
   "devDependencies": {
     "@types/react": "latest",
     "@types/react-dom": "latest"
   }
 }
-
