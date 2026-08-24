@@ -703,6 +703,18 @@ def vacuum_indexes(payload: dict | None = Body(default=None)) -> dict:
     target = str((payload or {}).get("target", "all"))
     return {"success": True, "data": watchdog_manager.start_laborer_job("vacuum", target=target)}
 
+@app.get("/api/learner/findings/{finding_id}")
+def learner_finding(finding_id: str) -> dict:
+    data=learner_store.finding(finding_id)
+    return {"success":True,"data":data} if data else error_response(str(uuid.uuid4()),"LEARNER_FINDING_NOT_FOUND","Finding not found",404)
+
+@app.get("/api/learner/summary")
+def learner_summary(start: str="", end: str="") -> dict:
+    return {"success":True,"data":learner_store.summary(start,(end+"T99") if end else "")}
+
+@app.get("/api/learner/history")
+def learner_history(source: str, scopeType: str, scopeKey: str, behaviorType: str, behaviorKey: str) -> dict:
+    return {"success":True,"data":LearnerService(PROJECT_ROOT).history(source,scopeType,scopeKey,behaviorType,behaviorKey)}
 
 @app.post("/api/learner/jobs", status_code=202)
 def start_learner_job(payload: dict = Body(default={})) -> dict:
@@ -785,6 +797,10 @@ def list_detections(
         if not isinstance(parsed_conditions, list):
             raise ValueError("conditions must be a JSON list")
         data = detection_service.list_detections(start, end, parsed_conditions, page, page_size, sort, direction)
+    except EventListIndexUnavailable as exc:
+        request_id = str(uuid.uuid4())
+        log.warning("Detection list index unavailable request_id=%s error=%s", request_id, exc)
+        return error_response(request_id, "EVENT_LIST_INDEX_UNAVAILABLE", str(exc), 409)
     except (ValueError, json.JSONDecodeError) as exc:
         request_id = str(uuid.uuid4())
         log.error("Detection query rejected request_id=%s error=%s", request_id, exc)
@@ -807,6 +823,9 @@ def list_email_security(kind: str, start: date, end: date, conditions: str = "[]
         parsed = json.loads(conditions)
         if not isinstance(parsed, list): raise ValueError("conditions must be a list")
         data = email_security_service.list_records(kind, start, end, parsed, page, page_size, sort, direction)
+    except EventListIndexUnavailable as exc:
+        request_id = str(uuid.uuid4()); log.warning("Email security list index unavailable request_id=%s error=%s", request_id, exc)
+        return error_response(request_id, "EVENT_LIST_INDEX_UNAVAILABLE", str(exc), 409)
     except (ValueError, json.JSONDecodeError) as exc:
         request_id = str(uuid.uuid4()); log.error("Email security query rejected request_id=%s error=%s", request_id, exc)
         return error_response(request_id, "INVALID_EMAIL_SECURITY_QUERY", str(exc), 400)
@@ -848,6 +867,9 @@ def list_transfers(kind: str, start: date, end: date, conditions: str = "[]", pa
         parsed = json.loads(conditions)
         if not isinstance(parsed, list): raise ValueError("conditions must be a list")
         data = transfer_service.list_records(kind, start, end, parsed, page, page_size, sort, direction)
+    except EventListIndexUnavailable as exc:
+        request_id = str(uuid.uuid4()); log.warning("Transfer list index unavailable request_id=%s error=%s", request_id, exc)
+        return error_response(request_id, "EVENT_LIST_INDEX_UNAVAILABLE", str(exc), 409)
     except (ValueError, json.JSONDecodeError) as exc:
         request_id = str(uuid.uuid4()); log.error("Transfer query rejected request_id=%s error=%s", request_id, exc)
         return error_response(request_id, "INVALID_TRANSFER_QUERY", str(exc), 400)
