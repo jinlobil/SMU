@@ -64,7 +64,7 @@ def test_learner_health_job_and_watchdog_surface(tmp_path,monkeypatch):
 def test_fastapi_and_frontend_expose_learner_contract():
     app=Path("backend/app.py").read_text(encoding="utf-8");ui=Path("frontend/src/pages/MachineLearningPage.tsx").read_text(encoding="utf-8")
     for route in ("/api/learner/jobs","/api/learner/dashboard","/api/learner/findings","/api/learner/history"): assert route in app
-    for label in ("당월 총 탐지","일별 탐지량 추이","임계 초과 일자 TOP 5","원인 분석 열기"): assert label in ui
+    for label in ("당월 총 탐지","전월 vs 당월 탐지량","임계 초과 일자 TOP 5","원인 분석 열기"): assert label in ui
 
 
 def test_learner_main_uses_keyword_only_logging_retention():
@@ -229,7 +229,7 @@ def test_machine_learning_uses_shared_action_tokens_without_learner_colors():
 
 def test_machine_learning_reuses_existing_smu_ui_patterns():
     ui=Path("frontend/src/pages/MachineLearningPage.tsx").read_text(encoding="utf-8")
-    for shared in ('<DateRange','className="refresh-button"','className="dash-card threat-card"','className="dash-card top-analysis learner-anomaly-table"','className="detail-modal learner-drilldown"'):
+    for shared in ('type="month"','className="refresh-button"','className="dash-card threat-card"','className="dash-card top-analysis learner-anomaly-table"','className="detail-modal learner-drilldown"'):
         assert shared in ui
     for forbidden in ('learner-date-input','ml-date-picker','learner-filter-button','learner-dropdown','learner-actions','learner-pagination'):
         assert forbidden not in ui
@@ -274,7 +274,7 @@ def test_machine_learning_toolbar_and_detail_reuse_shared_ui_patterns():
     ui = Path("frontend/src/pages/MachineLearningPage.tsx").read_text(encoding="utf-8")
     css = Path("frontend/src/styles.css").read_text(encoding="utf-8")
     assert 'className="dashboard-range filter-action-row learner-dashboard-controls"' in ui
-    assert '<DateRange start={start} end={end}' in ui
+    assert 'type="month"' in ui
     assert ui.count('className="refresh-button"') >= 2
     assert 'className="primary-action"' not in ui
     assert ".filter-action-row.learner-dashboard-controls" in css
@@ -283,3 +283,16 @@ def test_machine_learning_toolbar_and_detail_reuse_shared_ui_patterns():
     assert "margin-top:" not in css[css.index(".filter-action-row.learner-dashboard-controls"):css.index(".learner-kpis")]
     assert "word-break:keep-all;white-space:nowrap" in css
     assert ".learner-anomaly-detail>footer .refresh-button" not in css
+
+
+def test_machine_learning_month_comparison_and_lazy_cause_ui_contract():
+    ui = Path("frontend/src/pages/MachineLearningPage.tsx").read_text(encoding="utf-8")
+    css = Path("frontend/src/styles.css").read_text(encoding="utf-8")
+    assert 'type="month"' in ui and "DateRange" not in ui
+    assert "previousCount" in ui and "currentCount" in ui and "monthChangePct" in ui
+    assert "전월 동일 일자" in ui and "왜 이 날짜의 탐지량이 증가했나요?" in ui
+    assert "원본 분석 결과 보기" in ui
+    assert "AbortController" in ui  # Findings load only after opening the cause modal.
+    assert "anomaly-high pulse" in ui and "animation:status-breathe" in css
+    for status in ("similar", "up", "down", "insufficient"):
+        assert f".source-status.{status}" in css

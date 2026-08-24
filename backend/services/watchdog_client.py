@@ -117,6 +117,18 @@ class WatchdogManager:
             if exc.code==404:return None
             raise
 
+    def wait_for_learner_job(self, job: dict, progress) -> dict:
+        """Wait for the independent Learner; the Indexer never invokes this."""
+        while not self.stop.is_set():
+            current = self.learner_job(job["id"])
+            if current is None: raise RuntimeError(f"Learner job disappeared: {job['id']}")
+            progress(current.get("message", "Learner 분석 중"))
+            if current.get("status") == "completed": return current.get("result") or {}
+            if current.get("status") in {"failed", "cancelled"}:
+                raise RuntimeError((current.get("error") or {}).get("message", "Learner incremental failed"))
+            time.sleep(0.8)
+        raise RuntimeError("Learner wait interrupted")
+
     def restart_laborer(self) -> dict:
         self.ensure()
         return self.request("/laborer/restart", "POST", timeout=20)

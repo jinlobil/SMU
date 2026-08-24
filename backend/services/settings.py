@@ -104,7 +104,7 @@ class ThemePresetService:
         temporary.write_text(json.dumps(presets, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         os.replace(temporary, self.path)
 class SchedulerService:
-    TARGETS = {"detections", "inbound", "dlp", "outbound", "endpoints", "organizations", "users"}
+    TARGETS = {"detections", "inbound", "dlp", "outbound", "endpoints", "organizations", "users", "learner"}
     LEGACY_DETECTION_TARGETS = {"xdr", "firewall"}
 
     def __init__(self, root: Path, refresh_service, index_service=None):
@@ -226,13 +226,17 @@ class SchedulerService:
                 self.state.update(phase="collecting", currentTarget=None, currentMessage="수집 작업 준비 중")
                 self._persist_locked()
             messages = []; targets = self.get()["targets"]
-            if targets and self.index is not None and hasattr(self.index, "start_fetch_job"):
+            learner_selected = "learner" in targets
+            collection_targets = [target for target in targets if target != "learner"]
+            upstream_ok = True
+            if collection_targets and self.index is not None and hasattr(self.index, "start_fetch_job"):
                 try:
-                    fetch_job = self.index.start_fetch_job(targets, None, None, chain_index=True)
+                    fetch_job = self.index.start_fetch_job(collection_targets, None, None, chain_index=True)
                     result = self.index.wait_for_fetch_job(fetch_job, lambda message: self._update_progress("collecting" if "FETCHING" in message or "수집" in message else "indexing", "fetcher", message), wait_for_index=True)
-                    for target in targets:
+                    for target in collection_targets:
                         target_result = result.get(target) or {"status": "FAIL", "error": "결과 없음"}
                         state = target_result.get("status", "FAIL"); detail = target_result.get("error", "")
+                        upstream_ok = upstream_ok and state == "SUCCESS"
                         messages.append(f"{target}:{'OK' if state == 'SUCCESS' else 'FAIL ' + detail}")
                         with self.lock:
                             self.state["targetStatus"][target] = {"time": self._display_time(time.time()), "status": state, "message": detail}
@@ -241,7 +245,28 @@ class SchedulerService:
                 except Exception as exc:
                     self.log.exception("Scheduled Fetcher/Indexer chain failed")
                     messages.append(f"fetch/index:FAIL {type(exc).__name__}: {exc}")
-            elif not targets:
+                    upstream_ok = False
+            if learner_selected:
+                timestamp = self._display_time(time.time())
+                if not upstream_ok:
+                    messages.append("learner:SKIPPED upstream_index_failed")
+                    status, detail = "SKIPPED", "upstream_index_failed"
+                elif self.index is None or not hasattr(self.index, "start_learner_job"):
+                    messages.append("learner:FAIL unavailable")
+                    status, detail = "FAIL", "Learner unavailable"
+                else:
+                    try:
+                        self._update_progress("learner", "learner", "최신 인덱스 기반 Incremental 분석 준비 중")
+                        learner_job = self.index.start_learner_job(mode="incremental")
+                        self.index.wait_for_learner_job(learner_job, lambda message: self._update_progress("learner", "learner", message))
+                        messages.append("learner:OK"); status, detail = "SUCCESS", "Incremental 분석 완료"
+                    except Exception as exc:
+                        self.log.exception("Scheduled Learner final phase failed")
+                        messages.append(f"learner:FAIL {type(exc).__name__}: {exc}"); status, detail = "FAIL", str(exc)
+                with self.lock:
+                    self.state["targetStatus"]["learner"] = {"time": timestamp, "status": status, "message": detail}
+                    self._persist_locked()
+            elif not collection_targets:
                 messages.append("선택된 수집 대상 없음")
             with self.lock:
                 self.state["lastRun"] = self._display_time(time.time())

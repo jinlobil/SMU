@@ -100,8 +100,8 @@ def test_anomaly_top_and_source_contribution(tmp_path):
     anomaly = next(row for row in result["anomalies"] if row["day"] == "2026-08-13")
     assert anomaly["status"] == "HIGH"
     assert anomaly["contributions"][0]["source"] == "detections"
-    assert anomaly["contributions"][0]["percent"] == 90.0
-    assert "Detection" in anomaly["causeSummary"] and "활동 증가" in anomaly["causeSummary"]
+    assert anomaly["contributions"][0]["percent"] == 94.1
+    assert "Detection" in anomaly["causeSummary"] and "증가" in anomaly["causeSummary"]
 
 
 def test_default_kpi_and_top_list_include_high_but_retain_low_detail(tmp_path):
@@ -151,3 +151,38 @@ def test_schema_migration_never_backfills_derived_tables(tmp_path):
         assert db.execute("SELECT COUNT(*) FROM learner_daily_metrics").fetchone()[0] == 0
         assert db.execute("SELECT COUNT(*) FROM learner_operational_findings").fetchone()[0] == 0
         assert db.execute("SELECT value FROM learner_schema_meta WHERE key='schema_version'").fetchone()[0] == "5"
+
+
+def test_month_selection_aligns_previous_month_and_keeps_missing_days_null(tmp_path):
+    store = LearnerStore(tmp_path)
+    add_metrics(store, date(2026, 7, 1), date(2026, 7, 31), 100, 50)
+    add_metrics(store, date(2026, 8, 1), date(2026, 8, 24), 120, 60)
+    result = LearnerDashboardService(store).dashboard(month="2026-08")
+    assert result["selectedMonth"] == "2026-08"
+    assert result["comparisonMonth"] == "2026-07"
+    assert result["months"]["currentDays"] == 24
+    assert result["months"]["previousDays"] == 31
+    assert result["trend"][23]["currentCount"] == 180
+    assert result["trend"][24]["currentCount"] is None
+    assert result["trend"][24]["previousCount"] == 150
+    assert result["kpi"]["currentDailyAverage"] == 180
+
+
+def test_month_selection_rolls_any_month_to_its_previous_month(tmp_path):
+    store = LearnerStore(tmp_path)
+    add_metrics(store, date(2026, 5, 1), date(2026, 6, 30))
+    result = LearnerDashboardService(store).dashboard(month="2026-06")
+    assert (result["selectedMonth"], result["comparisonMonth"]) == ("2026-06", "2026-05")
+
+
+def test_new_source_missing_previous_month_is_not_zero_or_fake_growth(tmp_path):
+    store = LearnerStore(tmp_path)
+    rows = [(f"2026-08-{day:02d}", "firewall", 10, 0, 0, 0) for day in range(1, 25)]
+    with store.connect() as db:
+        db.executemany("INSERT OR REPLACE INTO learner_daily_metrics VALUES(?,?,?,?,?,?)", rows)
+    result = LearnerDashboardService(store).dashboard(source="firewall", month="2026-08")
+    comparison = next(row for row in result["sourceComparison"] if row["source"] == "firewall")
+    assert comparison["previousTotal"] is None
+    assert comparison["changePct"] is None
+    assert comparison["status"] == "INSUFFICIENT"
+    assert result["coverage"]["previous"]["status"] == "INSUFFICIENT"

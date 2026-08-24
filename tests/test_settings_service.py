@@ -118,3 +118,53 @@ def test_scheduler_exposes_only_physical_collection_targets(tmp_path: Path):
     service = SchedulerService(tmp_path, Refresh())
     saved = service.save({"enabled": False, "interval": 10, "targets": ["detections", "xdr", "firewall"]})
     assert saved["targets"] == ["detections"]
+
+
+class ScheduledLearnerIndex(ScheduledIndex):
+    def __init__(self, fail_upstream=False, fail_learner=False):
+        super().__init__(); self.events=[]; self.fail_upstream=fail_upstream; self.fail_learner=fail_learner; self.learner_mode=None
+    def wait_for_fetch_job(self,job,progress,wait_for_index=False):
+        self.events.append("index")
+        result=super().wait_for_fetch_job(job,progress,wait_for_index)
+        if self.fail_upstream: result[self.targets[0]]={"status":"FAIL","error":"broken"}
+        return result
+    def start_learner_job(self,mode="incremental",**kwargs):
+        self.events.append("learner");self.learner_mode=mode;return {"id":"learner-1"}
+    def wait_for_learner_job(self,job,progress):
+        if self.fail_learner: raise RuntimeError("learner failed")
+        return {"ok":True}
+
+
+def test_scheduler_runs_independent_learner_as_final_incremental_phase(tmp_path):
+    index=ScheduledLearnerIndex();service=SchedulerService(tmp_path,ScheduledRefresh(),index)
+    service.save({"enabled":False,"interval":1,"targets":["detections","dlp","learner"]});service._run_cycle()
+    assert index.targets == ["detections","dlp"]
+    assert index.events == ["index","learner"]
+    assert index.learner_mode == "incremental"
+    assert service.get()["targetStatus"]["learner"]["status"] == "SUCCESS"
+
+
+def test_scheduler_allows_learner_only(tmp_path):
+    index=ScheduledLearnerIndex();service=SchedulerService(tmp_path,ScheduledRefresh(),index)
+    service.save({"enabled":False,"interval":1,"targets":["learner"]});service._run_cycle()
+    assert index.events == ["learner"] and index.targets == []
+
+
+def test_scheduler_skips_learner_after_upstream_failure(tmp_path):
+    index=ScheduledLearnerIndex(fail_upstream=True);service=SchedulerService(tmp_path,ScheduledRefresh(),index)
+    service.save({"enabled":False,"interval":1,"targets":["detections","learner"]});service._run_cycle()
+    assert index.events == ["index"]
+    assert service.get()["targetStatus"]["learner"] == {"time": service.get()["targetStatus"]["learner"]["time"], "status":"SKIPPED", "message":"upstream_index_failed"}
+
+
+def test_scheduler_separates_learner_failure_from_successful_data_refresh(tmp_path):
+    index=ScheduledLearnerIndex(fail_learner=True);service=SchedulerService(tmp_path,ScheduledRefresh(),index)
+    service.save({"enabled":False,"interval":1,"targets":["detections","learner"]});service._run_cycle();state=service.get()
+    assert state["targetStatus"]["detections"]["status"] == "SUCCESS"
+    assert state["targetStatus"]["learner"]["status"] == "FAIL"
+    assert "index:OK" in state["lastResult"] and "learner:FAIL" in state["lastResult"]
+
+
+def test_indexer_has_no_direct_learner_callback():
+    source = Path("system_monitor/indexer.py").read_text(encoding="utf-8")
+    assert "learner" not in source.lower()
