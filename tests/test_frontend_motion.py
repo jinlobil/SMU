@@ -409,8 +409,8 @@ def test_learner_reuses_existing_process_monitor_and_controls():
     assert config.count('<h2>Process Monitor</h2>') == 1
     assert '<h2>Learner</h2>' not in config
     assert '<p><b>Learner</b>' in config
-    assert 'className="dashboard-range learner-dashboard-controls"' in machine
-    assert 'className="primary-action"' in machine
+    assert 'className="dashboard-range filter-action-row learner-dashboard-controls"' in machine
+    assert 'className="refresh-button"' in machine
     assert 'className="danger-action"' in machine
 
 

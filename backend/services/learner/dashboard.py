@@ -11,8 +11,13 @@ SOURCE_LABELS = {
     "detections": "Detection", "xdr": "Email XDR", "inbound": "Inbound",
     "outbound": "Outbound", "dlp": "DLP", "firewall": "Firewall",
 }
-BASELINE_DAYS = 30
-MIN_HISTORY_DAYS = 7
+SAME_WEEKDAY_MIN_SAMPLES = 6
+SAME_WEEKDAY_MAX_SAMPLES = 12
+DAY_TYPE_MIN_SAMPLES = 10
+DAY_TYPE_HISTORY_DAYS = 56
+ROLLING_BASELINE_DAYS = 30
+ROLLING_MIN_SAMPLES = 7
+HISTORY_LOOKBACK_DAYS = max(SAME_WEEKDAY_MAX_SAMPLES * 7, DAY_TYPE_HISTORY_DAYS, ROLLING_BASELINE_DAYS)
 
 
 def month_start(value: date) -> date:
@@ -33,11 +38,22 @@ def anomaly_series(counts: dict[str, int], start: date, end: date, history_start
     output = []
     for current in day_range(start, end):
         history_end = current - timedelta(days=1)
-        baseline_start = max(history_start, current - timedelta(days=BASELINE_DAYS))
-        history = [counts.get(day.isoformat(), 0) for day in day_range(baseline_start, history_end)] if history_end >= baseline_start else []
+        available = day_range(history_start, history_end) if history_end >= history_start else []
+        same_weekday = [counts.get(day.isoformat(), 0) for day in available if day.weekday() == current.weekday()][-SAME_WEEKDAY_MAX_SAMPLES:]
+        day_type_start = current - timedelta(days=DAY_TYPE_HISTORY_DAYS)
+        current_is_weekend = current.weekday() >= 5
+        day_type = [counts.get(day.isoformat(), 0) for day in available if day >= day_type_start and (day.weekday() >= 5) == current_is_weekend]
+        rolling_start = current - timedelta(days=ROLLING_BASELINE_DAYS)
+        rolling = [counts.get(day.isoformat(), 0) for day in available if day >= rolling_start]
+        if len(same_weekday) >= SAME_WEEKDAY_MIN_SAMPLES:
+            history, baseline_method, minimum_samples = same_weekday, "SAME_WEEKDAY", SAME_WEEKDAY_MIN_SAMPLES
+        elif len(day_type) >= DAY_TYPE_MIN_SAMPLES:
+            history, baseline_method, minimum_samples = day_type, "WEEKDAY_WEEKEND", DAY_TYPE_MIN_SAMPLES
+        else:
+            history, baseline_method, minimum_samples = rolling, "ROLLING", ROLLING_MIN_SAMPLES
         actual = counts.get(current.isoformat(), 0)
-        if len(history) < MIN_HISTORY_DAYS:
-            output.append({"day": current.isoformat(), "count": actual, "average": None, "upper": None, "lower": None, "deviationPct": None, "status": "INSUFFICIENT_HISTORY"})
+        if len(history) < minimum_samples:
+            output.append({"day": current.isoformat(), "count": actual, "average": None, "upper": None, "lower": None, "deviationPct": None, "status": "INSUFFICIENT_HISTORY", "baselineMethod": baseline_method, "sampleSize": len(history)})
             continue
         center = float(statistics.median(history))
         mad = float(statistics.median(abs(value - center) for value in history))
@@ -47,7 +63,7 @@ def anomaly_series(counts: dict[str, int], start: date, end: date, history_start
         upper, lower = center + 3 * sigma, max(0.0, center - 3 * sigma)
         status = "HIGH" if actual > upper else "LOW" if actual < lower else "NORMAL"
         deviation = ((actual - center) / center * 100) if center else (100.0 if actual else 0.0)
-        output.append({"day": current.isoformat(), "count": actual, "average": round(center, 2), "upper": round(upper, 2), "lower": round(lower, 2), "deviationPct": round(deviation, 1), "status": status})
+        output.append({"day": current.isoformat(), "count": actual, "average": round(center, 2), "upper": round(upper, 2), "lower": round(lower, 2), "deviationPct": round(deviation, 1), "status": status, "baselineMethod": baseline_method, "sampleSize": len(history)})
     return output
 
 
@@ -67,7 +83,7 @@ class LearnerDashboardService:
             trend_start = anchor
         current_start = month_start(anchor)
         previous_start, previous_end = previous_month(anchor)
-        load_start = max(minimum, min(previous_start, trend_start - timedelta(days=BASELINE_DAYS)))
+        load_start = max(minimum, min(previous_start, trend_start - timedelta(days=HISTORY_LOOKBACK_DAYS)))
         rows = self.store.daily_metrics(load_start.isoformat(), anchor.isoformat())
         by_source = {name: {} for name in SOURCES}
         finding_metrics = {name: {} for name in SOURCES}
@@ -78,7 +94,8 @@ class LearnerDashboardService:
         trend = anomaly_series(selected_counts, trend_start, anchor, load_start)
         anomalies = [item for item in trend if item["status"] in {"HIGH", "LOW"}]
         anomaly_details = [self._anomaly_detail(item, by_source, finding_metrics, source) for item in anomalies]
-        anomaly_details.sort(key=lambda item: abs(item["deviationPct"] or 0), reverse=True)
+        high_anomalies = [item for item in anomaly_details if item["status"] == "HIGH"]
+        high_anomalies.sort(key=lambda item: item["deviationPct"] or 0, reverse=True)
         current_days = (anchor - current_start).days + 1
         previous_days = (previous_end - previous_start).days + 1
         current_total = self._period_total(selected_counts, current_start, anchor)
@@ -89,16 +106,18 @@ class LearnerDashboardService:
         change_pct = change / previous_average * 100 if previous_average else (100.0 if current_average else 0.0)
         new_behavior = sum(int(finding_metrics[name].get(day.isoformat(), {}).get("new_behavior_count", 0)) for name in SOURCES for day in day_range(current_start, anchor) if not source or name == source)
         spread = sum(int(finding_metrics[name].get(day.isoformat(), {}).get("spread_count", 0)) for name in SOURCES for day in day_range(current_start, anchor) if not source or name == source)
+        current_values = [(selected_counts.get(day.isoformat(), 0), day.isoformat()) for day in day_range(current_start, anchor)]
+        peak_count, peak_day = max(current_values, default=(0, ""))
         comparisons = [self._source_comparison(name, by_source[name], previous_start, previous_end, current_start, anchor) for name in SOURCES]
         return {
             "range": {"start": trend_start.isoformat(), "end": anchor.isoformat()},
             "source": source,
             "sourceLabel": SOURCE_LABELS.get(source, "전체"),
-            "kpi": {"currentTotal": current_total, "currentDailyAverage": round(current_average, 1), "previousTotal": previous_total, "previousDailyAverage": round(previous_average, 1), "dailyAverageChange": round(change, 1), "dailyAverageChangePct": round(change_pct, 1), "anomalyDays": len(anomalies), "newBehavior": new_behavior, "spread": spread},
+            "kpi": {"currentTotal": current_total, "currentDailyAverage": round(current_average, 1), "previousTotal": previous_total, "previousDailyAverage": round(previous_average, 1), "dailyAverageChange": round(change, 1), "dailyAverageChangePct": round(change_pct, 1), "anomalyDays": len(high_anomalies), "peakCount": peak_count, "peakDay": peak_day, "newBehavior": new_behavior, "spread": spread},
             "months": {"current": current_start.strftime("%Y-%m"), "previous": previous_start.strftime("%Y-%m"), "currentDays": current_days, "previousDays": previous_days},
             "trend": trend,
             "anomalies": anomaly_details,
-            "topAnomalies": anomaly_details[:5],
+            "topAnomalies": high_anomalies[:5],
             "sourceComparison": comparisons,
         }
 
@@ -149,4 +168,4 @@ class LearnerDashboardService:
 
     @staticmethod
     def _empty(source, start, end):
-        return {"range": {"start": start, "end": end}, "source": source, "sourceLabel": SOURCE_LABELS.get(source, "전체"), "kpi": {"currentTotal": 0, "currentDailyAverage": 0, "previousTotal": 0, "previousDailyAverage": 0, "dailyAverageChange": 0, "dailyAverageChangePct": 0, "anomalyDays": 0, "newBehavior": 0, "spread": 0}, "months": {}, "trend": [], "anomalies": [], "topAnomalies": [], "sourceComparison": []}
+        return {"range": {"start": start, "end": end}, "source": source, "sourceLabel": SOURCE_LABELS.get(source, "전체"), "kpi": {"currentTotal": 0, "currentDailyAverage": 0, "previousTotal": 0, "previousDailyAverage": 0, "dailyAverageChange": 0, "dailyAverageChangePct": 0, "anomalyDays": 0, "peakCount": 0, "peakDay": "", "newBehavior": 0, "spread": 0}, "months": {}, "trend": [], "anomalies": [], "topAnomalies": [], "sourceComparison": []}

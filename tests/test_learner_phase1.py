@@ -64,7 +64,7 @@ def test_learner_health_job_and_watchdog_surface(tmp_path,monkeypatch):
 def test_fastapi_and_frontend_expose_learner_contract():
     app=Path("backend/app.py").read_text(encoding="utf-8");ui=Path("frontend/src/pages/MachineLearningPage.tsx").read_text(encoding="utf-8")
     for route in ("/api/learner/jobs","/api/learner/dashboard","/api/learner/findings","/api/learner/history"): assert route in app
-    for label in ("당월 총 탐지","일별 탐지량 추이","이상 탐지 일자 TOP 5","원인 분석 열기"): assert label in ui
+    for label in ("당월 총 탐지","일별 탐지량 추이","임계 초과 일자 TOP 5","원인 분석 열기"): assert label in ui
 
 
 def test_learner_main_uses_keyword_only_logging_retention():
@@ -170,7 +170,7 @@ def test_frontend_disables_analysis_buttons_and_exposes_graceful_cancel():
     ui=Path("frontend/src/pages/MachineLearningPage.tsx").read_text(encoding="utf-8")
     assert "disabled={busy}" in ui
     assert 'global-job-progress scheduler-progress indexing learner-job-progress' in ui
-    assert 'className="primary-action"' in ui and 'className="danger-action"' in ui
+    assert 'className="refresh-button"' in ui and 'className="danger-action"' in ui
     assert "분석 중단" in ui and "/cancel" in ui
     for field in ("sourceProcessed","sourceTotal","totalProcessed","totalEvents"):assert field in ui
 
@@ -229,12 +229,12 @@ def test_machine_learning_uses_shared_action_tokens_without_learner_colors():
 
 def test_machine_learning_reuses_existing_smu_ui_patterns():
     ui=Path("frontend/src/pages/MachineLearningPage.tsx").read_text(encoding="utf-8")
-    for shared in ('<DateRange','className="primary-action"','className="dash-card threat-card"','className="dash-card top-analysis learner-anomaly-table"','className="detail-modal learner-drilldown"'):
+    for shared in ('<DateRange','className="refresh-button"','className="dash-card threat-card"','className="dash-card top-analysis learner-anomaly-table"','className="detail-modal learner-drilldown"'):
         assert shared in ui
     for forbidden in ('learner-date-input','ml-date-picker','learner-filter-button','learner-dropdown','learner-actions','learner-pagination'):
         assert forbidden not in ui
     assert 'busy&&job&&<JobProgress' in ui
-    assert 'className="primary-action"' in ui
+    assert 'className="refresh-button"' in ui
     detection=Path("frontend/src/pages/DetectionPage.tsx").read_text(encoding="utf-8")
     assert '<DateRange' in detection and 'from "../components/DateRange"' in detection
     assert "FindingList" not in ui and "learner-finding" not in ui
@@ -262,9 +262,24 @@ def test_learner_summary_aggregates_gate_type_day_and_source(tmp_path):
 def test_machine_learning_uses_count_anomaly_dashboard():
     ui = Path("frontend/src/pages/MachineLearningPage.tsx").read_text(encoding="utf-8")
     css = Path("frontend/src/styles.css").read_text(encoding="utf-8")
-    for label in ("당월 총 탐지","당월 일평균","전월 대비 일평균","이상 탐지 일자","소스별 월간 비교","원인 분석 열기"):
+    for label in ("당월 총 탐지","당월 일평균","전월 대비 일평균","임계 초과 일자","당월 최고 탐지량","소스별 월간 비교","원인 분석 열기"):
         assert label in ui
     assert 'className="learner-dashboard-main"' in ui
     assert ".learner-dashboard-main" in css
     assert "/api/learner/dashboard?" in ui
     assert "/api/learner/summary?" not in ui
+
+
+def test_machine_learning_toolbar_and_detail_reuse_shared_ui_patterns():
+    ui = Path("frontend/src/pages/MachineLearningPage.tsx").read_text(encoding="utf-8")
+    css = Path("frontend/src/styles.css").read_text(encoding="utf-8")
+    assert 'className="dashboard-range filter-action-row learner-dashboard-controls"' in ui
+    assert '<DateRange start={start} end={end}' in ui
+    assert ui.count('className="refresh-button"') >= 2
+    assert 'className="primary-action"' not in ui
+    assert ".filter-action-row.learner-dashboard-controls" in css
+    assert "align-items:end" in css
+    assert "height:36px;min-height:36px;box-sizing:border-box" in css
+    assert "margin-top:" not in css[css.index(".filter-action-row.learner-dashboard-controls"):css.index(".learner-kpis")]
+    assert "word-break:keep-all;white-space:nowrap" in css
+    assert ".learner-anomaly-detail>footer .refresh-button" not in css

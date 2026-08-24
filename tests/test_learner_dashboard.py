@@ -1,7 +1,15 @@
 import json
 from datetime import date, timedelta
 
-from backend.services.learner.dashboard import LearnerDashboardService, anomaly_series
+from backend.services.learner.dashboard import (
+    DAY_TYPE_MIN_SAMPLES,
+    ROLLING_BASELINE_DAYS,
+    SAME_WEEKDAY_MAX_SAMPLES,
+    SAME_WEEKDAY_MIN_SAMPLES,
+    LearnerDashboardService,
+    anomaly_series,
+    day_range,
+)
 from backend.services.learner.store import LearnerStore
 
 
@@ -25,6 +33,8 @@ def test_month_totals_daily_averages_and_source_sum(tmp_path):
     assert result["kpi"]["currentTotal"] == 14 * 160
     assert result["kpi"]["currentDailyAverage"] == 160
     assert result["kpi"]["dailyAverageChangePct"] == 6.7
+    assert result["kpi"]["peakCount"] == 160
+    assert result["kpi"]["peakDay"] == "2026-08-14"
     detection = next(row for row in result["sourceComparison"] if row["source"] == "detections")
     assert detection["previousTotal"] == 3100 and detection["currentTotal"] == 1680
 
@@ -42,6 +52,44 @@ def test_anomaly_threshold_has_no_time_leak_and_classifies_high_low_normal():
     assert {row["day"]: row["status"] for row in original} == {"2026-01-08": "NORMAL", "2026-01-09": "HIGH", "2026-01-10": "NORMAL", "2026-01-11": "LOW"}
 
 
+def test_weekday_seasonality_treats_normal_weekends_as_normal_and_detects_spikes():
+    start = date(2026, 1, 5)  # Monday
+    counts = {}
+    for offset in range(13 * 7):
+        current = start + timedelta(days=offset)
+        counts[current.isoformat()] = 200 if current.weekday() >= 5 else 1000
+    counts["2026-03-31"] = 2500  # Tuesday surge
+    counts["2026-04-05"] = 800  # Sunday surge
+    rows = anomaly_series(counts, date(2026, 3, 30), date(2026, 4, 5), start)
+    by_day = {row["day"]: row for row in rows}
+    assert by_day["2026-04-04"]["status"] == "NORMAL"
+    assert by_day["2026-03-31"]["status"] == "HIGH"
+    assert by_day["2026-04-05"]["status"] == "HIGH"
+    assert by_day["2026-04-05"]["baselineMethod"] == "SAME_WEEKDAY"
+    assert by_day["2026-04-05"]["sampleSize"] <= SAME_WEEKDAY_MAX_SAMPLES
+
+
+def test_seasonal_baseline_fallback_order_is_explicit():
+    current = date(2026, 3, 2)
+    long_start = current - timedelta(days=70)
+    long_counts = {day.isoformat(): 100 for day in day_range(long_start, current)}
+    same_weekday = anomaly_series(long_counts, current, current, long_start)[0]
+    assert same_weekday["baselineMethod"] == "SAME_WEEKDAY"
+    assert same_weekday["sampleSize"] >= SAME_WEEKDAY_MIN_SAMPLES
+
+    group_start = current - timedelta(days=20)
+    group_counts = {day.isoformat(): 100 for day in day_range(group_start, current)}
+    day_type = anomaly_series(group_counts, current, current, group_start)[0]
+    assert day_type["baselineMethod"] == "WEEKDAY_WEEKEND"
+    assert day_type["sampleSize"] >= DAY_TYPE_MIN_SAMPLES
+
+    rolling_start = current - timedelta(days=9)
+    rolling_counts = {day.isoformat(): 100 for day in day_range(rolling_start, current)}
+    rolling = anomaly_series(rolling_counts, current, current, rolling_start)[0]
+    assert rolling["baselineMethod"] == "ROLLING"
+    assert rolling["sampleSize"] <= ROLLING_BASELINE_DAYS
+
+
 def test_anomaly_top_and_source_contribution(tmp_path):
     store = LearnerStore(tmp_path)
     add_metrics(store, date(2026, 7, 1), date(2026, 8, 14))
@@ -54,6 +102,20 @@ def test_anomaly_top_and_source_contribution(tmp_path):
     assert anomaly["contributions"][0]["source"] == "detections"
     assert anomaly["contributions"][0]["percent"] == 90.0
     assert "Detection" in anomaly["causeSummary"] and "활동 증가" in anomaly["causeSummary"]
+
+
+def test_default_kpi_and_top_list_include_high_but_retain_low_detail(tmp_path):
+    store = LearnerStore(tmp_path)
+    add_metrics(store, date(2026, 5, 1), date(2026, 8, 14))
+    with store.connect() as db:
+        db.execute("UPDATE learner_daily_metrics SET event_count=900 WHERE day='2026-08-13' AND source='detections'")
+        db.execute("UPDATE learner_daily_metrics SET event_count=0 WHERE day='2026-08-12'")
+    result = LearnerDashboardService(store).dashboard(start="2026-07-16", end="2026-08-14")
+    statuses = {row["day"]: row["status"] for row in result["anomalies"]}
+    assert statuses["2026-08-13"] == "HIGH"
+    assert statuses["2026-08-12"] == "LOW"
+    assert all(row["status"] == "HIGH" for row in result["topAnomalies"])
+    assert result["kpi"]["anomalyDays"] == sum(row["status"] == "HIGH" for row in result["anomalies"])
 
 
 def test_dashboard_hot_path_never_reads_large_finding_tables(tmp_path):
