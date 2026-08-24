@@ -308,6 +308,11 @@ def test_machine_learning_restores_grouped_comparison_and_source_color_roles():
     assert 'className="source-indicator"' in ui
     assert 'background:sourceColor(x.source)' in ui
     assert 'learner-kpi-sparkline' in ui
+    assert 'from "react-apexcharts"' in ui
+    assert 'sparkline:{enabled:true}' in ui
+    assert 'function MiniSparkline' not in ui
+    assert '<polyline points={points}' not in ui
+    assert "r.currentCount==null?null" in ui
     for role in ("average", "change", "anomaly", "peak"):
         assert f".learner-kpi.{role}" in css
     assert "font-variant-numeric:tabular-nums" in css
