@@ -295,7 +295,7 @@ def test_machine_learning_month_comparison_and_lazy_cause_ui_contract():
     assert "전월 동일 일자" in ui and "왜 이 날짜의 탐지량이 증가했나요?" in ui
     assert "원본 분석 결과 보기" in ui
     assert "AbortController" in ui  # Findings load only after opening the cause modal.
-    assert "anomaly-high pulse" in ui and "animation:status-breathe" in css
+    assert 'type:"effectScatter"' in ui and 'rippleEffect:{scale:2.4' in ui
     for status in ("similar", "up", "down", "insufficient"):
         assert f".source-status.{status}" in css
 
@@ -345,3 +345,26 @@ def test_custom_month_picker_reuses_shared_context_menu_surface():
     assert '.learner-kpi-sparkline{position:static!important' in css
     assert '.metric-cell-content,.status-cell-content' in css
     assert 'justify-content:center' in css
+
+
+def test_machine_learning_main_chart_uses_echarts_and_matching_series_legend():
+    ui = Path("frontend/src/pages/MachineLearningPage.tsx").read_text(encoding="utf-8")
+    package = Path("frontend/package.json").read_text(encoding="utf-8")
+    assert '<svg viewBox=' not in ui
+    assert 'type:"effectScatter"' in ui
+    assert 'stack:"normal-range"' in ui
+    assert 'hasAverage?["평소 평균"]' in ui and 'hasRange?["평소 범위"]' in ui
+    assert 'name:"평소 범위"' in ui and 'name:"평소 평균"' in ui
+    assert 'row.lower==null||row.upper==null?null' in ui
+    for dependency in ('"echarts"', '"echarts-for-react"', '"tslib"'):
+        assert dependency in package
+
+
+def test_learner_contribution_panel_has_structural_grid_boundaries():
+    ui = Path("frontend/src/pages/MachineLearningPage.tsx").read_text(encoding="utf-8")
+    css = Path("frontend/src/styles.css").read_text(encoding="utf-8")
+    assert 'className="learner-detail-summary"' in ui
+    assert 'className="learner-contribution-panel"' in ui
+    assert '.learner-contribution-panel{box-sizing:border-box;min-width:0;width:100%;overflow:visible' in css
+    assert 'grid-template-columns:minmax(210px,.82fr) minmax(300px,1.5fr)' in css
+    assert 'padding-inline-start:clamp(18px,2vw,28px)' in css
