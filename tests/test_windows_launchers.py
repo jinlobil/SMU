@@ -55,13 +55,17 @@ def test_python_launcher_does_not_open_a_browser() -> None:
     assert "webbrowser.open" not in script
     assert "open_browser_when_ready" not in script
     assert '"--no-access-log"' in script
-    assert '"list", "react-router-dom", "--depth=0"' in script
+    assert '"list", "react-router-dom", "vite", "echarts", "echarts-for-react", "tslib", "--depth=0"' in script
     assert "ensure_port_available(8765" in script
     assert "ensure_port_available(5173" in script
     assert "BACKEND_READY_TIMEOUT_SECONDS = 30.0" in script
     assert "attempts=60" not in script
     assert "deadline = time.monotonic() + timeout_seconds" in script
-    assert script.index("stop_processes(processes)\n        processes.clear()") < script.index("        hold_terminal()")
+    assert 'vite_cli = ROOT / "frontend" / "node_modules" / "vite" / "bin" / "vite.js"' in script
+    assert '[npm_command, "run", "dev"]' not in script
+    assert 'subprocess.CREATE_NEW_PROCESS_GROUP' in script
+    assert '["taskkill", "/PID", str(process.pid), "/T", "/F"]' in script
+    assert script.index("stop_processes([(service.name, service.process)") < script.index("        hold_terminal()")
 
 
 def test_backend_import_does_not_initialize_or_warm_large_stores() -> None:
