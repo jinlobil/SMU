@@ -71,6 +71,8 @@ def relay_output(name: str, process: subprocess.Popen[str]) -> None:
 def start_process(name: str, command: list[str], cwd: Path) -> subprocess.Popen[str]:
     write_line(f"Starting {name}: executable={command[0]} command={' '.join(command)}")
     platform_options = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {"start_new_session": True}
+    child_environment = os.environ.copy()
+    child_environment.update({"PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"})
     process = subprocess.Popen(
         command,
         cwd=cwd,
@@ -79,6 +81,7 @@ def start_process(name: str, command: list[str], cwd: Path) -> subprocess.Popen[
         text=True,
         encoding="utf-8",
         errors="replace",
+        env=child_environment,
         **platform_options,
     )
     write_line(f"Started {name}: monitored_pid={process.pid} executable={command[0]}")
@@ -87,8 +90,17 @@ def start_process(name: str, command: list[str], cwd: Path) -> subprocess.Popen[
 
 
 def http_service_healthy(url: str, timeout: float = 1.0) -> bool:
+    request = urllib.request.Request(
+        url,
+        headers={
+            "Connection": "close",
+            "User-Agent": "smu-launcher-health/1.0",
+            "X-SMU-Health-Probe": "launcher",
+        },
+    )
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            response.read()
             return 200 <= response.status < 400
     except OSError:
         return False

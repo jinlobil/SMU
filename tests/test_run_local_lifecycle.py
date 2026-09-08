@@ -143,3 +143,57 @@ def test_frontend_command_runs_vite_with_node_not_npm_wrapper(monkeypatch, tmp_p
 
     assert command == ["C:/Node/node.exe", str(vite), "--host", "127.0.0.1", "--port", "5173"]
     assert "npm" not in command[0].lower()
+
+
+def test_health_probe_consumes_response_and_identifies_itself(monkeypatch):
+    class Response:
+        status = 200
+
+        def __init__(self):
+            self.read_called = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def read(self):
+            self.read_called = True
+            return b'{}'
+
+    response = Response()
+    captured = {}
+
+    def open_request(request, timeout):
+        captured["request"] = request
+        captured["timeout"] = timeout
+        return response
+
+    monkeypatch.setattr(run_local.urllib.request, "urlopen", open_request)
+
+    assert run_local.http_service_healthy("http://127.0.0.1:8765/api/health", timeout=0.75)
+    assert response.read_called
+    assert captured["timeout"] == 0.75
+    assert captured["request"].get_header("Connection") == "close"
+    assert captured["request"].get_header("User-agent") == "smu-launcher-health/1.0"
+    assert captured["request"].get_header("X-smu-health-probe") == "launcher"
+
+
+def test_child_process_output_is_forced_to_utf8(monkeypatch, tmp_path):
+    quiet(monkeypatch)
+    captured = {}
+
+    class Started(FakeProcess):
+        stdout = []
+
+    def popen(command, **kwargs):
+        captured.update(kwargs)
+        return Started()
+
+    monkeypatch.setattr(run_local.subprocess, "Popen", popen)
+    run_local.start_process("backend", ["python", "server.py"], tmp_path)
+
+    assert captured["encoding"] == "utf-8"
+    assert captured["env"]["PYTHONUTF8"] == "1"
+    assert captured["env"]["PYTHONIOENCODING"] == "utf-8"

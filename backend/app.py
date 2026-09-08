@@ -1,5 +1,7 @@
+import asyncio
 import logging
 import json
+import os
 import time
 import uuid
 import urllib.error
@@ -45,6 +47,7 @@ from backend.services.learner.store import LearnerStore
 from backend.services.learner.dashboard import LearnerDashboardService
 from backend.services.learner import LearnerService
 from backend.services.exporting import export_headers, normalize_export_columns, normalize_report_sections, schema_payload
+from backend.asyncio_policy import install_windows_disconnect_handler
 
 configure_logging()
 log = logging.getLogger("smu.web")
@@ -55,6 +58,7 @@ QUIET_POLL_PATHS = {
     "/api/system-info/process-status", "/api/system-info/current",
     "/api/system-info/history",
 }
+HTTP_TRACE = os.environ.get("SMU_HTTP_TRACE", "").strip().lower() in {"1", "true", "yes"}
 endpoint_service = EndpointService(PROJECT_ROOT)
 organization_service = OrganizationService(PROJECT_ROOT)
 refresh_service = RefreshService(PROJECT_ROOT)
@@ -91,10 +95,15 @@ startup_log.info("Startup timing phase=learner_store_wired_no_initialize elapsed
 async def lifespan(_app: FastAPI):
     phase_started = time.perf_counter()
     startup_log.info("Startup timing phase=fastapi_startup_started elapsed_ms=0.0")
-    watchdog_manager.start()
-    startup_log.info("Startup timing phase=fastapi_startup_complete elapsed_ms=%.1f", (time.perf_counter()-phase_started)*1000)
-    yield
-    watchdog_manager.stop.set()
+    loop = asyncio.get_running_loop()
+    previous_exception_handler = install_windows_disconnect_handler(loop)
+    try:
+        watchdog_manager.start()
+        startup_log.info("Startup timing phase=fastapi_startup_complete elapsed_ms=%.1f", (time.perf_counter()-phase_started)*1000)
+        yield
+    finally:
+        watchdog_manager.stop.set()
+        loop.set_exception_handler(previous_exception_handler)
 
 phase_started = time.perf_counter()
 app = FastAPI(
@@ -148,6 +157,13 @@ async def request_logging(request: Request, call_next):
     response.headers["X-Request-ID"] = request_id
     path = request.url.path
     polling = path in QUIET_POLL_PATHS or path.startswith("/api/jobs/")
+    if HTTP_TRACE:
+        client = request.client.host if request.client else "unknown"
+        log.info(
+            "HTTP trace request_id=%s client=%s method=%s path=%s status=%s user_agent=%s health_probe=%s elapsed_ms=%.1f",
+            request_id, client, request.method, path, response.status_code,
+            request.headers.get("user-agent", ""), request.headers.get("x-smu-health-probe", ""), elapsed_ms,
+        )
     if response.status_code >= 400:
         log.warning("request_id=%s method=%s path=%s status=%s elapsed_ms=%.1f", request_id, request.method, path, response.status_code, elapsed_ms)
     elif elapsed_ms >= 1000 or not polling:
