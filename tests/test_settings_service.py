@@ -32,6 +32,15 @@ def test_scheduler_migrates_legacy_logical_detection_targets(tmp_path: Path):
     assert service.get()["targets"] == ["detections", "inbound"]
 
 
+
+def test_scheduler_migrates_legacy_logical_detection_targets(tmp_path: Path):
+    path = tmp_path / "runtime/scheduler.json"
+    path.parent.mkdir(parents=True)
+    path.write_text('{"enabled": false, "targets": ["xdr", "firewall", "inbound"]}', encoding="utf-8")
+    service = SchedulerService(tmp_path, Refresh())
+    assert service.get()["targets"] == ["detections", "inbound"]
+
+
 def test_theme_service_migrates_legacy_blue_ui_colors(tmp_path: Path):
     path=tmp_path/"env/Color_env.txt";path.parent.mkdir(parents=True)
     path.write_text("Primary_Blue=#0863e2\nCard_Title_Text=#007fc7\nTable_Header_Text=#0088e2\n",encoding="utf-8")
@@ -92,6 +101,7 @@ def test_scheduler_runs_every_target_then_index(tmp_path: Path):
     assert index.chain_index is True
     assert index.start is None and index.end is None
     assert index.calls==1
+    assert index.mode == "smart"
     assert "index:OK" in state["lastResult"]
     assert state["lastRun"] is not None
     assert state["phase"] == "idle"
