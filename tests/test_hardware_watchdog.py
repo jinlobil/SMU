@@ -165,6 +165,28 @@ def test_watchdog_manager_does_not_replace_healthy_watchdog_for_missing_worker_k
     assert manager.ensure() is True
 
 
+def test_watchdog_manager_ensures_fetcher_listener_before_dispatch(tmp_path, monkeypatch):
+    from backend.services.watchdog_client import WatchdogManager
+    manager = WatchdogManager(tmp_path); calls=[]
+    monkeypatch.setattr(manager, "ensure", lambda: calls.append("watchdog") or True)
+    monkeypatch.setattr(manager, "request", lambda path, method="GET", timeout=2: calls.append((path, method)) or ({"status":{"status":"running"}} if path == "/fetcher/ensure" else {"id":"fetch-1","status":"queued"}))
+    result=manager.start_fetch_job(["detections"],chain_index=True)
+    assert result["id"] == "fetch-1"
+    assert calls == ["watchdog", ("/fetcher/ensure","POST"), ("/fetcher/jobs?targets=detections&chain_index=1","POST")]
+
+
+def test_watchdog_manager_background_loop_bootstraps_fetcher(tmp_path, monkeypatch):
+    from backend.services.watchdog_client import WatchdogManager
+    manager = WatchdogManager(tmp_path); calls=[]
+    def ensure_fetcher():
+        calls.append("fetcher:8768")
+        manager.stop.set()
+        return {"status": {"status": "running"}}
+    monkeypatch.setattr(manager, "ensure_fetcher", ensure_fetcher)
+    manager.loop()
+    assert calls == ["fetcher:8768"]
+
+
 def test_learner_command_upgrades_old_watchdog_only_after_learner_404(tmp_path, monkeypatch):
     import urllib.error
     from backend.services.watchdog_client import WatchdogManager

@@ -411,8 +411,8 @@ def save_scheduler(payload: dict = Body()) -> dict:
 
 
 @app.post("/api/config/scheduler/run", status_code=202)
-def run_scheduler_now() -> dict:
-    return {"success": True, "data": scheduler_service.run_now()}
+def run_scheduler_now(payload: dict | None = Body(default=None)) -> dict:
+    return {"success": True, "data": scheduler_service.run_now(payload)}
 
 
 @app.get("/api/config/theme")
@@ -718,15 +718,6 @@ def rebuild_indexes(payload: dict | None = Body(default=None)) -> dict:
 def vacuum_indexes(payload: dict | None = Body(default=None)) -> dict:
     target = str((payload or {}).get("target", "all"))
     return {"success": True, "data": watchdog_manager.start_laborer_job("vacuum", target=target)}
-
-@app.get("/api/learner/findings/{finding_id}")
-def learner_finding(finding_id: str) -> dict:
-    data=learner_store.finding(finding_id)
-    return {"success":True,"data":data} if data else error_response(str(uuid.uuid4()),"LEARNER_FINDING_NOT_FOUND","Finding not found",404)
-
-@app.get("/api/learner/summary")
-def learner_summary(start: str="", end: str="") -> dict:
-    return {"success":True,"data":learner_store.summary(start,(end+"T99") if end else "")}
 
 @app.get("/api/learner/history")
 def learner_history(source: str, scopeType: str, scopeKey: str, behaviorType: str, behaviorKey: str) -> dict:

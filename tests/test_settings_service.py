@@ -1,6 +1,7 @@
 from pathlib import Path
 import pytest
 import os
+import time
 from backend.services.settings import DEFAULT_THEME, SchedulerService, ThemePresetService, ThemeService
 
 def test_theme_service_persists_valid_colors(tmp_path: Path):
@@ -20,6 +21,16 @@ def test_scheduler_settings_are_persistent(tmp_path: Path):
     assert saved["targets"]==["detections"]
     loaded=SchedulerService(tmp_path,Refresh()).get()
     assert loaded["enabled"] is True
+    assert loaded["nextRun"] is not None
+
+
+def test_scheduler_migrates_legacy_logical_detection_targets(tmp_path: Path):
+    path = tmp_path / "runtime/scheduler.json"
+    path.parent.mkdir(parents=True)
+    path.write_text('{"enabled": false, "targets": ["xdr", "firewall", "inbound"]}', encoding="utf-8")
+    service = SchedulerService(tmp_path, Refresh())
+    assert service.get()["targets"] == ["detections", "inbound"]
+
 
 
 def test_scheduler_migrates_legacy_logical_detection_targets(tmp_path: Path):
@@ -168,3 +179,52 @@ def test_scheduler_separates_learner_failure_from_successful_data_refresh(tmp_pa
 def test_indexer_has_no_direct_learner_callback():
     source = Path("system_monitor/indexer.py").read_text(encoding="utf-8")
     assert "learner" not in source.lower()
+
+
+def test_run_now_persists_current_ui_selection_and_uses_dispatch_path(tmp_path):
+    index=ScheduledIndex();service=SchedulerService(tmp_path,ScheduledRefresh(),index)
+    result=service.run_now({"enabled":True,"interval":7,"targets":["detections"]})
+    assert result["accepted"] is True
+    deadline=time.time()+2
+    while service.get()["running"] or index.calls == 0:
+        assert time.time()<deadline
+        time.sleep(.01)
+    state=service.get()
+    assert state["enabled"] is True and state["targets"] == ["detections"]
+    assert state["nextRun"] is not None
+    assert index.targets == ["detections"] and index.calls == 1
+
+
+class FailingDispatcher:
+    def start_fetch_job(self, *args, **kwargs):
+        raise ConnectionRefusedError(10061, "fetcher 8768 unavailable")
+
+
+def test_scheduler_fetcher_down_clears_running_and_records_failure(tmp_path):
+    service=SchedulerService(tmp_path,ScheduledRefresh(),FailingDispatcher())
+    service.save({"enabled":False,"interval":10,"targets":["detections","inbound"]})
+    service._run_cycle();state=service.get()
+    assert state["running"] is False
+    assert state["phase"] == "failed"
+    assert "fetch/index:FAIL ConnectionRefusedError" in state["lastResult"]
+    assert state["targetStatus"]["detections"]["status"] == "FAIL"
+    assert state["targetStatus"]["inbound"]["status"] == "FAIL"
+
+
+def test_scheduler_restart_restores_enabled_selection_and_dispatches_again(tmp_path):
+    first=SchedulerService(tmp_path,ScheduledRefresh(),ScheduledIndex())
+    first.save({"enabled":True,"interval":9,"targets":["detections","inbound"]})
+    restored_index=ScheduledIndex();restored=SchedulerService(tmp_path,ScheduledRefresh(),restored_index)
+    state=restored.get()
+    assert state["enabled"] is True and state["targets"] == ["detections","inbound"]
+    assert state["nextRun"] is not None
+    restored._run_cycle()
+    assert restored_index.targets == ["detections","inbound"]
+    assert "index:OK" in restored.get()["lastResult"]
+
+
+def test_scheduler_run_now_ui_sends_current_selection_and_handles_request_failure():
+    ui = Path("frontend/src/pages/ConfigPage.tsx").read_text(encoding="utf-8")
+    assert 'body:JSON.stringify(scheduler)' in ui
+    assert 'if(!r.ok||!payload?.data)' in ui
+    assert 'running:false,phase:"failed"' in ui

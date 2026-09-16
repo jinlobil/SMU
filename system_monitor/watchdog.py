@@ -227,7 +227,7 @@ class HardwareWatchdog:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         stream = log_path.open("a", encoding="utf-8")
         self.fetcher = subprocess.Popen([sys.executable, "-m", "system_monitor.fetcher", "--root", str(self.root)], cwd=self.root, stdin=subprocess.DEVNULL, stdout=stream, stderr=subprocess.STDOUT, creationflags=detached_flags(), close_fds=True, start_new_session=os.name != "nt")
-        self.log.info("Fetcher started pid=%s", self.fetcher.pid)
+        self.log.info("Fetcher started pid=%s listener=http://127.0.0.1:8768", self.fetcher.pid)
 
     def ensure_fetcher(self) -> dict:
         status = self.read_fetcher()
@@ -375,6 +375,9 @@ def handler_for(watchdog: HardwareWatchdog):
                 except Exception as exc: self._send(503, {"accepted": False, "error": f"{type(exc).__name__}: {exc}"})
             elif self.path == "/fetcher/restart":
                 try: self._send(202, watchdog.restart_fetcher())
+                except Exception as exc: self._send(503, {"accepted": False, "error": f"{type(exc).__name__}: {exc}"})
+            elif self.path == "/fetcher/ensure":
+                try: self._send(200, {"accepted": True, "status": watchdog.ensure_fetcher()})
                 except Exception as exc: self._send(503, {"accepted": False, "error": f"{type(exc).__name__}: {exc}"})
             elif self.path == "/learner/restart":
                 try: self._send(202,watchdog.restart_learner())

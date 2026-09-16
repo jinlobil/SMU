@@ -89,6 +89,18 @@ class WatchdogManager:
         self.ensure()
         return self.request("/fetcher/restart", "POST", timeout=20)
 
+    def ensure_fetcher(self) -> dict:
+        """Ensure that the watchdog and the Fetcher listener on 8768 are ready."""
+        self.ensure()
+        try:
+            return self.request("/fetcher/ensure", "POST", timeout=20)
+        except urllib.error.HTTPError as exc:
+            if exc.code != 404:
+                raise
+            self.log.warning("Running watchdog does not expose /fetcher/ensure; replacing stale watchdog")
+            self.restart_watchdog()
+            return self.request("/fetcher/ensure", "POST", timeout=20)
+
     def _learner_command(self, path: str, method: str, timeout: float) -> dict:
         self.ensure()
         try:
@@ -134,11 +146,23 @@ class WatchdogManager:
         return self.request("/laborer/restart", "POST", timeout=20)
 
     def start_fetch_job(self, targets: list[str], start: date | None = None, end: date | None = None, chain_index: bool = False) -> dict:
-        self.ensure()
         query = f"targets={','.join(targets)}"
         if start is not None and end is not None: query += f"&start={start.isoformat()}&end={end.isoformat()}"
         if chain_index: query += "&chain_index=1"
-        return self._report_job_state(self.request(f"/fetcher/jobs?{query}", "POST", timeout=20), "Fetcher")
+        last_error = None
+        for attempt in range(2):
+            try:
+                self.ensure_fetcher()
+                return self._report_job_state(self.request(f"/fetcher/jobs?{query}", "POST", timeout=20), "Fetcher")
+            except (OSError, urllib.error.URLError, urllib.error.HTTPError) as exc:
+                last_error = exc
+                self.log.warning("Fetcher dispatch failed attempt=%s targets=%s error=%s", attempt + 1, targets, exc)
+                if attempt == 0:
+                    try:
+                        self.restart_fetcher()
+                    except Exception as restart_exc:
+                        self.log.warning("Fetcher recovery before dispatch retry failed: %s", restart_exc)
+        raise RuntimeError(f"Fetcher dispatch failed after readiness check: {last_error}")
 
     def fetch_job(self, job_id: str) -> dict | None:
         try: return self._report_job_state(self.request(f"/fetcher/jobs/{job_id}", timeout=10), "Fetcher")
@@ -245,9 +269,9 @@ class WatchdogManager:
     def loop(self) -> None:
         while not self.stop.is_set():
             try:
-                self.ensure()
+                self.ensure_fetcher()
             except Exception:
-                self.log.exception("Watchdog health check failed")
+                self.log.exception("Watchdog/Fetcher readiness check failed")
             self.stop.wait(10)
 
     def start(self) -> None:

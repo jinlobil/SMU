@@ -130,8 +130,16 @@ class SchedulerService:
     def _load(self):
         try:
             loaded = json.loads(self.path.read_text(encoding="utf-8"))
-            self.state.update(loaded)
-            targets = list(self.state["targets"])
+            if not isinstance(loaded, dict):
+                raise ValueError("scheduler state must be an object")
+            targets = loaded.get("targets", self.state["targets"])
+            if not isinstance(targets, list):
+                raise ValueError("scheduler targets must be a list")
+            interval = max(1, min(1440, int(loaded.get("interval", self.state["interval"]))))
+            normalized = {key: loaded[key] for key in self.state if key in loaded}
+            normalized.update(enabled=loaded.get("enabled") is True, interval=interval)
+            self.state.update(normalized)
+            targets = list(targets)
             if any(target in self.LEGACY_DETECTION_TARGETS for target in targets) and "detections" not in targets:
                 targets.insert(0, "detections")
             self.state["targets"] = list(dict.fromkeys(target for target in targets if target in self.TARGETS))
@@ -140,8 +148,11 @@ class SchedulerService:
             self.state["running"] = False
             self.state["phase"] = "idle"
             self.state["currentTarget"] = None
-        except Exception:
-            pass
+            self.log.info("Scheduler restored enabled=%s interval=%s targets=%s", self.state["enabled"], interval, self.state["targets"])
+        except FileNotFoundError:
+            self.log.info("Scheduler state does not exist; defaults will be used path=%s", self.path)
+        except Exception as exc:
+            self.log.error("Scheduler state restore failed path=%s error=%s: %s", self.path, type(exc).__name__, exc)
 
     def _persist_locked(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -219,19 +230,22 @@ class SchedulerService:
         if not self.run_lock.acquire(blocking=False):
             self.log.warning("Scheduler cycle skipped because another cycle is running")
             return
+        messages = []
         try:
             with self.lock:
                 self.state["running"] = True
                 self.state["lastResult"] = "수집 작업 실행 중"
                 self.state.update(phase="collecting", currentTarget=None, currentMessage="수집 작업 준비 중")
                 self._persist_locked()
-            messages = []; targets = self.get()["targets"]
+            targets = self.get()["targets"]
             learner_selected = "learner" in targets
             collection_targets = [target for target in targets if target != "learner"]
             upstream_ok = True
             if collection_targets and self.index is not None and hasattr(self.index, "start_fetch_job"):
                 try:
+                    self.log.info("Scheduler dispatching Fetcher targets=%s chain_index=true", collection_targets)
                     fetch_job = self.index.start_fetch_job(collection_targets, None, None, chain_index=True)
+                    self.log.info("Scheduler Fetcher accepted job_id=%s", fetch_job.get("id"))
                     result = self.index.wait_for_fetch_job(fetch_job, lambda message: self._update_progress("collecting" if "FETCHING" in message or "수집" in message else "indexing", "fetcher", message), wait_for_index=True)
                     for target in collection_targets:
                         target_result = result.get(target) or {"status": "FAIL", "error": "결과 없음"}
@@ -246,6 +260,19 @@ class SchedulerService:
                     self.log.exception("Scheduled Fetcher/Indexer chain failed")
                     messages.append(f"fetch/index:FAIL {type(exc).__name__}: {exc}")
                     upstream_ok = False
+                    timestamp = self._display_time(time.time())
+                    with self.lock:
+                        for target in collection_targets:
+                            self.state["targetStatus"][target] = {"time": timestamp, "status": "FAIL", "message": str(exc)}
+                        self._persist_locked()
+            elif collection_targets:
+                upstream_ok = False
+                messages.append("fetch/index:FAIL dispatcher unavailable")
+                timestamp = self._display_time(time.time())
+                with self.lock:
+                    for target in collection_targets:
+                        self.state["targetStatus"][target] = {"time": timestamp, "status": "FAIL", "message": "Fetcher dispatcher unavailable"}
+                    self._persist_locked()
             if learner_selected:
                 timestamp = self._display_time(time.time())
                 if not upstream_ok:
@@ -268,18 +295,24 @@ class SchedulerService:
                     self._persist_locked()
             elif not collection_targets:
                 messages.append("선택된 수집 대상 없음")
+        except Exception as exc:
+            self.log.exception("Scheduler cycle failed before completion")
+            messages.append(f"scheduler:FAIL {type(exc).__name__}: {exc}")
+        finally:
             with self.lock:
                 self.state["lastRun"] = self._display_time(time.time())
                 self.state["lastResult"] = " / ".join(messages) or "선택된 수집 대상 없음"
                 self.state["running"] = False
-                self.state.update(phase="idle", currentTarget=None, currentMessage="완료")
+                failed = any("FAIL" in message for message in messages)
+                self.state.update(phase="failed" if failed else "idle", currentTarget=None, currentMessage="실패" if failed else "완료")
                 self._persist_locked()
-        finally:
             self.run_lock.release()
             if self.get()["enabled"]:
                 self._schedule_next()
 
-    def run_now(self):
+    def run_now(self, data=None):
+        if data is not None:
+            self.save(data)
         if self.run_lock.locked():
             return {**self.get(), "accepted": False}
         threading.Thread(target=self._run_cycle, daemon=True, name="smu-scheduler-manual").start()
