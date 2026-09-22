@@ -15,13 +15,13 @@ from backend.services.spreadsheet import write_xlsx_workbook
 ENTITIES = ("IPHost", "IPHostGroup", "FQDNHost", "FQDNHostGroup", "Services", "ServiceGroup")
 RULE_ENTITIES = ("FirewallRule", "SecurityPolicy")
 log = logging.getLogger("smu.firewall.rule_export")
-CORE_COLUMNS = [
-    "Order", "Rule Group", "Rule Name", "Status",
+MANAGEMENT_COLUMNS = [
+    "Rule Name", "Status", "Policy Type", "Rule Group", "Action",
     "Source Zone", "Source Object", "Source Resolved",
     "Destination Zone", "Destination Object", "Destination Resolved",
     "Service", "Service Resolved / Protocol / Port",
-    "Rule ID", "Action", "IPS", "AV", "Web", "Application", "QoS", "Heartbeat",
-    "Linked NAT", "Proxy", "Log",
+    "Schedule", "IPS", "AV", "Web", "Application", "QoS", "Heartbeat",
+    "Linked NAT", "Proxy", "Log", "Description",
 ]
 
 
@@ -142,32 +142,32 @@ def _feature(node: ET.Element, *names: str) -> str:
     return _join(values)
 
 
-def _rule_models(root: ET.Element, rule_entity: str | None) -> list[tuple[ET.Element, str]]:
+def _rule_models(root: ET.Element, rule_entity: str | None) -> list[tuple[ET.Element, ET.Element, str]]:
     """Return real policy rows, excluding group/header nodes, in XML document order."""
     supported = {rule_entity} if rule_entity in RULE_ENTITIES else set(RULE_ENTITIES)
-    rows: list[tuple[ET.Element, str]] = []
+    rows: list[tuple[ET.Element, ET.Element, str]] = []
     policy_tags = {"NetworkPolicy", "UserPolicy"}
     group_tags = {"FirewallRuleGroup", "RuleGroup", "PolicyGroup"}
 
-    def walk(parent: ET.Element, inherited_group: str = "") -> None:
+    def walk(parent: ET.Element, inherited_group: str = "", rule_root: ET.Element | None = None) -> None:
         current_group = inherited_group
         for child in list(parent):
             tag = _tag(child)
             if tag in group_tags:
                 group_name = _direct_text(child, "Name", "GroupName", "RuleGroupName") or (child.text or "").strip()
                 current_group = group_name or current_group
-                walk(child, current_group)
+                walk(child, current_group, rule_root)
             elif tag in policy_tags:
                 group_name = _direct_text(child, "PolicyGroup", "RuleGroup", "GroupName", "RuleGroupName") or current_group
-                rows.append((child, group_name))
+                rows.append((rule_root if rule_root is not None else child, child, group_name))
             elif tag in supported:
                 nested = [item for item in list(child) if _tag(item) in policy_tags]
                 if nested:
-                    walk(child, current_group)
+                    walk(child, current_group, child)
                 else:
-                    rows.append((child, current_group))
+                    rows.append((child, child, current_group))
             else:
-                walk(child, current_group)
+                walk(child, current_group, rule_root)
 
     walk(root)
     return rows
@@ -182,37 +182,43 @@ def parse_firewall_rules(payloads: dict[str, str], rule_entity: str | None = Non
     if status["code"] and status["code"] != "200":
         raise RuntimeError(f"Firewall API {status['code']}: {status['message']}")
     rule_nodes = _rule_models(root, rule_entity)
-    for row_number, (node, inherited_group) in enumerate(rule_nodes, 1):
-        source = _under_direct(node, {"SourceNetworks", "SourceNetwork", "SourceHosts", "SourceObjects"})
-        destination = _under_direct(node, {"DestinationNetworks", "DestinationNetwork", "DestinationHosts", "DestinationObjects"})
-        services = _under_direct(node, {"Services", "ServiceList"})
+    has_rule_id = any(_direct_text(rule_root, "RuleID", "PolicyID", "ID") for rule_root, _policy, _group in rule_nodes)
+    columns = (["Rule ID"] if has_rule_id else []) + MANAGEMENT_COLUMNS
+    for rule_root, policy, inherited_group in rule_nodes:
+        source = _under_direct(policy, {"SourceNetworks", "SourceNetwork", "SourceHosts", "SourceObjects"})
+        destination = _under_direct(policy, {"DestinationNetworks", "DestinationNetwork", "DestinationHosts", "DestinationObjects"})
+        services = _under_direct(policy, {"Services", "ServiceList"})
+        raw_status = _direct_text(rule_root, "Status", "Enable", "Enabled")
+        normalized_status = {"enable": "활성", "disable": "비활성"}.get(raw_status.casefold(), raw_status)
         row = {
-            "Order": _direct_text(node, "Order", "RulePosition", "Position") or str(row_number),
-            "Rule Group": _direct_text(node, "PolicyGroup", "RuleGroup", "GroupName", "RuleGroupName") or inherited_group,
-            "Rule Name": _direct_text(node, "Name", "RuleName"),
-            "Status": _direct_text(node, "Status", "Enable", "Enabled"),
-            "Source Zone": _join(_under_direct(node, {"SourceZones", "SourceZone"})),
+            "Rule ID": _direct_text(rule_root, "RuleID", "PolicyID", "ID").lstrip("#"),
+            "Rule Name": _direct_text(rule_root, "Name", "RuleName"),
+            "Status": normalized_status,
+            "Policy Type": _direct_text(rule_root, "PolicyType"),
+            "Rule Group": _direct_text(policy, "PolicyGroup", "RuleGroup", "GroupName", "RuleGroupName") or inherited_group,
+            "Action": _direct_text(policy, "Action"),
+            "Source Zone": _join(_under_direct(policy, {"SourceZones", "SourceZone"})),
             "Source Object": _join(source),
             "Source Resolved": _join([resolved_objects.get(value, value) for value in source]),
-            "Destination Zone": _join(_under_direct(node, {"DestinationZones", "DestinationZone"})),
+            "Destination Zone": _join(_under_direct(policy, {"DestinationZones", "DestinationZone"})),
             "Destination Object": _join(destination),
             "Destination Resolved": _join([resolved_objects.get(value, value) for value in destination]),
             "Service": _join(services),
             "Service Resolved / Protocol / Port": _join([resolved_services.get(value, value) for value in services]),
-            "Rule ID": _direct_text(node, "PolicyID", "RuleID", "ID"),
-            "Action": _direct_text(node, "Action"),
-            "IPS": _feature(node, "IntrusionPrevention", "IPSPolicy", "IPS"),
-            "AV": _feature(node, "MalwareScanning", "Antivirus", "AVPolicy", "ScanHTTP", "ScanFTP"),
-            "Web": _feature(node, "WebFilter", "WebFilterPolicy"),
-            "Application": _feature(node, "ApplicationControl", "ApplicationControlPolicy"),
-            "QoS": _feature(node, "TrafficShapingPolicy", "QoSPolicy", "TrafficShaping"),
-            "Heartbeat": _feature(node, "Heartbeat", "MinimumSourceHBPermitted", "MinimumDestinationHBPermitted"),
-            "Linked NAT": _feature(node, "LinkedNATRule", "LinkedNAT", "NATRule"),
-            "Proxy": _feature(node, "ProxyMode", "UseWebProxy", "Proxy"),
-            "Log": _feature(node, "LogTraffic", "LogFirewallTraffic"),
+            "Schedule": _feature(policy, "Schedule"),
+            "IPS": _feature(policy, "IntrusionPrevention", "IPSPolicy", "IPS"),
+            "AV": _feature(policy, "MalwareScanning", "Antivirus", "AVPolicy", "ScanHTTP", "ScanFTP"),
+            "Web": _feature(policy, "WebFilter", "WebFilterPolicy"),
+            "Application": _feature(policy, "ApplicationControl", "ApplicationControlPolicy"),
+            "QoS": _feature(policy, "TrafficShapingPolicy", "QoSPolicy", "TrafficShaping"),
+            "Heartbeat": _feature(policy, "Heartbeat", "MinimumSourceHBPermitted", "MinimumDestinationHBPermitted"),
+            "Linked NAT": _feature(policy, "LinkedNATRule", "LinkedNAT", "NATRule"),
+            "Proxy": _feature(policy, "ProxyMode", "UseWebProxy", "Proxy"),
+            "Log": _feature(policy, "LogTraffic", "LogFirewallTraffic"),
+            "Description": _direct_text(rule_root, "Description"),
         }
         rows.append(row)
-    return rows, CORE_COLUMNS.copy()
+    return rows, columns
 
 
 def classify_export_error(exc: Exception) -> str:
@@ -264,7 +270,7 @@ class FirewallRuleExportService:
                         log.warning("Firewall XML enrichment unavailable firewall=%s api_version=%s entity=%s error=%s", name, rule_response["apiVersion"] or "unknown", entity, exc)
                 diagnostics[name]["enrichmentErrors"] = enrichment_errors
                 rows, columns = parse_firewall_rules(payloads, rule_response["entity"])
-                sheets.append({"name": name, "rows": rows, "columns": columns})
+                sheets.append({"name": name, "rows": rows, "columns": columns, "cellStyles": {"Status": {"활성": 3, "비활성": 4}}})
                 counts[name] = len(rows)
             except Exception as exc:
                 errors.append({"Firewall": name, "Error Type": classify_export_error(exc), "Message": str(exc)})
