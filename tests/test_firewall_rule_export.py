@@ -9,13 +9,13 @@ from backend.services.spreadsheet import safe_sheet_name
 
 
 XML = {
-    "FirewallRule": '''<Response><Status code="200">OK</Status><FirewallRule><Name>Allow Web</Name><Status>Enable</Status><Action>Accept</Action><SourceZones><Zone>LAN</Zone></SourceZones><SourceNetworks><Network>Office Hosts</Network></SourceNetworks><DestinationZones><Zone>WAN</Zone></DestinationZones><DestinationNetworks><Network>portal.example.com</Network></DestinationNetworks><Services><Service>HTTPS</Service></Services><Schedule>All The Time</Schedule><LogTraffic>Enable</LogTraffic><WebFilterPolicy>Default</WebFilterPolicy><ApplicationControlPolicy>Allow Apps</ApplicationControlPolicy><IPSPolicy>LAN TO WAN</IPSPolicy><CustomUsefulField>preserved</CustomUsefulField></FirewallRule></Response>''',
-    "IPHost": '''<Response><Status code="200">OK</Status><IPHost><Name>PC-1</Name><IPAddress>10.0.0.1</IPAddress></IPHost></Response>''',
-    "IPHostGroup": '''<Response><Status code="200">OK</Status><IPHostGroup><Name>Office Hosts</Name><HostList><IPHost>PC-1</IPHost></HostList></IPHostGroup></Response>''',
+    "FirewallRule": '''<Response APIVersion="2000.2"><Status code="200">OK</Status><FirewallRule><Name>Allow Web</Name><Status>Enable</Status><Action>Accept</Action><SourceZones><Zone>LAN</Zone></SourceZones><SourceNetworks><Network>Office Hosts</Network></SourceNetworks><DestinationZones><Zone>WAN</Zone></DestinationZones><DestinationNetworks><Network>portal.example.com</Network></DestinationNetworks><Services><Service>Web Ports</Service></Services><Exclusions><SourceNetworks><Network>Excluded Source</Network></SourceNetworks><DestinationNetworks><Network>Excluded Destination</Network></DestinationNetworks><Services><Service>Excluded Service</Service></Services></Exclusions><Schedule>All The Time</Schedule><LogTraffic>Enable</LogTraffic><WebFilterPolicy>Default</WebFilterPolicy><ApplicationControlPolicy>Allow Apps</ApplicationControlPolicy><IPSPolicy>LAN TO WAN</IPSPolicy><CustomUsefulField>preserved</CustomUsefulField></FirewallRule></Response>''',
+    "IPHost": '''<Response APIVersion="2000.2"><Status code="200">OK</Status><IPHost><Name>PC-1</Name><HostType>IP</HostType><IPAddress>10.0.0.1</IPAddress></IPHost><IPHost><Name>Office Network</Name><HostType>Network</HostType><IPAddress>10.10.0.0</IPAddress><Subnet>255.255.0.0</Subnet></IPHost><IPHost><Name>VPN Range</Name><HostType>IPRange</HostType><StartIPAddress>10.20.0.1</StartIPAddress><EndIPAddress>10.20.0.50</EndIPAddress></IPHost><IPHost><Name>DNS List</Name><HostType>IPList</HostType><ListOfIPAddresses><IPAddress>1.1.1.1</IPAddress><IPAddress>8.8.8.8</IPAddress></ListOfIPAddresses></IPHost></Response>''',
+    "IPHostGroup": '''<Response APIVersion="2000.2"><Status code="200">OK</Status><IPHostGroup><Name>Office Hosts</Name><HostList><IPHost>PC-1</IPHost><IPHost>Office Network</IPHost><IPHost>VPN Range</IPHost><IPHost>DNS List</IPHost></HostList></IPHostGroup></Response>''',
     "FQDNHost": '''<Response><Status code="200">OK</Status><FQDNHost><Name>portal.example.com</Name><FQDN>portal.example.com</FQDN></FQDNHost></Response>''',
     "FQDNHostGroup": '''<Response><Status code="200">OK</Status></Response>''',
-    "Service": '''<Response><Status code="200">OK</Status><Service><Name>HTTPS</Name><Protocol>TCP</Protocol><DestinationPort>443</DestinationPort></Service></Response>''',
-    "ServiceGroup": '''<Response><Status code="200">OK</Status></Response>''',
+    "Services": '''<Response APIVersion="2000.2"><Status code="200">OK</Status><Services><Name>Web Ports</Name><Type>TCPorUDP</Type><ServiceDetails><ServiceDetail><Protocol>TCP</Protocol><SourcePort>1:65535</SourcePort><DestinationPort>80</DestinationPort></ServiceDetail><ServiceDetail><Protocol>TCP</Protocol><SourcePort>1024:65535</SourcePort><DestinationPort>443</DestinationPort></ServiceDetail></ServiceDetails></Services></Response>''',
+    "ServiceGroup": '''<Response APIVersion="2000.2"><Status code="200">OK</Status></Response>''',
 }
 
 
@@ -39,7 +39,8 @@ def test_rule_parser_resolves_hosts_groups_fqdn_services_and_preserves_xml() -> 
     assert row["Source Object"] == "Office Hosts"
     assert "PC-1 (10.0.0.1)" in row["Source Resolved"]
     assert row["Destination Resolved"] == "portal.example.com"
-    assert row["Service Resolved / Protocol / Port"] == "TCP / 443"
+    assert "Protocol: TCP | Source: 1:65535 | Destination: 80" in row["Service Resolved / Protocol / Port"]
+    assert "Protocol: TCP | Source: 1024:65535 | Destination: 443" in row["Service Resolved / Protocol / Port"]
     assert row["XML: CustomUsefulField"] == "preserved"
     assert "XML: CustomUsefulField" in columns
 
@@ -134,7 +135,7 @@ def test_security_policy_is_parsed_into_same_rule_model() -> None:
 
 def test_legacy_firewall_fallback_builds_sheet_and_diagnostics(tmp_path: Path, monkeypatch) -> None:
     env(tmp_path, ("Cloud",))
-    legacy_rules = XML["FirewallRule"].replace('<Response>', '<Response APIVersion="1700.1">').replace("FirewallRule", "SecurityPolicy")
+    legacy_rules = XML["FirewallRule"].replace('APIVersion="2000.2"', 'APIVersion="1700.1"').replace("FirewallRule", "SecurityPolicy")
     def post(_client, request: str) -> str:
         if "<FirewallRule/>" in request:
             return '<Response APIVersion="1700.1"><Status code="529">Input request module is Invalid</Status></Response>'
@@ -145,10 +146,10 @@ def test_legacy_firewall_fallback_builds_sheet_and_diagnostics(tmp_path: Path, m
     result = FirewallRuleExportService(tmp_path).build(["Cloud"])
     assert result["sheets"] == ["Cloud"]
     assert result["counts"] == {"Cloud": 1}
-    assert result["diagnostics"]["Cloud"] == {"apiVersion": "1700.1", "ruleEntity": "SecurityPolicy"}
+    assert result["diagnostics"]["Cloud"] == {"apiVersion": "1700.1", "ruleEntity": "SecurityPolicy", "enrichmentErrors": []}
 
 
-def test_object_entity_529_identifies_the_incompatible_module(tmp_path: Path, monkeypatch) -> None:
+def test_object_entity_529_is_reported_without_losing_rule_sheet(tmp_path: Path, monkeypatch) -> None:
     env(tmp_path, ("Cloud",))
     def get(_client, entity):
         if entity == "IPHostGroup":
@@ -156,5 +157,53 @@ def test_object_entity_529_identifies_the_incompatible_module(tmp_path: Path, mo
         return XML[entity]
     monkeypatch.setattr(FirewallClient, "get", get)
     result = FirewallRuleExportService(tmp_path).build(["Cloud"])
-    assert result["sheets"] == ["Export Errors"]
-    assert "entity IPHostGroup 529" in result["errors"][0]["Message"]
+    assert result["sheets"] == ["Cloud"]
+    assert result["errors"] == []
+    assert "entity IPHostGroup 529" in result["diagnostics"]["Cloud"]["enrichmentErrors"][0]
+
+
+def test_iphost_types_preserve_network_range_and_list_values() -> None:
+    rows, _ = parse_firewall_rules(XML)
+    resolved = rows[0]["Source Resolved"]
+    assert "Office Network (10.10.0.0 / 255.255.0.0)" in resolved
+    assert "VPN Range (10.20.0.1 - 10.20.0.50)" in resolved
+    assert "DNS List (1.1.1.1\n8.8.8.8)" in resolved
+
+
+def test_rule_exclusions_are_separate_from_main_policy_values() -> None:
+    row = parse_firewall_rules(XML)[0][0]
+    assert row["Source Object"] == "Office Hosts"
+    assert row["Destination Object"] == "portal.example.com"
+    assert row["Service"] == "Web Ports"
+    assert row["Source Exclusions"] == "Excluded Source"
+    assert row["Destination Exclusions"] == "Excluded Destination"
+    assert row["Service Exclusions"] == "Excluded Service"
+
+
+def test_services_request_uses_plural_sophos_entity(monkeypatch) -> None:
+    client = FirewallClient({"name": "Cloud", "host": "cloud", "port": "4444", "username": "u", "password": "p", "verify_ssl": False})
+    requests: list[str] = []
+    monkeypatch.setattr(client, "_post_xml", lambda request: requests.append(request) or XML["Services"])
+    client.get("Services")
+    assert "<Services/>" in requests[0]
+
+
+def test_services_failure_still_creates_rule_sheet(tmp_path: Path, monkeypatch) -> None:
+    env(tmp_path, ("Cloud",))
+    def get(_client, entity):
+        if entity == "Services":
+            raise TimeoutError("services unavailable")
+        return XML[entity]
+    monkeypatch.setattr(FirewallClient, "get", get)
+    result = FirewallRuleExportService(tmp_path).build(["Cloud"])
+    assert result["sheets"] == ["Cloud"]
+    assert result["counts"] == {"Cloud": 1}
+    assert result["errors"] == []
+    assert result["diagnostics"]["Cloud"]["enrichmentErrors"][0].startswith("Services: TimeoutError")
+
+
+def test_nat_columns_are_not_in_firewall_rule_export() -> None:
+    _rows, columns = parse_firewall_rules(XML)
+    assert "NAT Policy" not in columns
+    assert "Source NAT" not in columns
+    assert "Destination NAT" not in columns

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import socket
 import logging
+import socket
 import urllib.error
 import xml.etree.ElementTree as ET
 from datetime import date
@@ -12,14 +12,14 @@ from backend.services.firewall import FirewallClient, FirewallService, parse_sta
 from backend.services.spreadsheet import write_xlsx_workbook
 
 
-ENTITIES = ("IPHost", "IPHostGroup", "FQDNHost", "FQDNHostGroup", "Service", "ServiceGroup")
+ENTITIES = ("IPHost", "IPHostGroup", "FQDNHost", "FQDNHostGroup", "Services", "ServiceGroup")
 RULE_ENTITIES = ("FirewallRule", "SecurityPolicy")
 log = logging.getLogger("smu.firewall.rule_export")
 CORE_COLUMNS = [
     "Rule Name", "Status / Enable", "Action", "Source Zone", "Source Object", "Source Resolved",
     "Destination Zone", "Destination Object", "Destination Resolved", "Service",
     "Service Resolved / Protocol / Port", "Schedule", "Log Traffic", "Web Filter",
-    "Application Control", "IPS Policy", "NAT Policy", "Source NAT", "Destination NAT",
+    "Application Control", "IPS Policy", "Source Exclusions", "Destination Exclusions", "Service Exclusions",
 ]
 
 
@@ -40,9 +40,33 @@ def _first(node: ET.Element, *names: str) -> str:
     return next(iter(_values(node, set(names))), "")
 
 
-def _under(node: ET.Element, containers: set[str]) -> list[str]:
+def _direct_child(node: ET.Element, names: set[str]) -> ET.Element | None:
+    return next((child for child in list(node) if _tag(child) in names), None)
+
+
+def _direct_text(node: ET.Element, *names: str) -> str:
+    child = _direct_child(node, set(names))
+    return (child.text or "").strip() if child is not None else ""
+
+
+def _under_direct(node: ET.Element, containers: set[str]) -> list[str]:
+    """Read only top-level rule containers, never same-named Exclusions descendants."""
     result: list[str] = []
-    for container in node.iter():
+    for container in list(node):
+        if _tag(container) in containers:
+            for child in container.iter():
+                value = (child.text or "").strip()
+                if child is not container and value and value not in result:
+                    result.append(value)
+    return result
+
+
+def _exclusion_values(node: ET.Element, containers: set[str]) -> list[str]:
+    result: list[str] = []
+    exclusions = _direct_child(node, {"Exclusions"})
+    if exclusions is None:
+        return result
+    for container in exclusions.iter():
         if _tag(container) not in containers:
             continue
         for child in container.iter():
@@ -77,14 +101,30 @@ def _nodes(xml_text: str, entity: str) -> list[ET.Element]:
 def _object_maps(payloads: dict[str, str]) -> tuple[dict[str, str], dict[str, str]]:
     objects: dict[str, str] = {}
     groups: dict[str, list[str]] = {}
-    for entity in ("IPHost", "FQDNHost"):
-        for node in _nodes(payloads[entity], entity):
-            name = _first(node, "Name")
-            detail = _first(node, "IPAddress", "FQDN", "HostName", "IPRange")
-            if name:
-                objects[name] = detail or name
+    for node in _nodes(payloads.get("IPHost", "<Response/>"), "IPHost"):
+        name, host_type = _direct_text(node, "Name"), _direct_text(node, "HostType")
+        if host_type == "Network":
+            parts = [_direct_text(node, "IPAddress"), _direct_text(node, "Subnet")]
+            detail = " / ".join(part for part in parts if part)
+        elif host_type == "IPRange":
+            parts = [_direct_text(node, "StartIPAddress"), _direct_text(node, "EndIPAddress")]
+            detail = " - ".join(part for part in parts if part)
+        elif host_type == "IPList":
+            ip_list = _direct_child(node, {"ListOfIPAddresses"})
+            list_values = _values(ip_list, {"IPAddress", "IP"}) if ip_list is not None else []
+            if ip_list is not None and not list_values and (ip_list.text or "").strip():
+                list_values = [value.strip() for value in (ip_list.text or "").replace(";", ",").split(",") if value.strip()]
+            detail = "\n".join(list_values)
+        else:
+            detail = _direct_text(node, "IPAddress")
+        if name:
+            objects[name] = detail or name
+    for node in _nodes(payloads.get("FQDNHost", "<Response/>"), "FQDNHost"):
+        name = _direct_text(node, "Name")
+        if name:
+            objects[name] = _direct_text(node, "FQDN", "HostName") or name
     for entity in ("IPHostGroup", "FQDNHostGroup"):
-        for node in _nodes(payloads[entity], entity):
+        for node in _nodes(payloads.get(entity, "<Response/>"), entity):
             name = _first(node, "Name")
             members = [value for value in _values(node, {"IPHost", "FQDNHost", "Host", "Member", "HostName"}) if value != name]
             if name:
@@ -95,14 +135,24 @@ def _object_maps(payloads: dict[str, str]) -> tuple[dict[str, str], dict[str, st
 
     services: dict[str, str] = {}
     service_groups: dict[str, list[str]] = {}
-    for node in _nodes(payloads["Service"], "Service"):
-        name = _first(node, "Name")
-        details = _values(node, {"Protocol", "ProtocolName", "SourcePort", "DestinationPort", "Port", "ICMPType", "ICMPCode"})
+    for node in _nodes(payloads.get("Services", "<Response/>"), "Services"):
+        name = _direct_text(node, "Name")
+        details = []
+        detail_container = _direct_child(node, {"ServiceDetails"})
+        detail_nodes = [item for item in detail_container.iter() if _tag(item) == "ServiceDetail"] if detail_container is not None else []
+        for item in detail_nodes:
+            fields = []
+            for label, tags in (("Protocol", ("Protocol", "ProtocolName")), ("Source", ("SourcePort",)), ("Destination", ("DestinationPort", "Port")), ("ICMP Type", ("ICMPType",)), ("ICMP Code", ("ICMPCode",))):
+                value = _first(item, *tags)
+                if value:
+                    fields.append(f"{label}: {value}")
+            if fields:
+                details.append(" | ".join(fields))
         if name:
-            services[name] = " / ".join(details) or name
-    for node in _nodes(payloads["ServiceGroup"], "ServiceGroup"):
+            services[name] = "\n".join(details) or name
+    for node in _nodes(payloads.get("ServiceGroup", "<Response/>"), "ServiceGroup"):
         name = _first(node, "Name")
-        members = [value for value in _values(node, {"Service", "Member", "ServiceName"}) if value != name]
+        members = [value for value in _values(node, {"Service", "Services", "Member", "ServiceName"}) if value != name]
         if name:
             service_groups[name] = members
     for name, members in service_groups.items():
@@ -126,18 +176,18 @@ def parse_firewall_rules(payloads: dict[str, str], rule_entity: str | None = Non
     supported = {rule_entity} if rule_entity in RULE_ENTITIES else set(RULE_ENTITIES)
     rule_nodes = [node for node in root.iter() if _tag(node) in supported]
     for node in rule_nodes:
-        source = _under(node, {"SourceNetworks", "SourceNetwork", "SourceHosts", "SourceObjects"})
-        destination = _under(node, {"DestinationNetworks", "DestinationNetwork", "DestinationHosts", "DestinationObjects"})
-        services = _under(node, {"Services", "ServiceList"})
+        source = _under_direct(node, {"SourceNetworks", "SourceNetwork", "SourceHosts", "SourceObjects"})
+        destination = _under_direct(node, {"DestinationNetworks", "DestinationNetwork", "DestinationHosts", "DestinationObjects"})
+        services = _under_direct(node, {"Services", "ServiceList"})
         flat = _flatten(node)
         row = {
             "Rule Name": _first(node, "Name", "RuleName"),
             "Status / Enable": _first(node, "Status", "Enable", "Enabled"),
             "Action": _first(node, "Action"),
-            "Source Zone": _join(_under(node, {"SourceZones", "SourceZone"})),
+            "Source Zone": _join(_under_direct(node, {"SourceZones", "SourceZone"})),
             "Source Object": _join(source),
             "Source Resolved": _join([resolved_objects.get(value, value) for value in source]),
-            "Destination Zone": _join(_under(node, {"DestinationZones", "DestinationZone"})),
+            "Destination Zone": _join(_under_direct(node, {"DestinationZones", "DestinationZone"})),
             "Destination Object": _join(destination),
             "Destination Resolved": _join([resolved_objects.get(value, value) for value in destination]),
             "Service": _join(services),
@@ -147,9 +197,9 @@ def parse_firewall_rules(payloads: dict[str, str], rule_entity: str | None = Non
             "Web Filter": _first(node, "WebFilter", "WebFilterPolicy"),
             "Application Control": _first(node, "ApplicationControl", "ApplicationControlPolicy"),
             "IPS Policy": _first(node, "IntrusionPrevention", "IPSPolicy", "IPS"),
-            "NAT Policy": _first(node, "NATPolicy", "NATRule"),
-            "Source NAT": _first(node, "SourceNAT", "TranslatedSource"),
-            "Destination NAT": _first(node, "DestinationNAT", "TranslatedDestination"),
+            "Source Exclusions": _join(_exclusion_values(node, {"SourceNetworks", "SourceNetwork", "SourceHosts", "SourceObjects"})),
+            "Destination Exclusions": _join(_exclusion_values(node, {"DestinationNetworks", "DestinationNetwork", "DestinationHosts", "DestinationObjects"})),
+            "Service Exclusions": _join(_exclusion_values(node, {"Services", "ServiceList"})),
         }
         for key, value in flat.items():
             column = f"XML: {key}"
@@ -184,7 +234,7 @@ class FirewallRuleExportService:
         sheets: list[dict[str, Any]] = []
         errors: list[dict[str, str]] = []
         counts: dict[str, int] = {}
-        diagnostics: dict[str, dict[str, str]] = {}
+        diagnostics: dict[str, dict[str, Any]] = {}
         for config in configs:
             name = config["name"]
             progress(f"{name} Firewall Rule 및 Object 조회 중")
@@ -194,12 +244,20 @@ class FirewallRuleExportService:
                 diagnostics[name] = {"apiVersion": rule_response["apiVersion"], "ruleEntity": rule_response["entity"]}
                 log.info("Firewall rule API selected firewall=%s api_version=%s entity=%s", name, rule_response["apiVersion"] or "unknown", rule_response["entity"])
                 payloads = {"Rule": rule_response["raw"]}
+                enrichment_errors = []
                 for entity in ENTITIES:
-                    payloads[entity] = client.get(entity)
-                    entity_status = parse_status(payloads[entity])
-                    log.info("Firewall XML entity validated firewall=%s api_version=%s entity=%s status=%s", name, rule_response["apiVersion"] or "unknown", entity, entity_status["code"] or "unknown")
-                    if entity_status["code"] and entity_status["code"] != "200":
-                        raise RuntimeError(f"Firewall API entity {entity} {entity_status['code']}: {entity_status['message']}")
+                    try:
+                        raw = client.get(entity)
+                        entity_status = parse_status(raw)
+                        if entity_status["code"] and entity_status["code"] != "200":
+                            raise RuntimeError(f"Firewall API entity {entity} {entity_status['code']}: {entity_status['message']}")
+                        _nodes(raw, entity)  # Validate enrichment XML before it reaches the rule parser.
+                        payloads[entity] = raw
+                        log.info("Firewall XML enrichment validated firewall=%s api_version=%s entity=%s status=%s", name, rule_response["apiVersion"] or "unknown", entity, entity_status["code"] or "unknown")
+                    except Exception as exc:
+                        enrichment_errors.append(f"{entity}: {type(exc).__name__}: {exc}")
+                        log.warning("Firewall XML enrichment unavailable firewall=%s api_version=%s entity=%s error=%s", name, rule_response["apiVersion"] or "unknown", entity, exc)
+                diagnostics[name]["enrichmentErrors"] = enrichment_errors
                 rows, columns = parse_firewall_rules(payloads, rule_response["entity"])
                 sheets.append({"name": name, "rows": rows, "columns": columns})
                 counts[name] = len(rows)

@@ -67,7 +67,7 @@ class FirewallClient:
 
     def get(self, entity: str) -> str:
         """Read an XML API entity using the same authenticated transport as Response > Firewall."""
-        if entity not in {"FirewallRule", "SecurityPolicy", "IPHost", "IPHostGroup", "FQDNHost", "FQDNHostGroup", "Service", "ServiceGroup"}:
+        if entity not in {"FirewallRule", "SecurityPolicy", "IPHost", "IPHostGroup", "FQDNHost", "FQDNHostGroup", "Services", "ServiceGroup"}:
             raise ValueError(f"Unsupported firewall XML entity: {entity}")
         return self._post_xml(f"<Request>{self.login_xml()}<Get><{entity}/></Get></Request>")
 
