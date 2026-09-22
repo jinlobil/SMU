@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import socket
+import logging
 import urllib.error
 import xml.etree.ElementTree as ET
 from datetime import date
@@ -11,7 +12,9 @@ from backend.services.firewall import FirewallClient, FirewallService, parse_sta
 from backend.services.spreadsheet import write_xlsx_workbook
 
 
-ENTITIES = ("FirewallRule", "IPHost", "IPHostGroup", "FQDNHost", "FQDNHostGroup", "Service", "ServiceGroup")
+ENTITIES = ("IPHost", "IPHostGroup", "FQDNHost", "FQDNHostGroup", "Service", "ServiceGroup")
+RULE_ENTITIES = ("FirewallRule", "SecurityPolicy")
+log = logging.getLogger("smu.firewall.rule_export")
 CORE_COLUMNS = [
     "Rule Name", "Status / Enable", "Action", "Source Zone", "Source Object", "Source Resolved",
     "Destination Zone", "Destination Object", "Destination Resolved", "Service",
@@ -111,11 +114,18 @@ def _join(values: list[str]) -> str:
     return "\n".join(values)
 
 
-def parse_firewall_rules(payloads: dict[str, str]) -> tuple[list[dict[str, str]], list[str]]:
+def parse_firewall_rules(payloads: dict[str, str], rule_entity: str | None = None) -> tuple[list[dict[str, str]], list[str]]:
     resolved_objects, resolved_services = _object_maps(payloads)
     rows: list[dict[str, str]] = []
     extra_columns: list[str] = []
-    for node in _nodes(payloads["FirewallRule"], "FirewallRule"):
+    rule_xml = payloads.get("Rule") or payloads.get("FirewallRule") or payloads.get("SecurityPolicy") or ""
+    root = ET.fromstring(rule_xml)
+    status = parse_status(rule_xml)
+    if status["code"] and status["code"] != "200":
+        raise RuntimeError(f"Firewall API {status['code']}: {status['message']}")
+    supported = {rule_entity} if rule_entity in RULE_ENTITIES else set(RULE_ENTITIES)
+    rule_nodes = [node for node in root.iter() if _tag(node) in supported]
+    for node in rule_nodes:
         source = _under(node, {"SourceNetworks", "SourceNetwork", "SourceHosts", "SourceObjects"})
         destination = _under(node, {"DestinationNetworks", "DestinationNetwork", "DestinationHosts", "DestinationObjects"})
         services = _under(node, {"Services", "ServiceList"})
@@ -174,13 +184,23 @@ class FirewallRuleExportService:
         sheets: list[dict[str, Any]] = []
         errors: list[dict[str, str]] = []
         counts: dict[str, int] = {}
+        diagnostics: dict[str, dict[str, str]] = {}
         for config in configs:
             name = config["name"]
             progress(f"{name} Firewall Rule 및 Object 조회 중")
             try:
                 client = FirewallClient(config)
-                payloads = {entity: client.get(entity) for entity in ENTITIES}
-                rows, columns = parse_firewall_rules(payloads)
+                rule_response = client.get_rules_compatible()
+                diagnostics[name] = {"apiVersion": rule_response["apiVersion"], "ruleEntity": rule_response["entity"]}
+                log.info("Firewall rule API selected firewall=%s api_version=%s entity=%s", name, rule_response["apiVersion"] or "unknown", rule_response["entity"])
+                payloads = {"Rule": rule_response["raw"]}
+                for entity in ENTITIES:
+                    payloads[entity] = client.get(entity)
+                    entity_status = parse_status(payloads[entity])
+                    log.info("Firewall XML entity validated firewall=%s api_version=%s entity=%s status=%s", name, rule_response["apiVersion"] or "unknown", entity, entity_status["code"] or "unknown")
+                    if entity_status["code"] and entity_status["code"] != "200":
+                        raise RuntimeError(f"Firewall API entity {entity} {entity_status['code']}: {entity_status['message']}")
+                rows, columns = parse_firewall_rules(payloads, rule_response["entity"])
                 sheets.append({"name": name, "rows": rows, "columns": columns})
                 counts[name] = len(rows)
             except Exception as exc:
@@ -190,4 +210,4 @@ class FirewallRuleExportService:
         export_dir = self.root / "exports"
         path = export_dir / f"Sophos_Firewall_Rules_{date.today().isoformat()}.xlsx"
         names = write_xlsx_workbook(path, sheets)
-        return {"filename": path.name, "path": str(path), "sheets": names, "counts": counts, "errors": errors}
+        return {"filename": path.name, "path": str(path), "sheets": names, "counts": counts, "errors": errors, "diagnostics": diagnostics}

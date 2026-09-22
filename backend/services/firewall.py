@@ -39,6 +39,15 @@ def parse_status(xml_text: str) -> dict[str, str]:
         return {"code": code.group(1) if code else "", "message": message.group(1).strip() if message else xml_text}
 
 
+def response_api_version(xml_text: str) -> str:
+    try:
+        root = ET.fromstring(xml_text)
+        return str(root.attrib.get("APIVersion", ""))
+    except ET.ParseError:
+        match = re.search(r'<Response[^>]+APIVersion="([^"]+)"', xml_text)
+        return match.group(1) if match else ""
+
+
 class FirewallClient:
     def __init__(self, config: dict[str, Any]):
         self.config = config
@@ -58,9 +67,21 @@ class FirewallClient:
 
     def get(self, entity: str) -> str:
         """Read an XML API entity using the same authenticated transport as Response > Firewall."""
-        if entity not in {"FirewallRule", "IPHost", "IPHostGroup", "FQDNHost", "FQDNHostGroup", "Service", "ServiceGroup"}:
+        if entity not in {"FirewallRule", "SecurityPolicy", "IPHost", "IPHostGroup", "FQDNHost", "FQDNHostGroup", "Service", "ServiceGroup"}:
             raise ValueError(f"Unsupported firewall XML entity: {entity}")
         return self._post_xml(f"<Request>{self.login_xml()}<Get><{entity}/></Get></Request>")
+
+    def get_rules_compatible(self) -> dict[str, str]:
+        """Read rules using the entity supported by this firewall's SFOS API."""
+        raw = self.get("FirewallRule")
+        status = parse_status(raw)
+        invalid_module = status["code"] == "529" and "input request module is invalid" in status["message"].lower()
+        if invalid_module:
+            raw = self.get("SecurityPolicy")
+            entity = "SecurityPolicy"
+        else:
+            entity = "FirewallRule"
+        return {"raw": raw, "entity": entity, "apiVersion": response_api_version(raw)}
 
     def create(self, mode: str, target: str) -> dict[str, Any]:
         object_name = f"AIDR_{target}"

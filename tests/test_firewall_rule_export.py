@@ -78,7 +78,7 @@ def test_export_queries_all_required_xml_entities(tmp_path: Path, monkeypatch) -
         seen.append(entity); return XML[entity]
     monkeypatch.setattr(FirewallClient, "get", get)
     FirewallRuleExportService(tmp_path).build(["Cloud"])
-    assert seen == list(ENTITIES)
+    assert seen == ["FirewallRule", *ENTITIES]
 
 
 def test_malformed_rule_xml_is_reported_without_broken_workbook(tmp_path: Path, monkeypatch) -> None:
@@ -97,3 +97,64 @@ def test_sheet_names_are_excel_safe_and_unique() -> None:
     assert len(first) <= 31 and len(second) <= 31
     assert first != second
     assert not set("[]:*?/\\") & set(first + second)
+
+
+def test_rule_entity_falls_back_only_for_529_invalid_module(monkeypatch) -> None:
+    client = FirewallClient({"name": "Cloud", "host": "cloud", "port": "4444", "username": "u", "password": "p", "verify_ssl": False})
+    calls: list[str] = []
+    responses = iter([
+        '<Response APIVersion="1700.1"><Status code="529">Input request module is Invalid</Status></Response>',
+        '<Response APIVersion="1700.1"><Status code="200">OK</Status><SecurityPolicy><Name>Legacy Rule</Name></SecurityPolicy></Response>',
+    ])
+    def post(_request: str) -> str:
+        calls.append(_request); return next(responses)
+    monkeypatch.setattr(client, "_post_xml", post)
+    result = client.get_rules_compatible()
+    assert result["entity"] == "SecurityPolicy"
+    assert result["apiVersion"] == "1700.1"
+    assert "<FirewallRule/>" in calls[0] and "<SecurityPolicy/>" in calls[1]
+
+
+def test_rule_entity_does_not_fallback_for_other_failures(monkeypatch) -> None:
+    client = FirewallClient({"name": "Cloud", "host": "cloud", "port": "4444", "username": "u", "password": "p", "verify_ssl": False})
+    calls: list[str] = []
+    monkeypatch.setattr(client, "_post_xml", lambda request: calls.append(request) or '<Response APIVersion="2000.2"><Status code="500">Other error</Status></Response>')
+    result = client.get_rules_compatible()
+    assert result["entity"] == "FirewallRule"
+    assert len(calls) == 1
+
+
+def test_security_policy_is_parsed_into_same_rule_model() -> None:
+    payloads = dict(XML)
+    payloads["Rule"] = XML["FirewallRule"].replace("FirewallRule", "SecurityPolicy")
+    rows, _columns = parse_firewall_rules(payloads, "SecurityPolicy")
+    assert rows[0]["Rule Name"] == "Allow Web"
+    assert rows[0]["Action"] == "Accept"
+
+
+def test_legacy_firewall_fallback_builds_sheet_and_diagnostics(tmp_path: Path, monkeypatch) -> None:
+    env(tmp_path, ("Cloud",))
+    legacy_rules = XML["FirewallRule"].replace('<Response>', '<Response APIVersion="1700.1">').replace("FirewallRule", "SecurityPolicy")
+    def post(_client, request: str) -> str:
+        if "<FirewallRule/>" in request:
+            return '<Response APIVersion="1700.1"><Status code="529">Input request module is Invalid</Status></Response>'
+        if "<SecurityPolicy/>" in request:
+            return legacy_rules
+        return next(XML[entity] for entity in ENTITIES if f"<{entity}/>" in request)
+    monkeypatch.setattr(FirewallClient, "_post_xml", post)
+    result = FirewallRuleExportService(tmp_path).build(["Cloud"])
+    assert result["sheets"] == ["Cloud"]
+    assert result["counts"] == {"Cloud": 1}
+    assert result["diagnostics"]["Cloud"] == {"apiVersion": "1700.1", "ruleEntity": "SecurityPolicy"}
+
+
+def test_object_entity_529_identifies_the_incompatible_module(tmp_path: Path, monkeypatch) -> None:
+    env(tmp_path, ("Cloud",))
+    def get(_client, entity):
+        if entity == "IPHostGroup":
+            return '<Response APIVersion="2000.2"><Status code="529">Input request module is Invalid</Status></Response>'
+        return XML[entity]
+    monkeypatch.setattr(FirewallClient, "get", get)
+    result = FirewallRuleExportService(tmp_path).build(["Cloud"])
+    assert result["sheets"] == ["Export Errors"]
+    assert "entity IPHostGroup 529" in result["errors"][0]["Message"]
