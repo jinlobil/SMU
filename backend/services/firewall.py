@@ -56,6 +56,12 @@ class FirewallClient:
     def login_xml(self) -> str:
         return f"<Login><Username>{escape(self.config['username'])}</Username><Password>{escape(self.config['password'])}</Password></Login>"
 
+    def get(self, entity: str) -> str:
+        """Read an XML API entity using the same authenticated transport as Response > Firewall."""
+        if entity not in {"FirewallRule", "IPHost", "IPHostGroup", "FQDNHost", "FQDNHostGroup", "Service", "ServiceGroup"}:
+            raise ValueError(f"Unsupported firewall XML entity: {entity}")
+        return self._post_xml(f"<Request>{self.login_xml()}<Get><{entity}/></Get></Request>")
+
     def create(self, mode: str, target: str) -> dict[str, Any]:
         object_name = f"AIDR_{target}"
         if mode == "DOMAIN":
@@ -112,6 +118,20 @@ class FirewallService:
 
     def public_configurations(self) -> list[dict[str, Any]]:
         return [{"name": config["name"], "configured": config["configured"]} for config in self.configurations()]
+
+    def selected_for_export(self, names: list[Any]) -> list[dict[str, Any]]:
+        selected_names = list(dict.fromkeys(str(name) for name in names if str(name)))
+        known = {config["name"]: config for config in self.configurations()}
+        unknown = [name for name in selected_names if name not in known]
+        if unknown:
+            raise ValueError(f"Unknown firewall: {', '.join(unknown)}")
+        configs = [known[name] for name in selected_names]
+        if not configs:
+            raise ValueError("At least one firewall is required")
+        missing = [config["name"] for config in configs if not config["configured"]]
+        if missing:
+            raise ValueError(f"Selected firewall configuration is missing: {', '.join(missing)}")
+        return configs
 
     @staticmethod
     def targets(mode: str, raw_targets: list[Any]) -> list[str]:
