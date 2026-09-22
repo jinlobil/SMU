@@ -621,6 +621,15 @@ def start_export(payload: dict = Body()) -> dict:
     return {"success": True, "data": watchdog_manager.start_laborer_job("export", kind=kind, start=start.isoformat(), end=end.isoformat(), columns=columns)}
 
 
+@app.post("/api/jobs/export/firewall-rules", status_code=202)
+def start_firewall_rule_export(payload: dict = Body()) -> dict:
+    try:
+        firewalls = [config["name"] for config in firewall_service.selected_for_export(payload.get("firewalls") or [])]
+    except ValueError as exc:
+        return error_response(str(uuid.uuid4()), "INVALID_FIREWALL_EXPORT", str(exc), 400)
+    return {"success": True, "data": watchdog_manager.start_laborer_job("firewall_rules_export", firewalls=firewalls)}
+
+
 @app.get("/api/config/export/file/{filename}")
 def download_export_file(filename: str):
     path = PROJECT_ROOT / "exports" / Path(filename).name
@@ -719,9 +728,6 @@ def vacuum_indexes(payload: dict | None = Body(default=None)) -> dict:
     target = str((payload or {}).get("target", "all"))
     return {"success": True, "data": watchdog_manager.start_laborer_job("vacuum", target=target)}
 
-@app.get("/api/learner/history")
-def learner_history(source: str, scopeType: str, scopeKey: str, behaviorType: str, behaviorKey: str) -> dict:
-    return {"success":True,"data":LearnerService(PROJECT_ROOT).history(source,scopeType,scopeKey,behaviorType,behaviorKey)}
 
 @app.post("/api/learner/jobs", status_code=202)
 def start_learner_job(payload: dict = Body(default={})) -> dict:
