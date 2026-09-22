@@ -16,10 +16,12 @@ ENTITIES = ("IPHost", "IPHostGroup", "FQDNHost", "FQDNHostGroup", "Services", "S
 RULE_ENTITIES = ("FirewallRule", "SecurityPolicy")
 log = logging.getLogger("smu.firewall.rule_export")
 CORE_COLUMNS = [
-    "Rule Name", "Status / Enable", "Action", "Source Zone", "Source Object", "Source Resolved",
-    "Destination Zone", "Destination Object", "Destination Resolved", "Service",
-    "Service Resolved / Protocol / Port", "Schedule", "Log Traffic", "Web Filter",
-    "Application Control", "IPS Policy", "Source Exclusions", "Destination Exclusions", "Service Exclusions",
+    "Order", "Rule Group", "Rule Name", "Status",
+    "Source Zone", "Source Object", "Source Resolved",
+    "Destination Zone", "Destination Object", "Destination Resolved",
+    "Service", "Service Resolved / Protocol / Port",
+    "Rule ID", "Action", "IPS", "AV", "Web", "Application", "QoS", "Heartbeat",
+    "Linked NAT", "Proxy", "Log",
 ]
 
 
@@ -59,35 +61,6 @@ def _under_direct(node: ET.Element, containers: set[str]) -> list[str]:
                 if child is not container and value and value not in result:
                     result.append(value)
     return result
-
-
-def _exclusion_values(node: ET.Element, containers: set[str]) -> list[str]:
-    result: list[str] = []
-    exclusions = _direct_child(node, {"Exclusions"})
-    if exclusions is None:
-        return result
-    for container in exclusions.iter():
-        if _tag(container) not in containers:
-            continue
-        for child in container.iter():
-            value = (child.text or "").strip()
-            if child is not container and value and value not in result:
-                result.append(value)
-    return result
-
-
-def _flatten(node: ET.Element, prefix: str = "") -> dict[str, str]:
-    values: dict[str, list[str]] = {}
-    for child in list(node):
-        key = f"{prefix}.{_tag(child)}" if prefix else _tag(child)
-        if list(child):
-            for nested_key, nested_value in _flatten(child, key).items():
-                values.setdefault(nested_key, []).extend(nested_value.split("\n"))
-        else:
-            value = (child.text or "").strip()
-            if value:
-                values.setdefault(key, []).append(value)
-    return {key: "\n".join(dict.fromkeys(items)) for key, items in values.items()}
 
 
 def _nodes(xml_text: str, entity: str) -> list[ET.Element]:
@@ -164,26 +137,60 @@ def _join(values: list[str]) -> str:
     return "\n".join(values)
 
 
+def _feature(node: ET.Element, *names: str) -> str:
+    values = _values(node, set(names))
+    return _join(values)
+
+
+def _rule_models(root: ET.Element, rule_entity: str | None) -> list[tuple[ET.Element, str]]:
+    """Return real policy rows, excluding group/header nodes, in XML document order."""
+    supported = {rule_entity} if rule_entity in RULE_ENTITIES else set(RULE_ENTITIES)
+    rows: list[tuple[ET.Element, str]] = []
+    policy_tags = {"NetworkPolicy", "UserPolicy"}
+    group_tags = {"FirewallRuleGroup", "RuleGroup", "PolicyGroup"}
+
+    def walk(parent: ET.Element, inherited_group: str = "") -> None:
+        current_group = inherited_group
+        for child in list(parent):
+            tag = _tag(child)
+            if tag in group_tags:
+                group_name = _direct_text(child, "Name", "GroupName", "RuleGroupName") or (child.text or "").strip()
+                current_group = group_name or current_group
+                walk(child, current_group)
+            elif tag in policy_tags:
+                group_name = _direct_text(child, "PolicyGroup", "RuleGroup", "GroupName", "RuleGroupName") or current_group
+                rows.append((child, group_name))
+            elif tag in supported:
+                nested = [item for item in list(child) if _tag(item) in policy_tags]
+                if nested:
+                    walk(child, current_group)
+                else:
+                    rows.append((child, current_group))
+            else:
+                walk(child, current_group)
+
+    walk(root)
+    return rows
+
+
 def parse_firewall_rules(payloads: dict[str, str], rule_entity: str | None = None) -> tuple[list[dict[str, str]], list[str]]:
     resolved_objects, resolved_services = _object_maps(payloads)
     rows: list[dict[str, str]] = []
-    extra_columns: list[str] = []
     rule_xml = payloads.get("Rule") or payloads.get("FirewallRule") or payloads.get("SecurityPolicy") or ""
     root = ET.fromstring(rule_xml)
     status = parse_status(rule_xml)
     if status["code"] and status["code"] != "200":
         raise RuntimeError(f"Firewall API {status['code']}: {status['message']}")
-    supported = {rule_entity} if rule_entity in RULE_ENTITIES else set(RULE_ENTITIES)
-    rule_nodes = [node for node in root.iter() if _tag(node) in supported]
-    for node in rule_nodes:
+    rule_nodes = _rule_models(root, rule_entity)
+    for row_number, (node, inherited_group) in enumerate(rule_nodes, 1):
         source = _under_direct(node, {"SourceNetworks", "SourceNetwork", "SourceHosts", "SourceObjects"})
         destination = _under_direct(node, {"DestinationNetworks", "DestinationNetwork", "DestinationHosts", "DestinationObjects"})
         services = _under_direct(node, {"Services", "ServiceList"})
-        flat = _flatten(node)
         row = {
-            "Rule Name": _first(node, "Name", "RuleName"),
-            "Status / Enable": _first(node, "Status", "Enable", "Enabled"),
-            "Action": _first(node, "Action"),
+            "Order": _direct_text(node, "Order", "RulePosition", "Position") or str(row_number),
+            "Rule Group": _direct_text(node, "PolicyGroup", "RuleGroup", "GroupName", "RuleGroupName") or inherited_group,
+            "Rule Name": _direct_text(node, "Name", "RuleName"),
+            "Status": _direct_text(node, "Status", "Enable", "Enabled"),
             "Source Zone": _join(_under_direct(node, {"SourceZones", "SourceZone"})),
             "Source Object": _join(source),
             "Source Resolved": _join([resolved_objects.get(value, value) for value in source]),
@@ -192,22 +199,20 @@ def parse_firewall_rules(payloads: dict[str, str], rule_entity: str | None = Non
             "Destination Resolved": _join([resolved_objects.get(value, value) for value in destination]),
             "Service": _join(services),
             "Service Resolved / Protocol / Port": _join([resolved_services.get(value, value) for value in services]),
-            "Schedule": _first(node, "Schedule"),
-            "Log Traffic": _first(node, "LogTraffic", "LogFirewallTraffic"),
-            "Web Filter": _first(node, "WebFilter", "WebFilterPolicy"),
-            "Application Control": _first(node, "ApplicationControl", "ApplicationControlPolicy"),
-            "IPS Policy": _first(node, "IntrusionPrevention", "IPSPolicy", "IPS"),
-            "Source Exclusions": _join(_exclusion_values(node, {"SourceNetworks", "SourceNetwork", "SourceHosts", "SourceObjects"})),
-            "Destination Exclusions": _join(_exclusion_values(node, {"DestinationNetworks", "DestinationNetwork", "DestinationHosts", "DestinationObjects"})),
-            "Service Exclusions": _join(_exclusion_values(node, {"Services", "ServiceList"})),
+            "Rule ID": _direct_text(node, "PolicyID", "RuleID", "ID"),
+            "Action": _direct_text(node, "Action"),
+            "IPS": _feature(node, "IntrusionPrevention", "IPSPolicy", "IPS"),
+            "AV": _feature(node, "MalwareScanning", "Antivirus", "AVPolicy", "ScanHTTP", "ScanFTP"),
+            "Web": _feature(node, "WebFilter", "WebFilterPolicy"),
+            "Application": _feature(node, "ApplicationControl", "ApplicationControlPolicy"),
+            "QoS": _feature(node, "TrafficShapingPolicy", "QoSPolicy", "TrafficShaping"),
+            "Heartbeat": _feature(node, "Heartbeat", "MinimumSourceHBPermitted", "MinimumDestinationHBPermitted"),
+            "Linked NAT": _feature(node, "LinkedNATRule", "LinkedNAT", "NATRule"),
+            "Proxy": _feature(node, "ProxyMode", "UseWebProxy", "Proxy"),
+            "Log": _feature(node, "LogTraffic", "LogFirewallTraffic"),
         }
-        for key, value in flat.items():
-            column = f"XML: {key}"
-            if column not in extra_columns:
-                extra_columns.append(column)
-            row[column] = value
         rows.append(row)
-    return rows, [*CORE_COLUMNS, *extra_columns]
+    return rows, CORE_COLUMNS.copy()
 
 
 def classify_export_error(exc: Exception) -> str:

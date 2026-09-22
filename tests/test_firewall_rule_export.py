@@ -9,7 +9,7 @@ from backend.services.spreadsheet import safe_sheet_name
 
 
 XML = {
-    "FirewallRule": '''<Response APIVersion="2000.2"><Status code="200">OK</Status><FirewallRule><Name>Allow Web</Name><Status>Enable</Status><Action>Accept</Action><SourceZones><Zone>LAN</Zone></SourceZones><SourceNetworks><Network>Office Hosts</Network></SourceNetworks><DestinationZones><Zone>WAN</Zone></DestinationZones><DestinationNetworks><Network>portal.example.com</Network></DestinationNetworks><Services><Service>Web Ports</Service></Services><Exclusions><SourceNetworks><Network>Excluded Source</Network></SourceNetworks><DestinationNetworks><Network>Excluded Destination</Network></DestinationNetworks><Services><Service>Excluded Service</Service></Services></Exclusions><Schedule>All The Time</Schedule><LogTraffic>Enable</LogTraffic><WebFilterPolicy>Default</WebFilterPolicy><ApplicationControlPolicy>Allow Apps</ApplicationControlPolicy><IPSPolicy>LAN TO WAN</IPSPolicy><CustomUsefulField>preserved</CustomUsefulField></FirewallRule></Response>''',
+    "FirewallRule": '''<Response APIVersion="2000.2"><Status code="200">OK</Status><FirewallRule><NetworkPolicy><Name>FW_IN_SEOUL_VPN_PDA_TO_AWS_WMS</Name><PolicyGroup>SSL_PDA &gt; WMS</PolicyGroup><Position>3</Position><Status>Enable</Status><SourceZones><Zone>VPN</Zone></SourceZones><SourceNetworks><Network>Office Hosts</Network></SourceNetworks><DestinationZones><Zone>LAN</Zone></DestinationZones><DestinationNetworks><Network>portal.example.com</Network></DestinationNetworks><Services><Service>Web Ports</Service></Services><Exclusions><SourceNetworks><Network>Excluded Source</Network></SourceNetworks><DestinationNetworks><Network>Excluded Destination</Network></DestinationNetworks><Services><Service>Excluded Service</Service></Services></Exclusions><PolicyID>37</PolicyID><Action>Accept</Action><IntrusionPrevention>LAN TO WAN</IntrusionPrevention><MalwareScanning>Enable</MalwareScanning><WebFilterPolicy>Default</WebFilterPolicy><ApplicationControlPolicy>Allow Apps</ApplicationControlPolicy><TrafficShapingPolicy>QoS Standard</TrafficShapingPolicy><MinimumSourceHBPermitted>Green</MinimumSourceHBPermitted><LinkedNATRule>NAT_37</LinkedNATRule><ProxyMode>Disable</ProxyMode><LogTraffic>Enable</LogTraffic></NetworkPolicy></FirewallRule></Response>''',
     "IPHost": '''<Response APIVersion="2000.2"><Status code="200">OK</Status><IPHost><Name>PC-1</Name><HostType>IP</HostType><IPAddress>10.0.0.1</IPAddress></IPHost><IPHost><Name>Office Network</Name><HostType>Network</HostType><IPAddress>10.10.0.0</IPAddress><Subnet>255.255.0.0</Subnet></IPHost><IPHost><Name>VPN Range</Name><HostType>IPRange</HostType><StartIPAddress>10.20.0.1</StartIPAddress><EndIPAddress>10.20.0.50</EndIPAddress></IPHost><IPHost><Name>DNS List</Name><HostType>IPList</HostType><ListOfIPAddresses><IPAddress>1.1.1.1</IPAddress><IPAddress>8.8.8.8</IPAddress></ListOfIPAddresses></IPHost></Response>''',
     "IPHostGroup": '''<Response APIVersion="2000.2"><Status code="200">OK</Status><IPHostGroup><Name>Office Hosts</Name><HostList><IPHost>PC-1</IPHost><IPHost>Office Network</IPHost><IPHost>VPN Range</IPHost><IPHost>DNS List</IPHost></HostList></IPHostGroup></Response>''',
     "FQDNHost": '''<Response><Status code="200">OK</Status><FQDNHost><Name>portal.example.com</Name><FQDN>portal.example.com</FQDN></FQDNHost></Response>''',
@@ -36,13 +36,25 @@ def sheet_names(path: Path) -> str:
 def test_rule_parser_resolves_hosts_groups_fqdn_services_and_preserves_xml() -> None:
     rows, columns = parse_firewall_rules(XML)
     row = rows[0]
+    assert row["Order"] == "3"
+    assert row["Rule Group"] == "SSL_PDA > WMS"
+    assert row["Rule Name"] == "FW_IN_SEOUL_VPN_PDA_TO_AWS_WMS"
     assert row["Source Object"] == "Office Hosts"
     assert "PC-1 (10.0.0.1)" in row["Source Resolved"]
     assert row["Destination Resolved"] == "portal.example.com"
     assert "Protocol: TCP | Source: 1:65535 | Destination: 80" in row["Service Resolved / Protocol / Port"]
     assert "Protocol: TCP | Source: 1024:65535 | Destination: 443" in row["Service Resolved / Protocol / Port"]
-    assert row["XML: CustomUsefulField"] == "preserved"
-    assert "XML: CustomUsefulField" in columns
+    assert row["Rule ID"] == "37"
+    assert row["IPS"] == "LAN TO WAN"
+    assert row["AV"] == "Enable"
+    assert row["Web"] == "Default"
+    assert row["Application"] == "Allow Apps"
+    assert row["QoS"] == "QoS Standard"
+    assert row["Heartbeat"] == "Green"
+    assert row["Linked NAT"] == "NAT_37"
+    assert row["Proxy"] == "Disable"
+    assert row["Log"] == "Enable"
+    assert all(not column.startswith("XML:") for column in columns)
 
 
 def test_selected_firewalls_make_only_selected_sheets(tmp_path: Path, monkeypatch) -> None:
@@ -129,7 +141,7 @@ def test_security_policy_is_parsed_into_same_rule_model() -> None:
     payloads = dict(XML)
     payloads["Rule"] = XML["FirewallRule"].replace("FirewallRule", "SecurityPolicy")
     rows, _columns = parse_firewall_rules(payloads, "SecurityPolicy")
-    assert rows[0]["Rule Name"] == "Allow Web"
+    assert rows[0]["Rule Name"] == "FW_IN_SEOUL_VPN_PDA_TO_AWS_WMS"
     assert rows[0]["Action"] == "Accept"
 
 
@@ -170,14 +182,14 @@ def test_iphost_types_preserve_network_range_and_list_values() -> None:
     assert "DNS List (1.1.1.1\n8.8.8.8)" in resolved
 
 
-def test_rule_exclusions_are_separate_from_main_policy_values() -> None:
+def test_rule_exclusions_do_not_leak_into_management_columns() -> None:
     row = parse_firewall_rules(XML)[0][0]
     assert row["Source Object"] == "Office Hosts"
     assert row["Destination Object"] == "portal.example.com"
     assert row["Service"] == "Web Ports"
-    assert row["Source Exclusions"] == "Excluded Source"
-    assert row["Destination Exclusions"] == "Excluded Destination"
-    assert row["Service Exclusions"] == "Excluded Service"
+    assert "Excluded Source" not in row["Source Object"]
+    assert "Excluded Destination" not in row["Destination Object"]
+    assert "Excluded Service" not in row["Service"]
 
 
 def test_services_request_uses_plural_sophos_entity(monkeypatch) -> None:
@@ -207,3 +219,13 @@ def test_nat_columns_are_not_in_firewall_rule_export() -> None:
     assert "NAT Policy" not in columns
     assert "Source NAT" not in columns
     assert "Destination NAT" not in columns
+
+
+def test_network_and_user_policies_are_rows_but_group_header_is_not() -> None:
+    payloads = dict(XML)
+    payloads["Rule"] = '''<Response APIVersion="2000.2"><Status code="200">OK</Status><FirewallRuleGroup><Name>SSL_PDA &gt; WMS</Name><NetworkPolicy><Name>Network Rule</Name><Status>Enable</Status><PolicyID>37</PolicyID></NetworkPolicy></FirewallRuleGroup><FirewallRule><UserPolicy><Name>User Rule</Name><PolicyGroup>Identity Rules</PolicyGroup><Status>Enable</Status><PolicyID>38</PolicyID></UserPolicy></FirewallRule></Response>'''
+    rows, _columns = parse_firewall_rules(payloads)
+    assert [(row["Rule Group"], row["Rule Name"], row["Rule ID"]) for row in rows] == [
+        ("SSL_PDA > WMS", "Network Rule", "37"),
+        ("Identity Rules", "User Rule", "38"),
+    ]
