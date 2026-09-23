@@ -1,7 +1,8 @@
 from pathlib import Path
 import pytest
 import os
-from backend.services.settings import ThemeService, SchedulerService
+import time
+from backend.services.settings import DEFAULT_THEME, SchedulerService, ThemePresetService, ThemeService
 
 def test_theme_service_persists_valid_colors(tmp_path: Path):
     service=ThemeService(tmp_path); theme=service.load(); theme["Primary_Blue"]="#123456"
@@ -20,6 +21,16 @@ def test_scheduler_settings_are_persistent(tmp_path: Path):
     assert saved["targets"]==["detections"]
     loaded=SchedulerService(tmp_path,Refresh()).get()
     assert loaded["enabled"] is True
+    assert loaded["nextRun"] is not None
+
+
+def test_scheduler_migrates_legacy_logical_detection_targets(tmp_path: Path):
+    path = tmp_path / "runtime/scheduler.json"
+    path.parent.mkdir(parents=True)
+    path.write_text('{"enabled": false, "targets": ["xdr", "firewall", "inbound"]}', encoding="utf-8")
+    service = SchedulerService(tmp_path, Refresh())
+    assert service.get()["targets"] == ["detections", "inbound"]
+
 
 def test_theme_service_migrates_legacy_blue_ui_colors(tmp_path: Path):
     path=tmp_path/"env/Color_env.txt";path.parent.mkdir(parents=True)
@@ -28,6 +39,27 @@ def test_theme_service_migrates_legacy_blue_ui_colors(tmp_path: Path):
     assert theme["Primary_Blue"]=="#ff4d8d"
     assert theme["Card_Title_Text"]=="#ffb347"
     assert theme["Table_Header_Text"]=="#e4d4f2"
+
+def test_theme_has_all_role_tokens_and_old_files_receive_defaults(tmp_path: Path):
+    path=tmp_path/"env/Color_env.txt";path.parent.mkdir(parents=True)
+    path.write_text("Primary_Blue=#123456\n",encoding="utf-8")
+    theme=ThemeService(tmp_path).load()
+    assert len(DEFAULT_THEME)==59
+    assert theme["Primary_Blue"]=="#123456"
+    assert theme["UI_Background_Deep"]==DEFAULT_THEME["UI_Background_Deep"]
+    assert theme["Glow_Accent"]==DEFAULT_THEME["Glow_Accent"]
+
+def test_theme_presets_are_complete_separate_and_replace_by_name(tmp_path: Path):
+    service=ThemePresetService(tmp_path)
+    first={**DEFAULT_THEME,"Primary_Blue":"#112233"}
+    saved=service.save("My Purple Theme",first)
+    assert saved[0]["theme"]["Primary_Blue"]=="#112233"
+    assert len(saved[0]["theme"])==59
+    assert not (tmp_path/"env/Color_env.txt").exists()
+    saved=service.save("my purple theme",{**first,"Primary_Blue":"#334455"})
+    assert len(saved)==1
+    assert saved[0]["theme"]["Primary_Blue"]=="#334455"
+    assert service.delete("my purple theme")==[]
 
 class ScheduledRefresh:
     def __init__(self): self.calls=[]
@@ -41,8 +73,12 @@ class ScheduledRefresh:
     def refresh_users(self,*args): return self._record("users")
 
 class ScheduledIndex:
-    def __init__(self): self.calls=0
-    def rebuild_all(self,progress): self.calls+=1;progress("done");return {"ok":True}
+    def __init__(self): self.calls=0;self.targets=[];self.chain_index=False;self.start=None;self.end=None
+    def start_fetch_job(self,targets,start,end,chain_index=False):
+        self.targets=list(targets);self.start=start;self.end=end;self.chain_index=chain_index;return {"id":"fetch-1"}
+    def wait_for_fetch_job(self,job,progress,wait_for_index=False):
+        self.calls+=1;progress("FETCHING · 완료");progress("스마트 증분 완료")
+        return {**{target:{"status":"SUCCESS","data":{"ok":True}} for target in self.targets},"index":{"ok":True}}
 
 def test_scheduler_runs_every_target_then_index(tmp_path: Path):
     refresh=ScheduledRefresh();index=ScheduledIndex();service=SchedulerService(tmp_path,refresh,index)
@@ -51,7 +87,10 @@ def test_scheduler_runs_every_target_then_index(tmp_path: Path):
     assert saved["nextRun"] is not None
     service._run_cycle()
     state=service.get()
-    assert refresh.calls==targets
+    assert refresh.calls==[]
+    assert index.targets==targets
+    assert index.chain_index is True
+    assert index.start is None and index.end is None
     assert index.calls==1
     assert "index:OK" in state["lastResult"]
     assert state["lastRun"] is not None
@@ -74,3 +113,108 @@ def test_scheduler_retries_windows_permission_error(tmp_path: Path, monkeypatch)
 
     assert attempts["count"] == 3
     assert service.path.exists()
+
+
+def test_scheduler_exposes_only_physical_collection_targets(tmp_path: Path):
+    service = SchedulerService(tmp_path, Refresh())
+    saved = service.save({"enabled": False, "interval": 10, "targets": ["detections", "xdr", "firewall"]})
+    assert saved["targets"] == ["detections"]
+
+
+class ScheduledLearnerIndex(ScheduledIndex):
+    def __init__(self, fail_upstream=False, fail_learner=False):
+        super().__init__(); self.events=[]; self.fail_upstream=fail_upstream; self.fail_learner=fail_learner; self.learner_mode=None
+    def wait_for_fetch_job(self,job,progress,wait_for_index=False):
+        self.events.append("index")
+        result=super().wait_for_fetch_job(job,progress,wait_for_index)
+        if self.fail_upstream: result[self.targets[0]]={"status":"FAIL","error":"broken"}
+        return result
+    def start_learner_job(self,mode="incremental",**kwargs):
+        self.events.append("learner");self.learner_mode=mode;return {"id":"learner-1"}
+    def wait_for_learner_job(self,job,progress):
+        if self.fail_learner: raise RuntimeError("learner failed")
+        return {"ok":True}
+
+
+def test_scheduler_runs_independent_learner_as_final_incremental_phase(tmp_path):
+    index=ScheduledLearnerIndex();service=SchedulerService(tmp_path,ScheduledRefresh(),index)
+    service.save({"enabled":False,"interval":1,"targets":["detections","dlp","learner"]});service._run_cycle()
+    assert index.targets == ["detections","dlp"]
+    assert index.events == ["index","learner"]
+    assert index.learner_mode == "incremental"
+    assert service.get()["targetStatus"]["learner"]["status"] == "SUCCESS"
+
+
+def test_scheduler_allows_learner_only(tmp_path):
+    index=ScheduledLearnerIndex();service=SchedulerService(tmp_path,ScheduledRefresh(),index)
+    service.save({"enabled":False,"interval":1,"targets":["learner"]});service._run_cycle()
+    assert index.events == ["learner"] and index.targets == []
+
+
+def test_scheduler_skips_learner_after_upstream_failure(tmp_path):
+    index=ScheduledLearnerIndex(fail_upstream=True);service=SchedulerService(tmp_path,ScheduledRefresh(),index)
+    service.save({"enabled":False,"interval":1,"targets":["detections","learner"]});service._run_cycle()
+    assert index.events == ["index"]
+    assert service.get()["targetStatus"]["learner"] == {"time": service.get()["targetStatus"]["learner"]["time"], "status":"SKIPPED", "message":"upstream_index_failed"}
+
+
+def test_scheduler_separates_learner_failure_from_successful_data_refresh(tmp_path):
+    index=ScheduledLearnerIndex(fail_learner=True);service=SchedulerService(tmp_path,ScheduledRefresh(),index)
+    service.save({"enabled":False,"interval":1,"targets":["detections","learner"]});service._run_cycle();state=service.get()
+    assert state["targetStatus"]["detections"]["status"] == "SUCCESS"
+    assert state["targetStatus"]["learner"]["status"] == "FAIL"
+    assert "index:OK" in state["lastResult"] and "learner:FAIL" in state["lastResult"]
+
+
+def test_indexer_has_no_direct_learner_callback():
+    source = Path("system_monitor/indexer.py").read_text(encoding="utf-8")
+    assert "learner" not in source.lower()
+
+
+def test_run_now_persists_current_ui_selection_and_uses_dispatch_path(tmp_path):
+    index=ScheduledIndex();service=SchedulerService(tmp_path,ScheduledRefresh(),index)
+    result=service.run_now({"enabled":True,"interval":7,"targets":["detections"]})
+    assert result["accepted"] is True
+    deadline=time.time()+2
+    while service.get()["running"] or index.calls == 0:
+        assert time.time()<deadline
+        time.sleep(.01)
+    state=service.get()
+    assert state["enabled"] is True and state["targets"] == ["detections"]
+    assert state["nextRun"] is not None
+    assert index.targets == ["detections"] and index.calls == 1
+
+
+class FailingDispatcher:
+    def start_fetch_job(self, *args, **kwargs):
+        raise ConnectionRefusedError(10061, "fetcher 8768 unavailable")
+
+
+def test_scheduler_fetcher_down_clears_running_and_records_failure(tmp_path):
+    service=SchedulerService(tmp_path,ScheduledRefresh(),FailingDispatcher())
+    service.save({"enabled":False,"interval":10,"targets":["detections","inbound"]})
+    service._run_cycle();state=service.get()
+    assert state["running"] is False
+    assert state["phase"] == "failed"
+    assert "fetch/index:FAIL ConnectionRefusedError" in state["lastResult"]
+    assert state["targetStatus"]["detections"]["status"] == "FAIL"
+    assert state["targetStatus"]["inbound"]["status"] == "FAIL"
+
+
+def test_scheduler_restart_restores_enabled_selection_and_dispatches_again(tmp_path):
+    first=SchedulerService(tmp_path,ScheduledRefresh(),ScheduledIndex())
+    first.save({"enabled":True,"interval":9,"targets":["detections","inbound"]})
+    restored_index=ScheduledIndex();restored=SchedulerService(tmp_path,ScheduledRefresh(),restored_index)
+    state=restored.get()
+    assert state["enabled"] is True and state["targets"] == ["detections","inbound"]
+    assert state["nextRun"] is not None
+    restored._run_cycle()
+    assert restored_index.targets == ["detections","inbound"]
+    assert "index:OK" in restored.get()["lastResult"]
+
+
+def test_scheduler_run_now_ui_sends_current_selection_and_handles_request_failure():
+    ui = Path("frontend/src/pages/ConfigPage.tsx").read_text(encoding="utf-8")
+    assert 'body:JSON.stringify(scheduler)' in ui
+    assert 'if(!r.ok||!payload?.data)' in ui
+    assert 'running:false,phase:"failed"' in ui
