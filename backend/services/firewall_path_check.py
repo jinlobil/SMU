@@ -43,24 +43,38 @@ def address_match(requested: ipaddress.IPv4Network, objects: str, resolved: str)
     return "partial" if partial else "none"
 
 
-def service_match(protocol: str, port: int, service_names: str, resolved: str) -> bool:
+def service_match_details(protocol: str, port: int, service_names: str, resolved: str) -> dict[str, bool]:
     if any(
         value.strip().casefold() in ANY_VALUES
         or value.strip().casefold() in {"any service", "all services"}
         for value in f"{service_names}\n{resolved}".splitlines()
     ):
-        return True
+        return {"protocolMatch": True, "portMatch": True, "serviceMatch": True}
     protocol = protocol.upper()
+    protocol_match = False
+    port_match = False
     for line in resolved.splitlines():
         match = re.search(r"Protocol:\s*([^|]+)", line, re.I)
         if not match or match.group(1).strip().upper() != protocol:
             continue
+        protocol_match = True
         destination = re.search(r"Destination:\s*([^|]+)", line, re.I)
         if not destination:
             continue
         for start, end in PORT_RANGE.findall(destination.group(1)):
-            if int(start) <= port <= int(end or start): return True
-    return False
+            if int(start) <= port <= int(end or start):
+                port_match = True
+                break
+    return {"protocolMatch": protocol_match, "portMatch": port_match, "serviceMatch": protocol_match and port_match}
+
+
+def service_match(protocol: str, port: int, service_names: str, resolved: str) -> bool:
+    return service_match_details(protocol, port, service_names, resolved)["serviceMatch"]
+
+
+def _position(value: str) -> int | None:
+    match = re.fullmatch(r"\s*#?(\d+)\s*", value or "")
+    return int(match.group(1)) if match else None
 
 
 def match_rules(rows: list[dict[str, str]], source: ipaddress.IPv4Network, destination: ipaddress.IPv4Network, protocol: str, port: int) -> dict[str, Any]:
@@ -68,16 +82,33 @@ def match_rules(rows: list[dict[str, str]], source: ipaddress.IPv4Network, desti
     for row in rows:
         source_match = address_match(source, row.get("Source Object", ""), row.get("Source Resolved", ""))
         destination_match = address_match(destination, row.get("Destination Object", ""), row.get("Destination Resolved", ""))
-        service_ok = service_match(protocol, port, row.get("Service", ""), row.get("Service Resolved / Protocol / Port", ""))
-        if source_match == "none" or destination_match == "none" or not service_ok: continue
-        matches.append({"rule": row.get("Rule Name", ""), "status": row.get("Status", ""), "action": row.get("Action", ""), "sourceMatch": source_match, "destinationMatch": destination_match, "serviceMatch": service_ok})
-    full = [item for item in matches if item["sourceMatch"] == item["destinationMatch"] == "full"]
-    active = [item for item in full if item["status"] in {"활성", "Enable", "enable"}]
+        service = service_match_details(protocol, port, row.get("Service", ""), row.get("Service Resolved / Protocol / Port", ""))
+        if source_match == "none" or destination_match == "none" or not service["serviceMatch"]: continue
+        matches.append({
+            "rule": row.get("Rule Name", ""),
+            "status": row.get("Status", ""),
+            "action": row.get("Action", ""),
+            "sourceMatch": source_match,
+            "destinationMatch": destination_match,
+            **service,
+            "sourceZone": row.get("Source Zone", ""),
+            "destinationZone": row.get("Destination Zone", ""),
+            "position": _position(row.get("_Rule Position", "")),
+            "fullMatch": source_match == destination_match == "full" and service["serviceMatch"],
+        })
+    full = [item for item in matches if item["fullMatch"]]
+    active = [item for item in full if item["status"] == "활성" or item["status"].casefold() in {"enable", "enabled"}]
     if len(active) == 1:
         action = active[0]["action"].casefold()
         state = "allow" if action in {"allow", "accept"} else "deny" if action in {"deny", "drop", "reject"} else "matched"
         return {"state": state, "orderReliable": True, "matchedRule": active[0], "matches": matches}
     if len(active) > 1:
+        positions = [item["position"] for item in active]
+        if all(position is not None for position in positions) and len(set(positions)) == len(positions):
+            first = min(active, key=lambda item: item["position"])
+            action = first["action"].casefold()
+            state = "allow" if action in {"allow", "accept"} else "deny" if action in {"deny", "drop", "reject"} else "matched"
+            return {"state": state, "orderReliable": True, "orderSource": "explicit_position", "matchedRule": first, "matches": matches}
         return {"state": "order_check_required", "orderReliable": False, "matchedRule": None, "matches": matches}
     if full:
         return {"state": "disabled", "orderReliable": True, "matchedRule": full[0], "matches": matches}

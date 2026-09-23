@@ -192,6 +192,11 @@ def parse_firewall_rules(payloads: dict[str, str], rule_entity: str | None = Non
         raw_status = _direct_text(rule_root, "Status", "Enable", "Enabled")
         normalized_status = {"enable": "활성", "disable": "비활성"}.get(raw_status.casefold(), raw_status)
         row = {
+            # FirewallRule/SecurityPolicy GET does not consistently expose a
+            # policy order. Keep only an explicit root-level position when the
+            # appliance supplies one; callers must not substitute Rule ID or
+            # XML/Excel row order for it.
+            "_Rule Position": _direct_text(rule_root, "Position", "RulePosition", "Sequence", "Order"),
             "Rule ID": _direct_text(rule_root, "RuleID", "PolicyID", "ID").lstrip("#"),
             "Rule Name": _direct_text(rule_root, "Name", "RuleName"),
             "Status": normalized_status,
