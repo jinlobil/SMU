@@ -30,6 +30,7 @@ from backend.services.timeline import TimelineService
 from backend.services.sensitive import SensitiveService
 from backend.services.dashboard import DashboardService
 from backend.services.firewall import FirewallService
+from backend.services.firewall_path_check import FirewallPathCheckService
 from backend.services.firewall_detections import FirewallDetectionService
 from backend.services.event_list_index import EventListIndex
 from backend.services.easy_query import EasyQueryService
@@ -72,6 +73,7 @@ phase_started = time.perf_counter()
 dashboard_service = DashboardService(PROJECT_ROOT)
 startup_log.info("Startup timing phase=dashboard_service_created elapsed_ms=%.1f", (time.perf_counter()-phase_started)*1000)
 firewall_service = FirewallService(PROJECT_ROOT)
+firewall_path_check_service = FirewallPathCheckService(PROJECT_ROOT)
 firewall_detection_service = FirewallDetectionService(PROJECT_ROOT)
 event_list_index = EventListIndex(PROJECT_ROOT)
 easy_query_service = EasyQueryService(PROJECT_ROOT)
@@ -309,6 +311,18 @@ def get_dashboard_top_file(start: date | None = None, end: date | None = None) -
 @app.get("/api/firewall/configuration")
 def get_firewall_configuration() -> dict:
     return {"success": True, "data": {"firewalls": firewall_service.public_configurations()}}
+
+
+@app.post("/api/firewall/path-check")
+def firewall_path_check(payload: dict = Body()) -> dict:
+    try:
+        result = firewall_path_check_service.check(
+            str(payload.get("source", "")), str(payload.get("destination", "")),
+            str(payload.get("protocol", "TCP")), int(payload.get("port", 0)), bool(payload.get("refresh", False)),
+        )
+    except (ValueError, TypeError) as exc:
+        return error_response(str(uuid.uuid4()), "INVALID_PATH_CHECK", str(exc), 400)
+    return {"success": True, "data": result}
 
 
 @app.post("/api/jobs/firewall", status_code=202)

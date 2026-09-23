@@ -9,6 +9,7 @@ import { TimelinePage } from "./pages/TimelinePage";
 import { SensitivePage } from "./pages/SensitivePage";
 import { DashboardPage } from "./pages/DashboardPage";
 import { FirewallPage } from "./pages/FirewallPage";
+import { FirewallPathCheckPage } from "./pages/FirewallPathCheckPage";
 import { EasyQueryPage } from "./pages/EasyQueryPage";
 import { LayoutPage } from "./pages/LayoutPage";
 import { ConfigPage } from "./pages/ConfigPage";
@@ -47,7 +48,7 @@ const submenus: Record<string, { label: string; route: string }[]> = {
     { label: "Timeline", route: "/forensics/timeline" }, { label: "Sensitive Files", route: "/forensics/sensitive-files" },
     { label: "Sensitive Sites", route: "/forensics/sensitive-sites" },
   ],
-  Response: [{ label: "Firewall", route: "/response/firewall" }, { label: "Easy Query", route: "/response/easy-query" }],
+  Response: [{ label: "Firewall", route: "/response/firewall" }, { label: "Firewall Path Check", route: "/response/firewall-path-check" }, { label: "Easy Query", route: "/response/easy-query" }],
   Lab: [{ label: "Layout - User", route: "/lab/layout" }, { label: "Machine Learning", route: "/lab/machine-learning" }],
   Config: [
     { label: "General", route: "/config/general" }, { label: "UI Management", route: "/config/ui" }, { label: "Data Management", route: "/config/data" },
@@ -139,6 +140,7 @@ export function App() {
           <Route path="/forensics/sensitive-files" element={<SensitivePage kind="files" />} />
           <Route path="/forensics/sensitive-sites" element={<SensitivePage kind="sites" />} />
           <Route path="/response/firewall" element={<FirewallPage />} />
+          <Route path="/response/firewall-path-check" element={<FirewallPathCheckPage />} />
           <Route path="/response/easy-query" element={<EasyQueryPage />} />
           <Route path="/lab/layout" element={<LayoutPage />} />
           <Route path="/lab/machine-learning" element={<MachineLearningPage />} />

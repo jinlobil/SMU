@@ -41,6 +41,13 @@ NETWORK_MAPPINGS = (
 IP_TOKEN = re.compile(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?:/(?:\d{1,2}|(?:\d{1,3}\.){3}\d{1,3}))?")
 MASKED_NETWORK = re.compile(r"((?:\d{1,3}\.){3}\d{1,3})\s*/\s*((?:\d{1,3}\.){3}\d{1,3})")
 UNKNOWN_NAMES = {"any", "all", "모든 호스트", "모든호스트", "*"}
+SITE_FIREWALLS = {
+    "서울사업장 유선": "Seoul",
+    "서울사업장 무선": "Seoul",
+    "서울사업장 SSL-VPN": "Cloud",
+    "안성사업장": "Anseong",
+    "이천사업장": "Icheon",
+}
 
 
 def _matches_for_network(candidate: ipaddress.IPv4Network) -> list[NetworkMapping]:
@@ -103,3 +110,37 @@ def classify_analysis_sheet(source_categories: set[str], destination_categories:
     if pair == {"LAN", "WAN"}:
         return "LAN ↔ WAN"
     return "ETC"
+
+
+def resolve_input_network(value: str) -> dict[str, str] | None:
+    try:
+        candidate = ipaddress.ip_network(value.strip(), strict=False)
+    except ValueError:
+        return None
+    mapped = _matches_for_network(candidate)
+    if mapped:
+        item = mapped[0]
+        return {"input": value, "network": str(candidate), "site": item.site, "category": item.category, "managedFirewall": SITE_FIREWALLS.get(item.site, "")}
+    if candidate.is_global:
+        return {"input": value, "network": str(candidate), "site": "Internet", "category": "WAN", "managedFirewall": ""}
+    return {"input": value, "network": str(candidate), "site": "미확인", "category": "", "managedFirewall": ""}
+
+
+def determine_firewall_path(source: dict[str, str], destination: dict[str, str]) -> tuple[list[str], bool]:
+    path: list[str] = []
+    partial = False
+    source_fw, destination_fw = source.get("managedFirewall", ""), destination.get("managedFirewall", "")
+    if source_fw and source_fw != "Cloud":
+        path.append(source_fw)
+    elif source.get("category") == "OFFICE" and not source_fw:
+        partial = True
+    if "LAN" in {source.get("category"), destination.get("category")} or "WAN" in {source.get("category"), destination.get("category")}:
+        path.append("Cloud")
+    if destination_fw and destination_fw != "Cloud":
+        path.append(destination_fw)
+    elif destination.get("category") == "OFFICE" and not destination_fw:
+        partial = True
+    path = list(dict.fromkeys(path))
+    if not path:
+        partial = True
+    return path, partial
