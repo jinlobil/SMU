@@ -4,7 +4,7 @@ from zipfile import ZipFile
 import pytest
 
 from backend.services.firewall import FirewallClient
-from backend.services.firewall_rule_export import ENTITIES, FirewallRuleExportService, parse_firewall_rules
+from backend.services.firewall_rule_export import ENTITIES, FirewallRuleExportService, classify_parsed_rule, parse_firewall_rules
 from backend.services.spreadsheet import safe_sheet_name
 
 
@@ -65,7 +65,7 @@ def test_selected_firewalls_make_only_selected_sheets(tmp_path: Path, monkeypatc
     monkeypatch.setattr(FirewallClient, "get", lambda _self, entity: XML[entity])
     result = FirewallRuleExportService(tmp_path).build(["Cloud", "Icheon"])
     workbook = sheet_names(Path(result["path"]))
-    assert result["sheets"] == ["Cloud", "Icheon"]
+    assert result["sheets"] == ["Cloud", "Icheon", "LAN ↔ OFFICE", "LAN ↔ WAN", "ETC"]
     assert 'name="Seoul"' not in workbook and 'name="Anseong"' not in workbook
 
 
@@ -73,7 +73,8 @@ def test_all_configured_firewalls_make_one_sheet_each(tmp_path: Path, monkeypatc
     env(tmp_path)
     monkeypatch.setattr(FirewallClient, "get", lambda _self, entity: XML[entity])
     result = FirewallRuleExportService(tmp_path).build(["Cloud", "Seoul", "Icheon", "Anseong"])
-    assert result["sheets"] == ["Cloud", "Seoul", "Icheon", "Anseong"]
+    assert result["sheets"] == ["Cloud", "Seoul", "Icheon", "Anseong", "LAN ↔ OFFICE", "LAN ↔ WAN", "ETC"]
+    assert sum(result["counts"].values()) == sum(result["analysisCounts"].values()) == 4
 
 
 def test_one_firewall_failure_keeps_successful_sheets_and_error_sheet(tmp_path: Path, monkeypatch) -> None:
@@ -84,7 +85,7 @@ def test_one_firewall_failure_keeps_successful_sheets_and_error_sheet(tmp_path: 
         return XML[entity]
     monkeypatch.setattr(FirewallClient, "get", get)
     result = FirewallRuleExportService(tmp_path).build(["Cloud", "Seoul"])
-    assert result["sheets"] == ["Cloud", "Export Errors"]
+    assert result["sheets"] == ["Cloud", "LAN ↔ OFFICE", "LAN ↔ WAN", "ETC", "Export Errors"]
     assert result["errors"] == [{"Firewall": "Seoul", "Error Type": "Connection Timeout", "Message": "timed out"}]
 
 
@@ -101,7 +102,7 @@ def test_malformed_rule_xml_is_reported_without_broken_workbook(tmp_path: Path, 
     env(tmp_path, ("Cloud",))
     monkeypatch.setattr(FirewallClient, "get", lambda _self, entity: "<broken" if entity == "FirewallRule" else XML[entity])
     result = FirewallRuleExportService(tmp_path).build(["Cloud"])
-    assert result["sheets"] == ["Export Errors"]
+    assert result["sheets"] == ["LAN ↔ OFFICE", "LAN ↔ WAN", "ETC", "Export Errors"]
     assert result["errors"][0]["Error Type"] == "XML Parse Error"
     assert Path(result["path"]).read_bytes().startswith(b"PK")
 
@@ -159,7 +160,7 @@ def test_legacy_firewall_fallback_builds_sheet_and_diagnostics(tmp_path: Path, m
         return next(XML[entity] for entity in ENTITIES if f"<{entity}/>" in request)
     monkeypatch.setattr(FirewallClient, "_post_xml", post)
     result = FirewallRuleExportService(tmp_path).build(["Cloud"])
-    assert result["sheets"] == ["Cloud"]
+    assert result["sheets"] == ["Cloud", "LAN ↔ OFFICE", "LAN ↔ WAN", "ETC"]
     assert result["counts"] == {"Cloud": 1}
     assert result["diagnostics"]["Cloud"] == {"apiVersion": "1700.1", "ruleEntity": "SecurityPolicy", "enrichmentErrors": []}
 
@@ -172,7 +173,7 @@ def test_object_entity_529_is_reported_without_losing_rule_sheet(tmp_path: Path,
         return XML[entity]
     monkeypatch.setattr(FirewallClient, "get", get)
     result = FirewallRuleExportService(tmp_path).build(["Cloud"])
-    assert result["sheets"] == ["Cloud"]
+    assert result["sheets"] == ["Cloud", "LAN ↔ OFFICE", "LAN ↔ WAN", "ETC"]
     assert result["errors"] == []
     assert "entity IPHostGroup 529" in result["diagnostics"]["Cloud"]["enrichmentErrors"][0]
 
@@ -211,7 +212,7 @@ def test_services_failure_still_creates_rule_sheet(tmp_path: Path, monkeypatch) 
         return XML[entity]
     monkeypatch.setattr(FirewallClient, "get", get)
     result = FirewallRuleExportService(tmp_path).build(["Cloud"])
-    assert result["sheets"] == ["Cloud"]
+    assert result["sheets"] == ["Cloud", "LAN ↔ OFFICE", "LAN ↔ WAN", "ETC"]
     assert result["counts"] == {"Cloud": 1}
     assert result["errors"] == []
     assert result["diagnostics"]["Cloud"]["enrichmentErrors"][0].startswith("Services: TimeoutError")
@@ -252,3 +253,15 @@ def test_export_styles_only_the_localized_status_cell(tmp_path: Path, monkeypatc
     assert 'r="B2" t="inlineStr" s="3"' in sheet
     assert 'fgColor rgb="FFC6F6D5"' in styles
     assert 'fgColor rgb="FFFED7D7"' in styles
+
+
+def test_analysis_sheet_adds_firewall_and_derived_columns_without_changing_master(tmp_path: Path, monkeypatch) -> None:
+    env(tmp_path, ("Cloud",))
+    monkeypatch.setattr(FirewallClient, "get", lambda _self, entity: XML[entity])
+    result = FirewallRuleExportService(tmp_path).build(["Cloud"])
+    with ZipFile(result["path"]) as workbook:
+        master = workbook.read("xl/worksheets/sheet1.xml").decode()
+        etc = workbook.read("xl/worksheets/sheet4.xml").decode()
+    assert "Source Category" not in master and "Destination Site" not in master
+    assert "Firewall" in etc and "Source Category" in etc and "Destination Site" in etc
+    assert "Cloud" in etc

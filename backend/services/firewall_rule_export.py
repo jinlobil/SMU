@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from backend.services.firewall import FirewallClient, FirewallService, parse_status
+from backend.services.firewall_network_mapping import classify_analysis_sheet, classify_rule_side
 from backend.services.spreadsheet import write_xlsx_workbook
 
 
@@ -221,6 +222,18 @@ def parse_firewall_rules(payloads: dict[str, str], rule_entity: str | None = Non
     return rows, columns
 
 
+def classify_parsed_rule(row: dict[str, str]) -> tuple[str, dict[str, str]]:
+    source_categories, source_sites = classify_rule_side(row.get("Source Object", ""), row.get("Source Resolved", ""))
+    destination_categories, destination_sites = classify_rule_side(row.get("Destination Object", ""), row.get("Destination Resolved", ""))
+    bucket = classify_analysis_sheet(source_categories, destination_categories)
+    return bucket, {
+        "Source Category": ", ".join(sorted(source_categories)),
+        "Destination Category": ", ".join(sorted(destination_categories)),
+        "Source Site": "\n".join(source_sites),
+        "Destination Site": "\n".join(destination_sites),
+    }
+
+
 def classify_export_error(exc: Exception) -> str:
     if isinstance(exc, ET.ParseError):
         return "XML Parse Error"
@@ -246,6 +259,8 @@ class FirewallRuleExportService:
         errors: list[dict[str, str]] = []
         counts: dict[str, int] = {}
         diagnostics: dict[str, dict[str, Any]] = {}
+        analysis_rows: dict[str, list[dict[str, str]]] = {"LAN ↔ OFFICE": [], "LAN ↔ WAN": [], "ETC": []}
+        analysis_columns: list[str] = []
         for config in configs:
             name = config["name"]
             progress(f"{name} Firewall Rule 및 Object 조회 중")
@@ -272,11 +287,28 @@ class FirewallRuleExportService:
                 rows, columns = parse_firewall_rules(payloads, rule_response["entity"])
                 sheets.append({"name": name, "rows": rows, "columns": columns, "cellStyles": {"Status": {"활성": 3, "비활성": 4}}})
                 counts[name] = len(rows)
+                if "Rule ID" in columns and "Rule ID" not in analysis_columns:
+                    analysis_columns.append("Rule ID")
+                for row in rows:
+                    bucket, derived = classify_parsed_rule(row)
+                    analysis_rows[bucket].append({
+                        "Firewall": name,
+                        **row,
+                        **derived,
+                    })
             except Exception as exc:
                 errors.append({"Firewall": name, "Error Type": classify_export_error(exc), "Message": str(exc)})
+        base_columns = (["Rule ID"] if analysis_columns else []) + MANAGEMENT_COLUMNS
+        derived_columns = ["Source Category", "Destination Category", "Source Site", "Destination Site"]
+        for sheet_name in ("LAN ↔ OFFICE", "LAN ↔ WAN", "ETC"):
+            sheets.append({"name": sheet_name, "rows": analysis_rows[sheet_name], "columns": ["Firewall", *base_columns, *derived_columns], "cellStyles": {"Status": {"활성": 3, "비활성": 4}}})
+        original_total = sum(counts.values())
+        analysis_total = sum(len(rows) for rows in analysis_rows.values())
+        if original_total != analysis_total:
+            raise RuntimeError(f"Firewall analysis row count mismatch: original={original_total}, analysis={analysis_total}")
         if errors:
             sheets.append({"name": "Export Errors", "rows": errors, "columns": ["Firewall", "Error Type", "Message"]})
         export_dir = self.root / "exports"
         path = export_dir / f"Sophos_Firewall_Rules_{date.today().isoformat()}.xlsx"
         names = write_xlsx_workbook(path, sheets)
-        return {"filename": path.name, "path": str(path), "sheets": names, "counts": counts, "errors": errors, "diagnostics": diagnostics}
+        return {"filename": path.name, "path": str(path), "sheets": names, "counts": counts, "analysisCounts": {name: len(rows) for name, rows in analysis_rows.items()}, "errors": errors, "diagnostics": diagnostics}
