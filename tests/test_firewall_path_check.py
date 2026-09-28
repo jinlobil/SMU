@@ -26,6 +26,9 @@ def test_unicast_route_uses_existing_authenticated_firewall_client(monkeypatch) 
     ("101.1.0.50", "100.1.2.10", ["Seoul", "Cloud"]),
     ("101.3.0.10", "100.1.2.10", ["Icheon", "Cloud"]),
     ("100.1.2.10", "101.1.0.50", ["Cloud", "Seoul"]),
+    ("101.1.3.50", "52.79.112.47", ["Seoul"]),
+    ("101.3.0.10", "52.79.112.47", ["Icheon"]),
+    ("101.2.1.10", "52.79.112.47", ["Anseong"]),
 ])
 def test_managed_firewall_paths(source: str, destination: str, expected: list[str]) -> None:
     path, partial = determine_firewall_path(resolve_input_network(source), resolve_input_network(destination))
@@ -56,7 +59,7 @@ def test_policy_states_allow_disabled_deny_and_order_unknown() -> None:
     source, destination = ipaddress.ip_network("101.1.0.50"), ipaddress.ip_network("100.1.2.10")
     service = "Protocol: TCP | Destination: 389"
     assert match_rules([rule("allow", "101.1.0.0/22", "100.1.0.0/22", service)], source, destination, "TCP", 389)["state"] == "allow"
-    assert match_rules([rule("disabled", "101.1.0.0/22", "100.1.0.0/22", service, status="비활성")], source, destination, "TCP", 389)["state"] == "disabled"
+    assert match_rules([rule("disabled", "101.1.0.0/22", "100.1.0.0/22", service, status="비활성")], source, destination, "TCP", 389)["state"] == "no_matching_rule"
     assert match_rules([rule("deny", "101.1.0.0/22", "100.1.0.0/22", service, action="Deny")], source, destination, "TCP", 389)["state"] == "deny"
     result = match_rules([rule("deny first", "101.1.0.0/22", "100.1.0.0/22", service, action="Deny"), rule("allow later", "101.1.0.0/22", "100.1.0.0/22", service)], source, destination, "TCP", 389)
     assert result["state"] == "order_check_required" and result["orderReliable"] is False
@@ -87,13 +90,45 @@ def test_user_policy_vpn_to_bo_aws_is_full_match_with_resolved_groups() -> None:
     result = match_rules(rows, ipaddress.ip_network("106.1.0.0/16"), ipaddress.ip_network("100.1.2.77"), "TCP", 3389)
     candidate = result["matchedRule"]
     assert result["state"] == "allow"
-    assert candidate == {
-        "rule": "VPN_TO_BO AWS", "status": "활성", "action": "Accept",
-        "sourceMatch": "full", "destinationMatch": "full",
-        "protocolMatch": True, "portMatch": True, "serviceMatch": True,
-        "sourceZone": "VPN", "destinationZone": "LAN", "position": None,
-        "fullMatch": True,
-    }
+    assert candidate["rule"] == "VPN_TO_BO AWS"
+    assert candidate["status"] == "활성" and candidate["action"] == "Accept"
+    assert candidate["sourceMatch"] == candidate["destinationMatch"] == "full"
+    assert candidate["protocolMatch"] is candidate["portMatch"] is candidate["serviceMatch"] is True
+    assert candidate["sourceZone"] == "VPN" and candidate["destinationZone"] == "LAN"
+    assert candidate["fullMatch"] is True
+
+
+def test_general_any_rule_is_an_effective_allow_for_specific_request() -> None:
+    any_rule = rule("Office Internet", "Any", "Any", "Any", action="Accept")
+    result = match_rules([any_rule], ipaddress.ip_network("101.1.3.50"), ipaddress.ip_network("52.79.112.47"), "TCP", 443)
+    assert result["state"] == "allow"
+    assert result["matchedRule"]["rule"] == "Office Internet"
+
+
+def test_no_active_effective_rule_is_default_drop_not_policy_missing() -> None:
+    result = match_rules([], ipaddress.ip_network("101.1.3.50"), ipaddress.ip_network("52.79.112.47"), "TCP", 443)
+    assert result["state"] == "no_matching_rule"
+
+
+def test_unspecified_service_preserves_address_candidates_without_global_verdict() -> None:
+    rows = [
+        rule("https allow", "101.1.0.0/22", "Any", "Protocol: TCP | Destination: 443", action="Accept"),
+        rule("ssh deny", "101.1.0.0/22", "Any", "Protocol: TCP | Destination: 22", action="Reject"),
+        rule("dns allow", "101.1.0.0/22", "Any", "Protocol: UDP | Destination: 53", action="Accept"),
+    ]
+    result = match_rules(rows, ipaddress.ip_network("101.1.3.50"), ipaddress.ip_network("52.79.112.47"), "ANY", None)
+    assert result["state"] == "service_varies"
+    assert result["broadQuery"] is True
+    assert [candidate["rule"] for candidate in result["matches"]] == ["https allow", "ssh deny", "dns allow"]
+    assert result["matches"][0]["serviceProtocols"] == ["TCP"]
+    assert result["matches"][0]["servicePorts"] == ["443"]
+
+
+def test_protocol_without_port_is_broad_and_accepts_parser_protocol_names() -> None:
+    icmp = rule("icmp", "Any", "Any", "Protocol: ICMP", action="Accept")
+    result = match_rules([icmp], ipaddress.ip_network("101.1.3.50"), ipaddress.ip_network("52.79.112.47"), "ICMP", None)
+    assert result["state"] == "service_varies"
+    assert result["matches"][0]["protocolMatch"] is True
 
 
 def test_static_route_exact_prefix_longest_and_missing() -> None:
@@ -103,6 +138,25 @@ def test_static_route_exact_prefix_longest_and_missing() -> None:
     assert matched["network"] == "100.1.0.0/22" and matched["gateway"] == "2.2.2.2"
     assert match_static_route(routes, ipaddress.ip_network("8.8.8.8")) is None
     assert match_static_route([{"destination": "8.8.8.0", "netmask": "24", "status": "Disable"}], ipaddress.ip_network("8.8.8.8")) is None
+
+
+def test_default_route_participates_in_longest_prefix_match() -> None:
+    routes = [
+        {"destination": "0.0.0.0", "netmask": "0", "gateway": "52.79.112.1", "status": "Enable"},
+        {"destination": "52.79.0.0", "netmask": "16", "gateway": "52.79.0.1", "status": "Enable"},
+    ]
+    assert match_static_route(routes, ipaddress.ip_network("8.8.8.8"))["network"] == "0.0.0.0/0"
+    assert match_static_route(routes, ipaddress.ip_network("52.79.112.47"))["network"] == "52.79.0.0/16"
+
+
+def test_dotted_netmask_input_is_normalized_and_non_contiguous_mask_rejected(tmp_path: Path) -> None:
+    service = FirewallPathCheckService(tmp_path)
+    result = service.check("101.1.3.50/255.255.252.0", "52.79.112.47/255.255.255.0", "ANY", None)
+    assert result["source"]["input"] == "101.1.3.50/255.255.252.0"
+    assert result["source"]["network"] == "101.1.0.0/22"
+    assert result["destination"]["network"] == "52.79.112.0/24"
+    with pytest.raises(ValueError, match="IP 또는 CIDR"):
+        service.check("101.1.3.50/255.0.255.0", "52.79.112.47", "ANY", None)
 
 
 def test_snapshot_cache_and_refresh_only_refetch_requested_firewall(tmp_path: Path, monkeypatch) -> None:

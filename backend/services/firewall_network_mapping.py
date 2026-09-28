@@ -130,13 +130,15 @@ def determine_firewall_path(source: dict[str, str], destination: dict[str, str])
     path: list[str] = []
     partial = False
     source_fw, destination_fw = source.get("managedFirewall", ""), destination.get("managedFirewall", "")
-    if source_fw and source_fw != "Cloud":
+    if source_fw:
         path.append(source_fw)
     elif source.get("category") == "OFFICE" and not source_fw:
         partial = True
-    if "LAN" in {source.get("category"), destination.get("category")} or "WAN" in {source.get("category"), destination.get("category")}:
+    # Branch-office Internet traffic exits through its local firewall. Cloud is
+    # required for AWS/NCP (LAN) paths, not merely because one side is WAN.
+    if "LAN" in {source.get("category"), destination.get("category")}:
         path.append("Cloud")
-    if destination_fw and destination_fw != "Cloud":
+    if destination_fw:
         path.append(destination_fw)
     elif destination.get("category") == "OFFICE" and not destination_fw:
         partial = True

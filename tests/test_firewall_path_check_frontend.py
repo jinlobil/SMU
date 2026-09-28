@@ -17,3 +17,12 @@ def test_path_check_reuses_existing_ui_classes() -> None:
     page = (ROOT / "frontend/src/pages/FirewallPathCheckPage.tsx").read_text(encoding="utf-8")
     for class_name in ("panel", "firewall-buttons", "primary-action", "error-banner", "table-wrap", "result-pill"):
         assert class_name in page
+
+
+def test_path_check_supports_any_protocol_optional_port_and_effective_policy_labels() -> None:
+    page = (ROOT / "frontend/src/pages/FirewallPathCheckPage.tsx").read_text(encoding="utf-8")
+    assert '<option value="ANY"/>' in page
+    assert "Destination Port (Optional)" in page
+    assert 'port: port.trim() ? Number(port) : null' in page
+    assert 'no_matching_rule: "매칭 정책 없음 · 기본 Drop"' in page
+    assert 'service_varies: "서비스별 정책 상이"' in page
