@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import socket
 import urllib.error
 import xml.etree.ElementTree as ET
@@ -24,6 +25,16 @@ MANAGEMENT_COLUMNS = [
     "Schedule", "IPS", "AV", "Web", "Application", "QoS", "Heartbeat",
     "Linked NAT", "Proxy", "Log", "Description",
 ]
+WILDCARD_ALIASES = frozenset({
+    "*", "any", "all", "anyipv4", "any ipv4", "anyhost", "any host", "all hosts", "any network", "all networks",
+    "any service", "all services", "any zone", "all zones", "모두", "모든 호스트", "모든호스트",
+})
+
+
+def is_wildcard_value(value: str) -> bool:
+    """Normalize wildcard spellings emitted by Sophos objects, services and zones."""
+    normalized = re.sub(r"[\s_-]+", " ", str(value or "").strip().casefold())
+    return normalized in WILDCARD_ALIASES
 
 
 def _tag(node: ET.Element) -> str:

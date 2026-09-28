@@ -4,9 +4,9 @@ from pathlib import Path
 import pytest
 
 from backend.services.firewall import FirewallClient
-from backend.services.firewall_network_mapping import determine_firewall_path, resolve_input_network
-from backend.services.firewall_path_check import FirewallPathCheckService, address_match, match_rules, match_static_route, parse_unicast_routes, service_match
-from backend.services.firewall_rule_export import parse_firewall_rules
+from backend.services.firewall_network_mapping import determine_firewall_path, expected_zones_for_path, resolve_input_network
+from backend.services.firewall_path_check import FirewallPathCheckService, address_match, address_match_details, match_rules, match_static_route, parse_unicast_routes, service_match, zone_match
+from backend.services.firewall_rule_export import is_wildcard_value, parse_firewall_rules
 
 
 def rule(name: str, source: str, destination: str, service: str, *, status: str = "활성", action: str = "Allow") -> dict[str, str]:
@@ -41,10 +41,42 @@ def test_unmanaged_office_path_is_explicitly_partial() -> None:
 
 
 def test_address_matching_supports_ip_cidr_group_and_partial() -> None:
-    assert address_match(ipaddress.ip_network("101.1.0.50/32"), "Direct", "101.1.0.50") == "full"
-    assert address_match(ipaddress.ip_network("101.1.0.0/22"), "Group", "Member (101.1.0.0/22)") == "full"
-    assert address_match(ipaddress.ip_network("101.1.0.0/22"), "Narrow", "101.1.0.0/24") == "partial"
-    assert address_match(ipaddress.ip_network("101.1.0.0/22"), "Other", "101.2.0.0/24") == "none"
+    assert address_match(ipaddress.ip_network("192.0.2.77/32"), "Direct", "192.0.2.0/24") == "full"
+    assert address_match(ipaddress.ip_network("192.0.2.0/24"), "Group", "Member (192.0.0.0/16)") == "full"
+    assert address_match(ipaddress.ip_network("192.0.2.0/24"), "Narrow", "192.0.2.77/32") == "partial"
+    assert address_match(ipaddress.ip_network("192.0.2.0/24"), "Other", "198.51.100.0/24") == "none"
+
+
+@pytest.mark.parametrize("wildcard", ["Any", "ALL HOSTS", "모두", "모든_호스트", "*"])
+def test_common_wildcard_normalization_matches_any_ipv4(wildcard: str) -> None:
+    assert is_wildcard_value(wildcard)
+    result = address_match_details(ipaddress.ip_network("203.0.113.19"), wildcard, "")
+    assert result == {"match": "full", "wildcard": True, "resolverFailed": False}
+
+
+def test_iphost_group_and_ip_range_use_resolved_network_containment() -> None:
+    request = ipaddress.ip_network("192.0.2.77")
+    assert address_match(request, "GENERIC_GROUP", "MEMBER_NET (192.0.2.0/24)") == "full"
+    assert address_match(request, "GENERIC_RANGE", "192.0.2.64 - 192.0.2.95") == "full"
+
+
+def test_resolver_failure_is_distinct_from_real_no_match() -> None:
+    failed = address_match_details(ipaddress.ip_network("192.0.2.77"), "UNRESOLVED_OBJECT", "UNRESOLVED_OBJECT")
+    no_match = address_match_details(ipaddress.ip_network("192.0.2.77"), "OTHER_NET", "198.51.100.0/24")
+    assert failed["resolverFailed"] is True and failed["match"] == "none"
+    assert no_match["resolverFailed"] is False and no_match["match"] == "none"
+
+
+def test_zone_matching_uses_expected_zone_membership_and_wildcards() -> None:
+    assert zone_match("LAN", "Wireless\nLAN")
+    assert zone_match("WAN", "Any Zone")
+    assert not zone_match("WAN", "LAN\nVPN")
+
+
+def test_path_engine_provides_expected_zones_per_firewall_hop() -> None:
+    source, destination = resolve_input_network("101.1.3.50"), resolve_input_network("100.1.2.77")
+    path, _partial = determine_firewall_path(source, destination)
+    assert expected_zones_for_path(source, destination, path) == {"Seoul": ("LAN", "VPN"), "Cloud": ("VPN", "LAN")}
 
 
 def test_service_matching_supports_direct_group_range_and_any() -> None:
@@ -78,19 +110,19 @@ def test_explicit_position_selects_first_active_rule_without_using_rule_id() -> 
     assert result["orderSource"] == "explicit_position"
 
 
-def test_user_policy_vpn_to_bo_aws_is_full_match_with_resolved_groups() -> None:
+def test_user_policy_uses_generalized_resolved_groups() -> None:
     payloads = {
-        "Rule": '''<Response><Status code="200">OK</Status><FirewallRule><Name>VPN_TO_BO AWS</Name><Status>Enable</Status><PolicyType>User</PolicyType><UserPolicy><Action>Accept</Action><SourceZones><Zone>VPN</Zone></SourceZones><SourceNetworks><Network>SSLVPN_106.1.0.0/16</Network></SourceNetworks><DestinationZones><Zone>LAN</Zone></DestinationZones><DestinationNetworks><Network>GRP_BO_AP</Network></DestinationNetworks><Services><Service>GRP_SVC_BO_AP</Service></Services></UserPolicy></FirewallRule></Response>''',
-        "IPHost": '''<Response><Status code="200">OK</Status><IPHost><Name>SSLVPN_106.1.0.0/16</Name><HostType>Network</HostType><IPAddress>106.1.0.0</IPAddress><Subnet>255.255.0.0</Subnet></IPHost><IPHost><Name>SRV_KR_AWS_PRD_BO_AP</Name><HostType>IP</HostType><IPAddress>100.1.2.77</IPAddress></IPHost><IPHost><Name>SRV_KR_AWS_DEV_BO_AP</Name><HostType>IP</HostType><IPAddress>100.1.2.78</IPAddress></IPHost></Response>''',
-        "IPHostGroup": '''<Response><Status code="200">OK</Status><IPHostGroup><Name>GRP_BO_AP</Name><HostList><IPHost>SRV_KR_AWS_PRD_BO_AP</IPHost><IPHost>SRV_KR_AWS_DEV_BO_AP</IPHost></HostList></IPHostGroup></Response>''',
+        "Rule": '''<Response><Status code="200">OK</Status><FirewallRule><Name>GENERIC_USER_RULE</Name><Status>Enable</Status><PolicyType>User</PolicyType><UserPolicy><Action>Accept</Action><SourceZones><Zone>VPN</Zone></SourceZones><SourceNetworks><Network>GENERIC_SOURCE_NET</Network></SourceNetworks><DestinationZones><Zone>LAN</Zone></DestinationZones><DestinationNetworks><Network>GENERIC_DEST_GROUP</Network></DestinationNetworks><Services><Service>GENERIC_SERVICE_GROUP</Service></Services></UserPolicy></FirewallRule></Response>''',
+        "IPHost": '''<Response><Status code="200">OK</Status><IPHost><Name>GENERIC_SOURCE_NET</Name><HostType>Network</HostType><IPAddress>192.0.2.0</IPAddress><Subnet>255.255.255.0</Subnet></IPHost><IPHost><Name>GENERIC_DEST_A</Name><HostType>IP</HostType><IPAddress>198.51.100.77</IPAddress></IPHost><IPHost><Name>GENERIC_DEST_B</Name><HostType>IP</HostType><IPAddress>198.51.100.78</IPAddress></IPHost></Response>''',
+        "IPHostGroup": '''<Response><Status code="200">OK</Status><IPHostGroup><Name>GENERIC_DEST_GROUP</Name><HostList><IPHost>GENERIC_DEST_A</IPHost><IPHost>GENERIC_DEST_B</IPHost></HostList></IPHostGroup></Response>''',
         "Services": '''<Response><Status code="200">OK</Status><Services><Name>TCP_3389</Name><ServiceDetails><ServiceDetail><Protocol>TCP</Protocol><DestinationPort>3389</DestinationPort></ServiceDetail></ServiceDetails></Services></Response>''',
-        "ServiceGroup": '''<Response><Status code="200">OK</Status><ServiceGroup><Name>GRP_SVC_BO_AP</Name><ServiceList><Service>TCP_3389</Service></ServiceList></ServiceGroup></Response>''',
+        "ServiceGroup": '''<Response><Status code="200">OK</Status><ServiceGroup><Name>GENERIC_SERVICE_GROUP</Name><ServiceList><Service>TCP_3389</Service></ServiceList></ServiceGroup></Response>''',
     }
     rows, _columns = parse_firewall_rules(payloads, "FirewallRule")
-    result = match_rules(rows, ipaddress.ip_network("106.1.0.0/16"), ipaddress.ip_network("100.1.2.77"), "TCP", 3389)
+    result = match_rules(rows, ipaddress.ip_network("192.0.2.0/24"), ipaddress.ip_network("198.51.100.77"), "TCP", 3389, "VPN", "LAN")
     candidate = result["matchedRule"]
     assert result["state"] == "allow"
-    assert candidate["rule"] == "VPN_TO_BO AWS"
+    assert candidate["rule"] == "GENERIC_USER_RULE"
     assert candidate["status"] == "활성" and candidate["action"] == "Accept"
     assert candidate["sourceMatch"] == candidate["destinationMatch"] == "full"
     assert candidate["protocolMatch"] is candidate["portMatch"] is candidate["serviceMatch"] is True
@@ -108,6 +140,28 @@ def test_general_any_rule_is_an_effective_allow_for_specific_request() -> None:
 def test_no_active_effective_rule_is_default_drop_not_policy_missing() -> None:
     result = match_rules([], ipaddress.ip_network("101.1.3.50"), ipaddress.ip_network("52.79.112.47"), "TCP", 443)
     assert result["state"] == "no_matching_rule"
+
+
+def test_exact_query_retains_address_candidate_and_service_rejection_reason() -> None:
+    candidate = rule("GENERIC_HTTPS", "192.0.2.0/24", "Any", "Protocol: TCP | Destination: 443")
+    result = match_rules([candidate], ipaddress.ip_network("192.0.2.77"), ipaddress.ip_network("203.0.113.10"), "TCP", 22)
+    assert result["state"] == "no_matching_rule"
+    assert result["matches"][0]["addressCandidate"] is True
+    assert result["matches"][0]["full_match"] is False
+    assert result["matches"][0]["reject_reason"] == "port_no_match"
+    assert {
+        "source_match", "destination_match", "source_zone_match", "destination_zone_match",
+        "protocol_match", "port_match", "source_wildcard", "destination_wildcard",
+        "broad_query", "full_match", "reject_reason",
+    } <= result["matches"][0].keys()
+
+
+def test_zone_mismatch_rejects_address_candidate_with_diagnostic() -> None:
+    candidate = {**rule("GENERIC_RULE", "192.0.2.0/24", "Any", "Any"), "Source Zone": "VPN", "Destination Zone": "WAN"}
+    result = match_rules([candidate], ipaddress.ip_network("192.0.2.77"), ipaddress.ip_network("203.0.113.10"), "TCP", 443, "LAN", "WAN")
+    assert result["matches"] == []
+    assert result["evaluations"][0]["source_zone_match"] is False
+    assert "source_zone_no_match" in result["evaluations"][0]["reject_reason"]
 
 
 def test_unspecified_service_preserves_address_candidates_without_global_verdict() -> None:

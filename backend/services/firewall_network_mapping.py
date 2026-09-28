@@ -146,3 +146,24 @@ def determine_firewall_path(source: dict[str, str], destination: dict[str, str])
     if not path:
         partial = True
     return path, partial
+
+
+def expected_zones_for_path(source: dict[str, str], destination: dict[str, str], path: list[str]) -> dict[str, tuple[str, str]]:
+    """Return expected ingress/egress zones for each already-selected path hop."""
+    source_category, destination_category = source.get("category"), destination.get("category")
+    source_fw, destination_fw = source.get("managedFirewall"), destination.get("managedFirewall")
+    zones: dict[str, tuple[str, str]] = {}
+    for firewall in path:
+        if firewall == "Cloud":
+            source_zone = "LAN" if source_category == "LAN" else "WAN" if source_category == "WAN" else "VPN"
+            destination_zone = "LAN" if destination_category == "LAN" else "WAN" if destination_category == "WAN" else "VPN"
+        elif firewall == source_fw:
+            source_zone = "LAN"
+            destination_zone = "WAN" if destination_category == "WAN" else "VPN"
+        elif firewall == destination_fw:
+            source_zone = "WAN" if source_category == "WAN" else "VPN"
+            destination_zone = "LAN"
+        else:
+            continue
+        zones[firewall] = (source_zone, destination_zone)
+    return zones
