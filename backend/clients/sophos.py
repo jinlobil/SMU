@@ -59,6 +59,7 @@ class SophosClient:
         items: list[dict[str, Any]] = []
         params: dict[str, Any] = {"pageSize": 100, "pageTotal": "true"}
         page = 1
+        cursor_mode = False
         while True:
             url = f"{self.base_url}{path}?{urllib.parse.urlencode(params)}"
             payload = self.request_json(urllib.request.Request(url, headers=self.headers()))
@@ -68,8 +69,16 @@ class SophosClient:
             pages = payload.get("pages") if isinstance(payload.get("pages"), dict) else {}
             next_key = pages.get("nextKey")
             if next_key:
+                cursor_mode = True
                 params["pageFromKey"] = next_key
+                params.pop("page", None)
                 continue
+            # Sophos cursor and numbered pagination are mutually exclusive.
+            # Once a cursor chain ends, its final response may still include a
+            # total page count; falling through to numbered paging re-fetches
+            # overlapping pages and stores duplicate endpoints.
+            if cursor_mode:
+                break
             total_pages = pages.get("total")
             if isinstance(total_pages, int) and page < total_pages:
                 page += 1
