@@ -146,7 +146,7 @@ def _object_maps(payloads: dict[str, str]) -> tuple[dict[str, str], dict[str, st
         detail_nodes = [item for item in detail_container.iter() if _tag(item) == "ServiceDetail"] if detail_container is not None else []
         for item in detail_nodes:
             fields = []
-            for label, tags in (("Protocol", ("Protocol", "ProtocolName")), ("Source", ("SourcePort",)), ("Destination", ("DestinationPort", "Port")), ("ICMP Type", ("ICMPType",)), ("ICMP Code", ("ICMPCode",))):
+            for label, tags in (("Protocol", ("Protocol", "ProtocolName")), ("Protocol Number", ("ProtocolNumber", "IPProtocolNumber")), ("Source", ("SourcePort",)), ("Destination", ("DestinationPort", "Port")), ("ICMP Type", ("ICMPType",)), ("ICMP Code", ("ICMPCode",))):
                 value = _first(item, *tags)
                 if value:
                     fields.append(f"{label}: {value}")

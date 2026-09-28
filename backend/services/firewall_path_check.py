@@ -57,15 +57,19 @@ def zone_match(expected: str | None, rule_zones: str) -> bool:
     return any(is_wildcard_value(value) or value.casefold() == expected.casefold() for value in zones)
 
 
-def service_match_details(protocol: str, port: int | None, service_names: str, resolved: str, semantic_wildcard: bool = False) -> dict[str, Any]:
+def service_match_details(protocol: str, port: int | None, service_names: str, resolved: str,
+                          semantic_wildcard: bool = False, protocol_number: int | None = None) -> dict[str, Any]:
     any_service = semantic_wildcard or any(is_wildcard_value(value) for value in f"{service_names}\n{resolved}".splitlines())
     if any_service:
-        return {"protocolMatch": True, "portMatch": True, "serviceMatch": True, "anyService": True, "serviceProtocols": ["ANY"], "servicePorts": ["ANY"]}
+        return {"protocolMatch": True, "portMatch": True, "protocolNumberMatch": True, "serviceMatch": True,
+                "anyService": True, "serviceProtocols": ["ANY"], "servicePorts": ["ANY"], "serviceProtocolNumbers": ["ANY"]}
     protocol = protocol.upper()
     protocols: list[str] = []
     ports: list[str] = []
+    protocol_numbers: list[str] = []
     protocol_match = protocol == "ANY"
     port_match = port is None
+    protocol_number_match = protocol_number is None
     for line in resolved.splitlines():
         match = re.search(r"Protocol:\s*([^|]+)", line, re.I)
         if not match:
@@ -76,6 +80,15 @@ def service_match_details(protocol: str, port: int | None, service_names: str, r
         line_protocol_match = protocol == "ANY" or service_protocol == protocol
         if line_protocol_match:
             protocol_match = True
+        number = re.search(r"Protocol Number:\s*([^|]+)", line, re.I)
+        if number:
+            number_text = number.group(1).strip()
+            if number_text and number_text not in protocol_numbers:
+                protocol_numbers.append(number_text)
+            if protocol == "IP" and protocol_number is not None:
+                protocol_number_match = protocol_number_match or any(
+                    int(value) == protocol_number for value in re.findall(r"\d+", number_text)
+                )
         destination = re.search(r"Destination:\s*([^|]+)", line, re.I)
         if not destination:
             if line_protocol_match and port is None:
@@ -88,7 +101,10 @@ def service_match_details(protocol: str, port: int | None, service_names: str, r
             if line_protocol_match and (port is None or int(start) <= port <= int(end or start)):
                 port_match = True
                 break
-    return {"protocolMatch": protocol_match, "portMatch": port_match, "serviceMatch": protocol_match and port_match, "anyService": False, "serviceProtocols": protocols, "servicePorts": ports}
+    service_match = protocol_match and port_match and protocol_number_match
+    return {"protocolMatch": protocol_match, "portMatch": port_match, "protocolNumberMatch": protocol_number_match,
+            "serviceMatch": service_match, "anyService": False, "serviceProtocols": protocols,
+            "servicePorts": ports, "serviceProtocolNumbers": protocol_numbers}
 
 
 def service_match(protocol: str, port: int | None, service_names: str, resolved: str, semantic_wildcard: bool = False) -> bool:
@@ -113,8 +129,10 @@ def match_rules(
     port: int | None = None,
     expected_source_zone: str | None = None,
     expected_destination_zone: str | None = None,
+    protocol_number: int | None = None,
 ) -> dict[str, Any]:
-    broad_query = protocol == "ANY" or port is None
+    protocol = protocol.upper()
+    broad_query = protocol == "ANY" or (protocol in {"TCP", "UDP"} and port is None) or (protocol == "IP" and protocol_number is None)
     matches = []
     evaluations = []
     for row in rows:
@@ -123,7 +141,7 @@ def match_rules(
         source_match, destination_match = source_result["match"], destination_result["match"]
         source_zone_match = zone_match(expected_source_zone, row.get("Source Zone", ""))
         destination_zone_match = zone_match(expected_destination_zone, row.get("Destination Zone", ""))
-        service = service_match_details(protocol, port, row.get("Service", ""), row.get("Service Resolved / Protocol / Port", ""), row.get("service_wildcard") is True)
+        service = service_match_details(protocol, port, row.get("Service", ""), row.get("Service Resolved / Protocol / Port", ""), row.get("service_wildcard") is True, protocol_number)
         active = row.get("Status", "") == "활성" or row.get("Status", "").casefold() in {"enable", "enabled"}
         address_candidate = source_match == destination_match == "full" and source_zone_match and destination_zone_match
         reject_reasons = []
@@ -136,6 +154,7 @@ def match_rules(
         if not destination_zone_match: reject_reasons.append("destination_zone_no_match")
         if not broad_query and not service["protocolMatch"]: reject_reasons.append("protocol_no_match")
         if not broad_query and not service["portMatch"]: reject_reasons.append("port_no_match")
+        if not broad_query and not service["protocolNumberMatch"]: reject_reasons.append("protocol_number_no_match")
         evaluation = {
             "rule": row.get("Rule Name", ""),
             "status": row.get("Status", ""),
@@ -147,6 +166,10 @@ def match_rules(
             "destinationZone": row.get("Destination Zone", ""),
             "service": row.get("Service", ""),
             "serviceResolved": row.get("Service Resolved / Protocol / Port", ""),
+            "sourceObject": row.get("Source Object", ""),
+            "sourceResolved": row.get("Source Resolved", ""),
+            "destinationObject": row.get("Destination Object", ""),
+            "destinationResolved": row.get("Destination Resolved", ""),
             "position": _position(str(row.get("_Rule Order", ""))) or _position(str(row.get("_Rule Position", ""))),
             "positionSource": row.get("_Rule Order Source", "numeric_position" if _position(str(row.get("_Rule Position", ""))) is not None else ""),
             "fullMatch": address_candidate and service["serviceMatch"],
@@ -251,7 +274,8 @@ class FirewallPathCheckService:
         with self._lock: self._cache[config["name"]] = (time.monotonic(), snapshot)
         return snapshot
 
-    def check(self, source_value: str, destination_value: str, protocol: str = "ANY", port: Any = None, refresh: bool = False) -> dict[str, Any]:
+    def check(self, source_value: str, destination_value: str, protocol: str = "ANY", port: Any = None,
+              refresh: bool = False, protocol_number: Any = None) -> dict[str, Any]:
         try: source_network, destination_network = ipaddress.ip_network(source_value, strict=False), ipaddress.ip_network(destination_value, strict=False)
         except ValueError as exc: raise ValueError(f"Source/Destination IP 또는 CIDR을 확인하세요: {exc}") from exc
         if source_network.version != 4 or destination_network.version != 4:
@@ -262,6 +286,13 @@ class FirewallPathCheckService:
         normalized_port = None if port is None or str(port).strip().upper() in {"", "ANY"} else int(port)
         if normalized_port is not None and not 1 <= normalized_port <= 65535:
             raise ValueError("Destination Port는 비우거나 1~65535 범위여야 합니다")
+        if protocol not in {"TCP", "UDP"}:
+            normalized_port = None
+        normalized_protocol_number = None if protocol_number is None or str(protocol_number).strip() == "" else int(protocol_number)
+        if normalized_protocol_number is not None and protocol != "IP":
+            raise ValueError("Protocol Number는 IP Protocol에서만 사용할 수 있습니다")
+        if normalized_protocol_number is not None and not 0 <= normalized_protocol_number <= 255:
+            raise ValueError("Protocol Number는 비우거나 0~255 범위여야 합니다")
         source, destination = resolve_input_network(source_value), resolve_input_network(destination_value)
         if source is None or destination is None: raise ValueError("Source/Destination IP 또는 CIDR을 확인하세요")
         path, partial = determine_firewall_path(source, destination)
@@ -275,7 +306,9 @@ class FirewallPathCheckService:
             try:
                 snapshot = self._snapshot(config, refresh)
                 source_zone, destination_zone = expected_zones.get(name, (None, None))
-                results.append({"firewall": name, "available": True, "checkedAt": snapshot["checkedAt"], "expectedZones": {"source": source_zone, "destination": destination_zone}, "policy": match_rules(snapshot["rules"], source_network, destination_network, protocol, normalized_port, source_zone, destination_zone), "routing": {"destination": match_static_route(snapshot["routes"], destination_network), "return": match_static_route(snapshot["routes"], source_network), "error": snapshot["routeError"]}})
+                results.append({"firewall": name, "available": True, "checkedAt": snapshot["checkedAt"], "expectedZones": {"source": source_zone, "destination": destination_zone}, "policy": match_rules(snapshot["rules"], source_network, destination_network, protocol, normalized_port, source_zone, destination_zone, normalized_protocol_number), "routing": {"destination": match_static_route(snapshot["routes"], destination_network), "return": match_static_route(snapshot["routes"], source_network), "error": snapshot["routeError"]}})
             except Exception as exc:
                 results.append({"firewall": name, "available": False, "error": f"{type(exc).__name__}: {exc}", "policy": {"state": "unavailable"}, "routing": {"destination": None, "return": None}})
-        return {"source": source, "destination": destination, "protocol": protocol, "port": normalized_port, "path": path, "partialPath": partial, "firewalls": results, "checkedAt": datetime.now(timezone.utc).isoformat()}
+        return {"source": source, "destination": destination, "protocol": protocol, "port": normalized_port,
+                "protocolNumber": normalized_protocol_number, "path": path, "partialPath": partial,
+                "firewalls": results, "checkedAt": datetime.now(timezone.utc).isoformat()}

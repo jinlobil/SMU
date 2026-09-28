@@ -5,7 +5,7 @@ import pytest
 
 from backend.services.firewall import FirewallClient
 from backend.services.firewall_network_mapping import determine_firewall_path, expected_zones_for_path, resolve_input_network
-from backend.services.firewall_path_check import FirewallPathCheckService, address_match, address_match_details, match_rules, match_static_route, parse_unicast_routes, service_match, zone_match
+from backend.services.firewall_path_check import FirewallPathCheckService, address_match, address_match_details, match_rules, match_static_route, parse_unicast_routes, service_match, service_match_details, zone_match
 from backend.services.firewall_rule_export import is_wildcard_value, parse_firewall_rules
 
 
@@ -241,11 +241,36 @@ def test_unspecified_service_preserves_address_candidates_without_global_verdict
     assert result["matches"][0]["servicePorts"] == ["443"]
 
 
-def test_protocol_without_port_is_broad_and_accepts_parser_protocol_names() -> None:
+def test_portless_icmp_is_an_exact_protocol_query() -> None:
     icmp = rule("icmp", "Any", "Any", "Protocol: ICMP", action="Accept")
     result = match_rules([icmp], ipaddress.ip_network("101.1.3.50"), ipaddress.ip_network("52.79.112.47"), "ICMP", None)
-    assert result["state"] == "service_varies"
+    assert result["state"] == "allow"
+    assert result["broadQuery"] is False
     assert result["matches"][0]["protocolMatch"] is True
+
+
+@pytest.mark.parametrize("protocol", ["ICMP", "ICMPV6"])
+def test_icmp_protocols_match_without_a_destination_port(protocol: str) -> None:
+    candidate = rule("ping-service", "Any", "Any", f"Protocol: {protocol} | ICMP Type: 8")
+    result = match_rules([candidate], ipaddress.ip_network("192.0.2.1"), ipaddress.ip_network("198.51.100.1"), protocol)
+    assert result["state"] == "allow"
+    assert result["matchedRule"]["fullMatch"] is True
+
+
+def test_ip_protocol_number_is_not_treated_as_a_destination_port() -> None:
+    candidate = rule("generic-ip-service", "Any", "Any", "Protocol: IP | Protocol Number: 47")
+    result = match_rules([candidate], ipaddress.ip_network("192.0.2.1"), ipaddress.ip_network("198.51.100.1"), "IP", None, protocol_number=47)
+    mismatch = match_rules([candidate], ipaddress.ip_network("192.0.2.1"), ipaddress.ip_network("198.51.100.1"), "IP", None, protocol_number=50)
+    assert result["state"] == "allow"
+    assert result["matchedRule"]["serviceProtocolNumbers"] == ["47"]
+    assert mismatch["state"] == "no_matching_rule"
+    assert mismatch["matches"][0]["reject_reason"] == "protocol_number_no_match"
+
+
+def test_service_parser_preserves_ip_protocol_number() -> None:
+    details = service_match_details("IP", None, "GENERIC_IP", "Protocol: IP | Protocol Number: 47", protocol_number=47)
+    assert details["serviceMatch"] is True
+    assert details["serviceProtocolNumbers"] == ["47"]
 
 
 def test_static_route_exact_prefix_longest_and_missing() -> None:

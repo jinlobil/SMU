@@ -318,7 +318,8 @@ def firewall_path_check(payload: dict = Body()) -> dict:
     try:
         result = firewall_path_check_service.check(
             str(payload.get("source", "")), str(payload.get("destination", "")),
-            str(payload.get("protocol", "ANY") or "ANY"), payload.get("port"), bool(payload.get("refresh", False)),
+            str(payload.get("protocol", "ANY") or "ANY"), payload.get("port"),
+            refresh=bool(payload.get("refresh", False)), protocol_number=payload.get("protocolNumber"),
         )
     except (ValueError, TypeError) as exc:
         return error_response(str(uuid.uuid4()), "INVALID_PATH_CHECK", str(exc), 400)
