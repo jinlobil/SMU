@@ -147,7 +147,8 @@ def match_rules(
             "destinationZone": row.get("Destination Zone", ""),
             "service": row.get("Service", ""),
             "serviceResolved": row.get("Service Resolved / Protocol / Port", ""),
-            "position": _position(row.get("_Rule Position", "")),
+            "position": _position(str(row.get("_Rule Order", ""))) or _position(str(row.get("_Rule Position", ""))),
+            "positionSource": row.get("_Rule Order Source", "numeric_position" if _position(str(row.get("_Rule Position", ""))) is not None else ""),
             "fullMatch": address_candidate and service["serviceMatch"],
             "addressCandidate": address_candidate,
             "source_match": source_match,
@@ -182,7 +183,7 @@ def match_rules(
         if all(position is not None for position in positions) and len(set(positions)) == len(positions):
             first = min(active, key=lambda item: item["position"])
             state = _action_state(first)
-            return {"state": state, "orderReliable": True, "orderSource": "explicit_position", "matchedRule": first, "matches": matches, "evaluations": evaluations}
+            return {"state": state, "orderReliable": True, "orderSource": first["positionSource"], "matchedRule": first, "matches": matches, "evaluations": evaluations}
         return {"state": "order_check_required", "orderReliable": False, "matchedRule": None, "matches": matches, "evaluations": evaluations}
     return {"state": "no_matching_rule", "orderReliable": True, "matchedRule": None, "matches": matches, "evaluations": evaluations, "broadQuery": False}
 

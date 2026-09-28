@@ -75,11 +75,11 @@ def _under_direct(node: ET.Element, containers: set[str]) -> list[str]:
     return result
 
 
-def _policy_list_semantics(node: ET.Element, containers: set[str]) -> tuple[list[str], bool, str]:
+def _policy_list_semantics(node: ET.Element, containers: set[str], *, omitted_is_wildcard: bool = False) -> tuple[list[str], bool, str]:
     """Preserve Sophos list semantics, including scalar and empty Any containers."""
     matching = [container for container in list(node) if _tag(container) in containers]
     if not matching:
-        return [], False, "missing"
+        return [], omitted_is_wildcard, "omitted_container" if omitted_is_wildcard else "missing"
     values: list[str] = []
     for container in matching:
         scalar = (container.text or "").strip()
@@ -204,6 +204,42 @@ def _rule_models(root: ET.Element, rule_entity: str | None) -> list[tuple[ET.Ele
     return rows
 
 
+def _restore_rule_order(rows: list[dict[str, Any]]) -> bool:
+    """Restore a complete, unambiguous SFOS Position=Top/After chain."""
+    if not rows:
+        return False
+    names = [str(row.get("Rule Name", "")) for row in rows]
+    if any(not name for name in names) or len(set(names)) != len(names):
+        return False
+    top = [row for row in rows if str(row.get("_Rule Position", "")).casefold() == "top"]
+    if len(top) != 1:
+        return False
+    after_map: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        if row is top[0]:
+            continue
+        if str(row.get("_Rule Position", "")).casefold() != "after":
+            return False
+        previous = str(row.get("_Rule After", ""))
+        if not previous or previous in after_map:
+            return False
+        after_map[previous] = row
+    ordered: list[dict[str, Any]] = []
+    current = top[0]
+    while current not in ordered:
+        ordered.append(current)
+        next_row = after_map.get(str(current.get("Rule Name", "")))
+        if next_row is None:
+            break
+        current = next_row
+    if len(ordered) != len(rows):
+        return False
+    for index, row in enumerate(ordered, start=1):
+        row["_Rule Order"] = index
+        row["_Rule Order Source"] = "position_after_chain"
+    return True
+
+
 def parse_firewall_rules(payloads: dict[str, str], rule_entity: str | None = None) -> tuple[list[dict[str, Any]], list[str]]:
     resolved_objects, resolved_services = _object_maps(payloads)
     rows: list[dict[str, Any]] = []
@@ -216,17 +252,20 @@ def parse_firewall_rules(payloads: dict[str, str], rule_entity: str | None = Non
     has_rule_id = any(_direct_text(rule_root, "RuleID", "PolicyID", "ID") for rule_root, _policy, _group in rule_nodes)
     columns = (["Rule ID"] if has_rule_id else []) + MANAGEMENT_COLUMNS
     for rule_root, policy, inherited_group in rule_nodes:
-        source, source_wildcard, source_semantics = _policy_list_semantics(policy, {"SourceNetworks", "SourceNetwork", "SourceHosts", "SourceObjects"})
-        destination, destination_wildcard, destination_semantics = _policy_list_semantics(policy, {"DestinationNetworks", "DestinationNetwork", "DestinationHosts", "DestinationObjects"})
-        services, service_wildcard, service_semantics = _policy_list_semantics(policy, {"Services", "ServiceList"})
+        # SFOS 22 omits these optional list containers when the policy means
+        # Any. This rule is deliberately limited to these three policy fields.
+        source, source_wildcard, source_semantics = _policy_list_semantics(policy, {"SourceNetworks", "SourceNetwork", "SourceHosts", "SourceObjects"}, omitted_is_wildcard=True)
+        destination, destination_wildcard, destination_semantics = _policy_list_semantics(policy, {"DestinationNetworks", "DestinationNetwork", "DestinationHosts", "DestinationObjects"}, omitted_is_wildcard=True)
+        services, service_wildcard, service_semantics = _policy_list_semantics(policy, {"Services", "ServiceList"}, omitted_is_wildcard=True)
         raw_status = _direct_text(rule_root, "Status", "Enable", "Enabled")
         normalized_status = {"enable": "활성", "disable": "비활성"}.get(raw_status.casefold(), raw_status)
+        after = _direct_child(rule_root, {"After"})
         row = {
-            # FirewallRule/SecurityPolicy GET does not consistently expose a
-            # policy order. Keep only an explicit root-level position when the
-            # appliance supplies one; callers must not substitute Rule ID or
-            # XML/Excel row order for it.
+            # Preserve only API-provided ordering metadata. _restore_rule_order
+            # validates Top/After.Name as a complete chain; Rule ID and XML or
+            # Excel row order are never substituted for policy precedence.
             "_Rule Position": _direct_text(rule_root, "Position", "RulePosition", "Sequence", "Order"),
+            "_Rule After": _direct_text(after, "Name") if after is not None else "",
             "source_wildcard": source_wildcard,
             "destination_wildcard": destination_wildcard,
             "service_wildcard": service_wildcard,
@@ -260,6 +299,7 @@ def parse_firewall_rules(payloads: dict[str, str], rule_entity: str | None = Non
             "Description": _direct_text(rule_root, "Description"),
         }
         rows.append(row)
+    _restore_rule_order(rows)
     return rows, columns
 
 

@@ -55,6 +55,7 @@ def test_common_wildcard_normalization_matches_any_ipv4(wildcard: str) -> None:
 
 
 @pytest.mark.parametrize("wildcard_xml", [
+    "",
     "<SourceNetworks/><DestinationNetworks/>",
     "<SourceNetworks>Any</SourceNetworks><DestinationNetworks><Network>All</Network></DestinationNetworks>",
 ])
@@ -80,15 +81,22 @@ def test_parser_preserves_empty_service_container_as_any_service() -> None:
     assert result["matchedRule"]["anyService"] is True
 
 
-def test_missing_or_unparsed_policy_lists_are_not_wildcards() -> None:
-    payloads = {"Rule": '''<Response><Status code="200">OK</Status><FirewallRule><Name>INCOMPLETE_RULE</Name><Status>Enable</Status><NetworkPolicy><Action>Accept</Action></NetworkPolicy></FirewallRule></Response>'''}
+def test_omitted_sfos22_policy_lists_are_wildcards_but_other_missing_fields_are_not() -> None:
+    payloads = {"Rule": '''<Response APIVersion="2200.1"><Status code="200">OK</Status><FirewallRule><Name>CATCH_ALL</Name><Status>Enable</Status><NetworkPolicy><Action>Accept</Action></NetworkPolicy></FirewallRule></Response>'''}
     rows, _columns = parse_firewall_rules(payloads, "FirewallRule")
     row = rows[0]
-    assert row["source_wildcard"] is row["destination_wildcard"] is row["service_wildcard"] is False
-    assert row["_Source Semantics"] == row["_Destination Semantics"] == row["_Service Semantics"] == "missing"
+    assert row["source_wildcard"] is row["destination_wildcard"] is row["service_wildcard"] is True
+    assert row["_Source Semantics"] == row["_Destination Semantics"] == row["_Service Semantics"] == "omitted_container"
+    assert row["Source Zone"] == row["Destination Zone"] == ""
+    assert not zone_match("LAN", row["Source Zone"])
     result = match_rules(rows, ipaddress.ip_network("192.0.2.77"), ipaddress.ip_network("198.51.100.44"), "TCP", 443)
-    assert result["matches"] == []
-    assert result["evaluations"][0]["source_resolver_failed"] is False
+    assert result["state"] == "allow" and result["matchedRule"]["anyService"] is True
+
+
+def test_explicit_policy_lists_are_not_wildcards() -> None:
+    payloads = {"Rule": '''<Response><Status code="200">OK</Status><FirewallRule><Name>EXPLICIT_RULE</Name><Status>Enable</Status><NetworkPolicy><Action>Accept</Action><SourceNetworks><Network>SRC</Network></SourceNetworks><DestinationNetworks><Network>DST</Network></DestinationNetworks><Services><Service>HTTPS</Service></Services></NetworkPolicy></FirewallRule></Response>'''}
+    rows, _columns = parse_firewall_rules(payloads, "FirewallRule")
+    assert rows[0]["source_wildcard"] is rows[0]["destination_wildcard"] is rows[0]["service_wildcard"] is False
 
 
 def test_iphost_group_and_ip_range_use_resolved_network_containment() -> None:
@@ -144,7 +152,25 @@ def test_explicit_position_selects_first_active_rule_without_using_rule_id() -> 
     result = match_rules([later_allow, first_deny], source, destination, "TCP", 3389)
     assert result["state"] == "deny"
     assert result["matchedRule"]["rule"] == "deny"
-    assert result["orderSource"] == "explicit_position"
+    assert result["orderSource"] == "numeric_position"
+
+
+def test_sfos_position_after_chain_restores_effective_rule_order() -> None:
+    payloads = {"Rule": '''<Response APIVersion="2200.1"><Status code="200">OK</Status><FirewallRule><Name>SECOND_RULE</Name><Status>Enable</Status><Position>After</Position><After><Name>FIRST_RULE</Name></After><NetworkPolicy><Action>Accept</Action></NetworkPolicy></FirewallRule><FirewallRule><Name>FIRST_RULE</Name><Status>Enable</Status><Position>Top</Position><NetworkPolicy><Action>Reject</Action></NetworkPolicy></FirewallRule></Response>'''}
+    rows, _columns = parse_firewall_rules(payloads, "FirewallRule")
+    assert {row["Rule Name"]: row["_Rule Order"] for row in rows} == {"SECOND_RULE": 2, "FIRST_RULE": 1}
+    result = match_rules(rows, ipaddress.ip_network("192.0.2.77"), ipaddress.ip_network("198.51.100.44"), "TCP", 443)
+    assert result["state"] == "deny"
+    assert result["matchedRule"]["rule"] == "FIRST_RULE"
+    assert result["orderSource"] == "position_after_chain"
+
+
+def test_incomplete_position_after_chain_does_not_guess_order() -> None:
+    payloads = {"Rule": '''<Response><Status code="200">OK</Status><FirewallRule><Name>FIRST_RULE</Name><Status>Enable</Status><Position>Top</Position><NetworkPolicy><Action>Reject</Action></NetworkPolicy></FirewallRule><FirewallRule><Name>ORPHAN_RULE</Name><Status>Enable</Status><Position>After</Position><After><Name>MISSING_RULE</Name></After><NetworkPolicy><Action>Accept</Action></NetworkPolicy></FirewallRule></Response>'''}
+    rows, _columns = parse_firewall_rules(payloads, "FirewallRule")
+    assert all("_Rule Order" not in row for row in rows)
+    result = match_rules(rows, ipaddress.ip_network("192.0.2.77"), ipaddress.ip_network("198.51.100.44"), "TCP", 443)
+    assert result["state"] == "order_check_required"
 
 
 def test_user_policy_uses_generalized_resolved_groups() -> None:
