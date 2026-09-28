@@ -75,6 +75,25 @@ def _under_direct(node: ET.Element, containers: set[str]) -> list[str]:
     return result
 
 
+def _policy_list_semantics(node: ET.Element, containers: set[str]) -> tuple[list[str], bool, str]:
+    """Preserve Sophos list semantics, including scalar and empty Any containers."""
+    matching = [container for container in list(node) if _tag(container) in containers]
+    if not matching:
+        return [], False, "missing"
+    values: list[str] = []
+    for container in matching:
+        scalar = (container.text or "").strip()
+        if scalar and scalar not in values:
+            values.append(scalar)
+        for child in container.iter():
+            value = (child.text or "").strip()
+            if child is not container and value and value not in values:
+                values.append(value)
+    wildcard = any(is_wildcard_value(value) for value in values) or not values
+    representation = "explicit_value" if values else "empty_container"
+    return [value for value in values if not is_wildcard_value(value)], wildcard, representation
+
+
 def _nodes(xml_text: str, entity: str) -> list[ET.Element]:
     root = ET.fromstring(xml_text)
     status = parse_status(xml_text)
@@ -185,9 +204,9 @@ def _rule_models(root: ET.Element, rule_entity: str | None) -> list[tuple[ET.Ele
     return rows
 
 
-def parse_firewall_rules(payloads: dict[str, str], rule_entity: str | None = None) -> tuple[list[dict[str, str]], list[str]]:
+def parse_firewall_rules(payloads: dict[str, str], rule_entity: str | None = None) -> tuple[list[dict[str, Any]], list[str]]:
     resolved_objects, resolved_services = _object_maps(payloads)
-    rows: list[dict[str, str]] = []
+    rows: list[dict[str, Any]] = []
     rule_xml = payloads.get("Rule") or payloads.get("FirewallRule") or payloads.get("SecurityPolicy") or ""
     root = ET.fromstring(rule_xml)
     status = parse_status(rule_xml)
@@ -197,9 +216,9 @@ def parse_firewall_rules(payloads: dict[str, str], rule_entity: str | None = Non
     has_rule_id = any(_direct_text(rule_root, "RuleID", "PolicyID", "ID") for rule_root, _policy, _group in rule_nodes)
     columns = (["Rule ID"] if has_rule_id else []) + MANAGEMENT_COLUMNS
     for rule_root, policy, inherited_group in rule_nodes:
-        source = _under_direct(policy, {"SourceNetworks", "SourceNetwork", "SourceHosts", "SourceObjects"})
-        destination = _under_direct(policy, {"DestinationNetworks", "DestinationNetwork", "DestinationHosts", "DestinationObjects"})
-        services = _under_direct(policy, {"Services", "ServiceList"})
+        source, source_wildcard, source_semantics = _policy_list_semantics(policy, {"SourceNetworks", "SourceNetwork", "SourceHosts", "SourceObjects"})
+        destination, destination_wildcard, destination_semantics = _policy_list_semantics(policy, {"DestinationNetworks", "DestinationNetwork", "DestinationHosts", "DestinationObjects"})
+        services, service_wildcard, service_semantics = _policy_list_semantics(policy, {"Services", "ServiceList"})
         raw_status = _direct_text(rule_root, "Status", "Enable", "Enabled")
         normalized_status = {"enable": "활성", "disable": "비활성"}.get(raw_status.casefold(), raw_status)
         row = {
@@ -208,6 +227,12 @@ def parse_firewall_rules(payloads: dict[str, str], rule_entity: str | None = Non
             # appliance supplies one; callers must not substitute Rule ID or
             # XML/Excel row order for it.
             "_Rule Position": _direct_text(rule_root, "Position", "RulePosition", "Sequence", "Order"),
+            "source_wildcard": source_wildcard,
+            "destination_wildcard": destination_wildcard,
+            "service_wildcard": service_wildcard,
+            "_Source Semantics": source_semantics,
+            "_Destination Semantics": destination_semantics,
+            "_Service Semantics": service_semantics,
             "Rule ID": _direct_text(rule_root, "RuleID", "PolicyID", "ID").lstrip("#"),
             "Rule Name": _direct_text(rule_root, "Name", "RuleName"),
             "Status": normalized_status,
@@ -238,7 +263,7 @@ def parse_firewall_rules(payloads: dict[str, str], rule_entity: str | None = Non
     return rows, columns
 
 
-def classify_parsed_rule(row: dict[str, str]) -> tuple[str, dict[str, str]]:
+def classify_parsed_rule(row: dict[str, Any]) -> tuple[str, dict[str, str]]:
     source_categories, source_sites = classify_rule_side(row.get("Source Object", ""), row.get("Source Resolved", ""))
     destination_categories, destination_sites = classify_rule_side(row.get("Destination Object", ""), row.get("Destination Resolved", ""))
     bucket = classify_analysis_sheet(source_categories, destination_categories)

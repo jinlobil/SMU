@@ -54,6 +54,43 @@ def test_common_wildcard_normalization_matches_any_ipv4(wildcard: str) -> None:
     assert result == {"match": "full", "wildcard": True, "resolverFailed": False}
 
 
+@pytest.mark.parametrize("wildcard_xml", [
+    "<SourceNetworks/><DestinationNetworks/>",
+    "<SourceNetworks>Any</SourceNetworks><DestinationNetworks><Network>All</Network></DestinationNetworks>",
+])
+def test_parser_preserves_semantic_address_wildcards(wildcard_xml: str) -> None:
+    payloads = {"Rule": f'''<Response><Status code="200">OK</Status><FirewallRule><Name>GENERIC_RULE</Name><Status>Enable</Status><NetworkPolicy><Action>Accept</Action><SourceZones><Zone>Any</Zone></SourceZones>{wildcard_xml}<DestinationZones><Zone>Any</Zone></DestinationZones><Services><Service>TCP_443</Service></Services></NetworkPolicy></FirewallRule></Response>''',
+                "Services": '''<Response><Status code="200">OK</Status><Services><Name>TCP_443</Name><ServiceDetails><ServiceDetail><Protocol>TCP</Protocol><DestinationPort>443</DestinationPort></ServiceDetail></ServiceDetails></Services></Response>'''}
+    rows, _columns = parse_firewall_rules(payloads, "FirewallRule")
+    row = rows[0]
+    assert row["Source Object"] == row["Destination Object"] == ""
+    assert row["source_wildcard"] is row["destination_wildcard"] is True
+    broad = match_rules(rows, ipaddress.ip_network("192.0.2.77"), ipaddress.ip_network("198.51.100.44"), "ANY", None)
+    exact = match_rules(rows, ipaddress.ip_network("192.0.2.77"), ipaddress.ip_network("198.51.100.44"), "TCP", 443)
+    assert broad["matches"][0]["addressCandidate"] is True
+    assert exact["state"] == "allow" and exact["matchedRule"]["full_match"] is True
+
+
+def test_parser_preserves_empty_service_container_as_any_service() -> None:
+    payloads = {"Rule": '''<Response><Status code="200">OK</Status><FirewallRule><Name>GENERIC_ANY_SERVICE</Name><Status>Enable</Status><NetworkPolicy><Action>Accept</Action><SourceNetworks/><DestinationNetworks/><Services/></NetworkPolicy></FirewallRule></Response>'''}
+    rows, _columns = parse_firewall_rules(payloads, "FirewallRule")
+    assert rows[0]["service_wildcard"] is True
+    result = match_rules(rows, ipaddress.ip_network("192.0.2.77"), ipaddress.ip_network("198.51.100.44"), "UDP", 65000)
+    assert result["state"] == "allow"
+    assert result["matchedRule"]["anyService"] is True
+
+
+def test_missing_or_unparsed_policy_lists_are_not_wildcards() -> None:
+    payloads = {"Rule": '''<Response><Status code="200">OK</Status><FirewallRule><Name>INCOMPLETE_RULE</Name><Status>Enable</Status><NetworkPolicy><Action>Accept</Action></NetworkPolicy></FirewallRule></Response>'''}
+    rows, _columns = parse_firewall_rules(payloads, "FirewallRule")
+    row = rows[0]
+    assert row["source_wildcard"] is row["destination_wildcard"] is row["service_wildcard"] is False
+    assert row["_Source Semantics"] == row["_Destination Semantics"] == row["_Service Semantics"] == "missing"
+    result = match_rules(rows, ipaddress.ip_network("192.0.2.77"), ipaddress.ip_network("198.51.100.44"), "TCP", 443)
+    assert result["matches"] == []
+    assert result["evaluations"][0]["source_resolver_failed"] is False
+
+
 def test_iphost_group_and_ip_range_use_resolved_network_containment() -> None:
     request = ipaddress.ip_network("192.0.2.77")
     assert address_match(request, "GENERIC_GROUP", "MEMBER_NET (192.0.2.0/24)") == "full"

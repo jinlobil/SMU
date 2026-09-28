@@ -32,9 +32,9 @@ def _networks(text: str) -> list[ipaddress.IPv4Network]:
     return list(dict.fromkeys(values))
 
 
-def address_match_details(requested: ipaddress.IPv4Network, objects: str, resolved: str) -> dict[str, Any]:
+def address_match_details(requested: ipaddress.IPv4Network, objects: str, resolved: str, semantic_wildcard: bool = False) -> dict[str, Any]:
     values = [value.strip() for value in f"{objects}\n{resolved}".splitlines() if value.strip()]
-    wildcard = any(is_wildcard_value(value) for value in values)
+    wildcard = semantic_wildcard or any(is_wildcard_value(value) for value in values)
     if wildcard:
         return {"match": "full", "wildcard": True, "resolverFailed": False}
     partial = False
@@ -46,8 +46,8 @@ def address_match_details(requested: ipaddress.IPv4Network, objects: str, resolv
     return {"match": "partial" if partial else "none", "wildcard": False, "resolverFailed": bool(objects.strip()) and not networks}
 
 
-def address_match(requested: ipaddress.IPv4Network, objects: str, resolved: str) -> str:
-    return address_match_details(requested, objects, resolved)["match"]
+def address_match(requested: ipaddress.IPv4Network, objects: str, resolved: str, semantic_wildcard: bool = False) -> str:
+    return address_match_details(requested, objects, resolved, semantic_wildcard)["match"]
 
 
 def zone_match(expected: str | None, rule_zones: str) -> bool:
@@ -57,8 +57,8 @@ def zone_match(expected: str | None, rule_zones: str) -> bool:
     return any(is_wildcard_value(value) or value.casefold() == expected.casefold() for value in zones)
 
 
-def service_match_details(protocol: str, port: int | None, service_names: str, resolved: str) -> dict[str, Any]:
-    any_service = any(is_wildcard_value(value) for value in f"{service_names}\n{resolved}".splitlines())
+def service_match_details(protocol: str, port: int | None, service_names: str, resolved: str, semantic_wildcard: bool = False) -> dict[str, Any]:
+    any_service = semantic_wildcard or any(is_wildcard_value(value) for value in f"{service_names}\n{resolved}".splitlines())
     if any_service:
         return {"protocolMatch": True, "portMatch": True, "serviceMatch": True, "anyService": True, "serviceProtocols": ["ANY"], "servicePorts": ["ANY"]}
     protocol = protocol.upper()
@@ -91,8 +91,8 @@ def service_match_details(protocol: str, port: int | None, service_names: str, r
     return {"protocolMatch": protocol_match, "portMatch": port_match, "serviceMatch": protocol_match and port_match, "anyService": False, "serviceProtocols": protocols, "servicePorts": ports}
 
 
-def service_match(protocol: str, port: int | None, service_names: str, resolved: str) -> bool:
-    return service_match_details(protocol, port, service_names, resolved)["serviceMatch"]
+def service_match(protocol: str, port: int | None, service_names: str, resolved: str, semantic_wildcard: bool = False) -> bool:
+    return service_match_details(protocol, port, service_names, resolved, semantic_wildcard)["serviceMatch"]
 
 
 def _position(value: str) -> int | None:
@@ -106,7 +106,7 @@ def _action_state(candidate: dict[str, Any]) -> str:
 
 
 def match_rules(
-    rows: list[dict[str, str]],
+    rows: list[dict[str, Any]],
     source: ipaddress.IPv4Network,
     destination: ipaddress.IPv4Network,
     protocol: str = "ANY",
@@ -118,12 +118,12 @@ def match_rules(
     matches = []
     evaluations = []
     for row in rows:
-        source_result = address_match_details(source, row.get("Source Object", ""), row.get("Source Resolved", ""))
-        destination_result = address_match_details(destination, row.get("Destination Object", ""), row.get("Destination Resolved", ""))
+        source_result = address_match_details(source, row.get("Source Object", ""), row.get("Source Resolved", ""), row.get("source_wildcard") is True)
+        destination_result = address_match_details(destination, row.get("Destination Object", ""), row.get("Destination Resolved", ""), row.get("destination_wildcard") is True)
         source_match, destination_match = source_result["match"], destination_result["match"]
         source_zone_match = zone_match(expected_source_zone, row.get("Source Zone", ""))
         destination_zone_match = zone_match(expected_destination_zone, row.get("Destination Zone", ""))
-        service = service_match_details(protocol, port, row.get("Service", ""), row.get("Service Resolved / Protocol / Port", ""))
+        service = service_match_details(protocol, port, row.get("Service", ""), row.get("Service Resolved / Protocol / Port", ""), row.get("service_wildcard") is True)
         active = row.get("Status", "") == "활성" or row.get("Status", "").casefold() in {"enable", "enabled"}
         address_candidate = source_match == destination_match == "full" and source_zone_match and destination_zone_match
         reject_reasons = []
