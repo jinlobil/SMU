@@ -1,15 +1,18 @@
 """Adapter for the security report implementation ported from ``uimain_window.py``."""
 from __future__ import annotations
 
+import json
 from datetime import date, datetime, time
 from pathlib import Path
 from typing import Any, Callable
 
-from backend.services.detections import DetectionService
-from backend.services.email_security import EmailSecurityService
-from backend.services.endpoints import EndpointService, load_json_list, normalize_key
-from backend.services.transfers import TransferService
+from backend.services.detections import DetectionService, sensor_type
+from backend.services.email_security import EmailSecurityService, XDR_RULES
+from backend.services.endpoints import EndpointService, endpoint_principal, load_json_list, normalize_key
+from backend.services.transfers import TransferService, load_jsonl
 from backend.services import legacy_report
+from backend.services.exceptions import ExceptionService, normalize_identity
+from backend.services.exporting import normalize_report_sections
 
 
 class ReportService:
@@ -21,14 +24,26 @@ class ReportService:
         self.email = EmailSecurityService(root)
         self.transfers = TransferService(root)
         self.endpoints = EndpointService(root)
+        self.exceptions = ExceptionService(root)
 
-    def _configure_legacy_data(self) -> None:
+    def _configure_legacy_data(self, sections: list[str] | None = None) -> None:
+        sections = normalize_report_sections(sections)
         legacy_report.REPORT_DIR = str(self.root / "reports")
         legacy_report.ENDPOINTS = load_json_list(self.root / "cache/endpoints.json")
+        # The renderer receives an in-memory, processed copy.  Apply display-name
+        # overrides here without ever writing them back to the solution cache.
+        for endpoint in legacy_report.ENDPOINTS:
+            person = endpoint.get("associatedPerson") if isinstance(endpoint.get("associatedPerson"), dict) else None
+            if person is not None:
+                person["name"] = self.exceptions.resolve_user(endpoint_principal(person, endpoint.get("hostname")), person.get("name"))
         legacy_report.ORGS = load_json_list(self.root / "cache/user_groups.json")
         legacy_report.DEPT_MAP = {
             str(org.get("deptCode", "")): str(org.get("deptName") or org.get("name") or org.get("deptCode") or "미분류")
             for org in legacy_report.ORGS if isinstance(org, dict)
+        }
+        legacy_report.REPORT_EXCEPTION_MAP = {
+            normalize_identity(item.get("matchValue")): str(item.get("department") or "")
+            for item in self.exceptions.list("departments")["items"] if item.get("enabled", True)
         }
         context = self.endpoints._department_context()
         hostname_depts: dict[str, dict[str, str]] = {}
@@ -38,11 +53,25 @@ class ReportService:
                 "dept_name": row.get("dept", "미분류"), "dept_code": ""
             }
         legacy_report.HOSTNAME_DEPT_MAP = hostname_depts
+        legacy_report.ENDPOINT_LOGIN_INDEX = {}
+        legacy_report.MAILBOX_IDENTITY_CACHE = {}
+        legacy_report.MAILSCREEN_IDENTITY_CACHE = {}
+        for endpoint in legacy_report.ENDPOINTS:
+            person = endpoint.get("associatedPerson") if isinstance(endpoint.get("associatedPerson"), dict) else {}
+            principal = endpoint_principal(person, endpoint.get("hostname"))
+            account = principal.split("\\")[-1].strip() if "\\" in principal else principal.strip()
+            if account:
+                legacy_report.ENDPOINT_LOGIN_INDEX.setdefault(account.casefold(), {
+                    "hostname": str(endpoint.get("hostname") or "None"),
+                    "user_id": account,
+                    "user_name": str(person.get("name") or "None"),
+                })
         legacy_report.DIRECTORY_USER_INDEX = {}
         for user in load_json_list(self.root / "cache/users.json"):
+            principal = str(user.get("exchangeLogin") or user.get("userId") or "")
             entry = {
-                "name": str(user.get("name") or ""),
-                "user_id": str(user.get("exchangeLogin") or user.get("userId") or ""),
+                "name": self.exceptions.resolve_user(principal, user.get("name")),
+                "user_id": principal,
                 "email": str(user.get("email") or ""),
                 "dept_name": str(user.get("dept") or user.get("department") or "미분류"),
                 "dept_code": "",
@@ -54,16 +83,53 @@ class ReportService:
         def dates(start: str, end: str) -> tuple[date, date]:
             return date.fromisoformat(start), date.fromisoformat(end)
 
-        legacy_report.load_endpoint_detections_by_range = lambda start, end: [raw for _id, raw, _row in self.detections._events(*dates(start, end))[0]]
-        legacy_report.load_xdr_email_detections_by_range = lambda start, end: [raw for _id, raw, _row in self.email._collect_xdr(*dates(start, end))[0]]
-        legacy_report.load_emails_by_range = lambda start, end: [raw for _id, raw, _row in self.email._collect_inbound(*dates(start, end))[0]]
-        legacy_report.load_mailscreen_by_range = lambda start, end: [raw for _id, raw, _row in self.transfers._collect_outbound(*dates(start, end))[0]]
-        legacy_report.load_dlp_by_range = lambda start, end: [raw for _id, raw, _row in self.transfers._collect_dlp(*dates(start, end))[0]]
+        detection_cache: dict[tuple[date, date], tuple[list[dict], list[dict]]] = {}
 
-    def build(self, start: date, end: date, progress: Callable[[str], None] = lambda _message: None) -> dict[str, Any]:
+        def detection_rows(start: str, end: str) -> tuple[list[dict], list[dict]]:
+            period = dates(start, end)
+            if period not in detection_cache:
+                endpoint_rows, xdr_rows = [], []
+                for path in self.detections._files(*period):
+                    for event in load_json_list(path):
+                        description = event.get("detectionDescription") if isinstance(event.get("detectionDescription"), dict) else {}
+                        rule = str(description.get("createdReasonId") or event.get("detectionRule") or "")
+                        kind = sensor_type(event)
+                        if kind == "endpoint" and event.get("time"):
+                            endpoint_rows.append(event)
+                        if kind == "email" or (not kind and rule in XDR_RULES):
+                            xdr_rows.append(event)
+                detection_cache[period] = endpoint_rows, xdr_rows
+            return detection_cache[period]
+
+        def inbound_rows(start: str, end: str) -> list[dict]:
+            return [event for path in self.email._files(self.email.email_dir, *dates(start, end)) for event in load_json_list(path)]
+
+        def outbound_rows(start: str, end: str) -> list[dict]:
+            rows = []
+            for day in self.transfers._dates(*dates(start, end)):
+                path = self.transfers.outbound_dir / f"mailscreen_mail_{day.isoformat()}.json"
+                if not path.exists():
+                    continue
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                items = payload.get("items", []) if isinstance(payload, dict) else payload
+                rows.extend(item for item in items if isinstance(item, dict))
+            return rows
+
+        def dlp_rows(start: str, end: str) -> list[dict]:
+            return [row for day in self.transfers._dates(*dates(start, end)) for row in load_jsonl(self.transfers.dlp_dir / f"{day.isoformat()}.jsonl")]
+
+        # The legacy renderer consumes Raw dictionaries. Do not build discarded
+        # display rows or run per-event exception resolution for report input.
+        legacy_report.load_endpoint_detections_by_range = lambda start, end: detection_rows(start, end)[0] if "detections" in sections else []
+        legacy_report.load_xdr_email_detections_by_range = lambda start, end: detection_rows(start, end)[1] if "xdr" in sections else []
+        legacy_report.load_emails_by_range = lambda start, end: inbound_rows(start, end) if "inbound" in sections else []
+        legacy_report.load_mailscreen_by_range = lambda start, end: outbound_rows(start, end) if "outbound" in sections else []
+        legacy_report.load_dlp_by_range = lambda start, end: dlp_rows(start, end) if "dlp" in sections else []
+
+    def build(self, start: date, end: date, progress: Callable[[str], None] = lambda _message: None, sections: list[str] | None = None) -> dict[str, Any]:
         if start > end:
             raise ValueError("start date must not be after end date")
-        self._configure_legacy_data()
+        self._configure_legacy_data(sections)
         renderer = legacy_report.LegacySecurityReport()
         path = renderer._generate_security_report_v2(
             datetime.combine(start, time.min), datetime.combine(end, time.max), progress

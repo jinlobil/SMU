@@ -7,6 +7,7 @@ from typing import Callable
 
 
 log = logging.getLogger("smu.jobs")
+job_events = logging.getLogger("smu.job.events")
 
 
 class JobManager:
@@ -32,6 +33,7 @@ class JobManager:
             self._jobs[job_id]["message"] = message
 
     def _run(self, job_id: str, task: Callable[[Callable[[str], None]], dict]) -> None:
+        job_events.info("Job started job_id=%s type=%s", job_id, self._jobs[job_id]["type"])
         with self._lock:
             self._jobs[job_id]["status"] = "running"
             self._jobs[job_id]["message"] = "작업 시작"
@@ -39,10 +41,12 @@ class JobManager:
             result = task(lambda message: self.update_message(job_id, message))
             with self._lock:
                 self._jobs[job_id].update(status="completed", message="완료", result=result, finishedAt=self._now())
+            job_events.info("Job completed job_id=%s type=%s", job_id, self._jobs[job_id]["type"])
         except Exception as exc:
             log.exception("Background job failed job_id=%s type=%s", job_id, self._jobs[job_id]["type"])
             with self._lock:
                 self._jobs[job_id].update(status="failed", message="실패", error={"message": f"{type(exc).__name__}: {exc}", "traceback": traceback.format_exc()}, finishedAt=self._now())
+            job_events.warning("Job failed job_id=%s type=%s", job_id, self._jobs[job_id]["type"])
 
     @staticmethod
     def _now() -> str:
