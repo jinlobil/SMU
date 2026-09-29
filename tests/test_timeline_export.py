@@ -5,6 +5,7 @@ from zipfile import ZipFile
 
 from backend.services.timeline import TimelineService
 from backend.services.timeline_export import SHEET_ORDER, TimelineExportService
+from system_monitor.laborer import LaborerAgent
 
 
 def _database(root: Path, rows: list[tuple]) -> None:
@@ -37,6 +38,12 @@ def test_timeline_export_always_has_seven_sheets_and_actual_summary_bounds(tmp_p
     with ZipFile(path) as workbook:
         xml = workbook.read("xl/workbook.xml").decode()
         assert xml.count("<sheet ") == 7
+        summary = workbook.read("xl/worksheets/sheet1.xml").decode()
+        assert "TIMELINE" in summary and 'ref="A1:F1"' in summary
+        assert "autoFilter" not in summary
+        assert "검색 키워드" not in summary and "선택 Source" not in summary
+        assert "데이터 시작일" in summary and "데이터 종료일" in summary
+        assert "autoFilter" in workbook.read("xl/worksheets/sheet2.xml").decode()
         assert "검색 결과가 없습니다." in workbook.read("xl/worksheets/sheet3.xml").decode()
 
 
@@ -50,7 +57,51 @@ def test_zero_result_export_still_creates_summary_and_six_source_sheets(tmp_path
 
 def test_timeline_page_requests_backend_export_with_current_filters() -> None:
     page = (Path(__file__).resolve().parents[1] / "frontend/src/pages/TimelinePage.tsx").read_text(encoding="utf-8")
-    assert 'fetch("/api/timeline/export"' in page
+    assert 'fetch("/api/jobs/export/timeline"' in page
+    assert 'fetch(`/api/jobs/${job.id}`)' in page
+    assert "/api/config/export/file/" in page
     assert "JSON.stringify(lastQuery)" in page
     assert "Excel 다운로드" in page
-    assert "groups" not in page[page.index('fetch("/api/timeline/export"'):page.index('fetch("/api/timeline/export"') + 350]
+    assert 'className="refresh-button"' in page
+
+
+def test_summary_resolves_user_and_all_endpoint_values(tmp_path: Path) -> None:
+    cache = tmp_path / "cache"; cache.mkdir()
+    (cache / "users.json").write_text(json.dumps([{"id": "user-1", "name": "Example User", "email": "user@example.com", "exchangeLogin": "example"}]), encoding="utf-8")
+    (cache / "endpoints.json").write_text(json.dumps([
+        {"hostname": "PC-001", "ipv4Addresses": ["192.0.2.10", "192.0.2.11"], "associatedPerson": {"id": "user-1", "name": "Example User"}},
+        {"hostname": "PC-002", "ipv4Addresses": ["198.51.100.20"], "associatedPerson": {"id": "user-1", "name": "Example User"}},
+    ]), encoding="utf-8")
+    _database(tmp_path, [])
+    path = tmp_path / "identity.xlsx"
+    TimelineExportService(tmp_path).export("example", "", set(SHEET_ORDER), path)
+    with ZipFile(path) as workbook:
+        summary = workbook.read("xl/worksheets/sheet1.xml").decode()
+    for value in ("Example User", "user@example.com", "PC-001", "PC-002", "192.0.2.10", "192.0.2.11", "198.51.100.20"):
+        assert value in summary
+
+
+def test_xlsx_generation_is_dispatched_to_laborer_not_fastapi() -> None:
+    root = Path(__file__).resolve().parents[1]
+    app = (root / "backend/app.py").read_text(encoding="utf-8")
+    laborer = (root / "system_monitor/laborer.py").read_text(encoding="utf-8")
+    assert 'start_laborer_job(\n        "timeline_export"' in app
+    assert "TimelineExportService(self.root).export" in laborer
+    assert "timeline_export_service.export" not in app
+
+
+def test_laborer_completes_timeline_export_job(tmp_path: Path, monkeypatch) -> None:
+    agent = LaborerAgent(tmp_path)
+    monkeypatch.setattr(TimelineExportService, "export", lambda self, user, keyword, sources, path: (
+        path.parent.mkdir(parents=True, exist_ok=True), path.write_bytes(b"xlsx"),
+        {"events": 12, "sheets": ["Summary", *SHEET_ORDER]},
+    )[-1])
+    job = agent.submit("timeline_export", {"user": "tester", "keyword": "", "sources": ["Detection"]})
+    monkeypatch.setattr(agent.wake, "wait", lambda _timeout: agent.stop.set())
+
+    agent.worker_loop()
+
+    completed = agent.get(job["id"])
+    assert completed["status"] == "completed"
+    assert completed["result"]["rows"] == 12
+    assert completed["result"]["sheets"] == ["Summary", *SHEET_ORDER]

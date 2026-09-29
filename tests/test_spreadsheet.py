@@ -109,3 +109,26 @@ def test_laborer_query_decoder_keeps_report_sections_as_list() -> None:
 
     assert job_type == "report"
     assert payload["sections"] == ["detections", "dlp"]
+
+
+def test_timeline_export_job_payload_preserves_sources(monkeypatch) -> None:
+    captured = {}
+    monkeypatch.setattr(app_module.watchdog_manager, "start_laborer_job", lambda job_type, **payload: captured.setdefault("value", {"job_type": job_type, **payload}))
+
+    response = app_module.start_timeline_export({"user": "tester", "keyword": "needle", "sources": ["Detection", "File"]})
+
+    assert response["data"]["job_type"] == "timeline_export"
+    assert captured["value"] == {"job_type": "timeline_export", "user": "tester", "keyword": "needle", "sources": ["Detection", "File"]}
+
+
+def test_watchdog_transport_preserves_timeline_sources(tmp_path: Path, monkeypatch) -> None:
+    manager = WatchdogManager(tmp_path); captured = {}
+    monkeypatch.setattr(manager, "ensure", lambda: None)
+    monkeypatch.setattr(manager, "request", lambda path, *args, **kwargs: captured.setdefault("path", path) or {"id": "job"})
+    monkeypatch.setattr(manager, "_report_job_state", lambda result, _label: result)
+
+    manager.start_laborer_job("timeline_export", user="tester", keyword="", sources=["Detection", "File"])
+    job_type, payload = decode_job_query(captured["path"].split("?", 1)[1])
+
+    assert job_type == "timeline_export"
+    assert payload["sources"] == ["Detection", "File"]

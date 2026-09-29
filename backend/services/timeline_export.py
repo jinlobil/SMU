@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from backend.services.spreadsheet import write_xlsx_workbook
+from backend.services.endpoints import load_json_list, normalize_key
 from backend.services.timeline import ALL_SOURCES, TimelineService
 
 
@@ -38,21 +39,46 @@ class TimelineExportService:
         self.root = root
         self.timeline = timeline or TimelineService(root)
 
+    def _user_summary(self, query: str) -> dict[str, str]:
+        query_key = normalize_key(query)
+        users = load_json_list(self.root / "cache/users.json")
+        matched = next((user for user in users if query_key and query_key in {
+            normalize_key(user.get("id")), normalize_key(user.get("name")), normalize_key(user.get("email")),
+            normalize_key(user.get("exchangeLogin")), normalize_key(str(user.get("email", "")).split("@", 1)[0]),
+        }), None)
+        user_ids = {normalize_key(matched.get("id"))} if matched and matched.get("id") else set()
+        aliases = {query_key}
+        if matched:
+            aliases.update(normalize_key(matched.get(key)) for key in ("id", "name", "email", "exchangeLogin"))
+        hostnames, ips = [], []
+        for endpoint in load_json_list(self.root / "cache/endpoints.json"):
+            person = endpoint.get("associatedPerson") if isinstance(endpoint.get("associatedPerson"), dict) else {}
+            person_keys = {normalize_key(person.get(key)) for key in ("id", "name", "viaLogin")}
+            if not ((user_ids and normalize_key(person.get("id")) in user_ids) or aliases.intersection(person_keys)):
+                continue
+            hostname = str(endpoint.get("hostname", "") or "").strip()
+            if hostname and hostname not in hostnames:
+                hostnames.append(hostname)
+            addresses = endpoint.get("ipv4Addresses") if isinstance(endpoint.get("ipv4Addresses"), list) else []
+            for address in addresses:
+                value = str(address or "").strip()
+                if value and value not in ips:
+                    ips.append(value)
+        return {
+            "name": str(matched.get("name", "") or "-") if matched else "-",
+            "email": str(matched.get("email", "") or "-") if matched else "-",
+            "hostnames": "\n".join(hostnames) or "-", "ips": "\n".join(ips) or "-",
+        }
+
     def export(self, user: str, keyword: str, sources: set[str], path: Path) -> dict[str, Any]:
         selected = sources or set(ALL_SOURCES)
         events = self.timeline.search_all(user, keyword, selected)
         counts = Counter(str(event.get("source", "")) for event in events)
         timestamps = sorted(str(event.get("time", "")) for event in events if str(event.get("time", "")).strip() not in {"", "None"})
-        summary_rows = [
-            {"item": "검색 사용자", "value": user or "-"},
-            {"item": "검색 키워드", "value": keyword or "-"},
-            {"item": "선택 Source", "value": ", ".join(source for source in SHEET_ORDER if source in selected)},
-            {"item": "데이터 시작일", "value": timestamps[0] if timestamps else "-"},
-            {"item": "데이터 종료일", "value": timestamps[-1] if timestamps else "-"},
-            {"item": "전체 이벤트", "value": len(events)},
-            *({"item": source, "value": counts[source]} for source in SHEET_ORDER),
-        ]
-        sheets = [{"name": "Summary", "rows": summary_rows, "columns": ["item", "value"], "headers": {"item": "Timeline Export Summary", "value": "Value"}}]
+        summary = {**self._user_summary(user), "start": timestamps[0] if timestamps else "-",
+                   "end": timestamps[-1] if timestamps else "-", "total": len(events),
+                   "counts": {source: counts[source] for source in SHEET_ORDER}}
+        sheets = [{"name": "Summary", "reportSummary": summary}]
         for source in SHEET_ORDER:
             definitions = SOURCE_COLUMNS[source]
             rows = [_source_row(event, source) for event in events if event.get("source") == source]
