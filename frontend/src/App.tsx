@@ -33,7 +33,7 @@ const menuRoutes = [
   { label: "Forensics", route: "/forensics/timeline" },
   { label: "Response", route: "/response/firewall" },
   { label: "Asset", route: "/assets/endpoints" },
-  { label: "Lab", route: "/lab/layout" },
+  { label: "Lab", route: "/lab/machine-learning" },
   { label: "Config", route: "/config/general" },
 ];
 const submenus: Record<string, { label: string; route: string }[]> = {
@@ -49,7 +49,7 @@ const submenus: Record<string, { label: string; route: string }[]> = {
     { label: "Sensitive Sites", route: "/forensics/sensitive-sites" },
   ],
   Response: [{ label: "Firewall", route: "/response/firewall" }, { label: "Firewall Path Check", route: "/response/firewall-path-check" }, { label: "Easy Query", route: "/response/easy-query" }],
-  Lab: [{ label: "Layout - User", route: "/lab/layout" }, { label: "Machine Learning", route: "/lab/machine-learning" }],
+  Lab: [{ label: "Machine Learning", route: "/lab/machine-learning" }],
   Config: [
     { label: "General", route: "/config/general" }, { label: "UI Management", route: "/config/ui" }, { label: "Data Management", route: "/config/data" },
     { label: "Export Management", route: "/config/export" }, { label: "Integration Management", route: "/config/integrations" },

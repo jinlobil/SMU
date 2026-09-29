@@ -6,7 +6,7 @@ import time
 import uuid
 import urllib.error
 from contextlib import asynccontextmanager
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 APP_IMPORT_STARTED = time.perf_counter()
@@ -27,6 +27,7 @@ from backend.services.detections import DetectionService
 from backend.services.email_security import EmailSecurityService
 from backend.services.transfers import TransferService
 from backend.services.timeline import TimelineService
+from backend.services.timeline_export import TimelineExportService
 from backend.services.sensitive import SensitiveService
 from backend.services.dashboard import DashboardService
 from backend.services.firewall import FirewallService
@@ -68,6 +69,7 @@ detection_service = DetectionService(PROJECT_ROOT)
 email_security_service = EmailSecurityService(PROJECT_ROOT)
 transfer_service = TransferService(PROJECT_ROOT)
 timeline_service = TimelineService(PROJECT_ROOT)
+timeline_export_service = TimelineExportService(PROJECT_ROOT, timeline_service)
 sensitive_service = SensitiveService(PROJECT_ROOT)
 phase_started = time.perf_counter()
 dashboard_service = DashboardService(PROJECT_ROOT)
@@ -796,6 +798,64 @@ def learner_summary(start: str="", end: str="") -> dict:
 def learner_history(source: str, scopeType: str, scopeKey: str, behaviorType: str, behaviorKey: str) -> dict:
     return {"success":True,"data":LearnerService(PROJECT_ROOT).history(source,scopeType,scopeKey,behaviorType,behaviorKey)}
 
+@app.post("/api/jobs/index/vacuum", status_code=202)
+def vacuum_indexes(payload: dict | None = Body(default=None)) -> dict:
+    target = str((payload or {}).get("target", "all"))
+    return {"success": True, "data": watchdog_manager.start_laborer_job("vacuum", target=target)}
+
+
+@app.post("/api/learner/jobs", status_code=202)
+def start_learner_job(payload: dict = Body(default={})) -> dict:
+    try:
+        data=watchdog_manager.start_learner_job(str(payload.get("mode","incremental")),payload.get("sources"),payload.get("start"),payload.get("end"))
+    except urllib.error.HTTPError as exc:
+        if exc.code == 409:
+            try: busy=json.loads(exc.read())
+            except Exception: busy={}
+            return JSONResponse(status_code=409,content={"success":False,"error":"LEARNER_BUSY","message":busy.get("message","현재 분석 작업이 실행 중입니다."),"currentJobId":busy.get("currentJobId"),"status":busy.get("status")})
+        return error_response(str(uuid.uuid4()),"LEARNER_UNAVAILABLE",str(exc),503)
+    except Exception as exc:
+        log.exception("Learner job submission failed")
+        return error_response(str(uuid.uuid4()),"LEARNER_UNAVAILABLE",str(exc),503)
+    return {"success":True,"data":data}
+
+@app.post("/api/learner/jobs/{job_id}/cancel", status_code=202)
+def cancel_learner_job(job_id: str):
+    try:
+        data=watchdog_manager.cancel_learner_job(job_id)
+        return {"success":True,"jobId":data.get("id",job_id),"status":data.get("status","cancelling")}
+    except urllib.error.HTTPError as exc:
+        return error_response(str(uuid.uuid4()),"LEARNER_CANCEL_CONFLICT","분석을 중단할 수 없는 상태입니다.",exc.code)
+    except Exception as exc:return error_response(str(uuid.uuid4()),"LEARNER_UNAVAILABLE",str(exc),503)
+
+@app.get("/api/learner/findings")
+def learner_findings(source: str="", findingType: str="", start: str="", end: str="", view: str="review", page: int=Query(1,ge=1), pageSize: int=Query(30,ge=1,le=100)) -> dict:
+    result=learner_store.operational_findings(source,findingType,start,(end+"T99") if end else "",pageSize,(page-1)*pageSize,view != "all")
+    total=result["total"]
+    return {"success":True,"data":{"items":result["items"],"pagination":{"page":page,"pageSize":pageSize,"total":total,"totalPages":max(1,(total+pageSize-1)//pageSize)}}}
+
+@app.get("/api/learner/dashboard")
+def learner_dashboard(source: str="", month: str="", start: str="", end: str="") -> dict:
+    if source and source not in {"detections","xdr","inbound","outbound","dlp","firewall"}:
+        return error_response(str(uuid.uuid4()),"LEARNER_SOURCE_INVALID",f"Unsupported source: {source}",400)
+    try:
+        return {"success":True,"data":learner_dashboard_service.dashboard(source,month,start,end)}
+    except ValueError as exc:
+        return error_response(str(uuid.uuid4()),"LEARNER_DATE_INVALID",str(exc),400)
+
+@app.get("/api/learner/findings/{finding_id}")
+def learner_finding(finding_id: str) -> dict:
+    data=learner_store.finding(finding_id)
+    return {"success":True,"data":data} if data else error_response(str(uuid.uuid4()),"LEARNER_FINDING_NOT_FOUND","Finding not found",404)
+
+@app.get("/api/learner/summary")
+def learner_summary(start: str="", end: str="") -> dict:
+    return {"success":True,"data":learner_store.summary(start,(end+"T99") if end else "")}
+
+@app.get("/api/learner/history")
+def learner_history(source: str, scopeType: str, scopeKey: str, behaviorType: str, behaviorKey: str) -> dict:
+    return {"success":True,"data":LearnerService(PROJECT_ROOT).history(source,scopeType,scopeKey,behaviorType,behaviorKey)}
+
 @app.post("/api/learner/jobs", status_code=202)
 def start_learner_job(payload: dict = Body(default={})) -> dict:
     try:
@@ -976,6 +1036,22 @@ def search_timeline(user: str = "", keyword: str = "", sources: str = "Detection
         request_id = str(uuid.uuid4()); log.error("Timeline query rejected request_id=%s error=%s", request_id, exc)
         return error_response(request_id, "INVALID_TIMELINE_QUERY", str(exc), 400)
     return {"success": True, "data": data}
+
+
+@app.post("/api/timeline/export")
+def export_timeline(payload: dict = Body()):
+    user, keyword = str(payload.get("user", "")), str(payload.get("keyword", ""))
+    if not user.strip() and not keyword.strip():
+        return error_response(str(uuid.uuid4()), "TIMELINE_SEARCH_REQUIRED", "User or keyword is required", 400)
+    try:
+        selected_sources = {str(source).strip() for source in payload.get("sources", []) if str(source).strip()}
+        if not selected_sources:
+            raise ValueError("At least one source is required")
+        path = PROJECT_ROOT / "exports" / f"Timeline_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.xlsx"
+        timeline_export_service.export(user, keyword, selected_sources, path)
+    except ValueError as exc:
+        return error_response(str(uuid.uuid4()), "INVALID_TIMELINE_QUERY", str(exc), 400)
+    return FileResponse(path, filename=path.name, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
 @app.get("/api/sensitive/{kind}")

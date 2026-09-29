@@ -91,6 +91,31 @@ class TimelineService:
     def _indexed_search(self, user: str, keyword: str, sources: set[str], offset: int, limit: int) -> dict[str, Any] | None:
         if not self.index_path.exists():
             return None
+        clauses, params = self._search_filter(user, keyword, sources)
+        where = " AND ".join(clauses) if clauses else "1 = 1"
+        try:
+            with self._read_connection() as connection:
+                columns = {row[1] for row in connection.execute("PRAGMA table_info(timeline_events)").fetchall()}
+                if not columns:
+                    return None
+                raw_column = "raw_json" if "raw_json" in columns else "'{}'"
+                rows = connection.execute(
+                    f"""SELECT time, source, user, user_id, dept, asset, event, direction, peer, summary,
+                               indicator, {raw_column} FROM timeline_events WHERE {where}
+                        ORDER BY time DESC, rowid DESC""", params,
+                ).fetchall()
+        except sqlite3.Error:
+            return None
+        identities, _aliases = self._identities()
+        return [self._apply_identity({
+            "time": str(row[0] or "None"), "source": str(row[1] or "None"), "user": str(row[2] or "None"),
+            "userId": str(row[3] or "None"), "dept": str(row[4] or "미분류"), "asset": str(row[5] or "None"),
+            "event": str(row[6] or "None"), "direction": str(row[7] or "None"), "peer": str(row[8] or "None"),
+            "summary": str(row[9] or "None"), "indicator": str(row[10] or "None"),
+            "raw": json.loads(row[11]) if row[11] else {},
+        }, identities) for row in rows]
+
+    def _search_filter(self, user: str, keyword: str, sources: set[str]) -> tuple[list[str], list[str]]:
         clauses = []
         params: list[str] = []
         if sources:
@@ -98,7 +123,7 @@ class TimelineService:
             params.extend(sorted(sources))
         user_key = normalize_key(user)
         if user_key:
-            identities, aliases_by_name = self._identities()
+            _identities, aliases_by_name = self._identities()
             terms = {user_key, *aliases_by_name.get(user_key, set())}
             identity_sql = "LOWER(COALESCE(user,'') || ' ' || COALESCE(user_id,'') || ' ' || COALESCE(dept,'') || ' ' || COALESCE(asset,''))"
             clauses.append("(" + " OR ".join(f"{identity_sql} LIKE ?" for _ in terms) + ")")
@@ -107,6 +132,20 @@ class TimelineService:
         if keyword_key:
             clauses.append("LOWER(COALESCE(time,'') || ' ' || COALESCE(source,'') || ' ' || COALESCE(user,'') || ' ' || COALESCE(user_id,'') || ' ' || COALESCE(dept,'') || ' ' || COALESCE(asset,'') || ' ' || COALESCE(event,'') || ' ' || COALESCE(direction,'') || ' ' || COALESCE(peer,'') || ' ' || COALESCE(summary,'') || ' ' || COALESCE(indicator,'')) LIKE ?")
             params.append(f"%{keyword_key}%")
+        return clauses, params
+
+    def _read_connection(self) -> sqlite3.Connection:
+        uri = f"{self.index_path.resolve().as_uri()}?mode=ro"
+        connection = sqlite3.connect(uri, uri=True, timeout=30)
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA busy_timeout=30000")
+        connection.execute("PRAGMA query_only=ON")
+        return connection
+
+    def _indexed_search(self, user: str, keyword: str, sources: set[str], offset: int, limit: int) -> dict[str, Any] | None:
+        if not self.index_path.exists():
+            return None
+        clauses, params = self._search_filter(user, keyword, sources)
         where = " AND ".join(clauses) if clauses else "1 = 1"
         try:
             with self._read_connection() as connection:
@@ -255,6 +294,26 @@ class TimelineService:
         normalized = [{"bucket": key[0], "source": key[1], "event": key[2], "count": len(items), "items": sorted(items, key=lambda item: item["time"], reverse=True)[:100]} for key, items in groups.items()]
         normalized.sort(key=lambda group: group["bucket"], reverse=True)
         return {"groups": normalized[offset:offset + limit], "pagination": {"offset": offset, "limit": limit, "totalGroups": len(normalized), "totalEvents": len(events)}, "bounds": self.date_bounds(), "source": data_source}
+
+    def search_all(self, user: str, keyword: str, sources: set[str]) -> list[dict[str, Any]]:
+        """Return every event matching the same filters as search, without UI group/item limits."""
+        invalid = sources - ALL_SOURCES
+        if invalid:
+            raise ValueError(f"Unsupported timeline source: {sorted(invalid)}")
+        indexed = self.indexed_events(user, keyword, sources)
+        if indexed is not None:
+            return indexed
+        user_key, keyword_key = user.strip().lower(), keyword.strip().lower()
+        events = []
+        for event in self.all_events(sources):
+            identity_text = " ".join(str(event.get(key, "")) for key in ("user", "userId", "dept", "asset")).lower()
+            full_text = " ".join(str(value) for key, value in event.items() if key != "raw").lower()
+            if user_key and user_key not in identity_text:
+                continue
+            if keyword_key and keyword_key not in full_text:
+                continue
+            events.append(event)
+        return events
 
     @staticmethod
     def _event_key(event: dict[str, Any]) -> tuple[str, ...]:

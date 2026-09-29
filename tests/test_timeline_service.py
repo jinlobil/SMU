@@ -140,3 +140,17 @@ def test_timeline_all_events_includes_outbound_and_dlp(tmp_path: Path):
     events = service.all_events({"Outbound Mail", "File"})
 
     assert {event["source"] for event in events} == {"Outbound Mail", "File"}
+
+
+def test_timeline_search_all_uses_same_source_user_and_keyword_filters(tmp_path: Path):
+    database = tmp_path / "cache/index/timeline_index.db"
+    database.parent.mkdir(parents=True)
+    with sqlite3.connect(database) as connection:
+        connection.execute("CREATE TABLE timeline_events (time TEXT, source TEXT, user TEXT, user_id TEXT, dept TEXT, asset TEXT, event TEXT, direction TEXT, peer TEXT, summary TEXT, indicator TEXT, raw_json TEXT)")
+        connection.executemany("INSERT INTO timeline_events VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", [
+            ("2026-09-01", "Detection", "kim", "kim", "IT", "PC1", "A", "Host", "", "needle", "", "{}"),
+            ("2026-09-02", "Firewall", "kim", "kim", "IT", "FW", "B", "Host", "", "needle", "", "{}"),
+            ("2026-09-03", "Detection", "lee", "lee", "IT", "PC2", "C", "Host", "", "needle", "", "{}"),
+        ])
+    events = TimelineService(tmp_path).search_all("kim", "needle", {"Detection"})
+    assert [(event["source"], event["user"]) for event in events] == [("Detection", "kim")]
