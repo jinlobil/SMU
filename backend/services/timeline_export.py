@@ -42,19 +42,20 @@ class TimelineExportService:
     def _user_summary(self, query: str) -> dict[str, str]:
         query_key = normalize_key(query)
         users = load_json_list(self.root / "cache/users.json")
-        matched = next((user for user in users if query_key and query_key in {
-            normalize_key(user.get("id")), normalize_key(user.get("name")), normalize_key(user.get("email")),
-            normalize_key(user.get("exchangeLogin")), normalize_key(str(user.get("email", "")).split("@", 1)[0]),
-        }), None)
-        user_ids = {normalize_key(matched.get("id"))} if matched and matched.get("id") else set()
-        aliases = {query_key}
-        if matched:
-            aliases.update(normalize_key(matched.get(key)) for key in ("id", "name", "email", "exchangeLogin"))
+        def aliases(user: dict[str, Any]) -> set[str]:
+            values = (user.get("id"), user.get("name"), user.get("email"), user.get("exchangeLogin"),
+                      str(user.get("email", "")).split("@", 1)[0])
+            return {alias for value in values if (alias := normalize_key(value))}
+
+        matched = next((user for user in users if query_key and query_key in aliases(user)), None)
+        email_key = normalize_key(matched.get("email")) if matched else ""
+        same_person = [user for user in users if user is matched or (email_key and normalize_key(user.get("email")) == email_key)]
+        user_ids = {user_id for user in same_person if (user_id := normalize_key(user.get("id")))}
         hostnames, ips = [], []
         for endpoint in load_json_list(self.root / "cache/endpoints.json"):
             person = endpoint.get("associatedPerson") if isinstance(endpoint.get("associatedPerson"), dict) else {}
-            person_keys = {normalize_key(person.get(key)) for key in ("id", "name", "viaLogin")}
-            if not ((user_ids and normalize_key(person.get("id")) in user_ids) or aliases.intersection(person_keys)):
+            person_id = normalize_key(person.get("id"))
+            if not person_id or person_id not in user_ids:
                 continue
             hostname = str(endpoint.get("hostname", "") or "").strip()
             if hostname and hostname not in hostnames:

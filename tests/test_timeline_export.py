@@ -1,5 +1,6 @@
 import json
 import sqlite3
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from zipfile import ZipFile
 
@@ -39,7 +40,14 @@ def test_timeline_export_always_has_seven_sheets_and_actual_summary_bounds(tmp_p
         xml = workbook.read("xl/workbook.xml").decode()
         assert xml.count("<sheet ") == 7
         summary = workbook.read("xl/worksheets/sheet1.xml").decode()
-        assert "TIMELINE" in summary and 'ref="A1:F1"' in summary
+        assert "TIMELINE" in summary and 'ref="A1:G1"' in summary
+        root = ET.fromstring(summary)
+        namespace = {"x": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+        row_numbers = [int(row.attrib["r"]) for row in root.findall("x:sheetData/x:row", namespace)]
+        assert row_numbers == sorted(row_numbers)
+        for row in root.findall("x:sheetData/x:row", namespace):
+            columns = [cell.attrib["r"].rstrip("0123456789") for cell in row.findall("x:c", namespace)]
+            assert columns == sorted(columns)
         assert "autoFilter" not in summary
         assert "검색 키워드" not in summary and "선택 Source" not in summary
         assert "데이터 시작일" in summary and "데이터 종료일" in summary
@@ -79,6 +87,42 @@ def test_summary_resolves_user_and_all_endpoint_values(tmp_path: Path) -> None:
         summary = workbook.read("xl/worksheets/sheet1.xml").decode()
     for value in ("Example User", "user@example.com", "PC-001", "PC-002", "192.0.2.10", "192.0.2.11", "198.51.100.20"):
         assert value in summary
+
+
+def test_duplicate_users_resolve_endpoints_by_nonempty_exact_id_only(tmp_path: Path) -> None:
+    cache = tmp_path / "cache"; cache.mkdir()
+    (cache / "users.json").write_text(json.dumps([
+        {"id": "custom-user", "name": "황현준", "email": "hj.hwang4@locknlock.com", "exchangeLogin": ""},
+        {"id": "44af55de-09be-404f-a322-ab4aaaa79fb5", "name": "황현준(sk쉴더스)", "email": "hj.hwang4@locknlock.com", "exchangeLogin": "hj.hwang4"},
+    ], ensure_ascii=False), encoding="utf-8")
+    (cache / "endpoints.json").write_text(json.dumps([
+        {"hostname": "HWANGHYEONJUN", "ipv4Addresses": ["100.64.0.1", "101.1.3.50"], "associatedPerson": {"id": "44af55de-09be-404f-a322-ab4aaaa79fb5"}},
+        {"hostname": "UNRELATED-SERVER", "ipv4Addresses": ["203.0.113.99"], "associatedPerson": {"id": "unrelated-user"}},
+        {"hostname": "EMPTY-ID-SERVER", "ipv4Addresses": ["198.51.100.99"], "associatedPerson": {"id": "", "name": ""}},
+    ], ensure_ascii=False), encoding="utf-8")
+    _database(tmp_path, [])
+    path = tmp_path / "identity-exact.xlsx"
+
+    TimelineExportService(tmp_path).export("황현준", "", set(SHEET_ORDER), path)
+
+    with ZipFile(path) as workbook:
+        summary = workbook.read("xl/worksheets/sheet1.xml").decode()
+    for value in ("황현준", "hj.hwang4@locknlock.com", "HWANGHYEONJUN", "100.64.0.1", "101.1.3.50"):
+        assert value in summary
+    for unrelated in ("UNRELATED-SERVER", "203.0.113.99", "EMPTY-ID-SERVER", "198.51.100.99"):
+        assert unrelated not in summary
+
+
+def test_summary_uses_compact_label_and_value_regions(tmp_path: Path) -> None:
+    _database(tmp_path, [])
+    path = tmp_path / "compact.xlsx"
+    TimelineExportService(tmp_path).export("nobody", "", set(SHEET_ORDER), path)
+    with ZipFile(path) as workbook:
+        summary = workbook.read("xl/worksheets/sheet1.xml").decode()
+    assert 'ref="A13:E13"' in summary
+    assert 'ref="F13:G13"' in summary
+    assert 'r="F13"' in summary
+    assert 'ref="B13:F13"' not in summary
 
 
 def test_xlsx_generation_is_dispatched_to_laborer_not_fastapi() -> None:
