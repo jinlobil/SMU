@@ -40,7 +40,7 @@ def test_timeline_export_always_has_seven_sheets_and_actual_summary_bounds(tmp_p
         xml = workbook.read("xl/workbook.xml").decode()
         assert xml.count("<sheet ") == 7
         summary = workbook.read("xl/worksheets/sheet1.xml").decode()
-        assert "TIMELINE" in summary and 'ref="A1:G1"' in summary
+        assert "TIMELINE" in summary and 'ref="A1:B1"' in summary
         root = ET.fromstring(summary)
         namespace = {"x": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
         row_numbers = [int(row.attrib["r"]) for row in root.findall("x:sheetData/x:row", namespace)]
@@ -113,16 +113,41 @@ def test_duplicate_users_resolve_endpoints_by_nonempty_exact_id_only(tmp_path: P
         assert unrelated not in summary
 
 
-def test_summary_uses_compact_label_and_value_regions(tmp_path: Path) -> None:
+def test_name_without_department_suffix_resolves_user_and_endpoint_by_exact_id(tmp_path: Path) -> None:
+    cache = tmp_path / "cache"; cache.mkdir()
+    user_id = "04e91905-324a-487a-b74d-bd631221f50e"
+    (cache / "users.json").write_text(json.dumps([
+        {"id": user_id, "name": "서소리[ERP파트]", "email": "sori.seo@locknlock.com", "exchangeLogin": "sori.seo"},
+    ], ensure_ascii=False), encoding="utf-8")
+    (cache / "endpoints.json").write_text(json.dumps([
+        {"hostname": "SEOSORI1", "ipv4Addresses": ["100.64.0.1", "101.1.4.82", "101.1.2.59"], "associatedPerson": {"id": user_id}},
+        {"hostname": "OTHER-PC", "ipv4Addresses": ["203.0.113.5"], "associatedPerson": {"id": "different-id"}},
+    ], ensure_ascii=False), encoding="utf-8")
+    _database(tmp_path, [])
+    path = tmp_path / "department-suffix.xlsx"
+
+    TimelineExportService(tmp_path).export("서소리", "", set(SHEET_ORDER), path)
+
+    with ZipFile(path) as workbook:
+        summary = workbook.read("xl/worksheets/sheet1.xml").decode()
+    for value in ("서소리", "sori.seo@locknlock.com", "SEOSORI1", "100.64.0.1", "101.1.4.82", "101.1.2.59"):
+        assert value in summary
+    assert "서소리[ERP파트]" not in summary
+    assert "OTHER-PC" not in summary and "203.0.113.5" not in summary
+
+
+def test_summary_uses_real_two_column_cells_with_complete_border_styles(tmp_path: Path) -> None:
     _database(tmp_path, [])
     path = tmp_path / "compact.xlsx"
     TimelineExportService(tmp_path).export("nobody", "", set(SHEET_ORDER), path)
     with ZipFile(path) as workbook:
         summary = workbook.read("xl/worksheets/sheet1.xml").decode()
-    assert 'ref="A13:E13"' in summary
-    assert 'ref="F13:G13"' in summary
-    assert 'r="F13"' in summary
-    assert 'ref="B13:F13"' not in summary
+    root = ET.fromstring(summary)
+    namespace = {"x": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+    merges = [node.attrib["ref"] for node in root.findall("x:mergeCells/x:mergeCell", namespace)]
+    assert merges == ["A1:B1"]
+    row = root.find("x:sheetData/x:row[@r='13']", namespace)
+    assert [(cell.attrib["r"], cell.attrib["s"]) for cell in row.findall("x:c", namespace)] == [("A13", "6"), ("B13", "9")]
 
 
 def test_xlsx_generation_is_dispatched_to_laborer_not_fastapi() -> None:

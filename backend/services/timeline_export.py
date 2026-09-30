@@ -42,8 +42,11 @@ class TimelineExportService:
     def _user_summary(self, query: str) -> dict[str, str]:
         query_key = normalize_key(query)
         users = load_json_list(self.root / "cache/users.json")
+        def human_name(value: object) -> str:
+            return re.sub(r"\s*\[[^\]]*\]\s*$", "", str(value or "")).strip()
+
         def aliases(user: dict[str, Any]) -> set[str]:
-            values = (user.get("id"), user.get("name"), user.get("email"), user.get("exchangeLogin"),
+            values = (user.get("id"), user.get("name"), human_name(user.get("name")), user.get("email"), user.get("exchangeLogin"),
                       str(user.get("email", "")).split("@", 1)[0])
             return {alias for value in values if (alias := normalize_key(value))}
 
@@ -66,7 +69,7 @@ class TimelineExportService:
                 if value and value not in ips:
                     ips.append(value)
         return {
-            "name": str(matched.get("name", "") or "-") if matched else "-",
+            "name": (human_name(matched.get("name")) or "-") if matched else "-",
             "email": str(matched.get("email", "") or "-") if matched else "-",
             "hostnames": "\n".join(hostnames) or "-", "ips": "\n".join(ips) or "-",
         }

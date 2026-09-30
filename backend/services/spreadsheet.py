@@ -73,16 +73,16 @@ def _report_summary_worksheet(report: dict[str, object]) -> bytes:
     views = SubElement(sheet, "sheetViews")
     SubElement(views, "sheetView", {"workbookViewId": "0", "showGridLines": "0"})
     cols = SubElement(sheet, "cols")
-    SubElement(cols, "col", {"min": "1", "max": "5", "width": "9", "customWidth": "1"})
-    SubElement(cols, "col", {"min": "6", "max": "7", "width": "15", "customWidth": "1"})
+    SubElement(cols, "col", {"min": "1", "max": "1", "width": "36", "customWidth": "1"})
+    SubElement(cols, "col", {"min": "2", "max": "2", "width": "42", "customWidth": "1"})
     data = SubElement(sheet, "sheetData")
     merges: list[str] = []
     row_models: list[tuple[int, float | None, list[tuple[str, object, int, bool]]]] = [
         (1, 30, [("A", "TIMELINE", 5, True)]),
-        (2, 7, [(_column_name(index), "", 8, False) for index in range(1, 8)]),
-        (11, 7, [(_column_name(index), "", 8, False) for index in range(1, 8)]),
+        (2, 7, [(_column_name(index), "", 8, False) for index in range(1, 3)]),
+        (11, 7, [(_column_name(index), "", 8, False) for index in range(1, 3)]),
     ]
-    merges.append("A1:G1")
+    merges.append("A1:B1")
     fields = [
         (4, "검색 사용자 명", report.get("name", "-")), (5, "검색 사용자 IP", report.get("ips", "-")),
         (6, "검색 사용자 Email", report.get("email", "-")), (7, "검색 사용자 Hostname", report.get("hostnames", "-")),
@@ -93,8 +93,7 @@ def _report_summary_worksheet(report: dict[str, object]) -> bytes:
     for number, label, value in fields:
         lines = max(1, len(_text(value).splitlines()))
         height = min(72, 18 + (lines - 1) * 12) if lines > 1 else None
-        row_models.append((number, height, [("A", label, 6, True), ("F", value, 9 if number >= 13 else 7, True)]))
-        merges.extend((f"A{number}:E{number}", f"F{number}:G{number}"))
+        row_models.append((number, height, [("A", label, 6, True), ("B", value, 9 if number >= 13 else 7, True)]))
     for number, height, cells in sorted(row_models, key=lambda item: item[0]):
         attributes = {"r": str(number)}
         if height is not None:
