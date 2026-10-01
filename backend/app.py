@@ -28,6 +28,7 @@ from backend.services.detections import DetectionService
 from backend.services.email_security import EmailSecurityService
 from backend.services.transfers import TransferService
 from backend.services.timeline import TimelineService
+from backend.services.timeline_export import TimelineExportService
 from backend.services.sensitive import SensitiveService
 from backend.services.dashboard import DashboardService
 from backend.services.firewall import FirewallService
@@ -70,6 +71,7 @@ detection_service = DetectionService(PROJECT_ROOT)
 email_security_service = EmailSecurityService(PROJECT_ROOT)
 transfer_service = TransferService(PROJECT_ROOT)
 timeline_service = TimelineService(PROJECT_ROOT)
+timeline_export_service = TimelineExportService(PROJECT_ROOT, timeline_service)
 sensitive_service = SensitiveService(PROJECT_ROOT)
 phase_started = time.perf_counter()
 dashboard_service = DashboardService(PROJECT_ROOT)
@@ -864,6 +866,10 @@ def list_detections(
         if not isinstance(parsed_conditions, list):
             raise ValueError("conditions must be a JSON list")
         data = detection_service.list_detections(start, end, parsed_conditions, page, page_size, sort, direction)
+    except EventListIndexUnavailable as exc:
+        request_id = str(uuid.uuid4())
+        log.warning("Detection list index unavailable request_id=%s error=%s", request_id, exc)
+        return error_response(request_id, "EVENT_LIST_INDEX_UNAVAILABLE", str(exc), 409)
     except (ValueError, json.JSONDecodeError) as exc:
         request_id = str(uuid.uuid4())
         log.error("Detection query rejected request_id=%s error=%s", request_id, exc)
@@ -886,6 +892,9 @@ def list_email_security(kind: str, start: date, end: date, conditions: str = "[]
         parsed = json.loads(conditions)
         if not isinstance(parsed, list): raise ValueError("conditions must be a list")
         data = email_security_service.list_records(kind, start, end, parsed, page, page_size, sort, direction)
+    except EventListIndexUnavailable as exc:
+        request_id = str(uuid.uuid4()); log.warning("Email security list index unavailable request_id=%s error=%s", request_id, exc)
+        return error_response(request_id, "EVENT_LIST_INDEX_UNAVAILABLE", str(exc), 409)
     except (ValueError, json.JSONDecodeError) as exc:
         request_id = str(uuid.uuid4()); log.error("Email security query rejected request_id=%s error=%s", request_id, exc)
         return error_response(request_id, "INVALID_EMAIL_SECURITY_QUERY", str(exc), 400)
@@ -927,6 +936,9 @@ def list_transfers(kind: str, start: date, end: date, conditions: str = "[]", pa
         parsed = json.loads(conditions)
         if not isinstance(parsed, list): raise ValueError("conditions must be a list")
         data = transfer_service.list_records(kind, start, end, parsed, page, page_size, sort, direction)
+    except EventListIndexUnavailable as exc:
+        request_id = str(uuid.uuid4()); log.warning("Transfer list index unavailable request_id=%s error=%s", request_id, exc)
+        return error_response(request_id, "EVENT_LIST_INDEX_UNAVAILABLE", str(exc), 409)
     except (ValueError, json.JSONDecodeError) as exc:
         request_id = str(uuid.uuid4()); log.error("Transfer query rejected request_id=%s error=%s", request_id, exc)
         return error_response(request_id, "INVALID_TRANSFER_QUERY", str(exc), 400)
