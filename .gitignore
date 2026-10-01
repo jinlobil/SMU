@@ -8,3 +8,6 @@ runtime/
 
 
 cache/index/web_dashboard_summary.json
+
+env/content/
+env/aws_env.txt

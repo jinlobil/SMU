@@ -1,12 +1,48 @@
+import ipaddress
 import json
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from backend.services.exceptions import ExceptionService
+
 
 SEARCH_FIELDS = {"all", "hostname", "userId", "user", "dept", "ip", "ztna"}
 SORT_FIELDS = {"hostname", "userId", "user", "dept", "ip", "ztna", "lastSeen"}
+IP_NETWORKS = {
+    "wired": ipaddress.ip_network("101.1.0.0/22"),
+    "wireless": ipaddress.ip_network("101.1.4.0/22"),
+    "vpn": ipaddress.ip_network("106.1.0.0/16"),
+}
+ZTNA_IP = ipaddress.ip_address("100.64.0.1")
+
+
+def classify_endpoint_ips(values: object) -> dict[str, list[str]]:
+    """Classify unique IPv4 values without mutating or dropping the source data."""
+    result = {"wired": [], "wireless": [], "vpn": [], "ztna": [], "other": []}
+    seen: set[str] = set()
+    for raw in values if isinstance(values, list) else []:
+        text = str(raw).strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        try:
+            address = ipaddress.ip_address(text)
+        except ValueError:
+            result["other"].append(text)
+            continue
+        if address == ZTNA_IP:
+            result["ztna"].append(text)
+        elif address.version == 4 and address in IP_NETWORKS["wired"]:
+            result["wired"].append(text)
+        elif address.version == 4 and address in IP_NETWORKS["wireless"]:
+            result["wireless"].append(text)
+        elif address.version == 4 and address in IP_NETWORKS["vpn"]:
+            result["vpn"].append(text)
+        else:
+            result["other"].append(text)
+    return result
 
 
 def load_json_list(path: Path) -> list[dict[str, Any]]:
@@ -34,6 +70,17 @@ def load_key_value_file(path: Path) -> dict[str, str]:
 
 def normalize_key(value: object) -> str:
     return re.sub(r"\s+", "", str(value or "")).strip().lower()
+
+
+def endpoint_principal(person: dict[str, Any], hostname: Any = "") -> str:
+    """Return a full device/domain principal, never an account-only alias."""
+    candidates = []
+    for value in (person.get("viaLogin"), person.get("name"), person.get("id")):
+        candidate = str(value or "").strip().replace("/", "\\")
+        if "\\" in candidate and all(part.strip() for part in candidate.split("\\", 1)):
+            candidates.append(candidate)
+    host_key = normalize_key(hostname)
+    return next((value for value in candidates if normalize_key(value.split("\\", 1)[0]) == host_key), candidates[0] if candidates else "")
 
 
 def normalize_org_name(value: object) -> str:
@@ -112,6 +159,7 @@ class EndpointService:
         self.project_root = project_root
         self.cache_dir = project_root / "cache"
         self.env_dir = project_root / "env"
+        self.exception_service = ExceptionService(project_root)
 
     @property
     def endpoints_path(self) -> Path:
@@ -124,15 +172,16 @@ class EndpointService:
         directory_index = build_directory_index(load_json_list(self.cache_dir / "users.json"), dept_names)
         return org_index, directory_index, exceptions
 
-    def _row(self, endpoint: dict[str, Any], context: tuple[dict[str, dict[str, str]], dict[str, dict[str, str]], dict[str, str]], fallback_id: str = "") -> dict[str, str]:
+    def _row(self, endpoint: dict[str, Any], context: tuple[dict[str, dict[str, str]], dict[str, dict[str, str]], dict[str, str]], fallback_id: str = "") -> dict[str, Any]:
         org_index, directory_index, exceptions = context
         hostname = str(endpoint.get("hostname", "None") or "None")
         person = endpoint.get("associatedPerson") if isinstance(endpoint.get("associatedPerson"), dict) else {}
         user = str(person.get("name", "None") or "None")
-        via_login = str(person.get("viaLogin", "") or "")
+        via_login = endpoint_principal(person, hostname)
         user_id = via_login.split("\\")[-1] if "\\" in via_login else via_login
         ips = endpoint.get("ipv4Addresses", [])
         ip_text = ", ".join(str(ip) for ip in ips) if isinstance(ips, list) and ips else "None"
+        ip_categories = classify_endpoint_ips(ips)
         products = endpoint.get("assignedProducts", [])
         ztna_product = next(
             (
@@ -149,22 +198,24 @@ class EndpointService:
         if not dept_info:
             dept_info = directory_index.get(normalize_key(user_id))
         dept = (dept_info or {}).get("dept", "미분류")
-        for exception_key in (match_name, user_id, hostname):
-            exception_dept = exceptions.get(normalize_key(exception_key))
-            if exception_dept:
-                dept = exception_dept
-                break
+        final_identity = self.exception_service.finalize(principal=via_login, hostname=hostname, user_name=user, department=dept)
 
         return {
             "id": str(endpoint.get("id", "") or fallback_id or hostname),
             "hostname": hostname,
             "userId": user_id or "None",
-            "user": user,
-            "dept": dept,
+            "user": final_identity["user"],
+            "dept": final_identity["dept"],
             "ip": ip_text,
+            "ipCategories": ip_categories,
             "ztna": ztna,
             "lastSeen": kst_time(endpoint.get("lastSeenAt")),
         }
+
+    def export_rows(self) -> list[dict[str, Any]]:
+        """Return every mapped endpoint; shared by the list API and Laborer export."""
+        context = self._department_context()
+        return [self._row(endpoint, context, f"endpoint-{index}") for index, endpoint in enumerate(load_json_list(self.endpoints_path))]
 
     def list_endpoints(
         self,
@@ -182,8 +233,7 @@ class EndpointService:
         if direction not in {"asc", "desc"}:
             raise ValueError(f"Unsupported sort direction: {direction}")
 
-        context = self._department_context()
-        rows = [self._row(endpoint, context, f"endpoint-{index}") for index, endpoint in enumerate(load_json_list(self.endpoints_path))]
+        rows = self.export_rows()
         keyword = query.strip().lower()
         if keyword:
             fields = ("hostname", "userId", "user", "dept", "ip", "ztna") if field == "all" else (field,)
