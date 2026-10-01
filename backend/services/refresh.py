@@ -9,11 +9,12 @@ from backend.services.endpoints import load_key_value_file
 
 
 class RefreshService:
-    def __init__(self, project_root: Path, client_factory=SophosClient):
+    def __init__(self, project_root: Path, client_factory=SophosClient, aws_factory=None):
         self.project_root = project_root
         self.cache_dir = project_root / "cache"
         self.env_dir = project_root / "env"
         self.client_factory = client_factory
+        self.aws_factory = aws_factory
 
     def save_json_atomic(self, path: Path, payload: object) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -44,6 +45,14 @@ class RefreshService:
         users = client.fetch_users()
         self.save_json_atomic(self.cache_dir / "users.json", users)
         return {"users": len(users)}
+
+    def refresh_aws(self, progress: Callable[[str], None]) -> dict:
+        from backend.services.aws_assets import AwsCollector
+        progress("AWS Credential 확인 중")
+        payload = AwsCollector(self.project_root, self.aws_factory).collect(progress)
+        progress("AWS 전체 조회 완료 · Raw Cache 저장 중")
+        self.save_json_atomic(self.cache_dir / "aws.json", payload)
+        return {"counts": payload["metadata"]["counts"], "region": payload["metadata"]["region"]}
 
     def refresh_dlp(self, day: date, progress: Callable[[str], None]) -> dict:
         from backend.clients.legacy_collectors import DlpClient

@@ -8,11 +8,13 @@ from typing import Any
 
 from backend.services.detections import DetectionService
 from backend.services.email_security import EmailSecurityService
-from backend.services.endpoints import load_json_list, normalize_key
+from backend.services.endpoints import EndpointService, endpoint_principal, load_json_list, normalize_key
+from backend.services.exceptions import ExceptionService
+from backend.services.firewall_detections import FirewallDetectionService
 from backend.services.transfers import TransferService
 
 
-ALL_SOURCES = {"Detection", "XDR", "Email", "Outbound Mail", "File"}
+ALL_SOURCES = {"Detection", "XDR", "Firewall", "Email", "Outbound Mail", "File"}
 DATE_PATTERN = re.compile(r"(\d{4}-\d{2}-\d{2})")
 
 
@@ -21,7 +23,10 @@ class TimelineService:
         self.project_root = project_root
         self.detections = DetectionService(project_root)
         self.email = EmailSecurityService(project_root)
+        self.firewall = FirewallDetectionService(project_root)
         self.transfers = TransferService(project_root)
+        self.endpoints = EndpointService(project_root)
+        self.exception_service = ExceptionService(project_root)
 
     def _identities(self) -> tuple[dict[str, dict[str, str]], dict[str, set[str]]]:
         by_alias: dict[str, dict[str, str]] = {}
@@ -41,9 +46,11 @@ class TimelineService:
                         by_alias[key] = entry
                         aliases_by_name[display_key].add(key)
 
-        for endpoint in load_json_list(self.project_root / "cache/endpoints.json"):
+        context = self.endpoints._department_context()
+        for index, endpoint in enumerate(load_json_list(self.project_root / "cache/endpoints.json")):
+            row = self.endpoints._row(endpoint, context, f"timeline-endpoint-{index}")
             person = endpoint.get("associatedPerson") if isinstance(endpoint.get("associatedPerson"), dict) else {}
-            add(person.get("name"), "미분류", person.get("id"), person.get("viaLogin"))
+            add(row.get("user"), row.get("dept"), row.get("userId"), endpoint_principal(person, row.get("hostname")), row.get("hostname"))
         for user in load_json_list(self.project_root / "cache/users.json"):
             add(user.get("name"), user.get("dept") or user.get("department"), user.get("id"), user.get("userId"), user.get("exchangeLogin"), user.get("email"))
         return by_alias, aliases_by_name
@@ -54,11 +61,14 @@ class TimelineService:
         return [variant for value in values for variant in (value, value.split("\\")[-1], value.split("@", 1)[0])]
 
     def _apply_identity(self, event: dict[str, str], identities: dict[str, dict[str, str]]) -> dict[str, str]:
+        output = event
         for candidate in self._identity_candidates(event):
             identity = identities.get(normalize_key(candidate))
             if identity:
-                return {**event, "user": identity["user"], "dept": event["dept"] if event["dept"] not in {"", "None", "미분류"} else identity["dept"]}
-        return event
+                output = {**event, "user": identity["user"], "dept": event["dept"] if event["dept"] not in {"", "None", "미분류"} else identity["dept"]}
+                break
+        final = self.exception_service.finalize(principal=output.get("principal"), hostname=output.get("asset"), email=output.get("email"), user_name=output.get("user"), department=output.get("dept"))
+        return {**output, "user": final["user"], "dept": final["dept"]}
 
     @property
     def index_path(self) -> Path:
@@ -67,6 +77,31 @@ class TimelineService:
     def indexed_events(self, user: str, keyword: str, sources: set[str]) -> list[dict[str, str]] | None:
         if not self.index_path.exists():
             return None
+        clauses, params = self._search_filter(user, keyword, sources)
+        where = " AND ".join(clauses) if clauses else "1 = 1"
+        try:
+            with self._read_connection() as connection:
+                columns = {row[1] for row in connection.execute("PRAGMA table_info(timeline_events)").fetchall()}
+                if not columns:
+                    return None
+                raw_column = "raw_json" if "raw_json" in columns else "'{}'"
+                rows = connection.execute(
+                    f"""SELECT time, source, user, user_id, dept, asset, event, direction, peer, summary,
+                               indicator, {raw_column} FROM timeline_events WHERE {where}
+                        ORDER BY time DESC, rowid DESC""", params,
+                ).fetchall()
+        except sqlite3.Error:
+            return None
+        identities, _aliases = self._identities()
+        return [self._apply_identity({
+            "time": str(row[0] or "None"), "source": str(row[1] or "None"), "user": str(row[2] or "None"),
+            "userId": str(row[3] or "None"), "dept": str(row[4] or "미분류"), "asset": str(row[5] or "None"),
+            "event": str(row[6] or "None"), "direction": str(row[7] or "None"), "peer": str(row[8] or "None"),
+            "summary": str(row[9] or "None"), "indicator": str(row[10] or "None"),
+            "raw": json.loads(row[11]) if row[11] else {},
+        }, identities) for row in rows]
+
+    def _search_filter(self, user: str, keyword: str, sources: set[str]) -> tuple[list[str], list[str]]:
         clauses = []
         params: list[str] = []
         if sources:
@@ -74,7 +109,7 @@ class TimelineService:
             params.extend(sorted(sources))
         user_key = normalize_key(user)
         if user_key:
-            identities, aliases_by_name = self._identities()
+            _identities, aliases_by_name = self._identities()
             terms = {user_key, *aliases_by_name.get(user_key, set())}
             identity_sql = "LOWER(COALESCE(user,'') || ' ' || COALESCE(user_id,'') || ' ' || COALESCE(dept,'') || ' ' || COALESCE(asset,''))"
             clauses.append("(" + " OR ".join(f"{identity_sql} LIKE ?" for _ in terms) + ")")
@@ -83,9 +118,23 @@ class TimelineService:
         if keyword_key:
             clauses.append("LOWER(COALESCE(time,'') || ' ' || COALESCE(source,'') || ' ' || COALESCE(user,'') || ' ' || COALESCE(user_id,'') || ' ' || COALESCE(dept,'') || ' ' || COALESCE(asset,'') || ' ' || COALESCE(event,'') || ' ' || COALESCE(direction,'') || ' ' || COALESCE(peer,'') || ' ' || COALESCE(summary,'') || ' ' || COALESCE(indicator,'')) LIKE ?")
             params.append(f"%{keyword_key}%")
+        return clauses, params
+
+    def _read_connection(self) -> sqlite3.Connection:
+        uri = f"{self.index_path.resolve().as_uri()}?mode=ro"
+        connection = sqlite3.connect(uri, uri=True, timeout=30)
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA busy_timeout=30000")
+        connection.execute("PRAGMA query_only=ON")
+        return connection
+
+    def _indexed_search(self, user: str, keyword: str, sources: set[str], offset: int, limit: int) -> dict[str, Any] | None:
+        if not self.index_path.exists():
+            return None
+        clauses, params = self._search_filter(user, keyword, sources)
         where = " AND ".join(clauses) if clauses else "1 = 1"
         try:
-            with sqlite3.connect(self.index_path) as connection:
+            with self._read_connection() as connection:
                 table_exists = connection.execute(
                     "SELECT 1 FROM sqlite_master WHERE type='table' AND name='timeline_events'"
                 ).fetchone()
@@ -93,26 +142,55 @@ class TimelineService:
                     return None
                 columns = {row[1] for row in connection.execute("PRAGMA table_info(timeline_events)").fetchall()}
                 raw_column = "raw_json" if "raw_json" in columns else "'{}'"
+                bound_row = connection.execute("SELECT MIN(substr(time,1,10)), MAX(substr(time,1,10)) FROM timeline_events WHERE time <> ''").fetchone()
+                index_bounds = (date.fromisoformat(str(bound_row[0])), date.fromisoformat(str(bound_row[1]))) if bound_row and bound_row[0] and bound_row[1] else None
+                total_events = int(connection.execute(f"SELECT COUNT(*) FROM timeline_events WHERE {where}", params).fetchone()[0])
+                total_groups = int(connection.execute(
+                    f"SELECT COUNT(*) FROM (SELECT 1 FROM timeline_events WHERE {where} GROUP BY substr(time,1,16), source, event)", params,
+                ).fetchone()[0])
+                group_rows = connection.execute(
+                    f"""SELECT substr(time,1,16) AS bucket, source, event, COUNT(*) AS count
+                    FROM timeline_events WHERE {where}
+                    GROUP BY bucket, source, event
+                    ORDER BY bucket DESC, source ASC, event ASC LIMIT ? OFFSET ?""",
+                    (*params, limit, offset),
+                ).fetchall()
+                if not group_rows:
+                    return {"groups": [], "pagination": {"offset": offset, "limit": limit, "totalGroups": total_groups, "totalEvents": total_events}, "bounds": index_bounds, "source": "sqlite-index"}
+                group_clauses = []
+                group_params: list[str] = []
+                for group in group_rows:
+                    group_clauses.append("(substr(time,1,16)=? AND source=? AND event=?)")
+                    group_params.extend((str(group["bucket"]), str(group["source"]), str(group["event"])))
                 rows = connection.execute(
-                    f"""SELECT time, source, user, user_id, dept, asset, event, direction, peer, summary, indicator, {raw_column}
-                    FROM timeline_events WHERE {where} ORDER BY time DESC""",
-                    params,
+                    f"""WITH selected AS (
+                        SELECT rowid AS timeline_rowid, *,
+                               ROW_NUMBER() OVER (PARTITION BY substr(time,1,16), source, event ORDER BY time DESC, rowid DESC) AS item_rank
+                        FROM timeline_events WHERE {where} AND ({' OR '.join(group_clauses)})
+                    )
+                    SELECT time, source, user, user_id, dept, asset, event, direction, peer, summary, indicator, {raw_column}
+                    FROM selected WHERE item_rank <= 100 ORDER BY time DESC, timeline_rowid DESC""",
+                    (*params, *group_params),
                 ).fetchall()
         except sqlite3.Error:
             return None
         identities, _aliases = self._identities()
-        return [self._apply_identity(event, identities) for event in [
+        events = [self._apply_identity(event, identities) for event in [
             {
-                "time": str(row[0] or "None"), "source": str(row[1] or "None"),
-                "user": str(row[2] or "None"), "userId": str(row[3] or "None"),
-                "dept": str(row[4] or "미분류"), "asset": str(row[5] or "None"),
-                "event": str(row[6] or "None"), "direction": str(row[7] or "None"),
-                "peer": str(row[8] or "None"), "summary": str(row[9] or "None"),
-                "indicator": str(row[10] or "None"),
-                "raw": json.loads(row[11]) if row[11] else {},
+                "time": str(row[0] or "None"), "source": str(row[1] or "None"), "user": str(row[2] or "None"),
+                "userId": str(row[3] or "None"), "dept": str(row[4] or "미분류"), "asset": str(row[5] or "None"),
+                "event": str(row[6] or "None"), "direction": str(row[7] or "None"), "peer": str(row[8] or "None"),
+                "summary": str(row[9] or "None"), "indicator": str(row[10] or "None"), "raw": json.loads(row[11]) if row[11] else {},
             }
             for row in rows
         ]]
+        grouped: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
+        for event in events:
+            grouped[(event["time"][:16], event["source"], event["event"])].append(event)
+        groups = [{"bucket": str(group["bucket"]), "source": str(group["source"]), "event": str(group["event"]),
+                   "count": int(group["count"]), "items": grouped.get((str(group["bucket"]), str(group["source"]), str(group["event"])), [])}
+                  for group in group_rows]
+        return {"groups": groups, "pagination": {"offset": offset, "limit": limit, "totalGroups": total_groups, "totalEvents": total_events}, "bounds": index_bounds, "source": "sqlite-index"}
 
     def date_bounds(self) -> tuple[date, date] | None:
         dates = []
@@ -127,34 +205,51 @@ class TimelineService:
 
     @staticmethod
     def event(source: str, row: dict[str, str], raw: dict[str, Any] | None = None) -> dict[str, Any]:
-        if source == "Detection": result = {"time": row["time"], "source": source, "user": row["username"], "userId": "None", "dept": row["dept"], "asset": row["hostname"], "event": row["rule"], "direction": "Host", "peer": row["privateIp"], "summary": row["file"], "indicator": row["sha256"] if row["sha256"] != "None" else row["publicIp"]}
-        elif source == "XDR": result = {"time": row["time"], "source": source, "user": row["user"], "userId": row["userId"], "dept": row["dept"], "asset": row["mailbox"], "event": row["rule"], "direction": f"{row['from']} → {row['to']}", "peer": row["senderIp"], "summary": row["subject"], "indicator": row["iocSha256"] if row["iocSha256"] != "None" else row["ioc"]}
-        elif source == "Email": result = {"time": row["received"], "source": source, "user": row["to"], "userId": row["to"].split("@", 1)[0], "dept": "미분류", "asset": row["to"], "event": row["reason"], "direction": f"{row['from']} → {row['to']}", "peer": row["senderIp"], "summary": row["subject"], "indicator": row["senderIp"]}
-        elif source == "Outbound Mail": result = {"time": row["date"], "source": source, "user": row["senderName"], "userId": row["senderEmail"].split("@", 1)[0], "dept": row["dept"], "asset": row["senderEmail"], "event": row["sendResult"], "direction": f"{row['senderEmail']} → {row['receiver']}", "peer": row["receiver"], "summary": row["subject"], "indicator": row["attachment"]}
-        else: result = {"time": row["time"], "source": source, "user": row["username"], "userId": row["username"], "dept": row["dept"], "asset": row["computer"], "event": row["event"], "direction": f"{row['source']} → {row['destination']}", "peer": row["sourceIp"], "summary": row["destinationDetail"], "indicator": row["fileHash"]}
-        return {**result, "raw": raw or {}}
+        if source == "Detection": result = {"time": row["time"], "source": source, "principal": row.get("principal", ""), "user": row["username"], "userId": "None", "dept": row["dept"], "asset": row["hostname"], "event": row["rule"], "direction": "Host", "peer": row["privateIp"], "summary": row["file"], "indicator": row["sha256"] if row["sha256"] != "None" else row["publicIp"]}
+        elif source == "XDR": result = {"time": row["time"], "source": source, "principal": row.get("principal", ""), "email": row["mailbox"], "user": row["user"], "userId": row["userId"], "dept": row["dept"], "asset": row["mailbox"], "event": row["rule"], "direction": f"{row['from']} → {row['to']}", "peer": row["senderIp"], "summary": row["subject"], "indicator": row["iocSha256"] if row["iocSha256"] != "None" else row["ioc"]}
+        elif source == "Firewall": result = {"time": row["time"], "source": source, "principal": row.get("principal", ""), "user": row.get("user", "None"), "userId": "None", "dept": row.get("dept", "미분류"), "asset": row.get("hostname", row.get("deviceName", "None")), "event": row.get("rule", "None"), "direction": f"{row.get('sourceIp', 'None')}:{row.get('sourcePort', 'None')} → {row.get('destinationIp', 'None')}:{row.get('destinationPort', 'None')}", "peer": row.get("destinationIp", "None"), "summary": row.get("url", "None"), "indicator": row.get("threat", "None")}
+        elif source == "Email": result = {"time": row["received"], "source": source, "principal": row.get("principal", ""), "email": row["to"], "user": row.get("user", row["to"]), "userId": row.get("userId", row["to"].split("@", 1)[0]), "dept": row.get("dept", "미분류"), "asset": row["to"], "event": row["reason"], "direction": f"{row['from']} → {row['to']}", "peer": row["senderIp"], "summary": row["subject"], "indicator": row["senderIp"]}
+        elif source == "Outbound Mail": result = {"time": row["date"], "source": source, "email": row["senderEmail"], "user": row["senderName"], "userId": row["senderEmail"].split("@", 1)[0], "dept": row["dept"], "asset": row["senderEmail"], "event": row["sendResult"], "direction": f"{row['senderEmail']} → {row['receiver']}", "peer": row["receiver"], "summary": row["subject"], "indicator": row["attachment"]}
+        else: result = {"time": row["time"], "source": source, "principal": row.get("principal", ""), "user": row["username"], "userId": row["username"], "dept": row["dept"], "asset": row["computer"], "event": row["event"], "direction": f"{row['source']} → {row['destination']}", "peer": row["sourceIp"], "summary": row["destinationDetail"], "indicator": row["fileHash"]}
+        return {**result, "sourceFile": row.get("_sourceFile", ""), "raw": raw or {}}
 
-    def all_events(self, sources: set[str]) -> list[dict[str, str]]:
+    def all_events(self, sources: set[str], progress=None) -> list[dict[str, str]]:
         bounds = self.date_bounds()
         if bounds is None: return []
-        start, end = bounds; output = []
+        return self.events_between(bounds[0], bounds[1], sources, progress)
+
+    def events_between(self, start: date, end: date, sources: set[str], progress=None) -> list[dict[str, str]]:
+        output = []
         if "Detection" in sources:
-            output.extend(self.event("Detection", row, raw) for _id, raw, row in self.detections._events(start, end)[0])
+            rows = self.detections._events(start, end)[0]; output.extend(self.event("Detection", row, raw) for _id, raw, row in rows)
+            if progress: progress(f"통합 타임라인 · Detection {len(rows):,}건 변환 완료")
         if "XDR" in sources:
-            output.extend(self.event("XDR", row, raw) for _id, raw, row in self.email._collect_xdr(start, end)[0])
+            rows = self.email._collect_xdr(start, end)[0]; output.extend(self.event("XDR", row, raw) for _id, raw, row in rows)
+            if progress: progress(f"통합 타임라인 · Email XDR {len(rows):,}건 변환 완료")
+        if "Firewall" in sources:
+            rows = self.firewall._collect(start, end)[0]; output.extend(self.event("Firewall", row, raw) for _id, raw, row in rows)
+            if progress: progress(f"통합 타임라인 · Firewall {len(rows):,}건 변환 완료")
         if "Email" in sources:
-            output.extend(self.event("Email", row, raw) for _id, raw, row in self.email._collect_inbound(start, end)[0])
+            rows = self.email._collect_inbound(start, end)[0]; output.extend(self.event("Email", row, raw) for _id, raw, row in rows)
+            if progress: progress(f"통합 타임라인 · Inbound Mail {len(rows):,}건 변환 완료")
         if "Outbound Mail" in sources:
-            output.extend(self.event("Outbound Mail", row, raw) for _id, raw, row in self.transfers._collect_outbound(start, end)[0])
+            rows = self.transfers._collect_outbound(start, end)[0]; output.extend(self.event("Outbound Mail", row, raw) for _id, raw, row in rows)
+            if progress: progress(f"통합 타임라인 · Outbound Mail {len(rows):,}건 변환 완료")
         if "File" in sources:
-            output.extend(self.event("File", row, raw) for _id, raw, row in self.transfers._collect_dlp(start, end)[0])
+            rows = self.transfers._collect_dlp(start, end)[0]; output.extend(self.event("File", row, raw) for _id, raw, row in rows)
+            if progress: progress(f"통합 타임라인 · DLP File {len(rows):,}건 변환 완료")
+        if progress: progress(f"통합 타임라인 · 사용자/부서 정보 최종 반영 중 · 총 {len(output):,}건")
         identities, _aliases = self._identities()
-        return [self._apply_identity(event, identities) for event in output]
+        finalized = []
+        for index, event in enumerate(output, 1):
+            finalized.append(self._apply_identity(event, identities))
+            if progress and index % 25000 == 0: progress(f"통합 타임라인 · 사용자/부서 반영 {index:,}/{len(output):,}건")
+        return finalized
 
     def search(self, user: str, keyword: str, sources: set[str], offset: int = 0, limit: int = 250) -> dict[str, Any]:
         invalid = sources - ALL_SOURCES
         if invalid: raise ValueError(f"Unsupported timeline source: {sorted(invalid)}")
-        indexed = self.indexed_events(user, keyword, sources)
+        indexed = self._indexed_search(user, keyword, sources, offset, limit)
         if indexed is None:
             user_key = user.strip().lower(); keyword_key = keyword.strip().lower()
             events = []
@@ -166,17 +261,18 @@ class TimelineService:
                 events.append(event)
             data_source = "cache-scan"
         else:
-            events = indexed
-            data_source = "sqlite-index"
+            events = [item for group in indexed["groups"] for item in group["items"]]
             # Indexes made before raw_json was introduced remain readable.  Do
             # not, however, expose an empty object to the UI: recover the
             # original record from the cache until the next full rebuild.
             if any(not event.get("raw") for event in events):
-                raw_events = self.all_events(sources)
+                page_dates = [date.fromisoformat(event["time"][:10]) for event in events if DATE_PATTERN.match(event.get("time", ""))]
+                raw_events = self.events_between(min(page_dates), max(page_dates), sources) if page_dates else []
                 raw_by_key = {self._event_key(event): event.get("raw", {}) for event in raw_events}
                 for event in events:
                     if not event.get("raw"):
                         event["raw"] = raw_by_key.get(self._event_key(event), {})
+            return indexed
         groups: dict[tuple[str, str, str], list[dict[str, str]]] = defaultdict(list)
         for event in events:
             bucket = event["time"][:16] if len(event["time"]) >= 16 else event["time"]
@@ -184,6 +280,26 @@ class TimelineService:
         normalized = [{"bucket": key[0], "source": key[1], "event": key[2], "count": len(items), "items": sorted(items, key=lambda item: item["time"], reverse=True)[:100]} for key, items in groups.items()]
         normalized.sort(key=lambda group: group["bucket"], reverse=True)
         return {"groups": normalized[offset:offset + limit], "pagination": {"offset": offset, "limit": limit, "totalGroups": len(normalized), "totalEvents": len(events)}, "bounds": self.date_bounds(), "source": data_source}
+
+    def search_all(self, user: str, keyword: str, sources: set[str]) -> list[dict[str, Any]]:
+        """Return every event matching the same filters as search, without UI group/item limits."""
+        invalid = sources - ALL_SOURCES
+        if invalid:
+            raise ValueError(f"Unsupported timeline source: {sorted(invalid)}")
+        indexed = self.indexed_events(user, keyword, sources)
+        if indexed is not None:
+            return indexed
+        user_key, keyword_key = user.strip().lower(), keyword.strip().lower()
+        events = []
+        for event in self.all_events(sources):
+            identity_text = " ".join(str(event.get(key, "")) for key in ("user", "userId", "dept", "asset")).lower()
+            full_text = " ".join(str(value) for key, value in event.items() if key != "raw").lower()
+            if user_key and user_key not in identity_text:
+                continue
+            if keyword_key and keyword_key not in full_text:
+                continue
+            events.append(event)
+        return events
 
     @staticmethod
     def _event_key(event: dict[str, Any]) -> tuple[str, ...]:
