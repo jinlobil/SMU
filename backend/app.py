@@ -657,6 +657,11 @@ def start_aws_export(payload: dict = Body()) -> dict:
     return {"success": True, "data": watchdog_manager.start_laborer_job("aws_export", kind=kind)}
 
 
+@app.post("/api/jobs/export/endpoints", status_code=202)
+def start_endpoint_export() -> dict:
+    return {"success": True, "data": watchdog_manager.start_laborer_job("endpoint_export")}
+
+
 @app.get("/api/config/export/file/{filename}")
 def download_export_file(filename: str):
     path = PROJECT_ROOT / "exports" / Path(filename).name
