@@ -75,6 +75,20 @@ class TimelineService:
         return self.project_root / "cache" / "index" / "timeline_index.db"
 
     def indexed_events(self, user: str, keyword: str, sources: set[str]) -> list[dict[str, str]] | None:
+        result = self._indexed_search(user, keyword, sources, 0, 1_000_000)
+        if result is None:
+            return None
+        return [item for group in result["groups"] for item in group["items"]]
+
+    def _read_connection(self) -> sqlite3.Connection:
+        uri = f"{self.index_path.resolve().as_uri()}?mode=ro"
+        connection = sqlite3.connect(uri, uri=True, timeout=30)
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA busy_timeout=30000")
+        connection.execute("PRAGMA query_only=ON")
+        return connection
+
+    def _indexed_search(self, user: str, keyword: str, sources: set[str], offset: int, limit: int) -> dict[str, Any] | None:
         if not self.index_path.exists():
             return None
         clauses, params = self._search_filter(user, keyword, sources)
