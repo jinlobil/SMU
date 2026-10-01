@@ -12,6 +12,7 @@ def test_start_launcher_uses_explicit_virtualenv_python() -> None:
     assert "python run_local.py" not in script
     assert "bootstrap.log" in script
     assert 'import fastapi,psutil,uvicorn' in script
+    assert 'import fastapi,psutil,uvicorn,boto3' in script
     assert 'npm.cmd list react-router-dom --depth=0' in script
     assert "pause" in script.lower()
     assert "browser will open" not in script.lower()

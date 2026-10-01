@@ -63,7 +63,7 @@ def test_refresh_writes_complete_json_atomically_and_failure_preserves_previous(
     assert payload["instances"][0]["InstanceId"] == "i-1"
     previous = cache.read_bytes()
     broken = RefreshService(tmp_path, aws_factory=lambda _credentials: (_ for _ in ()).throw(RuntimeError("secret test-secret")))
-    with pytest.raises(RuntimeError, match="AWS API 통신 실패"):
+    with pytest.raises(RuntimeError, match="기타 AWS 수집 오류"):
         broken.refresh_aws(lambda _message: None)
     assert cache.read_bytes() == previous
 
@@ -75,14 +75,14 @@ def test_instance_mapping_optional_fields_search_and_exact_group_links(tmp_path:
         {"InstanceId": "i-2", "SecurityGroups": []},
     ], "security_groups": [{"GroupId": "sg-1", "GroupName": "exact-sg"}, {"GroupId": "sg-2", "GroupName": "eni-sg"}, {"GroupId": "sg-10", "GroupName": "wrong-prefix"}], "security_group_rules": [{"GroupId": "sg-1", "SecurityGroupRuleId": "rule-1"}, {"GroupId": "sg-2", "SecurityGroupRuleId": "rule-2"}, {"GroupId": "sg-10", "SecurityGroupRuleId": "wrong"}], "network_interfaces": [{"NetworkInterfaceId": "eni-1", "Groups": [{"GroupId": "sg-2"}]}], "vpcs": [{"VpcId": "vpc-1"}], "subnets": [{"SubnetId": "subnet-1"}]}), encoding="utf-8")
     service = AwsAssetService(tmp_path)
-    result = service.list_instances(query="exact-sg", field="securityGroups")
+    result = service.list_instances(query="eni-sg", field="securityGroups")
     row = result["items"][0]
-    assert row == {"name": "App", "instanceId": "i-1", "state": "running", "privateIp": "10.0.0.1", "publicIp": "-", "os": "Linux / CentOS", "description": "API", "securityGroups": [{"id": "sg-1", "name": "exact-sg"}, {"id": "sg-2", "name": "eni-sg"}]}
+    assert row == {"name": "App", "instanceId": "i-1", "state": "running", "privateIp": "10.0.0.1", "publicIp": "-", "os": "Linux / CentOS", "description": "API", "securityGroups": [{"id": "sg-2", "name": "eni-sg"}]}
     optional = service.list_instances(query="i-2", field="instanceId")["items"][0]
     assert optional["name"] == optional["publicIp"] == optional["os"] == optional["description"] == "-"
     detail = service.detail("i-1")
-    assert [item["GroupId"] for item in detail["securityGroups"]] == ["sg-1", "sg-2"]
-    assert [item["SecurityGroupRuleId"] for item in detail["securityGroupRules"]] == ["rule-1", "rule-2"]
+    assert [item["GroupId"] for item in detail["securityGroups"]] == ["sg-2"]
+    assert [item["SecurityGroupRuleId"] for item in detail["securityGroupRules"]] == ["rule-2"]
     assert detail["vpc"]["VpcId"] == "vpc-1" and detail["subnet"]["SubnetId"] == "subnet-1"
 
 

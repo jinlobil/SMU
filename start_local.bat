@@ -18,7 +18,7 @@ call npm.cmd list react-router-dom --depth=0 >nul 2>&1
 set "NPM_CHECK=%ERRORLEVEL%"
 popd
 if not "%NPM_CHECK%"=="0" goto run_setup
-"%~dp0.venv\Scripts\python.exe" -c "import fastapi,psutil,uvicorn" >nul 2>&1
+"%~dp0.venv\Scripts\python.exe" -c "import fastapi,psutil,uvicorn,boto3" >nul 2>&1
 if errorlevel 1 goto run_setup
 goto launch
 

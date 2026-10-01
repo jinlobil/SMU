@@ -649,6 +649,14 @@ def start_firewall_rule_export(payload: dict = Body()) -> dict:
     return {"success": True, "data": watchdog_manager.start_laborer_job("firewall_rules_export", firewalls=firewalls)}
 
 
+@app.post("/api/jobs/export/aws", status_code=202)
+def start_aws_export(payload: dict = Body()) -> dict:
+    kind = str(payload.get("kind", ""))
+    if kind not in {"aws_ec2", "aws_sg"}:
+        return error_response(str(uuid.uuid4()), "INVALID_AWS_EXPORT", "Unknown AWS export type", 400)
+    return {"success": True, "data": watchdog_manager.start_laborer_job("aws_export", kind=kind)}
+
+
 @app.get("/api/config/export/file/{filename}")
 def download_export_file(filename: str):
     path = PROJECT_ROOT / "exports" / Path(filename).name
@@ -699,6 +707,18 @@ def list_aws_instances(query: str = "", field: str = "all", page: int = Query(de
 def get_aws_instance(instance_id: str) -> dict:
     data = aws_asset_service.detail(instance_id)
     return {"success": True, "data": data} if data else error_response(str(uuid.uuid4()), "AWS_INSTANCE_NOT_FOUND", "AWS Instance not found", 404)
+
+
+@app.get("/api/aws/security-groups")
+def list_aws_security_groups(query: str = "", page: int = Query(default=1, ge=1),
+                             page_size: int = Query(default=50, alias="pageSize", ge=10, le=200)) -> dict:
+    return {"success": True, "data": aws_asset_service.list_security_groups(query, page, page_size)}
+
+
+@app.get("/api/aws/security-groups/{group_id}")
+def get_aws_security_group(group_id: str) -> dict:
+    data = aws_asset_service.security_group_detail(group_id)
+    return {"success": True, "data": data} if data else error_response(str(uuid.uuid4()), "AWS_SECURITY_GROUP_NOT_FOUND", "AWS Security Group not found", 404)
 
 
 @app.get("/api/organizations")
@@ -758,64 +778,6 @@ def rebuild_indexes(payload: dict | None = Body(default=None)) -> dict:
 
 
 
-
-@app.post("/api/jobs/index/vacuum", status_code=202)
-def vacuum_indexes(payload: dict | None = Body(default=None)) -> dict:
-    target = str((payload or {}).get("target", "all"))
-    return {"success": True, "data": watchdog_manager.start_laborer_job("vacuum", target=target)}
-
-
-@app.post("/api/learner/jobs", status_code=202)
-def start_learner_job(payload: dict = Body(default={})) -> dict:
-    try:
-        data=watchdog_manager.start_learner_job(str(payload.get("mode","incremental")),payload.get("sources"),payload.get("start"),payload.get("end"))
-    except urllib.error.HTTPError as exc:
-        if exc.code == 409:
-            try: busy=json.loads(exc.read())
-            except Exception: busy={}
-            return JSONResponse(status_code=409,content={"success":False,"error":"LEARNER_BUSY","message":busy.get("message","현재 분석 작업이 실행 중입니다."),"currentJobId":busy.get("currentJobId"),"status":busy.get("status")})
-        return error_response(str(uuid.uuid4()),"LEARNER_UNAVAILABLE",str(exc),503)
-    except Exception as exc:
-        log.exception("Learner job submission failed")
-        return error_response(str(uuid.uuid4()),"LEARNER_UNAVAILABLE",str(exc),503)
-    return {"success":True,"data":data}
-
-@app.post("/api/learner/jobs/{job_id}/cancel", status_code=202)
-def cancel_learner_job(job_id: str):
-    try:
-        data=watchdog_manager.cancel_learner_job(job_id)
-        return {"success":True,"jobId":data.get("id",job_id),"status":data.get("status","cancelling")}
-    except urllib.error.HTTPError as exc:
-        return error_response(str(uuid.uuid4()),"LEARNER_CANCEL_CONFLICT","분석을 중단할 수 없는 상태입니다.",exc.code)
-    except Exception as exc:return error_response(str(uuid.uuid4()),"LEARNER_UNAVAILABLE",str(exc),503)
-
-@app.get("/api/learner/findings")
-def learner_findings(source: str="", findingType: str="", start: str="", end: str="", view: str="review", page: int=Query(1,ge=1), pageSize: int=Query(30,ge=1,le=100)) -> dict:
-    result=learner_store.operational_findings(source,findingType,start,(end+"T99") if end else "",pageSize,(page-1)*pageSize,view != "all")
-    total=result["total"]
-    return {"success":True,"data":{"items":result["items"],"pagination":{"page":page,"pageSize":pageSize,"total":total,"totalPages":max(1,(total+pageSize-1)//pageSize)}}}
-
-@app.get("/api/learner/dashboard")
-def learner_dashboard(source: str="", month: str="", start: str="", end: str="") -> dict:
-    if source and source not in {"detections","xdr","inbound","outbound","dlp","firewall"}:
-        return error_response(str(uuid.uuid4()),"LEARNER_SOURCE_INVALID",f"Unsupported source: {source}",400)
-    try:
-        return {"success":True,"data":learner_dashboard_service.dashboard(source,month,start,end)}
-    except ValueError as exc:
-        return error_response(str(uuid.uuid4()),"LEARNER_DATE_INVALID",str(exc),400)
-
-@app.get("/api/learner/findings/{finding_id}")
-def learner_finding(finding_id: str) -> dict:
-    data=learner_store.finding(finding_id)
-    return {"success":True,"data":data} if data else error_response(str(uuid.uuid4()),"LEARNER_FINDING_NOT_FOUND","Finding not found",404)
-
-@app.get("/api/learner/summary")
-def learner_summary(start: str="", end: str="") -> dict:
-    return {"success":True,"data":learner_store.summary(start,(end+"T99") if end else "")}
-
-@app.get("/api/learner/history")
-def learner_history(source: str, scopeType: str, scopeKey: str, behaviorType: str, behaviorKey: str) -> dict:
-    return {"success":True,"data":LearnerService(PROJECT_ROOT).history(source,scopeType,scopeKey,behaviorType,behaviorKey)}
 
 @app.post("/api/jobs/index/vacuum", status_code=202)
 def vacuum_indexes(payload: dict | None = Body(default=None)) -> dict:

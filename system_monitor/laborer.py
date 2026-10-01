@@ -23,6 +23,7 @@ from backend.services.firewall_detections import FirewallDetectionService
 from backend.services.firewall_rule_export import FirewallRuleExportService
 from backend.services.transfers import TransferService
 from backend.services.timeline_export import TimelineExportService
+from backend.services.aws_export import AwsExportService
 from system_monitor.collector import acquire_singleton, atomic_json
 from system_monitor.logging_utils import configure_agent_logging
 
@@ -67,7 +68,7 @@ class LaborerAgent:
             db.execute("UPDATE jobs SET status='queued', message='Laborer 재시작 후 작업 복구 중', started_at=NULL WHERE status='running'")
 
     def submit(self, job_type: str, payload: dict) -> dict:
-        if job_type not in {"vacuum", "export", "report", "firewall_rules_export", "timeline_export"}:
+        if job_type not in {"vacuum", "export", "report", "firewall_rules_export", "timeline_export", "aws_export"}:
             raise ValueError(f"지원하지 않는 Laborer 작업입니다: {job_type}")
         with self.job_lock:
             with self._connect() as db:
@@ -145,6 +146,7 @@ class LaborerAgent:
                 elif row["type"] == "export": result = self._export(payload, callback)
                 elif row["type"] == "firewall_rules_export": result = FirewallRuleExportService(self.root).build(payload.get("firewalls") or [], callback)
                 elif row["type"] == "timeline_export": result = self._timeline_export(payload, callback)
+                elif row["type"] == "aws_export": result = AwsExportService(self.root).build(str(payload.get("kind", "")), callback)
                 else: raise ValueError(f"Unknown laborer job type: {row['type']}")
                 self._update(job_id, status="completed", message="완료", result=result, finished_at=self._now())
             except Exception as exc:

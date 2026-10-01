@@ -3,6 +3,7 @@ import { Navigate, Route, Routes, useLocation, useNavigate } from "react-router-
 import { EndpointPage } from "./pages/EndpointPage";
 import { OrganizationPage } from "./pages/OrganizationPage";
 import { AwsAssetPage } from "./pages/AwsAssetPage";
+import { AwsSecurityGroupPage } from "./pages/AwsSecurityGroupPage";
 import { DetectionPage } from "./pages/DetectionPage";
 import { EmailSecurityPage } from "./pages/EmailSecurityPage";
 import { TransferPage } from "./pages/TransferPage";
@@ -38,7 +39,7 @@ const menuRoutes = [
   { label: "Config", route: "/config/general" },
 ];
 const submenus: Record<string, { label: string; route: string }[]> = {
-  Asset: [{ label: "Endpoint", route: "/assets/endpoints" }, { label: "Organization", route: "/assets/organization" }, { label: "AWS", route: "/assets/aws" }],
+  Asset: [{ label: "Endpoint", route: "/assets/endpoints" }, { label: "Organization", route: "/assets/organization" }, { label: "AWS", route: "/assets/aws" }, { label: "AWS SG", route: "/assets/aws-sg" }],
   Detection: [
     { label: "Detection - XDR", route: "/detections/xdr" }, { label: "Email - XDR", route: "/detections/email-xdr" },
     { label: "Firewall", route: "/detections/firewall" },
@@ -132,6 +133,7 @@ export function App() {
           <Route path="/assets/endpoints" element={<EndpointPage />} />
           <Route path="/assets/organization" element={<OrganizationPage />} />
           <Route path="/assets/aws" element={<AwsAssetPage />} />
+          <Route path="/assets/aws-sg" element={<AwsSecurityGroupPage />} />
           <Route path="/detections/xdr" element={<DetectionPage />} />
           <Route path="/detections/email-xdr" element={<EmailSecurityPage kind="xdr" />} />
           <Route path="/detections/firewall" element={<FirewallDetectionPage />} />
