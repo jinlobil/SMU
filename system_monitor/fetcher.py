@@ -20,7 +20,7 @@ from system_monitor.collector import acquire_singleton, atomic_json
 from system_monitor.logging_utils import configure_agent_logging
 
 
-TARGETS = {"detections", "inbound", "dlp", "outbound", "endpoints", "organizations", "users"}
+TARGETS = {"detections", "inbound", "dlp", "outbound", "endpoints", "organizations", "users", "aws"}
 DAILY_TARGETS = {"detections", "inbound", "dlp", "outbound"}
 KST = timezone(timedelta(hours=9))
 
@@ -110,6 +110,7 @@ class FetcherAgent:
         if target == "outbound": return service.refresh_outbound_range(start, end, progress)
         if target == "endpoints": return service.refresh_endpoints(progress)
         if target == "organizations": return service.refresh_organizations(progress)
+        if target == "aws": return service.refresh_aws(progress)
         return service.refresh_users(progress)
 
     @staticmethod
@@ -191,7 +192,7 @@ class FetcherAgent:
                         results[target] = {"status": "FAIL", "error": failures[target]}
                         self.log.exception("Fetch target failed job_id=%s target=%s", job_id, target)
                         self._update(job_id, message=f"{prefix} · 실패 · 다음 대상 계속")
-                if row["chain_index"]:
+                if row["chain_index"] and any(target != "aws" for target in targets):
                     self._update(job_id, message="수집 완료 · Watchdog에 스마트 인덱싱 요청 중")
                     results["indexJob"] = self._notify_watchdog(job_id)
                 results["failures"] = failures

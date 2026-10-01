@@ -104,7 +104,7 @@ class ThemePresetService:
         temporary.write_text(json.dumps(presets, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         os.replace(temporary, self.path)
 class SchedulerService:
-    TARGETS = {"detections", "inbound", "dlp", "outbound", "endpoints", "organizations", "users", "learner"}
+    TARGETS = {"detections", "inbound", "dlp", "outbound", "endpoints", "organizations", "users", "aws", "learner"}
     LEGACY_DETECTION_TARGETS = {"xdr", "firewall"}
 
     def __init__(self, root: Path, refresh_service, index_service=None):
@@ -218,6 +218,8 @@ class SchedulerService:
             return self.refresh.refresh_endpoints(progress)
         if target == "organizations":
             return self.refresh.refresh_organizations(progress)
+        if target == "aws":
+            return self.refresh.refresh_aws(progress)
         return self.refresh.refresh_users(progress)
 
     def _update_progress(self, phase: str, target: str, message: str):
@@ -255,7 +257,8 @@ class SchedulerService:
                         with self.lock:
                             self.state["targetStatus"][target] = {"time": self._display_time(time.time()), "status": state, "message": detail}
                             self._persist_locked()
-                    messages.append("index:OK")
+                    if any(target != "aws" for target in collection_targets):
+                        messages.append("index:OK")
                 except Exception as exc:
                     self.log.exception("Scheduled Fetcher/Indexer chain failed")
                     messages.append(f"fetch/index:FAIL {type(exc).__name__}: {exc}")

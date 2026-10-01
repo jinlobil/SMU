@@ -21,6 +21,7 @@ from backend.config import PROJECT_ROOT
 from backend.logging_config import configure_logging
 from backend.services.endpoints import EndpointService
 from backend.services.organizations import OrganizationService
+from backend.services.aws_assets import AwsAssetService
 from backend.services.jobs import JobManager
 from backend.services.refresh import RefreshService
 from backend.services.detections import DetectionService
@@ -63,6 +64,7 @@ QUIET_POLL_PATHS = {
 HTTP_TRACE = os.environ.get("SMU_HTTP_TRACE", "").strip().lower() in {"1", "true", "yes"}
 endpoint_service = EndpointService(PROJECT_ROOT)
 organization_service = OrganizationService(PROJECT_ROOT)
+aws_asset_service = AwsAssetService(PROJECT_ROOT)
 refresh_service = RefreshService(PROJECT_ROOT)
 job_manager = JobManager()
 detection_service = DetectionService(PROJECT_ROOT)
@@ -404,7 +406,7 @@ def get_layout_image(floor: str):
 @app.get("/api/config/status")
 def config_status() -> dict:
     sources = {}
-    for name, relative in {"endpoints": "cache/endpoints.json", "organizations": "cache/user_groups.json", "detections": "cache/detections", "inbound": "cache/emails", "outbound": "cache/mailscreen", "dlp": "cache/dlp"}.items():
+    for name, relative in {"endpoints": "cache/endpoints.json", "organizations": "cache/user_groups.json", "aws": "cache/aws.json", "detections": "cache/detections", "inbound": "cache/emails", "outbound": "cache/mailscreen", "dlp": "cache/dlp"}.items():
         path = PROJECT_ROOT / relative
         files = [path] if path.is_file() else list(path.glob("*")) if path.is_dir() else []
         sources[name] = {"exists": bool(files), "files": len(files), "bytes": sum(file.stat().st_size for file in files if file.is_file()), "latest": max((file.stat().st_mtime for file in files), default=None)}
@@ -682,6 +684,23 @@ def get_endpoint(endpoint_id: str) -> dict:
     return {"success": True, "data": data}
 
 
+@app.get("/api/aws/instances")
+def list_aws_instances(query: str = "", field: str = "all", page: int = Query(default=1, ge=1),
+                       page_size: int = Query(default=50, alias="pageSize", ge=10, le=200),
+                       sort: str = "name", direction: str = "asc") -> dict:
+    try:
+        data = aws_asset_service.list_instances(query, field, page, page_size, sort, direction)
+    except ValueError as exc:
+        return error_response(str(uuid.uuid4()), "INVALID_AWS_QUERY", str(exc), 400)
+    return {"success": True, "data": data}
+
+
+@app.get("/api/aws/instances/{instance_id}")
+def get_aws_instance(instance_id: str) -> dict:
+    data = aws_asset_service.detail(instance_id)
+    return {"success": True, "data": data} if data else error_response(str(uuid.uuid4()), "AWS_INSTANCE_NOT_FOUND", "AWS Instance not found", 404)
+
+
 @app.get("/api/organizations")
 def list_organizations(
     query: str = "",
@@ -703,7 +722,7 @@ def list_organizations(
 @app.post("/api/jobs/refresh/{target}", status_code=202)
 def start_refresh(target: str, payload: dict | None = Body(default=None)) -> dict:
     payload = payload or {}
-    allowed = {"detections", "inbound", "dlp", "outbound", "endpoints", "organizations", "users"}
+    allowed = {"detections", "inbound", "dlp", "outbound", "endpoints", "organizations", "users", "aws"}
     if target not in allowed:
         request_id = str(uuid.uuid4())
         return error_response(request_id, "UNKNOWN_REFRESH_TARGET", f"Unknown refresh target: {target}", 404)
@@ -739,6 +758,64 @@ def rebuild_indexes(payload: dict | None = Body(default=None)) -> dict:
 
 
 
+
+@app.post("/api/jobs/index/vacuum", status_code=202)
+def vacuum_indexes(payload: dict | None = Body(default=None)) -> dict:
+    target = str((payload or {}).get("target", "all"))
+    return {"success": True, "data": watchdog_manager.start_laborer_job("vacuum", target=target)}
+
+
+@app.post("/api/learner/jobs", status_code=202)
+def start_learner_job(payload: dict = Body(default={})) -> dict:
+    try:
+        data=watchdog_manager.start_learner_job(str(payload.get("mode","incremental")),payload.get("sources"),payload.get("start"),payload.get("end"))
+    except urllib.error.HTTPError as exc:
+        if exc.code == 409:
+            try: busy=json.loads(exc.read())
+            except Exception: busy={}
+            return JSONResponse(status_code=409,content={"success":False,"error":"LEARNER_BUSY","message":busy.get("message","현재 분석 작업이 실행 중입니다."),"currentJobId":busy.get("currentJobId"),"status":busy.get("status")})
+        return error_response(str(uuid.uuid4()),"LEARNER_UNAVAILABLE",str(exc),503)
+    except Exception as exc:
+        log.exception("Learner job submission failed")
+        return error_response(str(uuid.uuid4()),"LEARNER_UNAVAILABLE",str(exc),503)
+    return {"success":True,"data":data}
+
+@app.post("/api/learner/jobs/{job_id}/cancel", status_code=202)
+def cancel_learner_job(job_id: str):
+    try:
+        data=watchdog_manager.cancel_learner_job(job_id)
+        return {"success":True,"jobId":data.get("id",job_id),"status":data.get("status","cancelling")}
+    except urllib.error.HTTPError as exc:
+        return error_response(str(uuid.uuid4()),"LEARNER_CANCEL_CONFLICT","분석을 중단할 수 없는 상태입니다.",exc.code)
+    except Exception as exc:return error_response(str(uuid.uuid4()),"LEARNER_UNAVAILABLE",str(exc),503)
+
+@app.get("/api/learner/findings")
+def learner_findings(source: str="", findingType: str="", start: str="", end: str="", view: str="review", page: int=Query(1,ge=1), pageSize: int=Query(30,ge=1,le=100)) -> dict:
+    result=learner_store.operational_findings(source,findingType,start,(end+"T99") if end else "",pageSize,(page-1)*pageSize,view != "all")
+    total=result["total"]
+    return {"success":True,"data":{"items":result["items"],"pagination":{"page":page,"pageSize":pageSize,"total":total,"totalPages":max(1,(total+pageSize-1)//pageSize)}}}
+
+@app.get("/api/learner/dashboard")
+def learner_dashboard(source: str="", month: str="", start: str="", end: str="") -> dict:
+    if source and source not in {"detections","xdr","inbound","outbound","dlp","firewall"}:
+        return error_response(str(uuid.uuid4()),"LEARNER_SOURCE_INVALID",f"Unsupported source: {source}",400)
+    try:
+        return {"success":True,"data":learner_dashboard_service.dashboard(source,month,start,end)}
+    except ValueError as exc:
+        return error_response(str(uuid.uuid4()),"LEARNER_DATE_INVALID",str(exc),400)
+
+@app.get("/api/learner/findings/{finding_id}")
+def learner_finding(finding_id: str) -> dict:
+    data=learner_store.finding(finding_id)
+    return {"success":True,"data":data} if data else error_response(str(uuid.uuid4()),"LEARNER_FINDING_NOT_FOUND","Finding not found",404)
+
+@app.get("/api/learner/summary")
+def learner_summary(start: str="", end: str="") -> dict:
+    return {"success":True,"data":learner_store.summary(start,(end+"T99") if end else "")}
+
+@app.get("/api/learner/history")
+def learner_history(source: str, scopeType: str, scopeKey: str, behaviorType: str, behaviorKey: str) -> dict:
+    return {"success":True,"data":LearnerService(PROJECT_ROOT).history(source,scopeType,scopeKey,behaviorType,behaviorKey)}
 
 @app.post("/api/jobs/index/vacuum", status_code=202)
 def vacuum_indexes(payload: dict | None = Body(default=None)) -> dict:
