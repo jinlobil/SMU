@@ -298,6 +298,10 @@ class FirewallPathCheckService:
         source, destination = resolve_input_network(source_value), resolve_input_network(destination_value)
         if source is None or destination is None: raise ValueError("Source/Destination IP 또는 CIDR을 확인하세요")
         path, partial = determine_firewall_path(source, destination)
+        aws = AwsSecurityGroupPathService(self.root).check(source_network, destination_network, protocol, normalized_port,
+                                                         normalized_protocol_number, path, partial)
+        if aws.get("networkPath"):
+            path, partial = aws["networkPath"]["path"], aws["networkPath"]["partialPath"]
         expected_zones = expected_zones_for_path(source, destination, path)
         configs = {item["name"]: item for item in self.firewalls.configurations()}
         results = []
@@ -311,8 +315,6 @@ class FirewallPathCheckService:
                 results.append({"firewall": name, "available": True, "checkedAt": snapshot["checkedAt"], "expectedZones": {"source": source_zone, "destination": destination_zone}, "policy": match_rules(snapshot["rules"], source_network, destination_network, protocol, normalized_port, source_zone, destination_zone, normalized_protocol_number), "routing": {"destination": match_static_route(snapshot["routes"], destination_network), "return": match_static_route(snapshot["routes"], source_network), "error": snapshot["routeError"]}})
             except Exception as exc:
                 results.append({"firewall": name, "available": False, "error": f"{type(exc).__name__}: {exc}", "policy": {"state": "unavailable"}, "routing": {"destination": None, "return": None}})
-        aws = AwsSecurityGroupPathService(self.root).check(source_network, destination_network, protocol, normalized_port,
-                                                         normalized_protocol_number, path, partial)
         steps = ([aws["outbound"]] if aws["outbound"]["state"] != "N/A" else [])
         steps.extend(firewall_step(item) for item in results)
         if aws["inbound"]["state"] != "N/A": steps.append(aws["inbound"])

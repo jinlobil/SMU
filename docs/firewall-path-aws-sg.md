@@ -50,7 +50,7 @@ SG 단계는 PASS이다. 여러 Match와 Candidate를 모두 반환하며 첫 Ru
 | ReferencedGroupInfo.GroupId | 상대 IP가 붙은 ENI의 실제 GroupId로 비교, 참조 SG를 새 부착으로 간주하지 않음 |
 | PrefixListId | ID와 미수집 사유를 표시, 다른 서비스 조건도 적용 가능하면 Candidate; CIDR을 추정하지 않음 |
 
-SG Reference의 Exact Allow는 기존 엔진이 완전한 직접 경로로 판단하고, 양쪽
+SG Reference의 Exact Allow는 실제 VpcId로 완전한 직접 경로를 판단하고, 양쪽
 private/IPv6 ENI가 동일 VPC이며 GroupId가 실제 일치할 때로 한정한다. Firewall 경유,
 EIP/Public 주소, VPC 간 연결 정보 부족, 부분 경로이면 NAT/Middlebox/Reference 의미를
 단정하지 않고 Candidate로 남긴다. Prefix List/Reference Candidate가 있더라도 독립된
@@ -80,7 +80,7 @@ AWS 읽기/구조 오류는 기존 Firewall 결과를 폐기하지 않고 UNKNOW
 | WAN → AWS | 기존 엔진이 선택한 FW만 → Destination SG Inbound |
 
 어느 경우에도 경로 이름을 기준으로 Cloud Firewall을 새로 삽입하지 않는다.
-기존 엔진이 직접 경로를 반환하면 SG 두 단계만 남는다. 기존 IPv4 경로와 Zone 매핑은
+양쪽 AWS EC2가 식별되면 실제 VpcId를 확인하고 SG 두 단계만 남긴다. 다른 VPC는 중간 경로 확인 불가로 표시한다. 기존 OFFICE/WAN 경로와 Zone 매핑은
 유지했다. IPv6 Query와 CidrIpv6 검사를 위해 address family 비교를 보호하고 같은
 family의 Source/Destination 입력을 허용했다. 기존 Sophos IPv4 매핑을 IPv6 경로로
 추정하거나 새로운 IPv6 Firewall 주소 매핑을 만들지 않는다.
@@ -133,3 +133,25 @@ UNKNOWN을 해소하려고 미수집 네트워크 정보를 추측하지 않는�
 
 커밋 메시지: `Integrate AWS Security Group checks into Firewall Path Check`.
 실제 Commit Hash와 GitHub 브랜치 링크는 완료 보고에 제공한다.
+
+### AWS 내부 경로와 Path 레이아웃 수정
+
+AWS 캐시에서 양쪽 IP의 EC2/ENI가 정확하게 식별되면, 비어 있지 않은 실제
+`VpcId`의 equality로 동일 VPC를 판정한다. 동일 VPC에서는 Outbound와
+Inbound SG만 검사하고 Sophos snapshot/Static Route 조회를 수행하지 않는다.
+SG reference의 기존 private/IPv6 조건은 유지한다.
+
+다른 VPC 또는 VpcId 누락은 중간 Network Path 확인 불가로 표시한다.
+현재 Path Engine의 LAN/Site 매핑과 Sophos Static Route만으로 AWS transit을
+입증할 수 없으므로 Cloud Firewall을 자동으로 넣지 않는다.
+OFFICE↔AWS, WAN→AWS와 기존 Firewall Rule/Static Route 판정은 유지한다.
+SG만 참여하는 결과는 `AWS SG 정책 기준 허용/차단`으로 표시한다.
+
+Path 카드의 `overflow:auto`를 제거하고 기존 flex 레이아웃에 wrap과
+축소 가능한 카드 폭을 적용했다. 모바일은 기존 세로 배치를 유지한다.
+높이는 콘텐츠에 따라 늘어나고 페이지가 스크롤된다.
+
+브라우저 회귀 검증은 Chromium과 Python playwright가 설치된 환경에서
+`cd frontend && npm run build` 후 저장소 루트에서
+`.venv/bin/python -m pytest -q tests/test_firewall_path_layout_browser.py`로 실행한다.
+1440/1024/390px에서 카드 경계, 내부 overflow, 페이지 wheel 스크롤을 검사한다.

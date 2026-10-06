@@ -206,7 +206,16 @@ class AwsSecurityGroupPathService:
             data = json.loads(self.path.read_text(encoding="utf-8"))
             if not isinstance(data, dict): raise ValueError("AWS Cache object required")
             source_endpoint, destination_endpoint = self._endpoint(source, data), self._endpoint(destination, data)
-            return {"outbound": self._step("Outbound", source_endpoint, destination_endpoint, destination, protocol, port, protocol_number, data, path, partial),
+            network_path = None
+            if source_endpoint["state"] == destination_endpoint["state"] == "IDENTIFIED":
+                source_vpc, destination_vpc = source_endpoint.get("vpcId"), destination_endpoint.get("vpcId")
+                same_vpc = bool(source_vpc and destination_vpc and source_vpc == destination_vpc)
+                # Site/LAN mappings and Sophos static routes do not prove AWS transit.
+                path, partial = [], not same_vpc
+                network_path = {"path": path, "partialPath": partial,
+                                "mode": "same_vpc" if same_vpc else "unknown",
+                                "reason": "동일 VPC · AWS SG 정책 검사" if same_vpc else "AWS 중간 Network Path 확인 불가 · Routing 정보 미수집"}
+            return {"networkPath": network_path, "outbound": self._step("Outbound", source_endpoint, destination_endpoint, destination, protocol, port, protocol_number, data, path, partial),
                     "inbound": self._step("Inbound", destination_endpoint, source_endpoint, source, protocol, port, protocol_number, data, path, partial),
                     "cache": {"path": str(self.path), "exists": True, "fetchedAt": (data.get("metadata") or {}).get("fetched_at")}}
         except Exception as exc:
@@ -219,12 +228,14 @@ class AwsSecurityGroupPathService:
 
 
 def policy_summary(steps: list[dict[str, Any]], partial: bool) -> dict[str, str]:
-    states = [step["state"] for step in steps if step["state"] != "N/A"]
+    active = [step for step in steps if step["state"] != "N/A"]
+    states = [step["state"] for step in active]
+    policy_type = "AWS SG" if active and all(step.get("kind") == "aws_sg" for step in active) else "Firewall / AWS SG"
     if "FAIL" in states:
-        return {"state": "FAIL", "label": "Firewall / AWS SG 정책 기준 차단"}
+        return {"state": "FAIL", "label": f"{policy_type} 정책 기준 차단"}
     if partial or not states or "UNKNOWN" in states:
         return {"state": "UNKNOWN", "label": "일부 정책 확인 불가"}
-    return {"state": "PASS", "label": "Firewall / AWS SG 정책 기준 허용"}
+    return {"state": "PASS", "label": f"{policy_type} 정책 기준 허용"}
 
 
 def firewall_step(result: dict[str, Any]) -> dict[str, Any]:
