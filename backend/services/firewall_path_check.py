@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from backend.services.firewall import FirewallClient, FirewallService, parse_status
+from backend.services.aws_security_group_path import AwsSecurityGroupPathService, firewall_step, policy_summary
 from backend.services.firewall_network_mapping import IP_TOKEN, MASKED_NETWORK, determine_firewall_path, expected_zones_for_path, resolve_input_network
 from backend.services.firewall_rule_export import ENTITIES, _nodes, _tag, is_wildcard_value, parse_firewall_rules
 
@@ -40,6 +41,7 @@ def address_match_details(requested: ipaddress.IPv4Network, objects: str, resolv
     partial = False
     networks = _networks(resolved)
     for network in networks:
+        if requested.version != network.version: continue
         if requested.subnet_of(network):
             return {"match": "full", "wildcard": False, "resolverFailed": False}
         if requested.overlaps(network): partial = True
@@ -231,7 +233,7 @@ def match_static_route(routes: list[dict[str, str]], destination: ipaddress.IPv4
             network = ipaddress.ip_network(route["destination"] if "/" in route["destination"] else f"{route['destination']}/{suffix}", strict=False)
         except ValueError:
             continue
-        if destination.subnet_of(network): candidates.append((network.prefixlen, route, str(network)))
+        if destination.version == network.version and destination.subnet_of(network): candidates.append((network.prefixlen, route, str(network)))
     if not candidates: return None
     _prefix, route, network = max(candidates, key=lambda item: item[0])
     return {**route, "network": network}
@@ -278,8 +280,8 @@ class FirewallPathCheckService:
               refresh: bool = False, protocol_number: Any = None) -> dict[str, Any]:
         try: source_network, destination_network = ipaddress.ip_network(source_value, strict=False), ipaddress.ip_network(destination_value, strict=False)
         except ValueError as exc: raise ValueError(f"Source/Destination IP 또는 CIDR을 확인하세요: {exc}") from exc
-        if source_network.version != 4 or destination_network.version != 4:
-            raise ValueError("Source/Destination은 IPv4만 지원합니다")
+        if source_network.version != destination_network.version:
+            raise ValueError("Source/Destination은 같은 IP address family를 사용해야 합니다")
         protocol = (protocol or "ANY").strip().upper()
         if not re.fullmatch(r"[A-Z0-9][A-Z0-9 _+./-]{0,31}", protocol):
             raise ValueError("Protocol 형식을 확인하세요")
@@ -309,6 +311,12 @@ class FirewallPathCheckService:
                 results.append({"firewall": name, "available": True, "checkedAt": snapshot["checkedAt"], "expectedZones": {"source": source_zone, "destination": destination_zone}, "policy": match_rules(snapshot["rules"], source_network, destination_network, protocol, normalized_port, source_zone, destination_zone, normalized_protocol_number), "routing": {"destination": match_static_route(snapshot["routes"], destination_network), "return": match_static_route(snapshot["routes"], source_network), "error": snapshot["routeError"]}})
             except Exception as exc:
                 results.append({"firewall": name, "available": False, "error": f"{type(exc).__name__}: {exc}", "policy": {"state": "unavailable"}, "routing": {"destination": None, "return": None}})
+        aws = AwsSecurityGroupPathService(self.root).check(source_network, destination_network, protocol, normalized_port,
+                                                         normalized_protocol_number, path, partial)
+        steps = ([aws["outbound"]] if aws["outbound"]["state"] != "N/A" else [])
+        steps.extend(firewall_step(item) for item in results)
+        if aws["inbound"]["state"] != "N/A": steps.append(aws["inbound"])
         return {"source": source, "destination": destination, "protocol": protocol, "port": normalized_port,
                 "protocolNumber": normalized_protocol_number, "path": path, "partialPath": partial,
-                "firewalls": results, "checkedAt": datetime.now(timezone.utc).isoformat()}
+                "firewalls": results, "awsSecurityGroups": aws, "steps": steps, "policySummary": policy_summary(steps, partial),
+                "checkedAt": datetime.now(timezone.utc).isoformat()}

@@ -135,11 +135,32 @@ class AwsAssetService:
         return {str(tag.get("Key")): str(tag.get("Value", "")) for tag in instance.get("Tags", []) if isinstance(tag, dict) and tag.get("Key")}
 
     @staticmethod
+    def attached_interfaces(instance: dict[str, Any], data: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        """Resolve actual ENI attachments without flattening their SG sets.
+
+        Existing asset callers use the embedded DescribeInstances records.
+        IP-specific consumers can enrich them from DescribeNetworkInterfaces,
+        but only when the raw ENI attachment identifies the same instance.
+        """
+        interfaces = [item for item in instance.get("NetworkInterfaces", []) if isinstance(item, dict)]
+        if data is None:
+            return interfaces
+        by_id = {str(item["NetworkInterfaceId"]): dict(item) for item in interfaces if item.get("NetworkInterfaceId")}
+        for raw in data.get("network_interfaces", []):
+            if not isinstance(raw, dict) or not raw.get("NetworkInterfaceId"):
+                continue
+            if not instance.get("InstanceId") or (raw.get("Attachment") or {}).get("InstanceId") != instance["InstanceId"]:
+                continue
+            identifier = str(raw["NetworkInterfaceId"])
+            by_id[identifier] = {**by_id.get(identifier, {}), **raw}
+        return list(by_id.values())
+
+    @staticmethod
     def _group_references(instance: dict[str, Any]) -> list[dict[str, Any]]:
         """Return attached groups by AWS ID, including groups exposed through ENIs."""
         references: dict[str, dict[str, Any]] = {}
         candidates: list[dict[str, Any]] = []
-        for interface in instance.get("NetworkInterfaces", []):
+        for interface in AwsAssetService.attached_interfaces(instance):
             if isinstance(interface, dict):
                 candidates.extend(interface.get("Groups", []))
         if not instance.get("NetworkInterfaces"):
@@ -172,7 +193,7 @@ class AwsAssetService:
             if not instance_id:
                 continue
             by_group: dict[str, set[str]] = {}
-            for interface in instance.get("NetworkInterfaces", []):
+            for interface in self.attached_interfaces(instance):
                 if not isinstance(interface, dict):
                     continue
                 eni = str(interface.get("NetworkInterfaceId") or "")
