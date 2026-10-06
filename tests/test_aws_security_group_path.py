@@ -73,15 +73,15 @@ def test_office_aws_wan_paths_keep_firewalls_and_add_endpoint_sg(tmp_path, monke
 
 
 @pytest.mark.parametrize("path,partial", [([], False), (["Cloud"], False)])
-def test_aws_to_aws_uses_existing_path_engine_without_inserting_cloud(tmp_path, monkeypatch, path, partial):
+def test_same_vpc_overrides_site_based_cloud_heuristic(tmp_path, monkeypatch, path, partial):
     import backend.services.firewall_path_check as module
     save(tmp_path, payload())
     monkeypatch.setattr(module, "determine_firewall_path", lambda *_args: (path, partial))
     result = path_service(tmp_path, monkeypatch).check("10.10.0.10", "100.1.2.10", "TCP", 443)
-    assert result["path"] == path
-    assert [step["kind"] for step in result["steps"]] == ["aws_sg", *(["firewall"] if path else []), "aws_sg"]
+    assert result["path"] == []
+    assert [step["kind"] for step in result["steps"]] == ["aws_sg", "aws_sg"]
     assert result["awsSecurityGroups"]["outbound"]["state"] == result["awsSecurityGroups"]["inbound"]["state"] == "PASS"
-    assert result["policySummary"] == {"state": "PASS", "label": "Firewall / AWS SG 정책 기준 허용"}
+    assert result["policySummary"] == {"state": "PASS", "label": "AWS SG 정책 기준 허용"}
     # No Source Inbound or Destination Outbound rules exist in this fixture.
     assert [step["direction"] for step in result["steps"] if step["kind"] == "aws_sg"] == ["Outbound", "Inbound"]
 
@@ -224,8 +224,8 @@ def test_referenced_sg_exact_attachment_for_direct_same_vpc_only(tmp_path, direc
     data["security_group_rules"][index]["ReferencedGroupInfo"] = {"GroupId": referenced}
     save(tmp_path, data)
     assert sg_check(tmp_path)[direction]["state"] == "PASS"
-    assert sg_check(tmp_path, path=["Cloud"])[direction]["state"] == "UNKNOWN"
-    assert sg_check(tmp_path, partial=True)[direction]["state"] == "UNKNOWN"
+    assert sg_check(tmp_path, path=["Cloud"])[direction]["state"] == "PASS"
+    assert sg_check(tmp_path, partial=True)[direction]["state"] == "PASS"
     data["security_group_rules"][index]["ReferencedGroupInfo"]["GroupId"] = referenced + "0"
     save(tmp_path, data)
     assert sg_check(tmp_path)[direction]["state"] == "FAIL"
@@ -394,3 +394,63 @@ def test_policy_summary_does_not_claim_actual_connectivity(states, partial, expe
     result = policy_summary([{"state": state} for state in states], partial)
     assert result["state"] == expected
     assert "실제 통신 가능" not in result["label"]
+
+
+@pytest.mark.parametrize("destination_vpc,mode,partial", [("vpc-1", "same_vpc", False), ("vpc-10", "unknown", True), ("", "unknown", True)])
+@pytest.mark.parametrize("blocked_direction", [None, "out-a", "in-b"])
+def test_cached_vpc_identity_controls_path_before_sophos_queries(tmp_path, monkeypatch, destination_vpc, mode, partial, blocked_direction):
+    data = payload()
+    data["instances"][1]["NetworkInterfaces"][0]["VpcId"] = destination_vpc
+    if blocked_direction:
+        data["security_group_rules"] = [rule for rule in data["security_group_rules"] if rule["SecurityGroupRuleId"] != blocked_direction]
+    save(tmp_path, data)
+    service = path_service(tmp_path, monkeypatch)
+    # Even a firewall snapshot with matching routes must not create a hop.
+    snapshots = []
+    def snapshot(*args):
+        snapshots.append(args)
+        return {"rules": [], "routes": [{"Destination": "0.0.0.0", "Netmask": "0.0.0.0"}], "routeError": "", "checkedAt": "now"}
+    monkeypatch.setattr(service, "_snapshot", snapshot)
+    result = service.check("10.10.0.10", "100.1.2.10", "TCP", 443)
+    assert snapshots == []
+    assert result["path"] == result["firewalls"] == []
+    assert result["partialPath"] is partial
+    assert result["awsSecurityGroups"]["networkPath"]["mode"] == mode
+    assert [step["direction"] for step in result["steps"]] == ["Outbound", "Inbound"]
+    assert result["steps"][0]["state"] == ("FAIL" if blocked_direction == "out-a" else "PASS")
+    assert result["steps"][1]["state"] == ("FAIL" if blocked_direction == "in-b" else "PASS")
+    assert result["policySummary"]["state"] == ("FAIL" if blocked_direction else "UNKNOWN" if partial else "PASS")
+    if blocked_direction: assert result["policySummary"]["label"] == "AWS SG 정책 기준 차단"
+
+
+def test_same_site_label_does_not_imply_same_vpc(tmp_path, monkeypatch):
+    data = payload()
+    destination = data["instances"][1]
+    destination["PrivateIpAddress"] = "10.10.0.20"
+    interface = destination["NetworkInterfaces"][0]
+    interface.update(PrivateIpAddress="10.10.0.20", PrivateIpAddresses=[{"PrivateIpAddress": "10.10.0.20"}], VpcId="vpc-other")
+    save(tmp_path, data)
+    result = path_service(tmp_path, monkeypatch).check("10.10.0.10", "10.10.0.20", "TCP", 443)
+    assert result["source"]["site"] == result["destination"]["site"]
+    assert result["path"] == [] and result["partialPath"] is True
+
+
+@pytest.mark.parametrize("eni_vpc", [True, False])
+def test_vpc_identity_uses_eni_then_instance_without_site_mapping(tmp_path, monkeypatch, eni_vpc):
+    data = payload()
+    addresses = ["10.88.1.7", "10.99.2.9"]
+    for instance, address in zip(data["instances"], addresses):
+        instance["PrivateIpAddress"] = address
+        instance["VpcId"] = "vpc-instance" if not eni_vpc else instance["InstanceId"]
+        interface = instance["NetworkInterfaces"][0]
+        interface.update(PrivateIpAddress=address, PrivateIpAddresses=[{"PrivateIpAddress": address}])
+        if eni_vpc:
+            interface["VpcId"] = "vpc-shared"
+        else:
+            interface.pop("VpcId")
+        instance["NetworkInterfaces"] = [interface]
+    save(tmp_path, data)
+    result = path_service(tmp_path, monkeypatch).check(*addresses, "TCP", 443)
+    assert result["path"] == [] and result["partialPath"] is False
+    assert result["awsSecurityGroups"]["networkPath"]["mode"] == "same_vpc"
+    assert all(step["state"] == "PASS" for step in result["steps"])
