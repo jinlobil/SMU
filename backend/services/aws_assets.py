@@ -15,6 +15,9 @@ AWS_OPERATIONS = {
     "network_interfaces": ("describe_network_interfaces", "NetworkInterfaces"),
     "vpcs": ("describe_vpcs", "Vpcs"),
     "subnets": ("describe_subnets", "Subnets"),
+    "instance_types": ("describe_instance_types", "InstanceTypes"),
+    "volumes": ("describe_volumes", "Volumes"),
+    "addresses": ("describe_addresses", "Addresses"),
 }
 log = logging.getLogger("smu.aws")
 
@@ -72,6 +75,9 @@ class AwsCollector:
 
     @staticmethod
     def _pages(client: Any, operation: str, result_key: str) -> list[dict[str, Any]]:
+        # DescribeAddresses has no paginator/NextToken in the EC2 API.
+        if operation == "describe_addresses":
+            return client.describe_addresses().get(result_key, [])
         rows: list[dict[str, Any]] = []
         for page in client.get_paginator(operation).paginate():
             values = page.get(result_key, [])
