@@ -4,13 +4,57 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from xml.etree.ElementTree import Element, SubElement, tostring
+from xml.etree.ElementTree import Element, SubElement, fromstring, tostring
 from zipfile import ZIP_DEFLATED, ZipFile
 
 
 MAIN_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 ILLEGAL_XML = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 INVALID_SHEET_CHARS = re.compile(r"[\\/*?:\[\]]")
+
+# Appended styles leave the existing export/report style indices intact.
+LEDGER_STYLES = {"header": 10, "body": 11, "running": 12, "stop": 13,
+                 "sophos": 14, "inbound": 15, "outbound": 16, "center": 17}
+LEDGER_TOP_STYLE_OFFSET = 8
+
+
+def _ledger_styles(styles: str) -> bytes:
+    root = fromstring(styles)
+    def tag(name): return f"{{{MAIN_NS}}}{name}"
+    fonts, fills, borders, xfs = (root.find(tag(name)) for name in ("fonts", "fills", "borders", "cellXfs"))
+    font_ids = []
+    for color, bold in [("FF000000", False), ("FF172B4D", True)]:
+        font_ids.append(len(fonts))
+        font = SubElement(fonts, tag("font"))
+        if bold: SubElement(font, tag("b"))
+        SubElement(font, tag("color"), {"rgb": color})
+        SubElement(font, tag("sz"), {"val": "11"})
+        SubElement(font, tag("name"), {"val": "Calibri"})
+    fill_ids = []
+    for color in ["FF17365D", "FFFFFFFF", "FF228B46", "FFC62828", "FF2463B5", "FFDDEBF7", "FFFCE4D6"]:
+        fill_ids.append(len(fills))
+        fill = SubElement(fills, tag("fill"))
+        pattern = SubElement(fill, tag("patternFill"), {"patternType": "solid"})
+        SubElement(pattern, tag("fgColor"), {"rgb": color})
+        SubElement(pattern, tag("bgColor"), {"indexed": "64"})
+    top_border = len(borders)
+    border = SubElement(borders, tag("border"))
+    for edge in ["left", "right", "top", "bottom"]:
+        SubElement(border, tag(edge), {"style": "medium" if edge == "top" else "thin"})
+    # Header, body, state, antivirus, directions, merged body, then top-edge variants.
+    models = [(1, fill_ids[0], True), (font_ids[0], fill_ids[1], False),
+              (1, fill_ids[2], True), (1, fill_ids[3], True), (1, fill_ids[4], True),
+              (font_ids[1], fill_ids[5], True), (font_ids[1], fill_ids[6], True),
+              (font_ids[0], fill_ids[1], True)]
+    for border_id in [1, top_border]:
+        for font_id, fill_id, center in models:
+            xf = SubElement(xfs, tag("xf"), {"numFmtId": "0", "fontId": str(font_id), "fillId": str(fill_id),
+                "borderId": str(border_id), "xfId": "0", "applyFont": "1", "applyFill": "1", "applyBorder": "1", "applyAlignment": "1"})
+            alignment = {"vertical": "center", "wrapText": "1"}
+            if center: alignment["horizontal"] = "center"
+            SubElement(xf, tag("alignment"), alignment)
+    for node in [fonts, fills, borders, xfs]: node.set("count", str(len(node)))
+    return b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' + tostring(root, encoding="utf-8")
 
 
 def _column_name(index: int) -> str:
@@ -40,8 +84,29 @@ def safe_sheet_name(name: str, used: set[str] | None = None) -> str:
     return candidate
 
 
-def _worksheet(rows: list[dict], columns: list[str], headers: dict[str, str], cell_styles: dict[str, dict[str, int]] | None = None) -> bytes:
+def _worksheet(rows: list[dict], columns: list[str], headers: dict[str, str], cell_styles: dict[str, dict[str, int]] | None = None,
+               ledger: bool = False, merge_columns: list[str] | None = None, group_key: str | None = None) -> bytes:
     cell_styles = cell_styles or {}
+    merge_columns = list(dict.fromkeys(merge_columns or []))
+    if merge_columns and (not group_key or any(key not in columns for key in merge_columns)):
+        raise ValueError("Table merges require a group key and valid columns")
+    merges, covered, group_starts = [], set(), set()
+    if group_key:
+        if any(row.get(group_key) is None for row in rows):
+            raise ValueError("Table merge group identifiers must be present")
+        start = 0
+        while start < len(rows):
+            end = start + 1
+            while end < len(rows) and rows[end].get(group_key) == rows[start].get(group_key): end += 1
+            group_starts.add(start + 2)
+            if end - start > 1:
+                for key in merge_columns:
+                    if any(_text(row.get(key)) != _text(rows[start].get(key)) for row in rows[start:end]):
+                        raise ValueError(f"Cannot merge differing values in column {key}")
+                    column = columns.index(key) + 1
+                    merges.append(f"{_column_name(column)}{start+2}:{_column_name(column)}{end+1}")
+                    covered.update((row, column) for row in range(start + 3, end + 2))
+            start = end
     sheet = Element("worksheet", {"xmlns": MAIN_NS})
     views = SubElement(sheet, "sheetViews")
     view = SubElement(views, "sheetView", {"workbookViewId": "0"})
@@ -58,12 +123,20 @@ def _worksheet(rows: list[dict], columns: list[str], headers: dict[str, str], ce
     for row_index, row_values in enumerate(values, 1):
         row_node = SubElement(sheet_data, "row", {"r": str(row_index)})
         for column_index, value in enumerate(row_values, 1):
-            style = 1 if row_index == 1 else cell_styles.get(columns[column_index - 1], {}).get(_text(value), 2)
+            style = (LEDGER_STYLES["header"] if ledger else 1) if row_index == 1 else cell_styles.get(columns[column_index - 1], {}).get(_text(value), LEDGER_STYLES["body"] if ledger else 2)
+            if ledger and row_index > 1:
+                if columns[column_index - 1] in merge_columns and style == LEDGER_STYLES["body"]:
+                    style = LEDGER_STYLES["center"]
+                if row_index in group_starts: style += LEDGER_TOP_STYLE_OFFSET
+            if (row_index, column_index) in covered: value = ""
             cell = SubElement(row_node, "c", {"r": f"{_column_name(column_index)}{row_index}", "t": "inlineStr", "s": str(style)})
             inline = SubElement(cell, "is")
             SubElement(inline, "t").text = _text(value)
     if columns:
         SubElement(sheet, "autoFilter", {"ref": f"A1:{_column_name(len(columns))}{max(1, len(rows)+1)}"})
+    if merges:
+        merged = SubElement(sheet, "mergeCells", {"count": str(len(merges))})
+        for ref in merges: SubElement(merged, "mergeCell", {"ref": ref})
     return b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' + tostring(sheet, encoding="utf-8")
 
 
@@ -121,7 +194,7 @@ def write_xlsx_workbook(path: Path, sheets: list[dict]) -> list[str]:
     for spec in sheets:
         rows = list(spec.get("rows") or [])
         columns = list(spec.get("columns") or list(dict.fromkeys(key for row in rows for key in row)))
-        prepared.append((safe_sheet_name(str(spec.get("name") or "Data"), used), rows, columns, dict(spec.get("headers") or {}), dict(spec.get("cellStyles") or {}), spec.get("reportSummary")))
+        prepared.append((safe_sheet_name(str(spec.get("name") or "Data"), used), rows, columns, dict(spec.get("headers") or {}), dict(spec.get("cellStyles") or {}), spec.get("reportSummary"), spec))
 
     overrides = "".join(f'<Override PartName="/xl/worksheets/sheet{i}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>' for i in range(1, len(prepared)+1))
     content_types = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -142,9 +215,10 @@ def write_xlsx_workbook(path: Path, sheets: list[dict]) -> list[str]:
         archive.writestr("_rels/.rels", package_rels)
         archive.writestr("xl/workbook.xml", workbook)
         archive.writestr("xl/_rels/workbook.xml.rels", workbook_rels)
-        archive.writestr("xl/styles.xml", styles)
-        for index, (_name, rows, columns, headers, cell_styles, report_summary) in enumerate(prepared, 1):
-            archive.writestr(f"xl/worksheets/sheet{index}.xml", _report_summary_worksheet(report_summary) if report_summary else _worksheet(rows, columns, headers, cell_styles))
+        archive.writestr("xl/styles.xml", _ledger_styles(styles) if any(spec.get("tableStyle") == "ledger" for *_rest, spec in prepared) else styles)
+        for index, (_name, rows, columns, headers, cell_styles, report_summary, spec) in enumerate(prepared, 1):
+            archive.writestr(f"xl/worksheets/sheet{index}.xml", _report_summary_worksheet(report_summary) if report_summary else _worksheet(rows, columns, headers, cell_styles,
+                spec.get("tableStyle") == "ledger", spec.get("mergeColumns"), spec.get("groupKey")))
     return [name for name, *_rest in prepared]
 
 

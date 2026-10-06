@@ -17,6 +17,9 @@ class Paginator:
 class Client:
     def __init__(self, pages): self.pages = pages; self.calls = []
     def get_paginator(self, operation): self.calls.append(operation); return Paginator(self.pages[operation])
+    def describe_addresses(self):
+        self.calls.append("describe_addresses")
+        return self.pages["describe_addresses"][0]
 
 
 def credentials(root: Path, content="AWS_ACCESS_KEY_ID=test-key\nAWS_SECRET_ACCESS_KEY=test-secret\nAWS_REGION=ap-northeast-2\n"):
@@ -31,6 +34,9 @@ def all_pages():
         "describe_network_interfaces": [{"NetworkInterfaces": [{"NetworkInterfaceId": "eni-1"}]}, {"NetworkInterfaces": [{"NetworkInterfaceId": "eni-2"}]}],
         "describe_vpcs": [{"Vpcs": [{"VpcId": "vpc-1"}]}, {"Vpcs": [{"VpcId": "vpc-2"}]}],
         "describe_subnets": [{"Subnets": [{"SubnetId": "subnet-1"}]}, {"Subnets": [{"SubnetId": "subnet-2"}]}],
+        "describe_instance_types": [{"InstanceTypes": [{"InstanceType": "t3.small"}]}, {"InstanceTypes": [{"InstanceType": "m5.large"}]}],
+        "describe_volumes": [{"Volumes": [{"VolumeId": "vol-1", "Size": 10}]}, {"Volumes": [{"VolumeId": "vol-2", "Size": 20}]}],
+        "describe_addresses": [{"Addresses": [{"AllocationId": "eipalloc-1", "PublicIp": "203.0.113.1"}, {"AllocationId": "eipalloc-2", "PublicIp": "203.0.113.2"}]}],
     }
 
 
@@ -48,7 +54,7 @@ def test_every_aws_describe_operation_consumes_all_paginator_pages(tmp_path: Pat
     payload = AwsCollector(tmp_path, lambda _credentials: client).collect()
     assert [item["InstanceId"] for item in payload["instances"]] == ["i-1", "i-2", "i-3"]
     assert set(client.calls) == {operation for operation, _key in AWS_OPERATIONS.values()}
-    for name in ("security_groups", "security_group_rules", "network_interfaces", "vpcs", "subnets"):
+    for name in ("security_groups", "security_group_rules", "network_interfaces", "vpcs", "subnets", "instance_types", "volumes", "addresses"):
         assert len(payload[name]) == 2
     assert payload["vpcs"][0]["CreatedAt"] == "2026-10-01T00:00:00+00:00"
     serialized = json.dumps(payload)
