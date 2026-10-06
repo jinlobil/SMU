@@ -51,11 +51,12 @@ SITE_FIREWALLS = {
 
 
 def _matches_for_network(candidate: ipaddress.IPv4Network) -> list[NetworkMapping]:
-    containing = [item for item in NETWORK_MAPPINGS if candidate.subnet_of(item.network)]
+    mappings = [item for item in NETWORK_MAPPINGS if item.network.version == candidate.version]
+    containing = [item for item in mappings if candidate.subnet_of(item.network)]
     if containing:
         longest = max(item.network.prefixlen for item in containing)
         return [item for item in containing if item.network.prefixlen == longest]
-    return [item for item in NETWORK_MAPPINGS if item.network.subnet_of(candidate)]
+    return [item for item in mappings if item.network.subnet_of(candidate)]
 
 
 def classify_rule_side(object_text: str, resolved_text: str) -> tuple[set[str], list[str]]:
