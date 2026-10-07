@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { RefreshButton } from "../components/RefreshButton";
 
 
-type IpCategories={wired:string[];wireless:string[];vpn:string[];ztna:string[];other:string[]};
+type IpCategories={wired:string[];wireless:string[];vpn:string[];ztna:string[];aws:string[];ncp:string[];other:string[]};
 type Endpoint = { id: string; hostname: string; userId: string; user: string; dept: string; ip: string; ipCategories:IpCategories;ztna: string; lastSeen: string };
 type ContextMenu = { x: number; y: number; endpoint: Endpoint };
 type EndpointResponse = { success: boolean; data: { items: Endpoint[]; pagination: { page: number; pageSize: number; total: number; totalPages: number }; source: { path: string; exists: boolean } } };
@@ -60,7 +60,7 @@ export function EndpointPage() {
       setDetail(payload.data.raw as Record<string, unknown>);
     } catch (reason) { setError(String(reason)); } finally { setDetailLoading(false); }
   };
-  const categorizedIps=(endpoint:Endpoint)=>[["유선",endpoint.ipCategories.wired],["무선",endpoint.ipCategories.wireless],["VPN",endpoint.ipCategories.vpn],["ZTNA",endpoint.ipCategories.ztna],["기타",endpoint.ipCategories.other]] as const;
+  const categorizedIps=(endpoint:Endpoint)=>[["유선",endpoint.ipCategories.wired],["무선",endpoint.ipCategories.wireless],["VPN",endpoint.ipCategories.vpn],["ZTNA",endpoint.ipCategories.ztna],["AWS",endpoint.ipCategories.aws],["NCP",endpoint.ipCategories.ncp],["기타",endpoint.ipCategories.other]] as const;
 
   return <>
     <header className="topbar"><div><p className="breadcrumb">Asset / Endpoint</p><h1>Endpoint</h1></div><RefreshButton target="endpoints" onComplete={() => setReloadKey((key) => key + 1)} /></header>

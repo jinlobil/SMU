@@ -1,4 +1,4 @@
-"""Small dependency-free XLSX writer used by Config exports."""
+"""Shared dependency-free XLSX writer for all SMU exports."""
 from __future__ import annotations
 
 import json
@@ -14,7 +14,7 @@ INVALID_SHEET_CHARS = re.compile(r"[\\/*?:\[\]]")
 
 # Appended styles leave the existing export/report style indices intact.
 LEDGER_STYLES = {"header": 10, "body": 11, "running": 12, "stop": 13,
-                 "sophos": 14, "inbound": 15, "outbound": 16, "center": 17}
+                 "sophos": 14, "inbound": 15, "outbound": 16, "center": 17, "allow": 26, "deny": 27, "neutral": 28}
 LEDGER_TOP_STYLE_OFFSET = 8
 
 
@@ -31,7 +31,7 @@ def _ledger_styles(styles: str) -> bytes:
         SubElement(font, tag("sz"), {"val": "11"})
         SubElement(font, tag("name"), {"val": "Calibri"})
     fill_ids = []
-    for color in ["FF17365D", "FFFFFFFF", "FF228B46", "FFC62828", "FF2463B5", "FFDDEBF7", "FFFCE4D6"]:
+    for color in ["FF17365D", "FFFFFFFF", "FF228B46", "FFC62828", "FF2463B5", "FFDDEBF7", "FFFCE4D6", "FFE2F0D9", "FFFCE0E0", "FFF2F2F2"]:
         fill_ids.append(len(fills))
         fill = SubElement(fills, tag("fill"))
         pattern = SubElement(fill, tag("patternFill"), {"patternType": "solid"})
@@ -53,8 +53,31 @@ def _ledger_styles(styles: str) -> bytes:
             alignment = {"vertical": "center", "wrapText": "1"}
             if center: alignment["horizontal"] = "center"
             SubElement(xf, tag("alignment"), alignment)
+    for fill_id in fill_ids[7:]:
+        xf = SubElement(xfs, tag("xf"), {"numFmtId": "0", "fontId": str(font_ids[0]), "fillId": str(fill_id),
+            "borderId": "1", "xfId": "0", "applyFont": "1", "applyFill": "1", "applyBorder": "1", "applyAlignment": "1"})
+        SubElement(xf, tag("alignment"), {"vertical": "center", "wrapText": "1"})
     for node in [fonts, fills, borders, xfs]: node.set("count", str(len(node)))
     return b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' + tostring(root, encoding="utf-8")
+
+
+def semantic_cell_style(column: str, header: str, value: object) -> int:
+    """Color known semantic columns only; names/descriptions never imply status."""
+    names = {re.sub(r"[^a-z0-9가-힣]", "", name.casefold()) for name in (column, header)}
+    text = _text(value).strip().casefold()
+    if names & {"action", "firewallaction", "동작"}:
+        if text in {"allow", "accept"}: return LEDGER_STYLES["allow"]
+        if text in {"drop", "reject", "deny"}: return LEDGER_STYLES["deny"]
+    if names & {"direction", "방향"}:
+        if text == "inbound": return LEDGER_STYLES["inbound"]
+        if text == "outbound": return LEDGER_STYLES["outbound"]
+    if names & {"antivirus", "av", "백신", "백신설치현황", "securityproduct", "product", "vendor"} and text == "sophos":
+        return LEDGER_STYLES["sophos"]
+    if names & {"status", "state", "result", "deliveryresult", "sendresult", "ztna", "상태", "전송결과", "ztna설치상태"}:
+        if text in {"running", "활성", "success", "succeeded", "성공", "정상", "enabled", "enable", "설치"}: return LEDGER_STYLES["running"]
+        if text in {"stop", "stopped", "stopping", "terminated", "비활성", "fail", "failed", "failure", "실패", "disabled", "disable", "미설치"}: return LEDGER_STYLES["stop"]
+        if text in {"any", "n/a", "미분류"}: return LEDGER_STYLES["neutral"]
+    return LEDGER_STYLES["body"]
 
 
 def _column_name(index: int) -> str:
@@ -85,7 +108,7 @@ def safe_sheet_name(name: str, used: set[str] | None = None) -> str:
 
 
 def _worksheet(rows: list[dict], columns: list[str], headers: dict[str, str], cell_styles: dict[str, dict[str, int]] | None = None,
-               ledger: bool = False, merge_columns: list[str] | None = None, group_key: str | None = None) -> bytes:
+               ledger: bool = True, merge_columns: list[str] | None = None, group_key: str | None = None) -> bytes:
     cell_styles = cell_styles or {}
     merge_columns = list(dict.fromkeys(merge_columns or []))
     if merge_columns and (not group_key or any(key not in columns for key in merge_columns)):
@@ -123,11 +146,13 @@ def _worksheet(rows: list[dict], columns: list[str], headers: dict[str, str], ce
     for row_index, row_values in enumerate(values, 1):
         row_node = SubElement(sheet_data, "row", {"r": str(row_index)})
         for column_index, value in enumerate(row_values, 1):
-            style = (LEDGER_STYLES["header"] if ledger else 1) if row_index == 1 else cell_styles.get(columns[column_index - 1], {}).get(_text(value), LEDGER_STYLES["body"] if ledger else 2)
+            column = columns[column_index - 1]
+            default_style = semantic_cell_style(column, headers.get(column, column), value) if ledger else 2
+            style = (LEDGER_STYLES["header"] if ledger else 1) if row_index == 1 else cell_styles.get(column, {}).get(_text(value), default_style)
             if ledger and row_index > 1:
                 if columns[column_index - 1] in merge_columns and style == LEDGER_STYLES["body"]:
                     style = LEDGER_STYLES["center"]
-                if row_index in group_starts: style += LEDGER_TOP_STYLE_OFFSET
+                if row_index in group_starts and 10 <= style <= 17: style += LEDGER_TOP_STYLE_OFFSET
             if (row_index, column_index) in covered: value = ""
             cell = SubElement(row_node, "c", {"r": f"{_column_name(column_index)}{row_index}", "t": "inlineStr", "s": str(style)})
             inline = SubElement(cell, "is")
@@ -144,16 +169,17 @@ def _report_summary_worksheet(report: dict[str, object]) -> bytes:
     """Build a cover-style summary sheet without table headers or AutoFilter."""
     sheet = Element("worksheet", {"xmlns": MAIN_NS})
     views = SubElement(sheet, "sheetViews")
-    SubElement(views, "sheetView", {"workbookViewId": "0", "showGridLines": "0"})
+    view = SubElement(views, "sheetView", {"workbookViewId": "0", "showGridLines": "0"})
+    SubElement(view, "pane", {"ySplit": "1", "topLeftCell": "A2", "activePane": "bottomLeft", "state": "frozen"})
     cols = SubElement(sheet, "cols")
     SubElement(cols, "col", {"min": "1", "max": "1", "width": "36", "customWidth": "1"})
     SubElement(cols, "col", {"min": "2", "max": "2", "width": "42", "customWidth": "1"})
     data = SubElement(sheet, "sheetData")
     merges: list[str] = []
     row_models: list[tuple[int, float | None, list[tuple[str, object, int, bool]]]] = [
-        (1, 30, [("A", "TIMELINE", 5, True)]),
-        (2, 7, [(_column_name(index), "", 8, False) for index in range(1, 3)]),
-        (11, 7, [(_column_name(index), "", 8, False) for index in range(1, 3)]),
+        (1, 30, [("A", "TIMELINE", LEDGER_STYLES["header"], True)]),
+        (2, 7, [(_column_name(index), "", LEDGER_STYLES["body"], False) for index in range(1, 3)]),
+        (11, 7, [(_column_name(index), "", LEDGER_STYLES["body"], False) for index in range(1, 3)]),
     ]
     merges.append("A1:B1")
     fields = [
@@ -166,7 +192,7 @@ def _report_summary_worksheet(report: dict[str, object]) -> bytes:
     for number, label, value in fields:
         lines = max(1, len(_text(value).splitlines()))
         height = min(72, 18 + (lines - 1) * 12) if lines > 1 else None
-        row_models.append((number, height, [("A", label, 6, True), ("B", value, 9 if number >= 13 else 7, True)]))
+        row_models.append((number, height, [("A", label, LEDGER_STYLES["header"], True), ("B", value, LEDGER_STYLES["center"], True)]))
     for number, height, cells in sorted(row_models, key=lambda item: item[0]):
         attributes = {"r": str(number)}
         if height is not None:
@@ -215,10 +241,10 @@ def write_xlsx_workbook(path: Path, sheets: list[dict]) -> list[str]:
         archive.writestr("_rels/.rels", package_rels)
         archive.writestr("xl/workbook.xml", workbook)
         archive.writestr("xl/_rels/workbook.xml.rels", workbook_rels)
-        archive.writestr("xl/styles.xml", _ledger_styles(styles) if any(spec.get("tableStyle") == "ledger" for *_rest, spec in prepared) else styles)
+        archive.writestr("xl/styles.xml", _ledger_styles(styles))
         for index, (_name, rows, columns, headers, cell_styles, report_summary, spec) in enumerate(prepared, 1):
             archive.writestr(f"xl/worksheets/sheet{index}.xml", _report_summary_worksheet(report_summary) if report_summary else _worksheet(rows, columns, headers, cell_styles,
-                spec.get("tableStyle") == "ledger", spec.get("mergeColumns"), spec.get("groupKey")))
+                True, spec.get("mergeColumns"), spec.get("groupKey")))
     return [name for name, *_rest in prepared]
 
 

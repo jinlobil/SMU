@@ -147,7 +147,7 @@ def test_summary_uses_real_two_column_cells_with_complete_border_styles(tmp_path
     merges = [node.attrib["ref"] for node in root.findall("x:mergeCells/x:mergeCell", namespace)]
     assert merges == ["A1:B1"]
     row = root.find("x:sheetData/x:row[@r='13']", namespace)
-    assert [(cell.attrib["r"], cell.attrib["s"]) for cell in row.findall("x:c", namespace)] == [("A13", "6"), ("B13", "9")]
+    assert [(cell.attrib["r"], cell.attrib["s"]) for cell in row.findall("x:c", namespace)] == [("A13", "10"), ("B13", "17")]
 
 
 def test_xlsx_generation_is_dispatched_to_laborer_not_fastapi() -> None:

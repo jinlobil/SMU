@@ -33,7 +33,7 @@ def test_endpoint_list_matches_legacy_fields_and_search(tmp_path: Path) -> None:
         "user": "홍길동",
         "dept": "Security",
         "ip": "10.0.0.7",
-        "ipCategories": {"wired": [], "wireless": [], "vpn": [], "ztna": [], "other": ["10.0.0.7"]},
+        "ipCategories": {"wired": [], "wireless": [], "vpn": [], "ztna": [], "aws": [], "ncp": ["10.0.0.7"], "other": []},
         "ztna": "미설치",
         "lastSeen": "2026-07-22 08:30:00",
     }]

@@ -12,7 +12,7 @@ class EndpointExportService:
     COLUMNS = [
         ("hostname", "Hostname"), ("userId", "User ID"), ("user", "User"), ("dept", "Dept"),
         ("wired", "유선 IP"), ("wireless", "무선 IP"), ("vpn", "VPN IP"),
-        ("ztnaIp", "ZTNA IP"), ("other", "기타 IP"), ("ztna", "ZTNA 설치 상태"),
+        ("ztnaIp", "ZTNA IP"), ("aws", "AWS IP"), ("ncp", "NCP IP"), ("other", "기타 IP"), ("ztna", "ZTNA 설치 상태"),
         ("lastSeen", "Last Seen (KST)"),
     ]
 
@@ -30,7 +30,7 @@ class EndpointExportService:
             categories = endpoint["ipCategories"]
             rows.append({"hostname": endpoint["hostname"], "userId": endpoint["userId"], "user": endpoint["user"], "dept": endpoint["dept"],
                          "wired": self._join(categories, "wired"), "wireless": self._join(categories, "wireless"), "vpn": self._join(categories, "vpn"),
-                         "ztnaIp": self._join(categories, "ztna"), "other": self._join(categories, "other"), "ztna": endpoint["ztna"], "lastSeen": endpoint["lastSeen"]})
+                         "aws": self._join(categories, "aws"), "ncp": self._join(categories, "ncp"), "ztnaIp": self._join(categories, "ztna"), "other": self._join(categories, "other"), "ztna": endpoint["ztna"], "lastSeen": endpoint["lastSeen"]})
         directory = self.root / "exports"; directory.mkdir(parents=True, exist_ok=True)
         path = directory / f"endpoint_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.xlsx"
         names = write_xlsx_workbook(path, [{"name": "Endpoint List", "rows": rows, "columns": [key for key, _ in self.COLUMNS], "headers": dict(self.COLUMNS)}])
