@@ -11,37 +11,44 @@ from backend.services.exceptions import ExceptionService
 SEARCH_FIELDS = {"all", "hostname", "userId", "user", "dept", "ip", "ztna"}
 SORT_FIELDS = {"hostname", "userId", "user", "dept", "ip", "ztna", "lastSeen"}
 IP_NETWORKS = {
-    "wired": ipaddress.ip_network("101.1.0.0/22"),
-    "wireless": ipaddress.ip_network("101.1.4.0/22"),
-    "vpn": ipaddress.ip_network("106.1.0.0/16"),
+    "wired": ("101.1.0.0/22", "101.3.0.0/24"),
+    "wireless": ("101.1.4.0/22",),
+    "vpn": ("106.1.0.0/16",),
+    "aws": ("100.1.0.0/22", "10.10.0.0/16", "10.20.0.0/16"),
+    "ncp": ("10.0.0.0/16",),
 }
+IP_NETWORKS = {category: tuple(ipaddress.ip_network(value) for value in values) for category, values in IP_NETWORKS.items()}
+IP_RANGES = {
+    "wired": (("101.3.1.1", "101.3.1.4"), ("101.2.1.1", "101.2.1.149")),
+    "wireless": (("101.3.1.5", "101.3.1.254"), ("101.2.1.150", "101.2.1.250")),
+}
+IP_RANGES = {category: tuple((ipaddress.ip_address(start), ipaddress.ip_address(end)) for start, end in ranges) for category, ranges in IP_RANGES.items()}
 ZTNA_IP = ipaddress.ip_address("100.64.0.1")
+IP_CATEGORIES = ("wired", "wireless", "vpn", "ztna", "aws", "ncp", "other")
 
 
 def classify_endpoint_ips(values: object) -> dict[str, list[str]]:
-    """Classify unique IPv4 values without mutating or dropping the source data."""
-    result = {"wired": [], "wireless": [], "vpn": [], "ztna": [], "other": []}
+    """Shared screen/export classification; preserve all distinct source values."""
+    result = {category: [] for category in IP_CATEGORIES}
     seen: set[str] = set()
     for raw in values if isinstance(values, list) else []:
         text = str(raw).strip()
         if not text or text in seen:
             continue
         seen.add(text)
+        category = "other"
         try:
             address = ipaddress.ip_address(text)
+            if address == ZTNA_IP:
+                category = "ztna"
+            elif address.version == 4:
+                for name, networks in IP_NETWORKS.items():
+                    if any(address in network for network in networks) or any(start <= address <= end for start, end in IP_RANGES.get(name, ())):
+                        category = name
+                        break
         except ValueError:
-            result["other"].append(text)
-            continue
-        if address == ZTNA_IP:
-            result["ztna"].append(text)
-        elif address.version == 4 and address in IP_NETWORKS["wired"]:
-            result["wired"].append(text)
-        elif address.version == 4 and address in IP_NETWORKS["wireless"]:
-            result["wireless"].append(text)
-        elif address.version == 4 and address in IP_NETWORKS["vpn"]:
-            result["vpn"].append(text)
-        else:
-            result["other"].append(text)
+            pass
+        result[category].append(text)
     return result
 
 

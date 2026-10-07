@@ -312,12 +312,12 @@ def test_multi_server_multi_eni_merge_ranges_do_not_overlap(tmp_path):
         assert text(refs["D2"]) == "i-0" and text(refs["D6"]) == "i-1"
 
 
-def test_generic_xlsx_keeps_existing_style_and_does_not_merge(tmp_path):
+def test_generic_xlsx_uses_common_ledger_style_without_merging(tmp_path):
     path = tmp_path / "generic.xlsx"
     write_xlsx_workbook(path, [{"name": "Data", "rows": [{"a": "x"}, {"a": "x"}], "columns": ["a"]}])
     with ZipFile(path) as archive:
         sheet = ET.fromstring(archive.read("xl/worksheets/sheet1.xml"))
-        assert cells(sheet)["A1"].attrib["s"] == "1" and cells(sheet)["A2"].attrib["s"] == "2"
+        assert cells(sheet)["A1"].attrib["s"] == "10" and cells(sheet)["A2"].attrib["s"] == "11"
         assert sheet.find("m:mergeCells", NS) is None
 
 

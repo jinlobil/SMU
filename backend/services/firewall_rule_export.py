@@ -164,6 +164,27 @@ def _object_maps(payloads: dict[str, str]) -> tuple[dict[str, str], dict[str, st
     return resolved, services
 
 
+def _fqdn_object_patterns(payloads: dict[str, str]) -> dict[str, list[str]]:
+    """Keep typed FQDN objects distinct from IP objects and display strings."""
+    hosts = {_direct_text(node, "Name"): [_direct_text(node, "FQDN", "HostName")]
+             for node in _nodes(payloads.get("FQDNHost", "<Response/>"), "FQDNHost") if _direct_text(node, "Name")}
+    groups = {}
+    for node in _nodes(payloads.get("FQDNHostGroup", "<Response/>"), "FQDNHostGroup"):
+        name = _direct_text(node, "Name")
+        if name:
+            members = []
+            for item in node.iter():
+                if _tag(item) in {"FQDNHost", "FQDNHostGroup", "Host", "Member", "HostName"}:
+                    value = _direct_text(item, "Name") or (item.text or "").strip()
+                    if value and value != name: members.append(value)
+            groups[name] = list(dict.fromkeys([*groups.get(name, []), *members]))
+    def patterns(name, visited):
+        if name in visited: return []
+        if name in hosts: return [value for value in hosts[name] if value]
+        return [value for member in groups.get(name, []) for value in patterns(member, visited | {name})]
+    return {name: list(dict.fromkeys(patterns(name, set()))) for name in hosts.keys() | groups.keys()}
+
+
 def _join(values: list[str]) -> str:
     return "\n".join(values)
 
@@ -242,6 +263,7 @@ def _restore_rule_order(rows: list[dict[str, Any]]) -> bool:
 
 def parse_firewall_rules(payloads: dict[str, str], rule_entity: str | None = None) -> tuple[list[dict[str, Any]], list[str]]:
     resolved_objects, resolved_services = _object_maps(payloads)
+    fqdn_objects = _fqdn_object_patterns(payloads)
     rows: list[dict[str, Any]] = []
     rule_xml = payloads.get("Rule") or payloads.get("FirewallRule") or payloads.get("SecurityPolicy") or ""
     root = ET.fromstring(rule_xml)
@@ -284,6 +306,7 @@ def parse_firewall_rules(payloads: dict[str, str], rule_entity: str | None = Non
             "Destination Zone": _join(_under_direct(policy, {"DestinationZones", "DestinationZone"})),
             "Destination Object": _join(destination),
             "Destination Resolved": _join([resolved_objects.get(value, value) for value in destination]),
+            "_Destination FQDNs": [pattern for name in destination for pattern in fqdn_objects.get(name, [])],
             "Service": _join(services),
             "Service Resolved / Protocol / Port": _join([resolved_services.get(value, value) for value in services]),
             "Schedule": _feature(policy, "Schedule"),
@@ -366,7 +389,7 @@ class FirewallRuleExportService:
                         log.warning("Firewall XML enrichment unavailable firewall=%s api_version=%s entity=%s error=%s", name, rule_response["apiVersion"] or "unknown", entity, exc)
                 diagnostics[name]["enrichmentErrors"] = enrichment_errors
                 rows, columns = parse_firewall_rules(payloads, rule_response["entity"])
-                sheets.append({"name": name, "rows": rows, "columns": columns, "cellStyles": {"Status": {"활성": 3, "비활성": 4}}})
+                sheets.append({"name": name, "rows": rows, "columns": columns})
                 counts[name] = len(rows)
                 if "Rule ID" in columns and "Rule ID" not in analysis_columns:
                     analysis_columns.append("Rule ID")
@@ -382,7 +405,7 @@ class FirewallRuleExportService:
         base_columns = (["Rule ID"] if analysis_columns else []) + MANAGEMENT_COLUMNS
         derived_columns = ["Source Category", "Destination Category", "Source Site", "Destination Site"]
         for sheet_name in ("LAN ↔ OFFICE", "LAN ↔ WAN", "ETC"):
-            sheets.append({"name": sheet_name, "rows": analysis_rows[sheet_name], "columns": ["Firewall", *base_columns, *derived_columns], "cellStyles": {"Status": {"활성": 3, "비활성": 4}}})
+            sheets.append({"name": sheet_name, "rows": analysis_rows[sheet_name], "columns": ["Firewall", *base_columns, *derived_columns]})
         original_total = sum(counts.values())
         analysis_total = sum(len(rows) for rows in analysis_rows.values())
         if original_total != analysis_total:

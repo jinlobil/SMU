@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from backend.services.fqdn import fqdn_matches, normalize_fqdn, resolve_fqdn
 from backend.services.firewall import FirewallClient, FirewallService, parse_status
 from backend.services.aws_security_group_path import AwsSecurityGroupPathService, firewall_step, policy_summary
 from backend.services.firewall_network_mapping import IP_TOKEN, MASKED_NETWORK, determine_firewall_path, expected_zones_for_path, resolve_input_network
@@ -132,6 +133,7 @@ def match_rules(
     expected_source_zone: str | None = None,
     expected_destination_zone: str | None = None,
     protocol_number: int | None = None,
+    destination_fqdn: str | None = None,
 ) -> dict[str, Any]:
     protocol = protocol.upper()
     broad_query = protocol == "ANY" or (protocol in {"TCP", "UDP"} and port is None) or (protocol == "IP" and protocol_number is None)
@@ -139,7 +141,12 @@ def match_rules(
     evaluations = []
     for row in rows:
         source_result = address_match_details(source, row.get("Source Object", ""), row.get("Source Resolved", ""), row.get("source_wildcard") is True)
-        destination_result = address_match_details(destination, row.get("Destination Object", ""), row.get("Destination Resolved", ""), row.get("destination_wildcard") is True)
+        if destination_fqdn:
+            wildcard = row.get("destination_wildcard") is True or any(is_wildcard_value(value) for value in row.get("Destination Object", "").splitlines())
+            matched = wildcard or any(fqdn_matches(destination_fqdn, pattern) for pattern in row.get("_Destination FQDNs", []))
+            destination_result = {"match": "full" if matched else "none", "wildcard": wildcard, "resolverFailed": False}
+        else:
+            destination_result = address_match_details(destination, row.get("Destination Object", ""), row.get("Destination Resolved", ""), row.get("destination_wildcard") is True)
         source_match, destination_match = source_result["match"], destination_result["match"]
         source_zone_match = zone_match(expected_source_zone, row.get("Source Zone", ""))
         destination_zone_match = zone_match(expected_destination_zone, row.get("Destination Zone", ""))
@@ -278,9 +285,16 @@ class FirewallPathCheckService:
 
     def check(self, source_value: str, destination_value: str, protocol: str = "ANY", port: Any = None,
               refresh: bool = False, protocol_number: Any = None) -> dict[str, Any]:
-        try: source_network, destination_network = ipaddress.ip_network(source_value, strict=False), ipaddress.ip_network(destination_value, strict=False)
-        except ValueError as exc: raise ValueError(f"Source/Destination IP 또는 CIDR을 확인하세요: {exc}") from exc
-        if source_network.version != destination_network.version:
+        try: source_network = ipaddress.ip_network(source_value, strict=False)
+        except ValueError as exc: raise ValueError(f"Source IP 또는 CIDR을 확인하세요: {exc}") from exc
+        destination_fqdn = None
+        resolved_addresses = []
+        try: destination_network = ipaddress.ip_network(destination_value, strict=False)
+        except ValueError:
+            destination_fqdn = normalize_fqdn(destination_value)
+            resolved_addresses = resolve_fqdn(destination_fqdn)
+            destination_network = ipaddress.ip_network(resolved_addresses[0]) if len(resolved_addresses) == 1 else None
+        if not destination_fqdn and source_network.version != destination_network.version:
             raise ValueError("Source/Destination은 같은 IP address family를 사용해야 합니다")
         protocol = (protocol or "ANY").strip().upper()
         if not re.fullmatch(r"[A-Z0-9][A-Z0-9 _+./-]{0,31}", protocol):
@@ -295,11 +309,17 @@ class FirewallPathCheckService:
             raise ValueError("Protocol Number는 IP Protocol에서만 사용할 수 있습니다")
         if normalized_protocol_number is not None and not 0 <= normalized_protocol_number <= 255:
             raise ValueError("Protocol Number는 비우거나 0~255 범위여야 합니다")
-        source, destination = resolve_input_network(source_value), resolve_input_network(destination_value)
+        source = resolve_input_network(source_value)
+        destination = resolve_input_network(str(destination_network)) if destination_fqdn and destination_network else resolve_input_network(destination_value)
+        if destination_fqdn:
+            destination = {**(destination or {"network": "", "site": "FQDN", "category": "", "managedFirewall": ""}), "input": destination_fqdn, "fqdn": destination_fqdn, "resolvedIps": resolved_addresses}
         if source is None or destination is None: raise ValueError("Source/Destination IP 또는 CIDR을 확인하세요")
         path, partial = determine_firewall_path(source, destination)
         aws = AwsSecurityGroupPathService(self.root).check(source_network, destination_network, protocol, normalized_port,
-                                                         normalized_protocol_number, path, partial)
+                                                         normalized_protocol_number, path, partial, fqdn=bool(destination_fqdn),
+                                                         destination_queries=[ipaddress.ip_network(value) for value in resolved_addresses] if destination_fqdn else None)
+        if destination_fqdn and not destination_network:
+            partial = True
         if aws.get("networkPath"):
             path, partial = aws["networkPath"]["path"], aws["networkPath"]["partialPath"]
         expected_zones = expected_zones_for_path(source, destination, path)
@@ -312,7 +332,9 @@ class FirewallPathCheckService:
             try:
                 snapshot = self._snapshot(config, refresh)
                 source_zone, destination_zone = expected_zones.get(name, (None, None))
-                results.append({"firewall": name, "available": True, "checkedAt": snapshot["checkedAt"], "expectedZones": {"source": source_zone, "destination": destination_zone}, "policy": match_rules(snapshot["rules"], source_network, destination_network, protocol, normalized_port, source_zone, destination_zone, normalized_protocol_number), "routing": {"destination": match_static_route(snapshot["routes"], destination_network), "return": match_static_route(snapshot["routes"], source_network), "error": snapshot["routeError"]}})
+                if destination_fqdn and not destination_network:
+                    destination_zone = None
+                results.append({"firewall": name, "available": True, "checkedAt": snapshot["checkedAt"], "expectedZones": {"source": source_zone, "destination": destination_zone}, "policy": match_rules(snapshot["rules"], source_network, destination_network, protocol, normalized_port, source_zone, destination_zone, normalized_protocol_number, destination_fqdn), "routing": {"destination": match_static_route(snapshot["routes"], destination_network) if destination_network else None, "return": match_static_route(snapshot["routes"], source_network), "error": snapshot["routeError"]}})
             except Exception as exc:
                 results.append({"firewall": name, "available": False, "error": f"{type(exc).__name__}: {exc}", "policy": {"state": "unavailable"}, "routing": {"destination": None, "return": None}})
         steps = ([aws["outbound"]] if aws["outbound"]["state"] != "N/A" else [])

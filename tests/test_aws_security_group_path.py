@@ -301,7 +301,7 @@ def test_empty_rules_are_a_confirmed_fail_for_specific_query(tmp_path):
     save(tmp_path, data)
     step = sg_check(tmp_path)["inbound"]
     assert step["state"] == "FAIL"
-    assert step["reason"] == "Attached SG에서 Query 조건과 일치하는 Allow Rule 없음"
+    assert step["reason"] == "일치하는 Allow Rule 없음"
 
 
 def test_cidr_and_duplicate_ip_never_select_arbitrary_instance(tmp_path):

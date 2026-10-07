@@ -250,9 +250,9 @@ def test_export_styles_only_the_localized_status_cell(tmp_path: Path, monkeypatc
     with ZipFile(result["path"]) as workbook:
         sheet = workbook.read("xl/worksheets/sheet1.xml").decode()
         styles = workbook.read("xl/styles.xml").decode()
-    assert 'r="B2" t="inlineStr" s="3"' in sheet
-    assert 'fgColor rgb="FFC6F6D5"' in styles
-    assert 'fgColor rgb="FFFED7D7"' in styles
+    assert 'r="B2" t="inlineStr" s="12"' in sheet
+    assert 'fgColor rgb="FF228B46"' in styles
+    assert 'fgColor rgb="FFC62828"' in styles
 
 
 def test_analysis_sheet_adds_firewall_and_derived_columns_without_changing_master(tmp_path: Path, monkeypatch) -> None:

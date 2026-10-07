@@ -154,10 +154,10 @@ class AwsSecurityGroupPathService:
         return "NO_MATCH", "Rule CIDR에 상대 IP/CIDR 포함 안 됨"
 
     def _step(self, direction: str, endpoint: dict[str, Any], peer: dict[str, Any], peer_query,
-              protocol: str, port: int | None, protocol_number: int | None, data: dict[str, Any], path: list[str], partial: bool) -> dict[str, Any]:
+              protocol: str, port: int | None, protocol_number: int | None, data: dict[str, Any], path: list[str], partial: bool, port_only: bool = False) -> dict[str, Any]:
         broad = broad_query(protocol, port, protocol_number)
         result = {"kind": "aws_sg", "label": f"AWS SG {direction}", "direction": direction, "state": endpoint["state"],
-                  "endpoint": endpoint, "groups": [], "matches": [], "evaluations": [], "broadQuery": broad, "reason": endpoint["reason"]}
+                  "queryMode": "fqdn" if port_only else "ip", "endpoint": endpoint, "groups": [], "matches": [], "evaluations": [], "broadQuery": broad, "reason": endpoint["reason"]}
         if endpoint["state"] != "IDENTIFIED":
             return result
         if not endpoint.get("groupsValid") or not endpoint.get("groupIds"):
@@ -174,7 +174,7 @@ class AwsSecurityGroupPathService:
                 continue
             if raw["GroupId"] not in endpoint["groupIds"] or raw["IsEgress"] != (direction == "Outbound"):
                 continue
-            address_match, address_reason = self._address(raw, peer_query, peer, endpoint, path, partial)
+            address_match, address_reason = ("CANDIDATE", "Source/Destination 조건은 FQDN 기준으로 판정하지 않음") if port_only else self._address(raw, peer_query, peer, endpoint, path, partial)
             service_match, service_reason = _service(raw, protocol, port, protocol_number)
             state = "NO_MATCH" if "NO_MATCH" in {address_match, service_match} else "MATCH" if address_match == service_match == "MATCH" else "CANDIDATE"
             if state == "MATCH" and raw["GroupId"] not in groups:
@@ -195,17 +195,25 @@ class AwsSecurityGroupPathService:
             result.update(state="PASS", reason="Attached SG의 Allow Rule이 Query 조건과 일치")
         elif broad or incomplete or result["matches"]:
             reason = "AWS SG 데이터 누락/불완전" if incomplete else "Broad Query · Protocol/Port 조건 확인 필요" if broad else "Candidate Rule의 추가 조건 확인 필요"
+            if port_only and result["matches"] and not incomplete:
+                reason = "해당 포트 허용 Rule 존재 · Source/Destination 조건은 FQDN 기준으로 판정하지 않음"
             result.update(state="UNKNOWN", reason=reason)
         else:
-            result.update(state="FAIL", reason="Attached SG에서 Query 조건과 일치하는 Allow Rule 없음")
+            result.update(state="FAIL", reason="해당 포트 허용 Rule 없음" if port_only else "일치하는 Allow Rule 없음")
         return result
 
     def check(self, source, destination, protocol: str, port: int | None, protocol_number: int | None,
-              path: list[str], partial: bool) -> dict[str, Any]:
+              path: list[str], partial: bool, *, fqdn: bool = False, destination_queries: list | None = None) -> dict[str, Any]:
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
             if not isinstance(data, dict): raise ValueError("AWS Cache object required")
-            source_endpoint, destination_endpoint = self._endpoint(source, data), self._endpoint(destination, data)
+            source_endpoint = self._endpoint(source, data)
+            if fqdn:
+                endpoints = [self._endpoint(query, data) for query in destination_queries or []]
+                identities = {(item.get("state"), item.get("instanceId"), item.get("eniId")) for item in endpoints}
+                destination_endpoint = endpoints[0] if len(identities) == 1 else self._unknown_endpoint("FQDN의 AWS Endpoint 확인 불가 · DNS 미확인 또는 여러 대상")
+            else:
+                destination_endpoint = self._endpoint(destination, data)
             network_path = None
             if source_endpoint["state"] == destination_endpoint["state"] == "IDENTIFIED":
                 source_vpc, destination_vpc = source_endpoint.get("vpcId"), destination_endpoint.get("vpcId")
@@ -215,15 +223,15 @@ class AwsSecurityGroupPathService:
                 network_path = {"path": path, "partialPath": partial,
                                 "mode": "same_vpc" if same_vpc else "unknown",
                                 "reason": "동일 VPC · AWS SG 정책 검사" if same_vpc else "AWS 중간 Network Path 확인 불가 · Routing 정보 미수집"}
-            return {"networkPath": network_path, "outbound": self._step("Outbound", source_endpoint, destination_endpoint, destination, protocol, port, protocol_number, data, path, partial),
-                    "inbound": self._step("Inbound", destination_endpoint, source_endpoint, source, protocol, port, protocol_number, data, path, partial),
+            return {"networkPath": network_path, "outbound": self._step("Outbound", source_endpoint, destination_endpoint, destination, protocol, port, protocol_number, data, path, partial, port_only=fqdn),
+                    "inbound": self._step("Inbound", destination_endpoint, source_endpoint, source, protocol, port, protocol_number, data, path, partial, port_only=fqdn),
                     "cache": {"path": str(self.path), "exists": True, "fetchedAt": (data.get("metadata") or {}).get("fetched_at")}}
         except Exception as exc:
             # AWS data must never discard the already-evaluated Firewall hops.
             log.warning("AWS SG check unavailable error_type=%s", type(exc).__name__)
             reason = "AWS Cache 없음" if isinstance(exc, FileNotFoundError) else "AWS Cache 데이터 확인 불가"
             return {key: {"kind": "aws_sg", "label": f"AWS SG {direction}", "direction": direction, "state": "UNKNOWN", "reason": reason,
-                          "endpoint": self._unknown_endpoint(reason), "groups": [], "matches": [], "evaluations": [], "broadQuery": broad_query(protocol, port, protocol_number)}
+                          "queryMode": "fqdn" if fqdn else "ip", "endpoint": self._unknown_endpoint(reason), "groups": [], "matches": [], "evaluations": [], "broadQuery": broad_query(protocol, port, protocol_number)}
                     for key, direction in [("outbound", "Outbound"), ("inbound", "Inbound")]}
 
 
