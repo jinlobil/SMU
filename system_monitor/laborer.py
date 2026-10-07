@@ -17,6 +17,7 @@ from backend.services.detections import DetectionService
 from backend.services.email_security import EmailSecurityService
 from backend.services.index_maintenance import IndexMaintenanceService
 from backend.services.report import ReportService
+from backend.services.office_encryption import XLSX_JOB_TYPES, ExportEncryptionError, cleanup_stale_exports, encrypted_xlsx_export, encryption_options
 from backend.services.spreadsheet import write_xlsx
 from backend.services.exporting import export_headers, normalize_export_columns, normalize_report_sections
 from backend.services.firewall_detections import FirewallDetectionService
@@ -47,10 +48,12 @@ class LaborerAgent:
         self.stop = threading.Event()
         self.wake = threading.Event()
         self.job_lock = threading.Lock()
+        self._export_passwords: dict[str, str] = {}
         self.current_job_id: str | None = None
         self.started_at = datetime.now().astimezone().isoformat(timespec="seconds")
         self.log = logging.getLogger("smu.laborer.agent")
         self.directory.mkdir(parents=True, exist_ok=True)
+        cleanup_stale_exports(self.root)
         self._initialize_database()
 
     @staticmethod
@@ -66,16 +69,30 @@ class LaborerAgent:
     def _initialize_database(self) -> None:
         with self._connect() as db:
             db.execute("CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, type TEXT NOT NULL, status TEXT NOT NULL, message TEXT NOT NULL, payload TEXT NOT NULL, result TEXT, error TEXT, created_at TEXT NOT NULL, started_at TEXT, finished_at TEXT)")
+            for row in db.execute("SELECT id,payload FROM jobs WHERE status IN ('queued','running')").fetchall():
+                if json.loads(row["payload"]).get("encrypt") is True:
+                    db.execute("UPDATE jobs SET status='failed', message='비밀번호가 재시작으로 소실되었습니다. 다시 요청하세요.', error=?, finished_at=? WHERE id=?",
+                               (json.dumps({"code": "EXPORT_PASSWORD_LOST", "message": "암호화 작업을 다시 요청하세요."}), self._now(), row["id"]))
             db.execute("UPDATE jobs SET status='queued', message='Laborer 재시작 후 작업 복구 중', started_at=NULL WHERE status='running'")
 
     def submit(self, job_type: str, payload: dict) -> dict:
-        if job_type not in {"vacuum", "export", "report", "firewall_rules_export", "timeline_export", "aws_export", "endpoint_export"}:
+        if job_type not in XLSX_JOB_TYPES | {"vacuum", "report"}:
             raise ValueError(f"지원하지 않는 Laborer 작업입니다: {job_type}")
+        encryption = encryption_options(payload)
+        if encryption and job_type not in XLSX_JOB_TYPES:
+            raise ValueError("파일 암호화는 XLSX Export에만 사용할 수 있습니다.")
+        password = encryption.get("password")
+        payload = {key: value for key, value in payload.items() if key not in {"password", "confirmPassword", "passwordConfirm", "passwordConfirmation"}}
         with self.job_lock:
-            with self._connect() as db:
-                job_id = str(uuid.uuid4())
-                db.execute("INSERT INTO jobs (id,type,status,message,payload,result,error,created_at,started_at,finished_at) VALUES (?,?,?,?,?,?,?,?,?,?)", (job_id, job_type, "queued", "대기 중", json.dumps(payload, ensure_ascii=False), None, None, self._now(), None, None))
-                row = db.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+            job_id = str(uuid.uuid4())
+            if password is not None: self._export_passwords[job_id] = password
+            try:
+                with self._connect() as db:
+                    db.execute("INSERT INTO jobs (id,type,status,message,payload,result,error,created_at,started_at,finished_at) VALUES (?,?,?,?,?,?,?,?,?,?)", (job_id, job_type, "queued", "대기 중", json.dumps(payload, ensure_ascii=False), None, None, self._now(), None, None))
+                    row = db.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+            except Exception:
+                self._export_passwords.pop(job_id, None)
+                raise
         self.wake.set()
         return self._public(row)
 
@@ -131,6 +148,14 @@ class LaborerAgent:
         progress(f"Timeline XLSX 파일 생성 완료 · {result['events']:,}건")
         return {"filename": path.name, "path": str(path), "rows": result["events"], "sheets": result["sheets"]}
 
+    def _xlsx_job(self, job_type: str, payload: dict, callback) -> dict:
+        if job_type == "export": return self._export(payload, callback)
+        if job_type == "firewall_rules_export": return FirewallRuleExportService(self.root).build(payload.get("firewalls") or [], callback)
+        if job_type == "timeline_export": return self._timeline_export(payload, callback)
+        if job_type == "aws_export": return AwsExportService(self.root).build(str(payload.get("kind", "")), callback)
+        if job_type == "endpoint_export": return EndpointExportService(self.root).build(callback)
+        raise ValueError("지원하지 않는 XLSX Export입니다.")
+
     def worker_loop(self) -> None:
         while not self.stop.is_set():
             with self._connect() as db:
@@ -144,17 +169,28 @@ class LaborerAgent:
                 callback = lambda message: self._update(job_id, message=str(message))
                 if row["type"] == "vacuum": result = IndexMaintenanceService(self.root).vacuum(str(payload.get("target", "all")), callback)
                 elif row["type"] == "report": result = ReportService(self.root).build(date.fromisoformat(str(payload.get("start"))), date.fromisoformat(str(payload.get("end"))), callback, normalize_report_sections(payload.get("sections")))
-                elif row["type"] == "export": result = self._export(payload, callback)
-                elif row["type"] == "firewall_rules_export": result = FirewallRuleExportService(self.root).build(payload.get("firewalls") or [], callback)
-                elif row["type"] == "timeline_export": result = self._timeline_export(payload, callback)
-                elif row["type"] == "aws_export": result = AwsExportService(self.root).build(str(payload.get("kind", "")), callback)
-                elif row["type"] == "endpoint_export": result = EndpointExportService(self.root).build(callback)
+                elif row["type"] in XLSX_JOB_TYPES:
+                    if payload.get("encrypt") is True:
+                        password = self._export_passwords.pop(job_id, None)
+                        if password is None:
+                            raise ExportEncryptionError("EXPORT_PASSWORD_LOST", "암호화 비밀번호가 소실되었습니다. 작업을 다시 요청하세요.")
+                        result = encrypted_xlsx_export(self.root, password, lambda: self._xlsx_job(row["type"], payload, callback), callback)
+                    else:
+                        result = self._xlsx_job(row["type"], payload, callback)
                 else: raise ValueError(f"Unknown laborer job type: {row['type']}")
                 self._update(job_id, status="completed", message="완료", result=result, finished_at=self._now())
             except Exception as exc:
+                if payload.get("encrypt") is True:
+                    code = exc.code if isinstance(exc, ExportEncryptionError) else "OFFICE_ENCRYPTION_FAILED"
+                    message = str(exc) if isinstance(exc, ExportEncryptionError) else "Office 암호화 Export에 실패했습니다."
+                    self.log.error("Encrypted XLSX job failed job_id=%s code=%s", job_id, code)
+                    self._update(job_id, status="failed", message=message, error={"code": code, "message": message}, finished_at=self._now())
+                    continue
                 self.log.exception("Laborer job failed job_id=%s", job_id)
                 self._update(job_id, status="failed", message="실패", error={"message": f"{type(exc).__name__}: {exc}", "traceback": traceback.format_exc()}, finished_at=self._now())
             finally:
+                self._export_passwords.pop(job_id, None)
+                password = None
                 self.current_job_id = None
 
 
@@ -172,7 +208,16 @@ def handler_for(agent: LaborerAgent):
             parsed = urlparse(self.path)
             if parsed.path == "/jobs":
                 try:
-                    job_type, payload = decode_job_query(parsed.query)
+                    length = int(self.headers.get("Content-Length", "0"))
+                    if not 0 <= length <= 1048576: raise ValueError("잘못된 작업 요청입니다.")
+                    if length:
+                        data = json.loads(self.rfile.read(length))
+                        if not isinstance(data, dict): raise ValueError("잘못된 작업 요청입니다.")
+                        job_type = data.pop("type", "")
+                        payload = data
+                    else:
+                        if "password" in parse_qs(parsed.query): raise ValueError("암호화 비밀번호는 JSON 본문으로 전달해야 합니다.")
+                        job_type, payload = decode_job_query(parsed.query)
                     self._send(202, agent.submit(job_type, payload))
                 except (ValueError, TypeError) as exc: self._send(400, {"error": str(exc)})
                 return

@@ -36,8 +36,8 @@ class WatchdogManager:
             self.job_events.info("%s job %s job_id=%s", kind, status, job_id)
         return job
 
-    def request(self, path: str, method: str = "GET", timeout: float = 2) -> dict:
-        request = urllib.request.Request(self.url + path, method=method)
+    def request(self, path: str, method: str = "GET", timeout: float = 2, body: dict | None = None) -> dict:
+        request = urllib.request.Request(self.url + path, method=method, data=json.dumps(body).encode("utf-8") if body is not None else None, headers={"Content-Type": "application/json"} if body is not None else {})
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.loads(response.read())
 
@@ -217,6 +217,10 @@ class WatchdogManager:
         # Keep structured values (selected export columns/report sections) intact
         # while the request is proxied through the watchdog and on to Laborer.
         job_payload = {key: value for key, value in payload.items() if value is not None}
+        if job_payload.get("encrypt") is True:
+            return self._report_job_state(self.request("/laborer/jobs", "POST", timeout=20, body={"type": job_type, **job_payload}), "Laborer")
+        job_payload.pop("password", None)
+        job_payload.pop("encrypt", None)
         query = urlencode({"type": job_type, **job_payload}, doseq=True)
         return self._report_job_state(self.request(f"/laborer/jobs?{query}", "POST", timeout=20), "Laborer")
 

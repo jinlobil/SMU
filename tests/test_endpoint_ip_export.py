@@ -56,7 +56,7 @@ def test_endpoint_ui_and_laborer_use_backend_classification_and_existing_job_flo
     assert "ipCategories" in page and all(label in page for label in ("유선", "무선", "VPN", "ZTNA", "기타"))
     assert "classify_endpoint_ips" not in page
     assert "Endpoint XLSX" in export_page and '"/api/jobs/export/endpoints"' in export_page
-    assert 'row["type"] == "endpoint_export"' in laborer
+    assert 'job_type == "endpoint_export"' in laborer
 
 
 def test_seven_categories_cover_ranges_boundaries_and_preserve_multiple_ips():

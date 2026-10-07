@@ -68,7 +68,7 @@ def test_timeline_page_requests_backend_export_with_current_filters() -> None:
     assert 'fetch("/api/jobs/export/timeline"' in page
     assert 'fetch(`/api/jobs/${job.id}`)' in page
     assert "/api/config/export/file/" in page
-    assert "JSON.stringify(lastQuery)" in page
+    assert "JSON.stringify({ ...lastQuery, ...options })" in page
     assert "Excel 다운로드" in page
     assert 'className="refresh-button"' in page
 
@@ -154,7 +154,7 @@ def test_xlsx_generation_is_dispatched_to_laborer_not_fastapi() -> None:
     root = Path(__file__).resolve().parents[1]
     app = (root / "backend/app.py").read_text(encoding="utf-8")
     laborer = (root / "system_monitor/laborer.py").read_text(encoding="utf-8")
-    assert 'start_laborer_job(\n        "timeline_export"' in app
+    assert 'start_xlsx_job("timeline_export", payload' in app
     assert "TimelineExportService(self.root).export" in laborer
     assert "timeline_export_service.export" not in app
 
