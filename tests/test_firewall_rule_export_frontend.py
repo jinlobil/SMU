@@ -19,4 +19,4 @@ def test_firewall_rule_export_is_a_laborer_job_with_list_transport() -> None:
     assert 'structured = {"columns", "sections", "firewalls"}' in laborer
     assert '"firewall_rules_export"' in laborer
     assert '@app.post("/api/jobs/export/firewall-rules"' in app
-    assert 'start_laborer_job("firewall_rules_export", firewalls=firewalls)' in app
+    assert 'start_xlsx_job("firewall_rules_export", payload, firewalls=firewalls)' in app

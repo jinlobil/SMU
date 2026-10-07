@@ -125,8 +125,8 @@ class HardwareWatchdog:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.loads(response.read())
 
-    def _laborer_request(self, path: str, method: str = "GET", timeout: float = 3) -> dict:
-        request = urllib.request.Request("http://127.0.0.1:8769" + path, method=method)
+    def _laborer_request(self, path: str, method: str = "GET", timeout: float = 3, body: dict | None = None) -> dict:
+        request = urllib.request.Request("http://127.0.0.1:8769" + path, method=method, data=json.dumps(body).encode("utf-8") if body is not None else None, headers={"Content-Type": "application/json"} if body is not None else {})
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.loads(response.read())
 
@@ -204,8 +204,10 @@ class HardwareWatchdog:
                 time.sleep(0.25)
         raise RuntimeError("Laborer did not publish a healthy heartbeat")
 
-    def submit_laborer_job(self, query: str) -> dict:
+    def submit_laborer_job(self, query: str, body: dict | None = None) -> dict:
         self.ensure_laborer()
+        if body is not None:
+            return self._laborer_request("/jobs", "POST", timeout=10, body=body)
         return self._laborer_request("/jobs" + (f"?{query}" if query else ""), "POST", timeout=10)
 
     def laborer_job(self, job_id: str) -> dict:
@@ -412,8 +414,16 @@ def handler_for(watchdog: HardwareWatchdog):
                     self._send(exc.code,payload)
                 except Exception as exc: self._send(503,{"accepted":False,"error":f"{type(exc).__name__}: {exc}"})
             elif self.path.startswith("/laborer/jobs"):
-                try: self._send(202, watchdog.submit_laborer_job(urlparse(self.path).query))
-                except Exception as exc: self._send(503, {"accepted": False, "error": f"{type(exc).__name__}: {exc}"})
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    if not 0 <= length <= 1048576: raise ValueError()
+                    if length:
+                        body = json.loads(self.rfile.read(length))
+                        if not isinstance(body, dict): raise ValueError()
+                        self._send(202, watchdog.submit_laborer_job("", body=body))
+                    else:
+                        self._send(202, watchdog.submit_laborer_job(urlparse(self.path).query))
+                except Exception: self._send(503, {"accepted": False, "error": "Laborer 작업 전달에 실패했습니다."})
             elif self.path == "/shutdown": self._send(202, {"accepted": True}); threading.Thread(target=watchdog.stop.set, daemon=True).start()
             else: self._send(404, {"error": "not found"})
         def log_message(self, *_): pass

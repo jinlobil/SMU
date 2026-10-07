@@ -38,4 +38,4 @@ def test_aws_sg_navigation_detail_and_laborer_export_are_wired():
     for label in ("Inbound", "Outbound", "적용 서버"): assert label in sg
     assert "/assets/aws?instanceId=" in sg and "/assets/aws-sg?groupId=" in aws
     assert "AWS EC2 XLSX" in export and "AWS SG XLSX" in export and '"/api/jobs/export/aws"' in export
-    assert 'row["type"] == "aws_export"' in laborer
+    assert 'job_type == "aws_export"' in laborer

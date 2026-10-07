@@ -41,6 +41,7 @@ from backend.services.settings import DEFAULT_THEME, SchedulerService, ThemePres
 from backend.services.report import ReportService
 from backend.services.system_metrics import SystemMetricsService
 from backend.services.watchdog_client import WatchdogManager
+from backend.services.office_encryption import encryption_options
 from backend.services.spreadsheet import write_xlsx
 from backend.services.integrations import IntegrationService
 from backend.services.index_maintenance import IndexMaintenanceService
@@ -628,6 +629,14 @@ def export_schema() -> dict:
     return {"success": True, "data": schema_payload()}
 
 
+def start_xlsx_job(job_type: str, payload: dict | None, **options):
+    try:
+        encryption = encryption_options(payload if isinstance(payload, dict) else {})
+    except ValueError as exc:
+        return error_response(str(uuid.uuid4()), "INVALID_EXPORT_ENCRYPTION", str(exc), 400)
+    return {"success": True, "data": watchdog_manager.start_laborer_job(job_type, **options, **encryption)}
+
+
 @app.post("/api/jobs/export", status_code=202)
 def start_export(payload: dict = Body()) -> dict:
     kind = str(payload.get("kind", ""))
@@ -637,7 +646,7 @@ def start_export(payload: dict = Body()) -> dict:
         if start > end: raise ValueError("start date must not be after end date")
     except ValueError as exc:
         return error_response(str(uuid.uuid4()), "INVALID_EXPORT", str(exc), 400)
-    return {"success": True, "data": watchdog_manager.start_laborer_job("export", kind=kind, start=start.isoformat(), end=end.isoformat(), columns=columns)}
+    return start_xlsx_job("export", payload, kind=kind, start=start.isoformat(), end=end.isoformat(), columns=columns)
 
 
 @app.post("/api/jobs/export/firewall-rules", status_code=202)
@@ -646,7 +655,7 @@ def start_firewall_rule_export(payload: dict = Body()) -> dict:
         firewalls = [config["name"] for config in firewall_service.selected_for_export(payload.get("firewalls") or [])]
     except ValueError as exc:
         return error_response(str(uuid.uuid4()), "INVALID_FIREWALL_EXPORT", str(exc), 400)
-    return {"success": True, "data": watchdog_manager.start_laborer_job("firewall_rules_export", firewalls=firewalls)}
+    return start_xlsx_job("firewall_rules_export", payload, firewalls=firewalls)
 
 
 @app.post("/api/jobs/export/aws", status_code=202)
@@ -654,12 +663,12 @@ def start_aws_export(payload: dict = Body()) -> dict:
     kind = str(payload.get("kind", ""))
     if kind not in {"aws_ec2", "aws_sg"}:
         return error_response(str(uuid.uuid4()), "INVALID_AWS_EXPORT", "Unknown AWS export type", 400)
-    return {"success": True, "data": watchdog_manager.start_laborer_job("aws_export", kind=kind)}
+    return start_xlsx_job("aws_export", payload, kind=kind)
 
 
 @app.post("/api/jobs/export/endpoints", status_code=202)
-def start_endpoint_export() -> dict:
-    return {"success": True, "data": watchdog_manager.start_laborer_job("endpoint_export")}
+def start_endpoint_export(payload: dict | None = Body(default=None)) -> dict:
+    return start_xlsx_job("endpoint_export", payload)
 
 
 @app.get("/api/config/export/file/{filename}")
@@ -983,9 +992,7 @@ def start_timeline_export(payload: dict = Body()) -> dict:
             raise ValueError("At least one source is required")
     except ValueError as exc:
         return error_response(str(uuid.uuid4()), "INVALID_TIMELINE_QUERY", str(exc), 400)
-    return {"success": True, "data": watchdog_manager.start_laborer_job(
-        "timeline_export", user=user, keyword=keyword, sources=sorted(selected_sources),
-    )}
+    return start_xlsx_job("timeline_export", payload, user=user, keyword=keyword, sources=sorted(selected_sources))
 
 
 @app.get("/api/sensitive/{kind}")
