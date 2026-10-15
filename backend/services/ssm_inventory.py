@@ -1,11 +1,13 @@
-"""Cache-only consumers, with bounded Run Command collection during AWS refresh."""
+"""OS-specific single-step SSM inventory collection; cache consumers never call SSM."""
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import copy
+import json
 import logging
+import random
 import time
 from pathlib import Path
 
@@ -13,47 +15,55 @@ from backend.services.aws_assets import load_aws_credentials
 from system_monitor.collector import acquire_singleton
 
 SEOUL = timezone(timedelta(hours=9), 'Asia/Seoul')
-DOCUMENT = 'LNL-ServerInventory'
-SUPPORTED_PLATFORMS = {'Linux', 'Windows'}
+DOCUMENTS = {'Linux': ('AWS-RunShellScript', 'linux.sh'),
+             'Windows': ('AWS-RunPowerShellScript', 'windows.ps1')}
+SUPPORTED_PLATFORMS = set(DOCUMENTS)
 log = logging.getLogger('smu.aws.ssm')
+THROTTLING_CODES = {'Throttling', 'ThrottlingException', 'TooManyRequestsException', 'RequestLimitExceeded'}
 
 
-class InvocationFailure(Exception):
-    """Only bounded, non-output diagnostic metadata may cross the worker boundary."""
-    def __init__(self, stage, reason, *, cause=None, status=None, response_code=None):
+class InventoryFailure(Exception):
+    """Safe metadata only: never retain output, command IDs or exception messages."""
+    def __init__(self, stage, reason, *, cause=None, status=None, response_code=None, output_length=None):
         super().__init__(reason)
         self.stage, self.reason = stage, reason
         self.exception_type = type(cause).__name__ if cause is not None else type(self).__name__
         code = getattr(cause, 'response', {}).get('Error', {}).get('Code')
-        # Never interpolate exception messages, output, URLs or command identifiers.
         self.aws_code = code if isinstance(code, str) and code.isalnum() and len(code) <= 80 else None
         self.status = status if status in {'Pending', 'InProgress', 'Delayed', 'Cancelling', 'Success', 'Failed', 'TimedOut', 'Cancelled'} else None
         self.response_code = response_code if type(response_code) is int else None
+        self.output_length = output_length if type(output_length) is int else None
 
 
 def normalized(value):
+    # Shared with Sophos/Excel consumers; intentionally retained.
     if not isinstance(value, str): return None
     value = value.strip()
     return None if value.casefold() in {'', 'unknown', 'n/a', 'none', 'null', '-'} else value
 
 
-def parse_inventory(output: str) -> dict:
-    result = dict.fromkeys(('hostname', 'kernel', 'os', 'os_install_date'))
-    result.update(was=[], web=[], db=[])
-    for line in output.splitlines():
-        key, sep, value = line.partition('=')
-        key = key.strip().lstrip('\ufeff').strip().casefold()
-        if not sep or key not in result: continue
-        if key in {'was', 'web', 'db'}:
-            if normalized(value) is None: continue
-            parts = value.split('|')
-            if len(parts) != 4: raise ValueError('Invalid inventory product record')
-            item = dict(zip(('product', 'version', 'path', 'status'), map(normalized, parts)))
-            if item['product']: result[key].append(item)
-        else:
-            result[key] = normalized(value)
-    if not result['hostname'] or not result['os']:
-        raise ValueError('Inventory hostname/OS missing')
+def validate_inventory(value):
+    """Validate JSON wire data and preserve the existing flat cache schema."""
+    if not isinstance(value, dict): raise ValueError('object required')
+    result = {}
+    for key in ('hostname', 'os', 'kernel', 'os_version', 'os_install_date'):
+        item = value.get(key)
+        if item is not None and not isinstance(item, str): raise ValueError('string or null required')
+        result[key] = normalized(item)
+    if not result['hostname'] or not result['os']: raise ValueError('hostname and os required')
+    for key in ('web', 'was', 'db'):
+        items = value.get(key)
+        if not isinstance(items, list): raise ValueError('product array required')
+        result[key] = []
+        for item in items:
+            if not isinstance(item, dict): raise ValueError('product object required')
+            product = {}
+            for field in ('product', 'version', 'path', 'status'):
+                entry = item.get(field)
+                if entry is not None and not isinstance(entry, str): raise ValueError('product string or null required')
+                product[field] = normalized(entry)
+            if not product['product']: raise ValueError('product name required')
+            result[key].append(product)
     return result
 
 
@@ -83,10 +93,12 @@ def _date(value):
 
 
 class SsmInventoryCollector:
-    def __init__(self, root: Path, client_factory=None, *, now=None, timeout=45, poll_interval=1, clock=time.monotonic, sleep=time.sleep):
+    def __init__(self, root: Path, client_factory=None, *, now=None, timeout=90, collection_timeout=300,
+                 poll_interval=1, clock=time.monotonic, sleep=time.sleep, jitter=random.random):
         self.root, self.client_factory = root, client_factory
         self.now = now or (lambda: datetime.now(timezone.utc))
-        self.timeout, self.poll_interval, self.clock, self.sleep = timeout, poll_interval, clock, sleep
+        self.timeout, self.collection_timeout = timeout, collection_timeout
+        self.poll_interval, self.clock, self.sleep, self.jitter = poll_interval, clock, sleep, jitter
 
     def _client(self):
         credentials = load_aws_credentials(self.root / 'env/aws_env.txt')
@@ -95,105 +107,98 @@ class SsmInventoryCollector:
         from botocore.config import Config
         return boto3.client('ssm', region_name=credentials['AWS_REGION'], aws_access_key_id=credentials['AWS_ACCESS_KEY_ID'],
                             aws_secret_access_key=credentials['AWS_SECRET_ACCESS_KEY'],
-                            config=Config(connect_timeout=5, read_timeout=10, retries={'max_attempts': 2}))
+                            config=Config(connect_timeout=3, read_timeout=5, retries={'max_attempts': 0}))
 
-    def _managed(self, client, instance_ids):
+    def _request(self, method, stage, deadline, **kwargs):
+        # Only explicit throttling is retried, including for non-idempotent SendCommand.
+        # SDK retries are disabled so all retries share our bounded deadline.
+        for attempt in range(5):
+            if self.clock() >= deadline: raise InventoryFailure(stage, 'polling_timeout')
+            try:
+                response = method(**kwargs)
+            except Exception as exc:
+                code = getattr(exc, 'response', {}).get('Error', {}).get('Code')
+                if code not in THROTTLING_CODES:
+                    raise
+                delay = min(4.0, 0.25 * 2 ** attempt) * (0.5 + 0.5 * self.jitter())
+                if attempt == 4 or self.clock() + delay >= deadline:
+                    raise InventoryFailure(stage, 'throttled', cause=exc) from None
+                self.sleep(delay)
+            else:
+                if self.clock() >= deadline: raise InventoryFailure(stage, 'polling_timeout')
+                return response
+
+    def _managed(self, client, instance_ids, deadline):
         output = {}
         for start in range(0, len(instance_ids), 50):
             args = {'Filters': [{'Key': 'InstanceIds', 'Values': instance_ids[start:start + 50]}], 'MaxResults': 50}
             seen = set()
             while True:
-                page = client.describe_instance_information(**args)
+                page = self._request(client.describe_instance_information, 'describe_instance_information', deadline, **args)
                 for item in page.get('InstanceInformationList', []):
                     if item.get('InstanceId') in instance_ids: output[item['InstanceId']] = item
                 token = page.get('NextToken')
                 if not token: break
-                if token in seen: raise RuntimeError('Repeated SSM pagination token')
+                if token in seen: raise InventoryFailure('describe_instance_information', 'repeated_pagination_token')
                 seen.add(token); args['NextToken'] = token
         return output
 
-    @staticmethod
-    def _resolve_plugin(client, command, identifier):
-        """Use execution metadata, never infer step names from the OS/plugin action."""
-        page = client.list_command_invocations(CommandId=command, InstanceId=identifier, Details=True)
-        invocations = [item for item in page.get('CommandInvocations', [])
-                       if item.get('InstanceId') == identifier and item.get('CommandId') == command]
-        if not invocations: return False, None
-        if len(invocations) != 1 or page.get('NextToken'):
-            raise InvocationFailure('get_command_invocation', 'ambiguous_invocation_metadata')
-        plugins = invocations[0].get('CommandPlugins', [])
-        if not plugins: return False, None
-        if len(plugins) == 1:
-            # AWS explicitly allows omission only for a single-step document.
-            return True, None
-        active = [item for item in plugins if not (
-            isinstance(item.get('Output'), str) and
-            item['Output'].lstrip('\ufeff').strip().casefold().startswith('step execution skipped due to unsupported plugin:'))]
-        if len(active) == 1:
-            name = active[0].get('Name')
-            if not isinstance(name, str) or not name:
-                raise InvocationFailure('get_command_invocation', 'plugin_name_missing')
-            return True, name
-        if any(item.get('Status') in {'Pending', 'InProgress', 'Delayed', 'Cancelling'} for item in plugins):
-            return False, None
-        # Multiple non-skipped steps cannot safely be assigned to a platform by guessing.
-        raise InvocationFailure('get_command_invocation', 'ambiguous_inventory_plugin')
-
-    def _invoke(self, client, identifier, platform):
+    def _invoke(self, client, identifier, platform, collection_deadline):
+        deadline = min(collection_deadline, self.clock() + self.timeout)
+        document, filename = DOCUMENTS[platform]
+        script = (Path(__file__).with_name('ssm_scripts') / filename).read_text(encoding='utf-8')
         try:
-            response = client.send_command(InstanceIds=[identifier], DocumentName=DOCUMENT, TimeoutSeconds=60)
-            command = response['Command']['CommandId']
+            sent = self._request(client.send_command, 'send_command', deadline,
+                InstanceIds=[identifier], DocumentName=document, TimeoutSeconds=60,
+                Parameters={'commands': [script], 'executionTimeout': ['60']})
+            command = sent['Command']['CommandId']
+        except InventoryFailure: raise
         except Exception as exc:
-            raise InvocationFailure('send_command', 'send_command_failed', cause=exc) from None
-        deadline = self.clock() + self.timeout
+            raise InventoryFailure('send_command', 'send_command_failed', cause=exc) from None
         state = response_code = None
-        missing = False
-        resolved, plugin = False, None
-        # A fixed attempt cap also bounds polling with a stalled/mocked clock.
-        for attempt in range(46):
+        not_ready = False
+        # The clock deadline and a finite cap both bound polling (even with a stalled clock).
+        for _ in range(120):
             if self.clock() >= deadline: break
             try:
-                if not resolved:
-                    resolved, plugin = self._resolve_plugin(client, command, identifier)
-                if resolved:
-                    args = {'CommandId': command, 'InstanceId': identifier}
-                    if plugin is not None: args['PluginName'] = plugin
-                    invocation = client.get_command_invocation(**args)
-                else:
-                    invocation = {'Status': 'Pending'}
+                invocation = self._request(client.get_command_invocation, 'get_command_invocation', deadline,
+                                          CommandId=command, InstanceId=identifier)
+            except InventoryFailure: raise
             except Exception as exc:
-                if isinstance(exc, InvocationFailure): raise
-                aws_code = getattr(exc, 'response', {}).get('Error', {}).get('Code')
-                if aws_code == 'InvalidPluginName':
-                    raise InvocationFailure('get_command_invocation', 'invalid_plugin_name', cause=exc) from None
-                if aws_code != 'InvocationDoesNotExist':
-                    raise InvocationFailure('get_command_invocation', 'get_command_invocation_failed', cause=exc) from None
-                missing = True
+                if getattr(exc, 'response', {}).get('Error', {}).get('Code') != 'InvocationDoesNotExist':
+                    raise InventoryFailure('get_command_invocation', 'get_command_invocation_failed', cause=exc) from None
+                not_ready = True
             else:
-                missing = False
+                not_ready = False
                 state, response_code = invocation.get('Status'), invocation.get('ResponseCode')
+                output = invocation.get('StandardOutputContent', '')
+                length = len(output) if isinstance(output, str) else None
                 if state == 'Success':
-                    if response_code != 0:
-                        raise InvocationFailure('terminal_status', 'response_code_nonzero', status=state, response_code=response_code)
-                    output = invocation.get('StandardOutputContent', '')
-                    # AWS returns only the first 24,000 stdout characters inline.
-                    # S3 URL presence is normal, but a full inline buffer may be truncated.
-                    if isinstance(output, str) and len(output) >= 24000:
-                        raise InvocationFailure('parse', 'output_may_be_truncated', status=state, response_code=response_code)
+                    if type(response_code) is not int or response_code != 0:
+                        raise InventoryFailure('terminal_status', 'nonzero_response_code', status=state, response_code=response_code, output_length=length)
+                    if not isinstance(output, str) or not output.strip():
+                        raise InventoryFailure('parse', 'empty_output', status=state, response_code=response_code, output_length=length)
                     try:
-                        return parse_inventory(output)
-                    except Exception as exc:
-                        raise InvocationFailure('parse', 'parse_failed', cause=exc, status=state, response_code=response_code) from None
+                        data = json.loads(output)
+                    except (ValueError, TypeError) as exc:
+                        raise InventoryFailure('parse', 'json_parse_failed', cause=exc, status=state, response_code=response_code, output_length=length) from None
+                    try:
+                        return validate_inventory(data)
+                    except ValueError as exc:
+                        raise InventoryFailure('parse', 'schema_validation_failed', cause=exc, status=state, response_code=response_code, output_length=length) from None
                 if state not in {'Pending', 'InProgress', 'Delayed', 'Cancelling'}:
-                    reason = {'Failed': 'terminal_failed', 'TimedOut': 'terminal_timed_out', 'Cancelled': 'terminal_cancelled'}.get(state, 'terminal_status_unknown')
-                    raise InvocationFailure('terminal_status', reason, status=state, response_code=response_code)
+                    raise InventoryFailure('terminal_status', 'terminal_failed', status=state, response_code=response_code, output_length=length)
             self.sleep(min(self.poll_interval, max(0, deadline - self.clock())))
-        cause = TimeoutError()
-        if missing:
-            failure = InvocationFailure('get_command_invocation', 'invocation_not_found_timeout', cause=cause)
-            failure.aws_code = 'InvocationDoesNotExist'
-            raise failure
-        raise InvocationFailure('get_command_invocation', 'invocation_poll_timeout', cause=cause, status=state, response_code=response_code)
+        failure = InventoryFailure('get_command_invocation', 'invocation_not_ready' if not_ready else 'polling_timeout',
+                                   cause=TimeoutError(), status=state, response_code=response_code)
+        if not_ready: failure.aws_code = 'InvocationDoesNotExist'
+        raise failure
+
+    @staticmethod
+    def _log_failure(identifier, platform, failure):
+        log.warning('SSM inventory failed instance_id=%s platform_type=%s stage=%s reason=%s exception_type=%s aws_error_code=%s status=%s response_code=%s output_length=%s',
+                    identifier, platform, failure.stage, failure.reason, failure.exception_type,
+                    failure.aws_code, failure.status, failure.response_code, failure.output_length)
 
     def collect(self, ec2_instances, previous=None, *, force=False, progress=lambda _: None):
         try:
@@ -205,7 +210,9 @@ class SsmInventoryCollector:
             result['instances'] = records = {key: item for key, item in records.items() if isinstance(item, dict)} if isinstance(records, dict) else {}
             timestamp = self.now().astimezone(SEOUL).isoformat()
             for item in ec2_instances:
-                if item.get('InstanceId'): self._failed(records, item['InstanceId'], timestamp, 'collection_failed')
+                identifier = item.get('InstanceId')
+                if identifier and (force or _date(records.get(identifier, {}).get('last_attempt_at')) != _date(timestamp)):
+                    self._failed(records, identifier, timestamp, 'collection_failed')
             result.update(last_attempt_at=timestamp, status='stale' if any(item.get('last_success_at') for item in records.values()) else 'failed')
             return result
 
@@ -229,14 +236,17 @@ class SsmInventoryCollector:
             result.pop('error', None)
             return result
         result['last_attempt_at'] = timestamp
+        collection_deadline = self.clock() + self.collection_timeout
         try:
             client = self._client()
-            managed = self._managed(client, needed)
+            managed = self._managed(client, needed, collection_deadline)
         except Exception as exc:
-            for identifier in needed: self._failed(records, identifier, timestamp, 'discovery_failed')
+            failure = exc if isinstance(exc, InventoryFailure) else InventoryFailure('describe_instance_information', 'discovery_failed', cause=exc)
+            for identifier in needed:
+                self._failed(records, identifier, timestamp, failure.reason)
+                self._log_failure(identifier, records.get(identifier, {}).get('platform_type'), failure)
             result['status'] = 'stale' if any(item.get('last_success_at') for item in records.values()) else 'failed'
             result['error'] = 'SSM 대상 조회 실패 · 권한/연결 설정 확인'
-            log.warning('SSM discovery failed error_type=%s', type(exc).__name__)
             return result
         targets = []
         for identifier in needed:
@@ -250,15 +260,14 @@ class SsmInventoryCollector:
             targets.append((identifier, info['PlatformType']))
         def collect_one(target):
             identifier, platform = target
-            try: return identifier, platform, self._invoke(client, identifier, platform), None
+            try: return identifier, platform, self._invoke(client, identifier, platform, collection_deadline), None
             except Exception as exc:
-                failure = exc if isinstance(exc, InvocationFailure) else InvocationFailure('get_command_invocation', 'unexpected_invocation_failure', cause=exc)
-                log.warning('SSM inventory failed instance_id=%s platform_type=%s stage=%s reason=%s exception_type=%s aws_error_code=%s status=%s response_code=%s',
-                            identifier, platform, failure.stage, failure.reason, failure.exception_type, failure.aws_code, failure.status, failure.response_code)
+                failure = exc if isinstance(exc, InventoryFailure) else InventoryFailure('collector', 'collection_failed', cause=exc)
+                self._log_failure(identifier, platform, failure)
                 return identifier, platform, None, failure.reason
         if targets:
             progress(f'SSM Server Inventory · {len(targets)}대 조회 중')
-            with ThreadPoolExecutor(max_workers=5) as pool:
+            with ThreadPoolExecutor(max_workers=3) as pool:
                 for identifier, platform, inventory, failure_reason in pool.map(collect_one, targets):
                     attempted = self.now().astimezone(SEOUL).isoformat()
                     if inventory is None:

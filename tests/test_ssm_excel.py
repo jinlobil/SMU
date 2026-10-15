@@ -7,7 +7,7 @@ import pytest
 
 from backend.services.aws_export import AwsExportService, core_agent_version
 from test_aws_export_inventory import prepare, NS, cells, text, style_info
-from test_ssm_inventory import LINUX, parse_inventory
+from test_ssm_inventory import LINUX, validate_inventory
 
 
 @pytest.mark.parametrize('endpoint,version', [
@@ -23,7 +23,7 @@ def test_core_agent_version_priority_and_absence(endpoint, version):
 def test_excel_ssm_join_exact_primary_ip_and_style_cache_only(tmp_path, monkeypatch):
     exporter, data = prepare(tmp_path)
     first, second, third = data['instances']
-    inventory = {**parse_inventory(LINUX), 'status': 'stale', 'last_success_at': '2026-10-14T09:00:00+09:00', 'platform_type': 'Linux'}
+    inventory = {**validate_inventory(json.loads(LINUX)), 'status': 'stale', 'last_success_at': '2026-10-14T09:00:00+09:00', 'platform_type': 'Linux'}
     inventory['was'].append({'product': 'SecondApp', 'version': None})
     inventory['web'].append({'product': 'SecondWeb', 'version': 'N/A'})
     inventory['db'].append({'product': 'PostgreSQL', 'version': '12.3'})
@@ -77,7 +77,7 @@ def test_windows_columns_and_unknown_single_db_platform(tmp_path):
     from test_ssm_inventory import WINDOWS
     exporter, data = prepare(tmp_path)
     identifier = data['instances'][0]['InstanceId']
-    record = {**parse_inventory(WINDOWS), 'status': 'success', 'platform_type': 'Windows', 'last_success_at': '2026-10-15T09:00:00+09:00'}
+    record = {**validate_inventory(json.loads(WINDOWS)), 'status': 'success', 'platform_type': 'Windows', 'last_success_at': '2026-10-15T09:00:00+09:00'}
     record['db'] = [{'product': 'FixtureDB', 'version': None}]
     data['ssm_inventory'] = {'instances': {identifier: record}}
     row = exporter._ec2_sheets(data)[0]['rows'][0]
