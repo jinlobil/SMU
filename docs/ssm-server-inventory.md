@@ -40,9 +40,12 @@ PingStatus=Online이고 PlatformType이 Linux/Windows일 때만 SendCommand한�
 AssociationStatus는 Run Command 실행 가능 여부의 판정에 쓰지 않는다.
 DocumentName은 `LNL-ServerInventory`로 고정하며 Parameters/임의 명령은 전송하지 않는다.
 
-- Linux: GetCommandInvocation의 PluginName=`linuxInventory`.
-- Windows: PluginName=`windowsInventory`.
-- 다른 Platform Plugin을 읽거나 Success 상태만 보고 정상 Inventory로 간주하지 않는다.
+- Windows/Linux 모두 ListCommandInvocations(CommandId, InstanceId, Details=True)로 실제 실행 plugin 목록을 조회한다.
+- 단일 step은 GetCommandInvocation에서 PluginName을 생략한다.
+- 여러 step은 unsupported-plugin skip 메시지를 반환한 항목을 제외하고 실제 CommandPlugins[].Name을 전달한다.
+- 여러 활성 step이 남으면 이름/OS로 추정하지 않고 ambiguous_inventory_plugin 조회 오류로 처리한다.
+- 아직 metadata가 없거나 step이 진행 중이면 기존 bounded polling 안에서 재조회한다.
+- Success 상태만 보고 정상 Inventory로 간주하지 않으며 HOSTNAME/OS 및 제품 출력을 검증한다.
 - Skip/빈 출력/비정상 응답은 Inventory 성공으로 처리하지 않는다.
 - 동시 서버 최대 5대. GetCommandInvocation은 최대 45초 polling window/46회 cap이다.
 - InvocationDoesNotExist/Pending/InProgress/Delayed 등을 bounded retry한다.
@@ -50,7 +53,7 @@ DocumentName은 `LNL-ServerInventory`로 고정하며 Parameters/임의 명령�
   polling window에 추가될 수 있다. 무한 polling은 없다.
 
 IAM에는 기존 EC2 조회 권한 외에 ssm:DescribeInstanceInformation, ssm:SendCommand,
-ssm:GetCommandInvocation이 필요하다. SendCommand는 해당 Custom Document/EC2 대상으로
+ssm:GetCommandInvocation, ssm:ListCommandInvocations가 필요하다. SendCommand는 해당 Custom Document/EC2 대상으로
 제한할 수 있다. 이 작업에서 IAM이나 운영 AWS 리소스를 실제 변경하지 않았다.
 
 ## 4. Parser와 Cache
@@ -190,3 +193,27 @@ invocation_not_found_timeout/invocation_poll_timeout 등을 구분하여 확인�
 수정 후 전체 pytest: 669 passed, 2 failed (56.69s). 남은 실패는 위에 기록한 기존
 Scheduler 테스트 대역 mode 누락과 Timeline 150/100 불일치로 동일하다.
 관련 AWS/SSM/Excel 선택 검사 85개 통과 후 추가 Windows/서울 날짜 회귀 검사까지 전체 실행에 포함했다.
+
+
+## InvalidPluginName 조회 오류 수정
+
+기존 코드는 Custom Document LNL-ServerInventory만 실행하지만 GetCommandInvocation에 OS별
+고정 이름 linuxInventory/windowsInventory를 전달했다. 실제 실행 step 이름을 확인하지 않은
+가정이었으며, 보고된 InvalidPluginName은 그 이름으로 결과를 조회할 수 없다는 API 오류다.
+운영 Document 내용/실제 plugin 목록은 저장소에 없으므로 실제 이름이나 노드별 차이는 확정하지 않는다.
+AWS SDK의 GetCommandInvocation.PluginName 규격은 단일 step에서 생략을 허용하고,
+여러 step에서는 ListCommandInvocations(Details=True)의 CommandPlugins[].Name 사용을 안내한다.
+현재 구현은 위 규격에 따라 실행 metadata에서 이름을 구한다. 실제 명령은 변경하지 않는다.
+IAM에 ssm:ListCommandInvocations 권한이 추가로 필요하다.
+InvalidPluginName은 stage=get_command_invocation/reason=invalid_plugin_name으로 분리한다.
+
+별도 Linux exit code 1은 stage=terminal_status/reason=terminal_failed로 유지한다.
+Collector 자체에는 shell script나 임의 명령 실행이 없으며, SendCommand는 고정 Custom Document와
+InstanceIds/TimeoutSeconds만 전달한다. 저장소에 Custom Document 본문이 없어 어떤 명령이
+exit 1을 반환했는지는 특정할 수 없다. Document 내부 마지막 명령의 exit status, 명시적 exit 1,
+set -e 하의 실패 등은 점검 후보일 뿐 확인된 원인이 아니다. 운영 Document 본문과 해당 실행의
+stderr를 관리자가 별도 확인해야 하며 SMU 로그/Cache로 원문을 유입시키지 않는다.
+
+이번 PluginName 수정 검증: 관련 AWS/SSM/Excel 96 passed (1.61s).
+전체 pytest: 678 passed, 2 failed (46.25s). 남은 실패는 기존 Scheduler 테스트 대역 mode 누락과
+Timeline 150/100 불일치로 동일하다. 운영 AWS 호출은 하지 않았다.

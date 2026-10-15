@@ -14,7 +14,7 @@ from system_monitor.collector import acquire_singleton
 
 SEOUL = timezone(timedelta(hours=9), 'Asia/Seoul')
 DOCUMENT = 'LNL-ServerInventory'
-PLUGINS = {'Linux': 'linuxInventory', 'Windows': 'windowsInventory'}
+SUPPORTED_PLATFORMS = {'Linux', 'Windows'}
 log = logging.getLogger('smu.aws.ssm')
 
 
@@ -112,8 +112,34 @@ class SsmInventoryCollector:
                 seen.add(token); args['NextToken'] = token
         return output
 
+    @staticmethod
+    def _resolve_plugin(client, command, identifier):
+        """Use execution metadata, never infer step names from the OS/plugin action."""
+        page = client.list_command_invocations(CommandId=command, InstanceId=identifier, Details=True)
+        invocations = [item for item in page.get('CommandInvocations', [])
+                       if item.get('InstanceId') == identifier and item.get('CommandId') == command]
+        if not invocations: return False, None
+        if len(invocations) != 1 or page.get('NextToken'):
+            raise InvocationFailure('get_command_invocation', 'ambiguous_invocation_metadata')
+        plugins = invocations[0].get('CommandPlugins', [])
+        if not plugins: return False, None
+        if len(plugins) == 1:
+            # AWS explicitly allows omission only for a single-step document.
+            return True, None
+        active = [item for item in plugins if not (
+            isinstance(item.get('Output'), str) and
+            item['Output'].lstrip('\ufeff').strip().casefold().startswith('step execution skipped due to unsupported plugin:'))]
+        if len(active) == 1:
+            name = active[0].get('Name')
+            if not isinstance(name, str) or not name:
+                raise InvocationFailure('get_command_invocation', 'plugin_name_missing')
+            return True, name
+        if any(item.get('Status') in {'Pending', 'InProgress', 'Delayed', 'Cancelling'} for item in plugins):
+            return False, None
+        # Multiple non-skipped steps cannot safely be assigned to a platform by guessing.
+        raise InvocationFailure('get_command_invocation', 'ambiguous_inventory_plugin')
+
     def _invoke(self, client, identifier, platform):
-        plugin = PLUGINS[platform]
         try:
             response = client.send_command(InstanceIds=[identifier], DocumentName=DOCUMENT, TimeoutSeconds=60)
             command = response['Command']['CommandId']
@@ -122,13 +148,25 @@ class SsmInventoryCollector:
         deadline = self.clock() + self.timeout
         state = response_code = None
         missing = False
+        resolved, plugin = False, None
         # A fixed attempt cap also bounds polling with a stalled/mocked clock.
         for attempt in range(46):
             if self.clock() >= deadline: break
             try:
-                invocation = client.get_command_invocation(CommandId=command, InstanceId=identifier, PluginName=plugin)
+                if not resolved:
+                    resolved, plugin = self._resolve_plugin(client, command, identifier)
+                if resolved:
+                    args = {'CommandId': command, 'InstanceId': identifier}
+                    if plugin is not None: args['PluginName'] = plugin
+                    invocation = client.get_command_invocation(**args)
+                else:
+                    invocation = {'Status': 'Pending'}
             except Exception as exc:
-                if getattr(exc, 'response', {}).get('Error', {}).get('Code') != 'InvocationDoesNotExist':
+                if isinstance(exc, InvocationFailure): raise
+                aws_code = getattr(exc, 'response', {}).get('Error', {}).get('Code')
+                if aws_code == 'InvalidPluginName':
+                    raise InvocationFailure('get_command_invocation', 'invalid_plugin_name', cause=exc) from None
+                if aws_code != 'InvocationDoesNotExist':
                     raise InvocationFailure('get_command_invocation', 'get_command_invocation_failed', cause=exc) from None
                 missing = True
             else:
@@ -204,9 +242,9 @@ class SsmInventoryCollector:
         for identifier in needed:
             info = managed.get(identifier, {})
             existing = records.get(identifier, {})
-            if info.get('PlatformType') in PLUGINS and not existing.get('last_success_at'):
+            if info.get('PlatformType') in SUPPORTED_PLATFORMS and not existing.get('last_success_at'):
                 records.setdefault(identifier, {})['platform_type'] = info['PlatformType']
-            if info.get('PingStatus') != 'Online' or info.get('PlatformType') not in PLUGINS:
+            if info.get('PingStatus') != 'Online' or info.get('PlatformType') not in SUPPORTED_PLATFORMS:
                 self._failed(records, identifier, timestamp, 'not_online' if info.get('PingStatus') != 'Online' else 'unsupported_platform')
                 continue
             targets.append((identifier, info['PlatformType']))
@@ -231,7 +269,7 @@ class SsmInventoryCollector:
         active = [records.get(identifier, {}) for identifier in identifiers]
         complete = all(item.get('status') == 'success' and _date(item.get('last_success_at')) == today for item in active)
         online = [identifier for identifier in identifiers if managed.get(identifier, {}).get('PingStatus') == 'Online'
-                  and managed.get(identifier, {}).get('PlatformType') in PLUGINS]
+                  and managed.get(identifier, {}).get('PlatformType') in SUPPORTED_PLATFORMS]
         # Snapshot date covers the eligible Online set, not unmanageable EC2s.
         # Per-instance last_attempt_at gates automatic attempts, including failures.
         if online and all(records[identifier].get('status') == 'success' and _date(records[identifier].get('last_success_at')) == today for identifier in online):
