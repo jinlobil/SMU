@@ -706,6 +706,36 @@ def get_endpoint(endpoint_id: str) -> dict:
     return {"success": True, "data": data}
 
 
+@app.get("/api/aws/ssm-inventory")
+def ssm_inventory_status() -> dict:
+    from backend.services.ssm_inventory import cache_lock
+    lease = cache_lock(PROJECT_ROOT)
+    running = lease is None
+    if lease is not None: lease.close()
+    try:
+        inventory = refresh_service._aws_cache().get("ssm_inventory") or {}
+    except (OSError, ValueError):
+        inventory = {}
+    return {"success": True, "data": {key: inventory.get(key) for key in ("snapshot_date", "collected_at", "last_attempt_at", "status")} | {"running": running}}
+
+
+@app.post("/api/jobs/aws/ssm-inventory", status_code=202)
+def start_ssm_inventory_refresh() -> dict:
+    from backend.services.ssm_inventory import cache_lock
+    lease = cache_lock(PROJECT_ROOT)
+    if lease is None:
+        return error_response(str(uuid.uuid4()), "AWS_INVENTORY_BUSY", "AWS/SSM 최신화가 이미 실행 중입니다.", 409)
+    def refresh(progress):
+        try: return refresh_service.refresh_ssm_inventory(progress)
+        finally: lease.close()
+    try:
+        job = job_manager.create("ssm-inventory-refresh", refresh)
+    except Exception:
+        lease.close()
+        raise
+    return {"success": True, "data": job}
+
+
 @app.get("/api/aws/instances")
 def list_aws_instances(query: str = "", field: str = "all", page: int = Query(default=1, ge=1),
                        page_size: int = Query(default=50, alias="pageSize", ge=10, le=200),

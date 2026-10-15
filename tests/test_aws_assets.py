@@ -61,8 +61,13 @@ def test_every_aws_describe_operation_consumes_all_paginator_pages(tmp_path: Pat
     assert "test-key" not in serialized and "test-secret" not in serialized
 
 
+class EmptySsm:
+    def describe_instance_information(self, **_kwargs):
+        return {"InstanceInformationList": []}
+
+
 def test_refresh_writes_complete_json_atomically_and_failure_preserves_previous(tmp_path: Path):
-    credentials(tmp_path); client = Client(all_pages()); service = RefreshService(tmp_path, aws_factory=lambda _credentials: client)
+    credentials(tmp_path); client = Client(all_pages()); service = RefreshService(tmp_path, aws_factory=lambda _credentials: client, ssm_factory=lambda _: EmptySsm())
     result = service.refresh_aws(lambda _message: None)
     cache = tmp_path / "cache/aws.json"; payload = json.loads(cache.read_text(encoding="utf-8"))
     assert result["region"] == "ap-northeast-2" and payload["metadata"]["counts"]["instances"] == 3

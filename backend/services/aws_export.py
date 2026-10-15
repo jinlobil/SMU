@@ -12,8 +12,8 @@ from backend.services.spreadsheet import LEDGER_STYLES, write_xlsx_workbook
 
 
 EC2_COLUMNS = list(zip(
-    ["no", "type", "tier", "project", "hostname", "name", "purpose", "instanceId", "instanceType", "cpu", "memory", "ebs", "os", "osType", "kernel", "osEos", "was", "web", "db", "dbPlatform", "dbEos", "eip", "eipRequired", "privateIp", "installedAt", "state", "antivirus"],
-    ["NO", "Type", "티어", "종류", "Hostname", "Name", "용도", "Instance ID", "Instance", "vCPU(core)", "MEM", "EBS", "OS", "Platform", "Kernel", "OS EOS", "WAS", "WEB", "DB", "DB Platform", "DB EOS", "EIP", "EIP 필수 여부", "IP", "설치일", "Status", "anti virus"],
+    ["no", "type", "tier", "project", "hostname", "name", "purpose", "instanceId", "instanceType", "cpu", "memory", "ebs", "os", "osType", "kernel", "osEos", "was", "web", "db", "dbPlatform", "dbEos", "eip", "eipRequired", "privateIp", "installedAt", "state", "antivirus", "antivirusVersion"],
+    ["NO", "Type", "티어", "종류", "Hostname", "Name", "용도", "Instance ID", "Instance", "vCPU(core)", "MEM", "EBS", "OS", "Platform", "Kernel", "OS EOS", "WAS", "WEB", "DB", "DB Platform", "DB EOS", "EIP", "EIP 필수 여부", "IP", "설치일", "Status", "Anti Virus", "Anti Virus Version"],
 ))
 MAPPING_COLUMNS = list(zip(
     ["no", "ec2Name", "hostname", "instanceId", "state", "privateIp", "publicIp", "name", "groupId", "direction", "protocol", "fromPort", "toPort", "sourceType", "source", "destinationType", "destination", "description", "eniId", "vpcId", "subnetId"],
@@ -56,6 +56,38 @@ class SophosMatcher:
             name = _hostname(instance.get(key))
             if name and name in self.by_hostname: return self.by_hostname[name]
         return None
+
+
+def core_agent_version(endpoint):
+    from backend.services.ssm_inventory import normalized
+    for module in (endpoint or {}).get("modules", []) or []:
+        if isinstance(module, dict) and module.get("name") == "coreAgent" and normalized(module.get("version")):
+            return normalized(module["version"])
+    for product in (endpoint or {}).get("assignedProducts", []) or []:
+        if isinstance(product, dict) and product.get("code") == "coreAgent" and product.get("status") == "installed" and normalized(product.get("version")):
+            return normalized(product["version"])
+    return "-"
+
+
+def ssm_excel_values(record):
+    from backend.services.ssm_inventory import normalized
+    if not isinstance(record, dict): return {}
+    def product_cell(category, *, require_version=False, name_only=False):
+        values = []
+        for product in record.get(category, []) or []:
+            if not isinstance(product, dict): continue
+            name, version = normalized(product.get("product")), normalized(product.get("version"))
+            if name:
+                values.append("-" if require_version and not version else name if name_only or not version else f"{name} {version}")
+        return "; ".join(values) or "-"
+    # Failed first attempts carry platform discovery, but never fabricated inventory.
+    values = {"os": record["platform_type"]} if record.get("platform_type") in {"Linux", "Windows"} else {}
+    if record.get("last_success_at") and record.get("status") in {"success", "stale"}:
+        values.update({"hostname": normalized(record.get("hostname")) or "-", "osType": normalized(record.get("os")) or "-",
+                       "kernel": normalized(record.get("kernel")) or "-", "installedAt": normalized(record.get("os_install_date")) or "-",
+                       "was": product_cell("was"), "web": product_cell("web"), "db": product_cell("db", name_only=True),
+                       "dbPlatform": product_cell("db", require_version=True)})
+    return values
 
 
 class InventoryResources:
@@ -120,14 +152,19 @@ class AwsExportService:
         instances, interfaces = [], []
         for number, instance in enumerate(data.get("instances", []), 1):
             tags = _tags(instance); instance_id = str(instance.get("InstanceId") or "-"); name = tags.get("Name") or "-"
-            endpoint = matcher.match(instance)
+            fallback_endpoint = matcher.match(instance)
+            # Antivirus identity is restricted to the primary EC2 private address.
+            endpoint = matcher.by_ip.get(str(instance.get("PrivateIpAddress") or ""))
             row = {key: "-" for key, _label in EC2_COLUMNS}
             row.update({"no": number, "type": "EC2", "tier": {"PRD": "PROD", "DEV": "DEV"}.get(tags.get("Environment"), tags.get("Environment") or "-"),
-                "project": tags.get("Project") or "-", "hostname": (endpoint or {}).get("hostname") or "-", "name": name,
+                "project": tags.get("Project") or "-", "hostname": (fallback_endpoint or {}).get("hostname") or "-", "name": name,
                 "purpose": tags.get("Purpose") or tags.get("Description") or "-", "instanceId": instance_id,
                 "instanceType": instance.get("InstanceType") or "-", "os": tags.get("OS") or "-", "osType": tags.get("OS_type") or "-",
                 "privateIp": instance.get("PrivateIpAddress") or "-", "state": _state(instance), "antivirus": "Sophos" if endpoint is not None else "미설치",
-                **resources.values(instance)})
+                "antivirusVersion": core_agent_version(endpoint), **resources.values(instance)})
+            ssm_values = ssm_excel_values((data.get("ssm_inventory") or {}).get("instances", {}).get(instance_id))
+            if ssm_values.get("hostname") == "-": ssm_values.pop("hostname")
+            row.update(ssm_values)
             instances.append(row)
             for interface in instance.get("NetworkInterfaces", []):
                 private_ips = [str(item.get("PrivateIpAddress")) for item in interface.get("PrivateIpAddresses", []) if item.get("PrivateIpAddress")]

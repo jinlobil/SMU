@@ -9,12 +9,13 @@ from backend.services.endpoints import load_key_value_file
 
 
 class RefreshService:
-    def __init__(self, project_root: Path, client_factory=SophosClient, aws_factory=None):
+    def __init__(self, project_root: Path, client_factory=SophosClient, aws_factory=None, ssm_factory=None):
         self.project_root = project_root
         self.cache_dir = project_root / "cache"
         self.env_dir = project_root / "env"
         self.client_factory = client_factory
         self.aws_factory = aws_factory
+        self.ssm_factory = ssm_factory
 
     def save_json_atomic(self, path: Path, payload: object) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -48,11 +49,46 @@ class RefreshService:
 
     def refresh_aws(self, progress: Callable[[str], None]) -> dict:
         from backend.services.aws_assets import AwsCollector
+        from backend.services.ssm_inventory import SsmInventoryCollector, cache_lock, cache_write_lock
         progress("AWS Credential 확인 중")
         payload = AwsCollector(self.project_root, self.aws_factory).collect(progress)
-        progress("AWS 전체 조회 완료 · Raw Cache 저장 중")
-        self.save_json_atomic(self.cache_dir / "aws.json", payload)
-        return {"counts": payload["metadata"]["counts"], "region": payload["metadata"]["region"]}
+        lease = cache_lock(self.project_root)
+        try:
+            inventory = None
+            if lease is not None:
+                previous = self._aws_cache()
+                inventory = SsmInventoryCollector(self.project_root, self.ssm_factory).collect(
+                    payload.get("instances", []), previous.get("ssm_inventory"), progress=progress)
+            else:
+                progress("SSM 수집 실행 중 · AWS EC2 Cache만 최신화")
+            with cache_write_lock(self.project_root):
+                if inventory is None:
+                    inventory = self._aws_cache().get("ssm_inventory") or {}
+                payload["ssm_inventory"] = inventory
+                progress("AWS 전체 조회 완료 · Raw Cache 저장 중")
+                self.save_json_atomic(self.cache_dir / "aws.json", payload)
+            return {"counts": payload["metadata"]["counts"], "region": payload["metadata"]["region"], "ssm": inventory.get("status", "running")}
+        finally:
+            if lease is not None: lease.close()
+
+    def _aws_cache(self):
+        try:
+            payload = json.loads((self.cache_dir / "aws.json").read_text(encoding="utf-8"))
+            return payload if isinstance(payload, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def refresh_ssm_inventory(self, progress):
+        from backend.services.ssm_inventory import SsmInventoryCollector, cache_write_lock
+        payload = self._aws_cache()
+        if "instances" not in payload: raise ValueError("AWS Cache를 먼저 최신화하세요.")
+        inventory = SsmInventoryCollector(self.project_root, self.ssm_factory).collect(
+            payload["instances"], payload.get("ssm_inventory"), force=True, progress=progress)
+        with cache_write_lock(self.project_root):
+            latest = self._aws_cache()
+            latest["ssm_inventory"] = inventory
+            self.save_json_atomic(self.cache_dir / "aws.json", latest)
+        return {"ssm": inventory["status"]}
 
     def refresh_dlp(self, day: date, progress: Callable[[str], None]) -> dict:
         from backend.clients.legacy_collectors import DlpClient
