@@ -1,11 +1,10 @@
-"""OS-specific single-step SSM inventory collection; cache consumers never call SSM."""
+"""Collect the existing LNL-ServerInventory contract; consumers use cache only."""
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import copy
-import json
 import logging
 import random
 import time
@@ -15,16 +14,17 @@ from backend.services.aws_assets import load_aws_credentials
 from system_monitor.collector import acquire_singleton
 
 SEOUL = timezone(timedelta(hours=9), 'Asia/Seoul')
-DOCUMENTS = {'Linux': ('AWS-RunShellScript', 'linux.sh'),
-             'Windows': ('AWS-RunPowerShellScript', 'windows.ps1')}
-SUPPORTED_PLATFORMS = set(DOCUMENTS)
+DOCUMENT = 'LNL-ServerInventory'
+# Verified against the administrator-supplied schemaVersion 2.2 Document definition.
+STEPS = {'Linux': 'linuxInventory', 'Windows': 'windowsInventory'}
+SUPPORTED_PLATFORMS = set(STEPS)
 log = logging.getLogger('smu.aws.ssm')
 THROTTLING_CODES = {'Throttling', 'ThrottlingException', 'TooManyRequestsException', 'RequestLimitExceeded'}
 
 
 class InventoryFailure(Exception):
     """Safe metadata only: never retain output, command IDs or exception messages."""
-    def __init__(self, stage, reason, *, cause=None, status=None, response_code=None, output_length=None):
+    def __init__(self, stage, reason, *, cause=None, status=None, response_code=None, output_length=None, keys_present=None):
         super().__init__(reason)
         self.stage, self.reason = stage, reason
         self.exception_type = type(cause).__name__ if cause is not None else type(self).__name__
@@ -33,6 +33,8 @@ class InventoryFailure(Exception):
         self.status = status if status in {'Pending', 'InProgress', 'Delayed', 'Cancelling', 'Success', 'Failed', 'TimedOut', 'Cancelled'} else None
         self.response_code = response_code if type(response_code) is int else None
         self.output_length = output_length if type(output_length) is int else None
+        self.keys_present = {key: None if keys_present is None else bool(keys_present.get(key))
+                             for key in ('hostname', 'os', 'was', 'web', 'db')}
 
 
 def normalized(value):
@@ -42,28 +44,48 @@ def normalized(value):
     return None if value.casefold() in {'', 'unknown', 'n/a', 'none', 'null', '-'} else value
 
 
-def validate_inventory(value):
-    """Validate JSON wire data and preserve the existing flat cache schema."""
-    if not isinstance(value, dict): raise ValueError('object required')
-    result = {}
-    for key in ('hostname', 'os', 'kernel', 'os_version', 'os_install_date'):
-        item = value.get(key)
-        if item is not None and not isinstance(item, str): raise ValueError('string or null required')
-        result[key] = normalized(item)
-    if not result['hostname'] or not result['os']: raise ValueError('hostname and os required')
-    for key in ('web', 'was', 'db'):
-        items = value.get(key)
-        if not isinstance(items, list): raise ValueError('product array required')
-        result[key] = []
-        for item in items:
-            if not isinstance(item, dict): raise ValueError('product object required')
-            product = {}
-            for field in ('product', 'version', 'path', 'status'):
-                entry = item.get(field)
-                if entry is not None and not isinstance(entry, str): raise ValueError('product string or null required')
-                product[field] = normalized(entry)
-            if not product['product']: raise ValueError('product name required')
-            result[key].append(product)
+class OutputParseError(ValueError):
+    def __init__(self, reason, keys_present):
+        super().__init__(reason)
+        self.reason, self.keys_present = reason, keys_present
+
+
+def parse_inventory(output):
+    """Parse the unmodified Custom Document's KV/product contract, never stdout JSON."""
+    fields = ('hostname', 'kernel', 'os', 'os_install_date')
+    products = ('was', 'web', 'db')
+    result = dict.fromkeys((*fields, 'os_version'))
+    result.update(was=[], web=[], db=[])
+    records = []
+    keys = dict.fromkeys(('hostname', 'os', *products), False)
+    if not isinstance(output, str) or not output.strip().strip('\ufeff').strip():
+        raise OutputParseError('empty_output', keys)
+    for line in output.splitlines():
+        key, sep, value = line.partition('=')
+        key = key.strip().lstrip('\ufeff').strip().casefold()
+        if not sep: continue
+        if key in keys: keys[key] = True
+        if key in fields or key in products: records.append((key, value))
+    # AWS returns only the first 24,000 stdout characters. Do not save a partial inventory.
+    if len(output) >= 24000:
+        raise OutputParseError('output_truncated', keys)
+    for key, value in records:
+        if key in products:
+            if normalized(value) is None: continue
+            parts = value.split('|')
+            if len(parts) != 4:
+                raise OutputParseError('invalid_product_record', keys)
+            item = dict(zip(('product', 'version', 'path', 'status'), map(normalized, parts)))
+            if not item['product']:
+                raise OutputParseError('invalid_product_record', keys)
+            result[key].append(item)
+        else:
+            result[key] = normalized(value)
+    if not result['hostname']: raise OutputParseError('missing_hostname', keys)
+    if not result['os']: raise OutputParseError('missing_os', keys)
+    # Both Document steps always emit all three product categories, even when absent.
+    # Missing categories can signal incomplete stdout even below the AWS size limit.
+    if not all(keys[key] for key in products): raise OutputParseError('parse_failed', keys)
     return result
 
 
@@ -93,7 +115,7 @@ def _date(value):
 
 
 class SsmInventoryCollector:
-    def __init__(self, root: Path, client_factory=None, *, now=None, timeout=90, collection_timeout=300,
+    def __init__(self, root: Path, client_factory=None, *, now=None, timeout=330, collection_timeout=1800,
                  poll_interval=1, clock=time.monotonic, sleep=time.sleep, jitter=random.random):
         self.root, self.client_factory = root, client_factory
         self.now = now or (lambda: datetime.now(timezone.utc))
@@ -145,12 +167,10 @@ class SsmInventoryCollector:
 
     def _invoke(self, client, identifier, platform, collection_deadline):
         deadline = min(collection_deadline, self.clock() + self.timeout)
-        document, filename = DOCUMENTS[platform]
-        script = (Path(__file__).with_name('ssm_scripts') / filename).read_text(encoding='utf-8')
+        step = STEPS[platform]
         try:
             sent = self._request(client.send_command, 'send_command', deadline,
-                InstanceIds=[identifier], DocumentName=document, TimeoutSeconds=60,
-                Parameters={'commands': [script], 'executionTimeout': ['60']})
+                InstanceIds=[identifier], DocumentName=DOCUMENT, TimeoutSeconds=60)
             command = sent['Command']['CommandId']
         except InventoryFailure: raise
         except Exception as exc:
@@ -158,15 +178,16 @@ class SsmInventoryCollector:
         state = response_code = None
         not_ready = False
         # The clock deadline and a finite cap both bound polling (even with a stalled clock).
-        for _ in range(120):
+        for _ in range(360):
             if self.clock() >= deadline: break
             try:
                 invocation = self._request(client.get_command_invocation, 'get_command_invocation', deadline,
-                                          CommandId=command, InstanceId=identifier)
+                                          CommandId=command, InstanceId=identifier, PluginName=step)
             except InventoryFailure: raise
             except Exception as exc:
                 if getattr(exc, 'response', {}).get('Error', {}).get('Code') != 'InvocationDoesNotExist':
-                    raise InventoryFailure('get_command_invocation', 'get_command_invocation_failed', cause=exc) from None
+                    code = getattr(exc, 'response', {}).get('Error', {}).get('Code')
+                    raise InventoryFailure('get_command_invocation', 'invalid_plugin_name' if code == 'InvalidPluginName' else 'get_command_invocation_failed', cause=exc) from None
                 not_ready = True
             else:
                 not_ready = False
@@ -176,16 +197,11 @@ class SsmInventoryCollector:
                 if state == 'Success':
                     if type(response_code) is not int or response_code != 0:
                         raise InventoryFailure('terminal_status', 'nonzero_response_code', status=state, response_code=response_code, output_length=length)
-                    if not isinstance(output, str) or not output.strip():
-                        raise InventoryFailure('parse', 'empty_output', status=state, response_code=response_code, output_length=length)
                     try:
-                        data = json.loads(output)
-                    except (ValueError, TypeError) as exc:
-                        raise InventoryFailure('parse', 'json_parse_failed', cause=exc, status=state, response_code=response_code, output_length=length) from None
-                    try:
-                        return validate_inventory(data)
-                    except ValueError as exc:
-                        raise InventoryFailure('parse', 'schema_validation_failed', cause=exc, status=state, response_code=response_code, output_length=length) from None
+                        return parse_inventory(output)
+                    except OutputParseError as exc:
+                        raise InventoryFailure('parse', exc.reason, cause=exc, status=state, response_code=response_code,
+                                               output_length=length, keys_present=exc.keys_present) from None
                 if state not in {'Pending', 'InProgress', 'Delayed', 'Cancelling'}:
                     raise InventoryFailure('terminal_status', 'terminal_failed', status=state, response_code=response_code, output_length=length)
             self.sleep(min(self.poll_interval, max(0, deadline - self.clock())))
@@ -196,9 +212,10 @@ class SsmInventoryCollector:
 
     @staticmethod
     def _log_failure(identifier, platform, failure):
-        log.warning('SSM inventory failed instance_id=%s platform_type=%s stage=%s reason=%s exception_type=%s aws_error_code=%s status=%s response_code=%s output_length=%s',
-                    identifier, platform, failure.stage, failure.reason, failure.exception_type,
-                    failure.aws_code, failure.status, failure.response_code, failure.output_length)
+        log.warning('SSM inventory failed instance_id=%s platform_type=%s selected_step=%s stage=%s reason=%s exception_type=%s aws_error_code=%s status=%s response_code=%s output_length=%s has_hostname=%s has_os=%s has_was=%s has_web=%s has_db=%s',
+                    identifier, platform, STEPS.get(platform), failure.stage, failure.reason, failure.exception_type,
+                    failure.aws_code, failure.status, failure.response_code, failure.output_length,
+                    *(failure.keys_present[key] for key in ('hostname', 'os', 'was', 'web', 'db')))
 
     def collect(self, ec2_instances, previous=None, *, force=False, progress=lambda _: None):
         try:

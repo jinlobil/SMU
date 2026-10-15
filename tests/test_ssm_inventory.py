@@ -1,27 +1,28 @@
-"""SSM single-step JSON contract, bounded calls, and existing cache policies."""
+"""Verified LNL-ServerInventory KV contract, fixed steps and bounded collection."""
 import copy
 from datetime import datetime, timedelta, timezone
 import json
-from pathlib import Path
-import subprocess
 import threading
 
 import pytest
 from botocore.exceptions import ClientError
 
-from backend.services.ssm_inventory import DOCUMENTS, SsmInventoryCollector, validate_inventory
+from backend.services.ssm_inventory import DOCUMENT, STEPS, OutputParseError, SsmInventoryCollector, parse_inventory
 from test_aws_assets import credentials
 
 LINUX_DATA = {'hostname': 'fixture-linux', 'kernel': '6.1-fixture', 'os': 'Example Linux 1',
-              'os_version': '1', 'os_install_date': None,
+              'os_version': None, 'os_install_date': None,
               'was': [{'product': 'Tomcat', 'version': '9.0.1', 'path': '/srv/app', 'status': 'running'}],
               'web': [{'product': 'Tengine', 'version': '1.2', 'path': '/srv/web', 'status': 'running'}],
               'db': [{'product': 'MySQL', 'version': None, 'path': '/srv/db', 'status': 'running'}]}
 WINDOWS_DATA = {'hostname': 'fixture-windows', 'kernel': '10.0.fixture', 'os': 'Example Windows Server',
-                'os_version': '10.0.fixture', 'os_install_date': '2025-01-02 03:04:05',
+                'os_version': None, 'os_install_date': '2025-01-02 03:04:05',
                 'web': [{'product': 'IIS', 'version': '10.0', 'path': r'C:\Windows\System32\inetsrv', 'status': 'running'}],
                 'was': [], 'db': []}
-LINUX, WINDOWS = json.dumps(LINUX_DATA), json.dumps(WINDOWS_DATA)
+LINUX = ('HOSTNAME=fixture-linux\nKERNEL=6.1-fixture\nOS=Example Linux 1\nOS_INSTALL_DATE=N/A\n'
+         'WAS=Tomcat|9.0.1|/srv/app|running\nWEB=Tengine|1.2|/srv/web|running\nDB=MySQL|unknown|/srv/db|running')
+WINDOWS = ('HOSTNAME=fixture-windows\nKERNEL=10.0.fixture\nOS=Example Windows Server\nOS_INSTALL_DATE=2025-01-02 03:04:05\n'
+           'WEB=IIS|10.0|C:\\Windows\\System32\\inetsrv|running\nWAS=None\nDB=None')
 TODAY = datetime(2026, 10, 14, 16, tzinfo=timezone.utc)
 
 
@@ -35,7 +36,7 @@ def aws_error(code, operation='GetCommandInvocation'):
 
 
 class SsmClient:
-    """Boto-shaped single-step fake. No ListCommandInvocations method by design."""
+    """Boto-shaped Custom Document fake; no ListCommandInvocations method."""
     def __init__(self, count=2):
         self.information = {item['InstanceId']: {'InstanceId': item['InstanceId'], 'PingStatus': 'Online',
             'PlatformType': 'Windows' if number % 2 else 'Linux', 'AssociationStatus': 'Failed'}
@@ -53,24 +54,23 @@ class SsmClient:
     def send_command(self, **kwargs):
         identifier = kwargs['InstanceIds'][0]
         platform = self.information[identifier]['PlatformType']
-        assert kwargs['DocumentName'] == DOCUMENTS[platform][0]
-        assert set(kwargs['Parameters']) == {'commands', 'executionTimeout'}
-        assert len(kwargs['Parameters']['commands']) == 1
-        assert kwargs['Parameters']['executionTimeout'] == ['60']
-        assert kwargs['Parameters']['commands'][0] == (Path(__file__).parents[1] / 'backend/services/ssm_scripts' / DOCUMENTS[platform][1]).read_text()
+        assert kwargs['DocumentName'] == DOCUMENT == 'LNL-ServerInventory'
+        assert set(kwargs) == {'InstanceIds', 'DocumentName', 'TimeoutSeconds'}
+        assert 'Parameters' not in kwargs
         self.sent.append(identifier); self.requests.append(kwargs)
         return {'Command': {'CommandId': 'fixture-command-' + identifier, 'DocumentName': kwargs['DocumentName'],
                             'InstanceIds': [identifier], 'Status': 'Pending'}}
 
     def get_command_invocation(self, **kwargs):
-        assert set(kwargs) == {'InstanceId', 'CommandId'}
+        assert set(kwargs) == {'InstanceId', 'CommandId', 'PluginName'}
+        assert kwargs['PluginName'] == STEPS[self.information[kwargs['InstanceId']]['PlatformType']]
         identifier = kwargs['InstanceId']
         assert kwargs['CommandId'] == 'fixture-command-' + identifier
         if identifier in self.fail: raise aws_error('AccessDeniedException')
         if identifier in self.missing:
             self.missing.remove(identifier); raise aws_error('InvocationDoesNotExist')
         base = {'CommandId': kwargs['CommandId'], 'InstanceId': identifier,
-                'DocumentName': DOCUMENTS[self.information[identifier]['PlatformType']][0],
+                'DocumentName': DOCUMENT, 'PluginName': kwargs['PluginName'],
                 'Status': 'Success', 'ResponseCode': 0,
                 'StandardOutputContent': self.outputs.get(identifier, WINDOWS if self.information[identifier]['PlatformType'] == 'Windows' else LINUX),
                 'StandardErrorContent': '', 'StandardOutputUrl': 'https://example.invalid/output'}
@@ -86,31 +86,55 @@ def collector(root, client, now=TODAY, **kwargs):
 
 
 @pytest.mark.parametrize('platform,data', [('Linux', LINUX_DATA), ('Windows', WINDOWS_DATA)])
-def test_platform_json_collection_and_single_step_document(tmp_path, platform, data):
+def test_custom_document_collection_selects_verified_platform_step(tmp_path, platform, data):
     client = SsmClient(1); identifier = instances(1)[0]['InstanceId']
     client.information[identifier]['PlatformType'] = platform
     result = collector(tmp_path, client).collect(instances(1))
     record = result['instances'][identifier]
     assert result['status'] == 'success' and record['status'] == 'success'
     for key, value in data.items(): assert record[key] == value
-    assert client.requests[0]['DocumentName'] == ('AWS-RunPowerShellScript' if platform == 'Windows' else 'AWS-RunShellScript')
+    assert client.requests[0]['DocumentName'] == 'LNL-ServerInventory'
 
 
-@pytest.mark.parametrize('version', ['unknown', 'N/A', '', None])
-def test_json_arrays_multiple_products_and_nullable_versions(version):
-    data = {**LINUX_DATA, 'web': [], 'db': [], 'was': [
-        {'product': 'App', 'version': version, 'path': None, 'status': 'running'},
-        {'product': 'App2', 'version': '2.0'}]}
-    result = validate_inventory(json.loads(json.dumps(data)))
-    assert result['was'][0]['version'] is None and result['was'][1]['version'] == '2.0'
-    assert result['web'] == result['db'] == []
+@pytest.mark.parametrize('version', ['unknown', 'N/A', '', 'None', 'null'])
+def test_repeated_products_nullable_versions_and_empty_categories(version):
+    output = (f'HOSTNAME=fixture\nOS=Example\nWAS=App|{version}|/a|running\n'
+              f'WAS=App2|2.0|/b|installed\nWEB=None\nDB=DB1|{version}|/c|running\nDB=DB2|3.0|/d|installed')
+    result = parse_inventory(output)
+    assert len(result['was']) == len(result['db']) == 2
+    assert result['was'][0]['version'] is result['db'][0]['version'] is None
+    assert result['was'][1]['version'] == '2.0' and result['web'] == []
 
 
-@pytest.mark.parametrize('data', [None, [], {}, {**LINUX_DATA, 'hostname': None},
-    {**LINUX_DATA, 'os': {}}, {**LINUX_DATA, 'web': None}, {**LINUX_DATA, 'db': ['invalid']},
-    {**LINUX_DATA, 'was': [{'product': None}]}, {**LINUX_DATA, 'was': [{'product': 'App', 'version': 3}]}])
-def test_schema_validation_rejects_invalid_inventory(data):
-    with pytest.raises(ValueError): validate_inventory(data)
+@pytest.mark.parametrize('output,reason', [
+    ('', 'empty_output'), (' \ufeff \r\n', 'empty_output'),
+    ('OS=Example\nWAS=None\nWEB=None\nDB=None', 'missing_hostname'),
+    ('HOSTNAME=fixture\nWAS=None\nWEB=None\nDB=None', 'missing_os'),
+    ('HOSTNAME=fixture\nOS=Example\nWAS=App|1|/a\nWEB=None\nDB=None', 'invalid_product_record'),
+    ('HOSTNAME=fixture\nOS=Example\nWAS=|1|/a|running\nWEB=None\nDB=None', 'invalid_product_record'),
+    ('HOSTNAME=fixture\nOS=Example\nWAS=None\nWEB=None', 'parse_failed'),
+    ('Step execution skipped due to unsupported plugin: aws:runShellScript', 'missing_hostname'),
+    ('HOSTNAME=fixture\nOS=Example\nWAS=None\nWEB=None\nDB=None\n' + 'x' * 24000, 'output_truncated'),
+])
+def test_parser_detailed_failures(output, reason):
+    with pytest.raises(OutputParseError) as caught: parse_inventory(output)
+    assert caught.value.reason == reason
+
+
+@pytest.mark.parametrize('output', [LINUX, WINDOWS])
+def test_bom_crlf_whitespace_and_original_document_output(output):
+    decorated = '\ufeff' + '\r\n'.join('  ' + line + '  ' for line in output.splitlines())
+    assert parse_inventory(decorated) == parse_inventory(output)
+
+
+def test_actual_windows_document_fields_with_synthetic_hostname():
+    output = ('HOSTNAME=fixture-windows\nKERNEL=10.0.14393\nOS=Microsoft Windows Server 2016 Datacenter\n'
+              'OS_INSTALL_DATE=2025-01-14 19:48:22\nWEB=IIS|10.0|C:\\Windows\\System32\\inetsrv|running\nWAS=None\nDB=None')
+    result = parse_inventory('\ufeff' + output.replace('\n', '\r\n'))
+    assert result['kernel'] == '10.0.14393' and result['os'] == 'Microsoft Windows Server 2016 Datacenter'
+    assert result['os_install_date'] == '2025-01-14 19:48:22'
+    assert result['was'] == result['db'] == []
+    assert result['web'] == [{'product': 'IIS', 'version': '10.0', 'path': r'C:\Windows\System32\inetsrv', 'status': 'running'}]
 
 
 @pytest.mark.parametrize('response,reason,stage', [
@@ -119,8 +143,8 @@ def test_schema_validation_rejects_invalid_inventory(data):
     ({'Status': 'Success', 'ResponseCode': 1}, 'nonzero_response_code', 'terminal_status'),
     ({'StandardOutputContent': ''}, 'empty_output', 'parse'),
     ({'StandardOutputContent': '  \r\n'}, 'empty_output', 'parse'),
-    ({'StandardOutputContent': 'not JSON SECRET'}, 'json_parse_failed', 'parse'),
-    ({'StandardOutputContent': '{}'}, 'schema_validation_failed', 'parse'),
+    ({'StandardOutputContent': 'SECRET malformed stdout'}, 'missing_hostname', 'parse'),
+    ({'StandardOutputContent': 'HOSTNAME=fixture\nOS=Example\nWAS=SECRET invalid\nWEB=None\nDB=None'}, 'invalid_product_record', 'parse'),
 ])
 def test_failure_reasons_and_safe_logs(tmp_path, caplog, response, reason, stage):
     client = SsmClient(1); identifier = instances(1)[0]['InstanceId']
@@ -128,7 +152,7 @@ def test_failure_reasons_and_safe_logs(tmp_path, caplog, response, reason, stage
     result = collector(tmp_path, client).collect(instances(1))
     assert result['instances'][identifier]['error'] == reason
     assert f'stage={stage}' in caplog.text and f'reason={reason}' in caplog.text
-    for field in ('instance_id=', 'platform_type=Linux', 'exception_type=', 'aws_error_code=', 'status=', 'response_code=', 'output_length='):
+    for field in ('instance_id=', 'platform_type=Linux', 'exception_type=', 'aws_error_code=', 'status=', 'response_code=', 'output_length=', 'selected_step=linuxInventory', 'has_hostname=', 'has_os='):
         assert field in caplog.text
     assert 'SECRET' not in caplog.text + json.dumps(result)
     assert 'fixture-command-' not in caplog.text + json.dumps(result)
@@ -276,15 +300,6 @@ def test_discovery_pagination_and_filter_batches(tmp_path):
     assert [len(item['Filters'][0]['Values']) for item in calls] == [50, 50, 2, 2]
 
 
-def test_linux_script_emits_one_json_object_without_extra_dependency():
-    script = Path(__file__).parents[1] / 'backend/services/ssm_scripts/linux.sh'
-    result = subprocess.run(['sh', str(script)], capture_output=True, text=True, timeout=30, check=True)
-    data = json.loads(result.stdout)
-    validate_inventory(data)
-    assert data['os_install_date'] is None
-    assert all(isinstance(data[key], list) for key in ('was', 'web', 'db'))
-
-
 def test_first_failure_is_attempted_only_once_until_force_or_next_date(tmp_path):
     client = SsmClient(1); identifier = instances(1)[0]['InstanceId']; client.fail.add(identifier)
     target = collector(tmp_path, client)
@@ -319,8 +334,8 @@ def test_whole_collection_deadline_prevents_new_calls_after_discovery(tmp_path):
     assert all(record['error'] == 'polling_timeout' for record in result['instances'].values())
 
 
-@pytest.mark.parametrize('platform', ['Linux', 'Windows'])
-def test_official_boto_response_and_request_shapes_without_pluginname(tmp_path, platform, monkeypatch):
+@pytest.mark.parametrize('platform,step', [('Linux', 'linuxInventory'), ('Windows', 'windowsInventory')])
+def test_official_boto_shapes_use_only_custom_document_and_exact_step(tmp_path, platform, step, monkeypatch):
     import boto3
     import botocore.session
     from botocore.stub import Stubber
@@ -333,19 +348,78 @@ def test_official_boto_response_and_request_shapes_without_pluginname(tmp_path, 
     target = collector(tmp_path, client)
     identifier = 'i-00000000000000000'
     command = '00000000-0000-0000-0000-000000000000'
-    document, filename = DOCUMENTS[platform]
-    script = (Path(__file__).parents[1] / 'backend/services/ssm_scripts' / filename).read_text()
+    document = 'LNL-ServerInventory'
     with Stubber(client) as stub:
         stub.add_response('send_command', {'Command': {'CommandId': command, 'DocumentName': document,
                           'InstanceIds': [identifier], 'Status': 'Pending'}},
-                          {'DocumentName': document, 'InstanceIds': [identifier], 'TimeoutSeconds': 60,
-                           'Parameters': {'commands': [script], 'executionTimeout': ['60']}})
+                          {'DocumentName': document, 'InstanceIds': [identifier], 'TimeoutSeconds': 60})
         stub.add_client_error('get_command_invocation', service_error_code='InvocationDoesNotExist',
-                              expected_params={'InstanceId': identifier, 'CommandId': command})
+                              expected_params={'InstanceId': identifier, 'CommandId': command, 'PluginName': step})
         stub.add_response('get_command_invocation', {'CommandId': command, 'InstanceId': identifier,
-                          'DocumentName': document, 'Status': 'Success', 'ResponseCode': 0,
+                          'DocumentName': document, 'PluginName': step, 'Status': 'Success', 'ResponseCode': 0,
                           'StandardOutputContent': WINDOWS if platform == 'Windows' else LINUX,
-                          'StandardErrorContent': ''}, {'InstanceId': identifier, 'CommandId': command})
+                          'StandardErrorContent': ''}, {'InstanceId': identifier, 'CommandId': command, 'PluginName': step})
         result = target._invoke(client, identifier, platform, target.clock() + 90)
         assert result['hostname'] == ('fixture-windows' if platform == 'Windows' else 'fixture-linux')
         stub.assert_no_pending_responses()
+
+
+@pytest.mark.parametrize('platform', ['Linux', 'Windows'])
+@pytest.mark.parametrize('output,reason,has_hostname,has_os', [
+    ('', 'empty_output', False, False),
+    ('HOSTNAME=fixture\nWAS=None\nWEB=None\nDB=None', 'missing_os', True, False),
+    ('OS=Example\nWAS=None\nWEB=None\nDB=None', 'missing_hostname', False, True),
+    ('HOSTNAME=fixture\nOS=Example\nWAS=SECRET invalid\nWEB=None\nDB=None', 'invalid_product_record', True, True),
+])
+def test_parse_diagnostics_and_stale_preservation(tmp_path, caplog, platform, output, reason, has_hostname, has_os):
+    client = SsmClient(1); identifier = instances(1)[0]['InstanceId']
+    client.information[identifier]['PlatformType'] = platform
+    target = collector(tmp_path, client)
+    cached = target.collect(instances(1)); original = copy.deepcopy(cached)
+    client.outputs[identifier] = output
+    failed = target.collect(instances(1), cached, force=True)
+    row = failed['instances'][identifier]
+    assert row['status'] == 'stale' and row['error'] == reason
+    for key in (*LINUX_DATA, 'last_success_at', 'platform_type'):
+        assert row[key] == original['instances'][identifier][key]
+    assert cached == original
+    assert f'selected_step={STEPS[platform]}' in caplog.text
+    assert 'status=Success response_code=0' in caplog.text
+    assert f'has_hostname={has_hostname} has_os={has_os}' in caplog.text
+    assert 'SECRET' not in caplog.text + json.dumps(failed)
+    assert 'fixture-command-' not in caplog.text + json.dumps(failed)
+
+
+def test_every_product_category_repeated_and_document_specific_values_preserved():
+    result = parse_inventory('HOSTNAME=fixture\nOS=Example\nOS_INSTALL_DATE=N/A\n'
+        'WAS=Tomcat|9.0.46|/srv/app|running\nWAS=WebLogic|12.2.1.4|/srv/wls|installed\n'
+        'WEB=Nginx|1.24.0|package:nginx|installed\nWEB=Tengine|2.3.3|/srv/web|running\n'
+        'DB=Oracle|19.0.0.0.0|/srv/oracle|installed\nDB=MSSQL|16.0|instance=fixture (Example Edition)|stopped')
+    assert len(result['was']) == len(result['web']) == len(result['db']) == 2
+    assert result['web'][0]['path'] == 'package:nginx'
+    assert result['db'][1]['path'] == 'instance=fixture (Example Edition)'
+    assert result['db'][1]['product'] == 'MSSQL' and result['db'][1]['status'] == 'stopped'
+    assert result['os_install_date'] is None
+
+
+def test_invalid_plugin_name_stays_a_lookup_error_without_fallback(tmp_path, caplog):
+    client = SsmClient(1); calls = []
+    def get(**kwargs): calls.append(kwargs); raise aws_error('InvalidPluginName')
+    client.get_command_invocation = get
+    result = collector(tmp_path, client).collect(instances(1))
+    assert result['instances'][instances(1)[0]['InstanceId']]['error'] == 'invalid_plugin_name'
+    assert len(calls) == 1 and calls[0]['PluginName'] == 'linuxInventory'
+    assert 'stage=get_command_invocation' in caplog.text
+    assert 'aws_error_code=InvalidPluginName' in caplog.text
+    assert 'SECRET' not in caplog.text
+
+
+def test_document_300_second_execution_is_not_cut_off_by_previous_short_poll_window(tmp_path):
+    client = SsmClient(1); clock = Clock(); actual = client.get_command_invocation
+    def get(**kwargs):
+        if clock.value < 299: return {'Status': 'InProgress', 'ResponseCode': -1, 'StandardOutputContent': ''}
+        return actual(**kwargs)
+    client.get_command_invocation = get
+    target = collector(tmp_path, client, clock=clock)
+    target.sleep, target.poll_interval = clock.sleep, 1
+    assert target.collect(instances(1))['status'] == 'success' and clock.value == 299
