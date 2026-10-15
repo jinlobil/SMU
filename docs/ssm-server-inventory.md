@@ -17,11 +17,18 @@ Scheduler/Fetcher 소스 코드는 변경하지 않았다. Interval 30/60/120분
 Scheduler dispatch 경로에서 AWS 최신화와 같은 날짜 SSM 미재실행을 검증한다.
 
 SSM은 명시적 Asia/Seoul(UTC+09:00)의 달력 날짜를 사용한다. 24시간 TTL이 아니다.
-`last_success_at`의 서울 날짜가 오늘이며 status=success인 EC2는 재실행하지 않는다.
-현재 EC2 모두 오늘 성공했으면 SSM client/Describe API도 호출하지 않고 Cache를 사용한다.
-새 날짜에는 현재 EC2 모두 갱신 대상이 된다. 일부 실패 후에는 오늘 성공한 서버를
-제외하고 신규/미완료/stale 대상만 재시도한다. 숫자 Scheduler Interval을 SSM에 전달하거나
-SSM에서 Scheduler 주기를 정하지 않는다.
+인스턴스별 `last_attempt_at`의 서울 날짜가 오늘이면 성공/실패와 관계없이 일반 자동 수집을 재실행하지 않는다.
+현재 EC2 모두 오늘 시도했으면 SSM client/Describe API도 호출하지 않고 기존 상태를 유지한다.
+새 날짜에는 다시 시도하고, 당일 신규 EC2는 시도 이력이 없어 1회 수집한다.
+force refresh는 당일 Gate를 무시한다. Scheduler Interval은 변경하거나 SSM에 전달하지 않는다.
+
+실행 실패는 send_command / get_command_invocation / terminal_status / parse 단계로 구분한다.
+로그에는 Instance ID, PlatformType, 단계, 고정 실패 사유, Exception type, AWS Error Code,
+Status와 ResponseCode만 남긴다. 원문 stdout/stderr, CommandId, URL, 예외 메시지는 기록하지 않는다.
+Cache에는 고정 실패 사유만 저장하며 기존 정상 Inventory는 stale로 보존한다.
+`StandardOutputUrl`은 S3 stdout 위치이므로 존재만으로 실패 처리하지 않는다.
+inline stdout은 AWS 제한인 24,000자에 도달하면 잘림 가능성으로 거부하며 S3 추가 호출은 하지 않는다.
+Parser는 UTF BOM, CRLF, 앞뒤 공백을 처리한다.
 
 ## 3. 대상·Plugin·부하 제어
 
@@ -167,3 +174,19 @@ Python Dependency 추가 없음. 기존 boto3/botocore와 표준 라이브러리
 - OS EOS/DB EOS/Lifecycle Catalog와 새 Inventory DB는 추가하지 않았다.
 
 변경 브랜치: `codex/ssm-server-inventory`. PR 검증 결과에 기존 main에서 재현된 실패 2개를 명시한다.
+
+## Collector 진단 수정
+
+기존 `command_failed`는 AWS 실행 실패를 의미하는 확정 진단이 아니었다.
+전송/조회/terminal status/파싱 예외를 모두 같은 사유로 바꿨기 때문이다.
+AWS SDK GetCommandInvocation 응답 정의를 확인한 결과 StandardOutputUrl은 S3 전체 stdout URL이며
+실패 조건이 아니다. 기존 조건은 Success/ResponseCode=0 응답도 거부할 수 있었다.
+또 첫 KEY에 UTF BOM이 붙으면 HOSTNAME 누락으로 파싱 실패했다. 두 경로 모두 회귀 테스트로 검증한다.
+운영 aws.json 및 기존 실행 로그는 이 작업 환경에 없어 26대의 실제 실패 분포는 확정할 수 없다.
+수정 후 당일 재검증에는 SSM 전용 강제 갱신을 사용해야 한다. 일반 Scheduler는 오늘 시도 이력을 존중한다.
+진단 로그에서 terminal_failed/terminal_timed_out, parse_failed,
+invocation_not_found_timeout/invocation_poll_timeout 등을 구분하여 확인한다.
+
+수정 후 전체 pytest: 669 passed, 2 failed (56.69s). 남은 실패는 위에 기록한 기존
+Scheduler 테스트 대역 mode 누락과 Timeline 150/100 불일치로 동일하다.
+관련 AWS/SSM/Excel 선택 검사 85개 통과 후 추가 Windows/서울 날짜 회귀 검사까지 전체 실행에 포함했다.
