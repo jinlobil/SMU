@@ -18,6 +18,19 @@ PLUGINS = {'Linux': 'linuxInventory', 'Windows': 'windowsInventory'}
 log = logging.getLogger('smu.aws.ssm')
 
 
+class InvocationFailure(Exception):
+    """Only bounded, non-output diagnostic metadata may cross the worker boundary."""
+    def __init__(self, stage, reason, *, cause=None, status=None, response_code=None):
+        super().__init__(reason)
+        self.stage, self.reason = stage, reason
+        self.exception_type = type(cause).__name__ if cause is not None else type(self).__name__
+        code = getattr(cause, 'response', {}).get('Error', {}).get('Code')
+        # Never interpolate exception messages, output, URLs or command identifiers.
+        self.aws_code = code if isinstance(code, str) and code.isalnum() and len(code) <= 80 else None
+        self.status = status if status in {'Pending', 'InProgress', 'Delayed', 'Cancelling', 'Success', 'Failed', 'TimedOut', 'Cancelled'} else None
+        self.response_code = response_code if type(response_code) is int else None
+
+
 def normalized(value):
     if not isinstance(value, str): return None
     value = value.strip()
@@ -29,7 +42,7 @@ def parse_inventory(output: str) -> dict:
     result.update(was=[], web=[], db=[])
     for line in output.splitlines():
         key, sep, value = line.partition('=')
-        key = key.strip().casefold()
+        key = key.strip().lstrip('\ufeff').strip().casefold()
         if not sep or key not in result: continue
         if key in {'was', 'web', 'db'}:
             if normalized(value) is None: continue
@@ -101,26 +114,48 @@ class SsmInventoryCollector:
 
     def _invoke(self, client, identifier, platform):
         plugin = PLUGINS[platform]
-        response = client.send_command(InstanceIds=[identifier], DocumentName=DOCUMENT, TimeoutSeconds=60)
-        command = response['Command']['CommandId']
+        try:
+            response = client.send_command(InstanceIds=[identifier], DocumentName=DOCUMENT, TimeoutSeconds=60)
+            command = response['Command']['CommandId']
+        except Exception as exc:
+            raise InvocationFailure('send_command', 'send_command_failed', cause=exc) from None
         deadline = self.clock() + self.timeout
+        state = response_code = None
+        missing = False
         # A fixed attempt cap also bounds polling with a stalled/mocked clock.
         for attempt in range(46):
             if self.clock() >= deadline: break
             try:
                 invocation = client.get_command_invocation(CommandId=command, InstanceId=identifier, PluginName=plugin)
             except Exception as exc:
-                if getattr(exc, 'response', {}).get('Error', {}).get('Code') != 'InvocationDoesNotExist': raise
+                if getattr(exc, 'response', {}).get('Error', {}).get('Code') != 'InvocationDoesNotExist':
+                    raise InvocationFailure('get_command_invocation', 'get_command_invocation_failed', cause=exc) from None
+                missing = True
             else:
-                state = invocation.get('Status')
+                missing = False
+                state, response_code = invocation.get('Status'), invocation.get('ResponseCode')
                 if state == 'Success':
-                    if invocation.get('ResponseCode', 0) != 0 or invocation.get('StandardOutputUrl'):
-                        raise ValueError('Incomplete inventory output')
-                    return parse_inventory(invocation.get('StandardOutputContent', ''))
+                    if response_code != 0:
+                        raise InvocationFailure('terminal_status', 'response_code_nonzero', status=state, response_code=response_code)
+                    output = invocation.get('StandardOutputContent', '')
+                    # AWS returns only the first 24,000 stdout characters inline.
+                    # S3 URL presence is normal, but a full inline buffer may be truncated.
+                    if isinstance(output, str) and len(output) >= 24000:
+                        raise InvocationFailure('parse', 'output_may_be_truncated', status=state, response_code=response_code)
+                    try:
+                        return parse_inventory(output)
+                    except Exception as exc:
+                        raise InvocationFailure('parse', 'parse_failed', cause=exc, status=state, response_code=response_code) from None
                 if state not in {'Pending', 'InProgress', 'Delayed', 'Cancelling'}:
-                    raise RuntimeError('Inventory command unsuccessful')
+                    reason = {'Failed': 'terminal_failed', 'TimedOut': 'terminal_timed_out', 'Cancelled': 'terminal_cancelled'}.get(state, 'terminal_status_unknown')
+                    raise InvocationFailure('terminal_status', reason, status=state, response_code=response_code)
             self.sleep(min(self.poll_interval, max(0, deadline - self.clock())))
-        raise TimeoutError('SSM inventory timeout')
+        cause = TimeoutError()
+        if missing:
+            failure = InvocationFailure('get_command_invocation', 'invocation_not_found_timeout', cause=cause)
+            failure.aws_code = 'InvocationDoesNotExist'
+            raise failure
+        raise InvocationFailure('get_command_invocation', 'invocation_poll_timeout', cause=cause, status=state, response_code=response_code)
 
     def collect(self, ec2_instances, previous=None, *, force=False, progress=lambda _: None):
         try:
@@ -146,10 +181,13 @@ class SsmInventoryCollector:
         if not identifiers:
             result.update(snapshot_date=today, collected_at=timestamp, last_attempt_at=timestamp, status='success')
             return result
-        needed = [identifier for identifier in identifiers if force or records.get(identifier, {}).get('status') != 'success'
-                  or _date(records.get(identifier, {}).get('last_success_at')) != today]
+        needed = [identifier for identifier in identifiers if force
+                  or _date(records.get(identifier, {}).get('last_attempt_at')) != today]
         if not needed:
-            result.update(snapshot_date=today, status='success')
+            active = [records[identifier] for identifier in identifiers]
+            complete = all(item.get('status') == 'success' and _date(item.get('last_success_at')) == today for item in active)
+            result['status'] = 'success' if complete else 'partial' if any(item.get('last_success_at') for item in active) else 'failed'
+            if complete: result['snapshot_date'] = today
             result.pop('error', None)
             return result
         result['last_attempt_at'] = timestamp
@@ -163,11 +201,9 @@ class SsmInventoryCollector:
             log.warning('SSM discovery failed error_type=%s', type(exc).__name__)
             return result
         targets = []
-        for identifier in identifiers:
+        for identifier in needed:
             info = managed.get(identifier, {})
             existing = records.get(identifier, {})
-            if not force and existing.get('status') == 'success' and _date(existing.get('last_success_at')) == today:
-                continue
             if info.get('PlatformType') in PLUGINS and not existing.get('last_success_at'):
                 records.setdefault(identifier, {})['platform_type'] = info['PlatformType']
             if info.get('PingStatus') != 'Online' or info.get('PlatformType') not in PLUGINS:
@@ -176,17 +212,19 @@ class SsmInventoryCollector:
             targets.append((identifier, info['PlatformType']))
         def collect_one(target):
             identifier, platform = target
-            try: return identifier, platform, self._invoke(client, identifier, platform)
+            try: return identifier, platform, self._invoke(client, identifier, platform), None
             except Exception as exc:
-                log.warning('SSM inventory invocation failed error_type=%s', type(exc).__name__)
-                return identifier, platform, None
+                failure = exc if isinstance(exc, InvocationFailure) else InvocationFailure('get_command_invocation', 'unexpected_invocation_failure', cause=exc)
+                log.warning('SSM inventory failed instance_id=%s platform_type=%s stage=%s reason=%s exception_type=%s aws_error_code=%s status=%s response_code=%s',
+                            identifier, platform, failure.stage, failure.reason, failure.exception_type, failure.aws_code, failure.status, failure.response_code)
+                return identifier, platform, None, failure.reason
         if targets:
             progress(f'SSM Server Inventory · {len(targets)}대 조회 중')
             with ThreadPoolExecutor(max_workers=5) as pool:
-                for identifier, platform, inventory in pool.map(collect_one, targets):
+                for identifier, platform, inventory, failure_reason in pool.map(collect_one, targets):
                     attempted = self.now().astimezone(SEOUL).isoformat()
                     if inventory is None:
-                        self._failed(records, identifier, attempted, 'command_failed')
+                        self._failed(records, identifier, attempted, failure_reason)
                     else:
                         records[identifier] = {**inventory, 'status': 'success', 'platform_type': platform,
                                                'last_attempt_at': attempted, 'last_success_at': attempted}
@@ -195,7 +233,7 @@ class SsmInventoryCollector:
         online = [identifier for identifier in identifiers if managed.get(identifier, {}).get('PingStatus') == 'Online'
                   and managed.get(identifier, {}).get('PlatformType') in PLUGINS]
         # Snapshot date covers the eligible Online set, not unmanageable EC2s.
-        # Partial failures retry only entries missing today's success.
+        # Per-instance last_attempt_at gates automatic attempts, including failures.
         if online and all(records[identifier].get('status') == 'success' and _date(records[identifier].get('last_success_at')) == today for identifier in online):
             result['snapshot_date'] = today
         if targets and any(records[identifier].get('status') == 'success' for identifier, _ in targets):

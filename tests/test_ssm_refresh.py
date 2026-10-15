@@ -33,7 +33,8 @@ def test_aws_atomic_refresh_cache_only_daily_ssm_and_failure_isolation(tmp_path,
     # Discovery failure must not turn successful Describe collection into AWS failure.
     from datetime import datetime, timedelta
     for record in first['ssm_inventory']['instances'].values():
-        record['last_success_at'] = (datetime.fromisoformat(record['last_success_at']) - timedelta(days=1)).isoformat()
+        for field in ('last_success_at', 'last_attempt_at'):
+            record[field] = (datetime.fromisoformat(record[field]) - timedelta(days=1)).isoformat()
     path.write_text(json.dumps(first))
     monkeypatch.setattr(client, 'describe_instance_information', lambda **_: (_ for _ in ()).throw(RuntimeError('fixture')))
     assert target.refresh_aws(lambda _: None)['ssm'] == 'stale'

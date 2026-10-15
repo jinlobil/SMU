@@ -119,7 +119,7 @@ def test_same_date_force_collects_all_online_but_not_hybrid(tmp_path):
 
 
 @pytest.mark.parametrize('failure', ['fail', 'pending', 'skip'])
-def test_failure_preserves_last_good_values_and_retry_only_failed(tmp_path, failure):
+def test_failure_preserves_last_good_values_without_same_day_retry(tmp_path, failure):
     client = SsmClient(); target = collector(tmp_path, client)
     cache = target.collect(instances())
     identifier = instances()[0]['InstanceId']
@@ -132,7 +132,7 @@ def test_failure_preserves_last_good_values_and_retry_only_failed(tmp_path, fail
     assert record['last_attempt_at'] != cache['instances'][identifier]['last_attempt_at']
     client.sent.clear()
     collector(tmp_path, client, TODAY + timedelta(days=1)).collect(instances(), result)
-    assert client.sent == [identifier]
+    assert client.sent == []
 
 
 def test_invocation_missing_retries_and_skip_never_parses_success(tmp_path):
@@ -228,3 +228,104 @@ def test_failed_new_platform_attempt_preserves_entire_last_success(tmp_path):
     for key in ['platform_type', 'hostname', 'kernel', 'os', 'os_install_date', 'was', 'web', 'db', 'last_success_at']:
         assert record[key] == cache['instances'][identifier][key]
     assert 'windowsInventory' in client.plugins
+
+
+@pytest.mark.parametrize('output', [WINDOWS, LINUX])
+def test_bom_crlf_whitespace_and_product_fields(output):
+    decorated = '\ufeff' + '\r\n'.join('  ' + line + '  ' for line in output.splitlines())
+    assert parse_inventory(decorated) == parse_inventory(output)
+    if output == WINDOWS:
+        assert parse_inventory(decorated)['web'][0] == {
+            'product': 'IIS', 'version': '10.0', 'path': r'C:\Windows\inetsrv', 'status': 'running'}
+
+
+def test_s3_output_url_is_not_a_failure(tmp_path):
+    client = SsmClient(); original = client.get_command_invocation
+    def invocation(**kwargs):
+        return {**original(**kwargs), 'StandardOutputUrl': 'https://example.invalid/sensitive-output'}
+    client.get_command_invocation = invocation
+    assert collector(tmp_path, client).collect(instances())['status'] == 'success'
+
+
+@pytest.mark.parametrize('kind,stage,reason,status,code', [
+    ('send', 'send_command', 'send_command_failed', None, None),
+    ('get', 'get_command_invocation', 'get_command_invocation_failed', None, None),
+    ('missing', 'get_command_invocation', 'invocation_not_found_timeout', None, None),
+    ('pending', 'get_command_invocation', 'invocation_poll_timeout', 'InProgress', -1),
+    ('failed', 'terminal_status', 'terminal_failed', 'Failed', 1),
+    ('timedout', 'terminal_status', 'terminal_timed_out', 'TimedOut', -1),
+    ('nonzero', 'terminal_status', 'response_code_nonzero', 'Success', 2),
+    ('parse', 'parse', 'parse_failed', 'Success', 0),
+    ('truncated', 'parse', 'output_may_be_truncated', 'Success', 0),
+])
+def test_failure_diagnostics_and_cache_are_safe(tmp_path, caplog, kind, stage, reason, status, code):
+    client = SsmClient(1)
+    class AwsFailure(Exception):
+        response = {'Error': {'Code': 'AccessDeniedException'}}
+    def fail(**kwargs): raise AwsFailure('SECRET exception credential command-id')
+    if kind == 'send': client.send_command = fail
+    elif kind == 'get': client.get_command_invocation = fail
+    elif kind == 'missing':
+        def missing(**kwargs): raise MissingInvocation('SECRET command-id')
+        client.get_command_invocation = missing
+    else:
+        client.get_command_invocation = lambda **_: {
+            'Status': status, 'ResponseCode': code,
+            'StandardOutputContent': 'SECRET' * 4000 if kind == 'truncated' else 'SECRET output',
+            'StandardErrorContent': 'SECRET stderr', 'CommandId': 'SECRET command-id'}
+    result = collector(tmp_path, client).collect(instances(1))
+    record = result['instances'][instances(1)[0]['InstanceId']]
+    assert record['error'] == reason
+    assert f'stage={stage}' in caplog.text and f'reason={reason}' in caplog.text
+    assert 'instance_id=i-fixture-000 platform_type=Linux' in caplog.text
+    assert f'status={status}' in caplog.text and f'response_code={code}' in caplog.text
+    if kind in {'send', 'get'}:
+        assert 'aws_error_code=AccessDeniedException' in caplog.text
+        assert 'exception_type=AwsFailure' in caplog.text
+    if kind == 'missing': assert 'aws_error_code=InvocationDoesNotExist' in caplog.text
+    assert 'SECRET' not in caplog.text + json.dumps(result)
+    assert 'CommandId' not in caplog.text + json.dumps(result)
+
+
+def test_failed_attempt_daily_gate_force_new_instance_and_next_day(tmp_path):
+    client = SsmClient(); client.fail.add(instances()[0]['InstanceId'])
+    target = collector(tmp_path, client)
+    cache = target.collect(instances())
+    client.sent.clear()
+    same = target.collect(instances(), cache)
+    assert client.sent == [] and same['status'] == 'partial'
+    assert same['instances'] == cache['instances']
+    client.information.update(SsmClient(3).information)
+    cache = target.collect(instances(3), same)
+    assert client.sent == [instances(3)[2]['InstanceId']]
+    client.sent.clear()
+    cache = target.collect(instances(3), cache, force=True)
+    assert len(client.sent) == 3
+    client.sent.clear()
+    collector(tmp_path, client, TODAY + timedelta(days=1)).collect(instances(3), cache)
+    assert len(client.sent) == 3
+
+
+def test_windows_document_output_regression():
+    # Synthetic hostname; preserve the reported Windows document's other fields.
+    output = ('HOSTNAME=fixture-windows\nKERNEL=10.0.14393\n'
+              'OS=Microsoft Windows Server 2016 Datacenter\n'
+              'OS_INSTALL_DATE=2025-01-14 19:48:22\n'
+              'WEB=IIS|10.0|C:\\Windows\\System32\\inetsrv|running\nWAS=None\nDB=None')
+    row = parse_inventory('\ufeff' + output.replace('\n', '\r\n'))
+    assert row['kernel'] == '10.0.14393'
+    assert row['os'] == 'Microsoft Windows Server 2016 Datacenter'
+    assert row['os_install_date'] == '2025-01-14 19:48:22'
+    assert row['was'] == row['db'] == []
+    assert row['web'] == [{'product': 'IIS', 'version': '10.0',
+                           'path': r'C:\Windows\System32\inetsrv', 'status': 'running'}]
+
+
+def test_failed_attempt_gate_converts_timestamp_to_seoul(tmp_path):
+    client = SsmClient(1); identifier = instances(1)[0]['InstanceId']
+    previous = {'instances': {identifier: {'status': 'failed', 'error': 'terminal_failed',
+                                         'last_attempt_at': TODAY.isoformat()}}}
+    # UTC 14th is already Seoul 15th: do not retry, nor claim success.
+    result = collector(tmp_path, client).collect(instances(1), previous)
+    assert client.sent == client.filters == [] and result['status'] == 'failed'
+    assert result['instances'] == previous['instances']
