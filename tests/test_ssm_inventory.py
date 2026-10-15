@@ -5,7 +5,7 @@ import threading
 
 import pytest
 
-from backend.services.ssm_inventory import DOCUMENT, PLUGINS, SsmInventoryCollector, parse_inventory
+from backend.services.ssm_inventory import DOCUMENT, SsmInventoryCollector, parse_inventory
 from test_aws_assets import credentials
 
 LINUX = 'HOSTNAME=fixture-linux\nKERNEL=6.1-fixture\nOS=Example Linux 1\nOS_INSTALL_DATE=N/A\nWAS=Tomcat|9.0.1|/srv/app|running\nWEB=Tengine|1.2|/srv/web|running\nDB=MySQL|unknown|/srv/db|running'
@@ -43,15 +43,21 @@ class SsmClient:
         self.sent.append(identifier)
         return {'Command': {'CommandId': identifier}}
 
+    def list_command_invocations(self, **kwargs):
+        assert kwargs['Details'] is True
+        identifier = kwargs['InstanceId']
+        return {'CommandInvocations': [{'InstanceId': identifier, 'CommandId': kwargs['CommandId'],
+                'CommandPlugins': [{'Name': 'actual-step-fixture', 'Status': 'Success'}]}]}
+
     def get_command_invocation(self, **kwargs):
         identifier = kwargs['InstanceId']
-        self.plugins.append(kwargs['PluginName'])
-        assert kwargs['PluginName'] == PLUGINS[self.information[identifier]['PlatformType']]
+        self.plugins.append(kwargs.get('PluginName'))
+        assert 'PluginName' not in kwargs
         if identifier in self.fail: raise RuntimeError('fixture failure')
         if identifier in self.missing:
             self.missing.remove(identifier); raise MissingInvocation()
         if identifier in self.pending: return {'Status': 'InProgress'}
-        output = WINDOWS if kwargs['PluginName'] == 'windowsInventory' else LINUX
+        output = WINDOWS if self.information[identifier]['PlatformType'] == 'Windows' else LINUX
         if identifier in self.skip: output = 'Step execution skipped due to unsupported plugin: aws:runShellScript'
         return {'Status': 'Success', 'ResponseCode': 0, 'StandardOutputContent': output}
 
@@ -82,7 +88,7 @@ def test_seoul_date_same_day_new_instance_and_next_day(tmp_path):
     target = collector(tmp_path, client)
     cache = target.collect(instances())
     assert cache['snapshot_date'] == '2026-10-15' and cache['status'] == 'success'
-    assert len(client.sent) == 2 and set(client.plugins) == {'linuxInventory', 'windowsInventory'}
+    assert len(client.sent) == 2 and set(client.plugins) == {None}
     original = copy.deepcopy(cache)
     client.sent.clear()
     input_cache = cache
@@ -227,7 +233,7 @@ def test_failed_new_platform_attempt_preserves_entire_last_success(tmp_path):
     assert record['status'] == 'stale'
     for key in ['platform_type', 'hostname', 'kernel', 'os', 'os_install_date', 'was', 'web', 'db', 'last_success_at']:
         assert record[key] == cache['instances'][identifier][key]
-    assert 'windowsInventory' in client.plugins
+    assert client.plugins and all(plugin is None for plugin in client.plugins)
 
 
 @pytest.mark.parametrize('output', [WINDOWS, LINUX])
@@ -329,3 +335,82 @@ def test_failed_attempt_gate_converts_timestamp_to_seoul(tmp_path):
     result = collector(tmp_path, client).collect(instances(1), previous)
     assert client.sent == client.filters == [] and result['status'] == 'failed'
     assert result['instances'] == previous['instances']
+
+
+@pytest.mark.parametrize('platform', ['Windows', 'Linux'])
+@pytest.mark.parametrize('multiple', [False, True])
+def test_actual_plugin_metadata_single_omission_and_multi_name(tmp_path, platform, multiple):
+    client = SsmClient(1); identifier = instances(1)[0]['InstanceId']
+    client.information[identifier]['PlatformType'] = platform
+    calls = []
+    actual_name = 'runtime-generated-step-42'
+    def listing(**kwargs):
+        plugins = [{'Name': actual_name, 'Status': 'Success'}]
+        if multiple:
+            plugins.insert(0, {'Name': 'inactive-step', 'Status': 'Success',
+                              'Output': 'Step execution skipped due to unsupported plugin: aws:runShellScript'})
+        return {'CommandInvocations': [{'CommandId': kwargs['CommandId'], 'InstanceId': identifier,
+                                       'CommandPlugins': plugins}]}
+    class InvalidPluginName(Exception):
+        response = {'Error': {'Code': 'InvalidPluginName'}}
+    def invocation(**kwargs):
+        calls.append(kwargs)
+        if (multiple and kwargs.get('PluginName') != actual_name) or (not multiple and 'PluginName' in kwargs):
+            raise InvalidPluginName('SECRET')
+        return {'Status': 'Success', 'ResponseCode': 0, 'StandardOutputUrl': 'https://example.invalid/output',
+                'StandardOutputContent': '\ufeff' + (WINDOWS if platform == 'Windows' else LINUX)}
+    client.list_command_invocations = listing
+    client.get_command_invocation = invocation
+    result = collector(tmp_path, client).collect(instances(1))
+    assert result['status'] == 'success'
+    assert result['instances'][identifier]['platform_type'] == platform
+    assert len(calls) == 1
+    assert calls[0].get('PluginName') == (actual_name if multiple else None)
+
+
+def test_invalid_plugin_name_is_query_error_not_execution_failure(tmp_path, caplog):
+    client = SsmClient(1)
+    class InvalidPluginName(Exception):
+        response = {'Error': {'Code': 'InvalidPluginName'}}
+    def invocation(**_): raise InvalidPluginName('SECRET')
+    client.get_command_invocation = invocation
+    result = collector(tmp_path, client).collect(instances(1))
+    assert result['instances'][instances(1)[0]['InstanceId']]['error'] == 'invalid_plugin_name'
+    assert 'stage=get_command_invocation' in caplog.text
+    assert 'aws_error_code=InvalidPluginName' in caplog.text
+    assert 'terminal_failed' not in caplog.text and 'SECRET' not in caplog.text
+
+
+@pytest.mark.parametrize('metadata', ['empty', 'pending', 'ambiguous'])
+def test_plugin_resolution_bounded_and_never_guesses(tmp_path, metadata):
+    client = SsmClient(1); identifier = instances(1)[0]['InstanceId']; calls = []
+    def listing(**kwargs):
+        calls.append(1)
+        plugins = [] if metadata == 'empty' else [
+            {'Name': 'step-one', 'Status': 'Pending' if metadata == 'pending' else 'Success'},
+            {'Name': 'step-two', 'Status': 'Pending' if metadata == 'pending' else 'Success'}]
+        return {'CommandInvocations': [{'CommandId': kwargs['CommandId'], 'InstanceId': identifier,
+                                       'CommandPlugins': plugins}]}
+    client.list_command_invocations = listing
+    client.get_command_invocation = lambda **_: pytest.fail('Must not guess PluginName')
+    result = collector(tmp_path, client).collect(instances(1))
+    reason = result['instances'][identifier]['error']
+    assert reason == ('ambiguous_inventory_plugin' if metadata == 'ambiguous' else 'invocation_poll_timeout')
+    assert len(calls) <= 46
+
+
+def test_metadata_eventual_consistency_then_actual_failed_exit_code(tmp_path, caplog):
+    client = SsmClient(1); identifier = instances(1)[0]['InstanceId']; calls = []
+    original = client.list_command_invocations
+    def listing(**kwargs):
+        calls.append(1)
+        if len(calls) == 1: return {'CommandInvocations': []}
+        return original(**kwargs)
+    client.list_command_invocations = listing
+    client.get_command_invocation = lambda **_: {'Status': 'Failed', 'ResponseCode': 1,
+                                                'StandardErrorContent': 'SECRET', 'StandardOutputContent': 'SECRET'}
+    result = collector(tmp_path, client).collect(instances(1))
+    assert result['instances'][identifier]['error'] == 'terminal_failed'
+    assert len(calls) == 2
+    assert 'stage=terminal_status' in caplog.text and 'status=Failed response_code=1' in caplog.text
+    assert 'invalid_plugin_name' not in caplog.text and 'SECRET' not in caplog.text
