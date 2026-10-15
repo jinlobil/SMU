@@ -353,6 +353,8 @@ def test_official_boto_shapes_use_only_custom_document_and_exact_step(tmp_path, 
         stub.add_response('send_command', {'Command': {'CommandId': command, 'DocumentName': document,
                           'InstanceIds': [identifier], 'Status': 'Pending'}},
                           {'DocumentName': document, 'InstanceIds': [identifier], 'TimeoutSeconds': 60})
+        stub.add_client_error('get_command_invocation', service_error_code='InvalidPluginName',
+                              expected_params={'InstanceId': identifier, 'CommandId': command, 'PluginName': step})
         stub.add_client_error('get_command_invocation', service_error_code='InvocationDoesNotExist',
                               expected_params={'InstanceId': identifier, 'CommandId': command, 'PluginName': step})
         stub.add_response('get_command_invocation', {'CommandId': command, 'InstanceId': identifier,
@@ -385,7 +387,8 @@ def test_parse_diagnostics_and_stale_preservation(tmp_path, caplog, platform, ou
     assert cached == original
     assert f'selected_step={STEPS[platform]}' in caplog.text
     assert 'status=Success response_code=0' in caplog.text
-    assert f'has_hostname={has_hostname} has_os={has_os}' in caplog.text
+    assert f'has_hostname={has_hostname}' in caplog.text
+    assert f'has_os={has_os}' in caplog.text
     assert 'SECRET' not in caplog.text + json.dumps(failed)
     assert 'fixture-command-' not in caplog.text + json.dumps(failed)
 
@@ -402,15 +405,21 @@ def test_every_product_category_repeated_and_document_specific_values_preserved(
     assert result['os_install_date'] is None
 
 
-def test_invalid_plugin_name_stays_a_lookup_error_without_fallback(tmp_path, caplog):
-    client = SsmClient(1); calls = []
+@pytest.mark.parametrize('platform,step', [('Linux', 'linuxInventory'), ('Windows', 'windowsInventory')])
+def test_invalid_plugin_name_grace_expires_without_fallback(tmp_path, caplog, platform, step):
+    client = SsmClient(1); calls = []; clock = Clock()
+    client.information[instances(1)[0]['InstanceId']]['PlatformType'] = platform
     def get(**kwargs): calls.append(kwargs); raise aws_error('InvalidPluginName')
     client.get_command_invocation = get
-    result = collector(tmp_path, client).collect(instances(1))
+    target = collector(tmp_path, client, clock=clock); target.sleep = clock.sleep
+    result = target.collect(instances(1))
     assert result['instances'][instances(1)[0]['InstanceId']]['error'] == 'invalid_plugin_name'
-    assert len(calls) == 1 and calls[0]['PluginName'] == 'linuxInventory'
+    assert len(calls) == 7 and clock.value == 25
+    assert clock.delays == [1, 2, 4, 5, 5, 5, 3]
+    assert all(call['PluginName'] == step for call in calls)
     assert 'stage=get_command_invocation' in caplog.text
     assert 'aws_error_code=InvalidPluginName' in caplog.text
+    assert 'attempt_count=7' in caplog.text and 'elapsed_seconds=25' in caplog.text
     assert 'SECRET' not in caplog.text
 
 
@@ -423,3 +432,134 @@ def test_document_300_second_execution_is_not_cut_off_by_previous_short_poll_win
     target = collector(tmp_path, client, clock=clock)
     target.sleep, target.poll_interval = clock.sleep, 1
     assert target.collect(instances(1))['status'] == 'success' and clock.value == 299
+
+
+@pytest.mark.parametrize('platform,step', [('Linux', 'linuxInventory'), ('Windows', 'windowsInventory')])
+@pytest.mark.parametrize('invalid_count', [1, 3])
+def test_initial_invalid_plugin_name_recovers_with_exact_same_step(tmp_path, caplog, platform, step, invalid_count):
+    caplog.set_level('INFO', logger='smu.aws.ssm')
+    client = SsmClient(1); identifier = instances(1)[0]['InstanceId']; calls = []; clock = Clock()
+    client.information[identifier]['PlatformType'] = platform
+    actual = client.get_command_invocation
+    def get(**kwargs):
+        calls.append(kwargs.copy())
+        if len(calls) <= invalid_count: raise aws_error('InvalidPluginName')
+        return actual(**kwargs)
+    client.get_command_invocation = get
+    target = collector(tmp_path, client, clock=clock); target.sleep = clock.sleep
+    assert target.collect(instances(1))['status'] == 'success'
+    assert len(calls) == invalid_count + 1 and len(client.sent) == 1
+    assert all(call['PluginName'] == step for call in calls)
+    assert clock.delays == ([1] if invalid_count == 1 else [1, 2, 4])
+    parsed = next(record.getMessage() for record in caplog.records if 'reason=inventory_parsed ' in record.getMessage())
+    assert f'invalid_plugin_name_count={invalid_count}' in parsed
+    assert f'attempt_count={invalid_count + 1}' in parsed and 'document_name=LNL-ServerInventory' in parsed
+    assert 'status=Success response_code=0' in parsed
+    for key in ('hostname', 'kernel', 'os', 'os_install_date', 'was', 'web', 'db'):
+        assert f'has_{key}=True' in parsed
+    assert 'reason=send_command_succeeded' in caplog.text and 'send_success=True target_count=1' in caplog.text
+    for secret in ('fixture-command-', '/srv/app', 'C:\\Windows', 'SECRET'):
+        assert secret not in caplog.text
+
+
+@pytest.mark.parametrize('platform', ['Linux', 'Windows'])
+@pytest.mark.parametrize('terminal', [True, False])
+def test_invalid_plugin_name_then_real_terminal_or_parse_failure(tmp_path, caplog, platform, terminal):
+    client = SsmClient(1); identifier = instances(1)[0]['InstanceId']; calls = []; clock = Clock()
+    client.information[identifier]['PlatformType'] = platform
+    actual = client.get_command_invocation
+    client.responses[identifier] = {'Status': 'Failed', 'ResponseCode': 1} if terminal else {'StandardOutputContent': 'SECRET malformed'}
+    def get(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1: raise aws_error('InvalidPluginName')
+        return actual(**kwargs)
+    client.get_command_invocation = get
+    target = collector(tmp_path, client, clock=clock); target.sleep = clock.sleep
+    result = target.collect(instances(1))
+    reason = 'terminal_failed' if terminal else 'missing_hostname'
+    assert result['instances'][identifier]['error'] == reason and len(calls) == 2
+    assert ('stage=terminal_status' if terminal else 'stage=parse') in caplog.text
+    assert ('status=Failed response_code=1' if terminal else 'status=Success response_code=0') in caplog.text
+    assert 'invalid_plugin_name_count=1' in caplog.text and 'attempt_count=2' in caplog.text
+    assert 'SECRET' not in caplog.text
+
+
+def test_plugin_and_throttle_retries_share_one_lookup_budget(tmp_path, caplog):
+    client = SsmClient(1); calls = []; clock = Clock()
+    def get(**kwargs):
+        calls.append(kwargs)
+        raise aws_error('ThrottlingException' if len(calls) % 2 else 'InvalidPluginName')
+    client.get_command_invocation = get
+    target = collector(tmp_path, client, clock=clock); target.sleep = clock.sleep
+    result = target.collect(instances(1))
+    assert result['instances'][instances(1)[0]['InstanceId']]['error'] == 'throttled'
+    assert len(calls) == 9 and len(client.sent) == 1
+    assert clock.value < 25
+    assert all(call['PluginName'] == 'linuxInventory' for call in calls)
+    assert 'last_aws_error_code=ThrottlingException' in caplog.text
+
+
+def test_invalid_plugin_name_after_registered_response_is_not_initial_grace(tmp_path):
+    client = SsmClient(1); calls = []; clock = Clock()
+    def get(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1: return {'Status': 'InProgress', 'ResponseCode': -1}
+        raise aws_error('InvalidPluginName')
+    client.get_command_invocation = get
+    target = collector(tmp_path, client, clock=clock); target.sleep, target.poll_interval = clock.sleep, 1
+    result = target.collect(instances(1))
+    assert result['instances'][instances(1)[0]['InstanceId']]['error'] == 'invalid_plugin_name'
+    assert len(calls) == 2 and clock.value == 1
+
+
+@pytest.mark.parametrize('send_delay,timeout,expected_time', [(10, 330, 35), (0, 3, 3)])
+def test_grace_starts_after_send_and_obeys_outer_deadline(tmp_path, send_delay, timeout, expected_time):
+    client = SsmClient(1); clock = Clock(); actual = client.send_command
+    def send(**kwargs): clock.value += send_delay; return actual(**kwargs)
+    def get(**kwargs): raise aws_error('InvalidPluginName')
+    client.send_command, client.get_command_invocation = send, get
+    target = collector(tmp_path, client, clock=clock, timeout=timeout); target.sleep = clock.sleep
+    result = target.collect(instances(1))
+    assert result['instances'][instances(1)[0]['InstanceId']]['error'] == 'invalid_plugin_name'
+    assert clock.value == expected_time
+
+
+def test_not_ready_throttle_recovery_and_parse_diagnostics_only_metadata(tmp_path, caplog):
+    caplog.set_level('INFO', logger='smu.aws.ssm')
+    client = SsmClient(1); calls = []; clock = Clock(); actual = client.get_command_invocation
+    def get(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1: raise aws_error('InvocationDoesNotExist')
+        if len(calls) == 2: raise aws_error('ThrottlingException')
+        return actual(**kwargs)
+    client.get_command_invocation = get
+    target = collector(tmp_path, client, clock=clock); target.sleep, target.poll_interval = clock.sleep, 1
+    assert target.collect(instances(1))['status'] == 'success'
+    assert len(calls) == 3 and clock.delays == [1, 0.1875]
+    assert 'invocation_not_ready_count=1' in caplog.text
+    assert 'reason=stdout_received' in caplog.text and 'reason=inventory_parsed' in caplog.text
+    assert 'was_record_count=1 web_record_count=1 db_record_count=1' in caplog.text
+    caplog.clear()
+    client.outputs[instances(1)[0]['InstanceId']] = 'HOSTNAME=fixture\nOS=Example\nWAS=SECRET bad\nWAS=Tomcat|1|/SECRET/path|running\nWEB=None\nDB=None'
+    failed = target.collect(instances(1), force=True)
+    assert failed['instances'][instances(1)[0]['InstanceId']]['error'] == 'invalid_product_record'
+    message = next(record.getMessage() for record in caplog.records if record.levelname == 'WARNING')
+    assert 'parse_reason=invalid_product_record' in message and 'line_count=6' in message
+    assert 'was_record_count=2 web_record_count=0 db_record_count=0' in message
+    assert 'has_kernel=False' in message and 'has_os_install_date=False' in message
+    assert 'SECRET' not in caplog.text and 'fixture-command-' not in caplog.text
+
+
+def test_request_started_inside_grace_accepts_valid_response_after_grace(tmp_path):
+    client = SsmClient(1); actual = client.get_command_invocation; calls = []; clock = Clock()
+    def get(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            clock.value = 23
+            raise aws_error('InvalidPluginName')
+        clock.value = 26
+        return actual(**kwargs)
+    client.get_command_invocation = get
+    target = collector(tmp_path, client, clock=clock); target.sleep = clock.sleep
+    assert target.collect(instances(1))['status'] == 'success'
+    assert len(calls) == 2 and clock.value == 26
