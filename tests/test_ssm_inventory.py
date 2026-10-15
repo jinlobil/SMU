@@ -1,416 +1,351 @@
+"""SSM single-step JSON contract, bounded calls, and existing cache policies."""
 import copy
 from datetime import datetime, timedelta, timezone
 import json
+from pathlib import Path
+import subprocess
 import threading
 
 import pytest
+from botocore.exceptions import ClientError
 
-from backend.services.ssm_inventory import DOCUMENT, SsmInventoryCollector, parse_inventory
+from backend.services.ssm_inventory import DOCUMENTS, SsmInventoryCollector, validate_inventory
 from test_aws_assets import credentials
 
-LINUX = 'HOSTNAME=fixture-linux\nKERNEL=6.1-fixture\nOS=Example Linux 1\nOS_INSTALL_DATE=N/A\nWAS=Tomcat|9.0.1|/srv/app|running\nWEB=Tengine|1.2|/srv/web|running\nDB=MySQL|unknown|/srv/db|running'
-WINDOWS = 'HOSTNAME=fixture-windows\nKERNEL=10.0.fixture\nOS=Example Windows Server\nOS_INSTALL_DATE=2025-01-02 03:04:05\nWEB=IIS|10.0|C:\\Windows\\inetsrv|running\nWAS=None\nDB=None'
-TODAY = datetime(2026, 10, 14, 16, tzinfo=timezone.utc)  # Seoul 15th
+LINUX_DATA = {'hostname': 'fixture-linux', 'kernel': '6.1-fixture', 'os': 'Example Linux 1',
+              'os_version': '1', 'os_install_date': None,
+              'was': [{'product': 'Tomcat', 'version': '9.0.1', 'path': '/srv/app', 'status': 'running'}],
+              'web': [{'product': 'Tengine', 'version': '1.2', 'path': '/srv/web', 'status': 'running'}],
+              'db': [{'product': 'MySQL', 'version': None, 'path': '/srv/db', 'status': 'running'}]}
+WINDOWS_DATA = {'hostname': 'fixture-windows', 'kernel': '10.0.fixture', 'os': 'Example Windows Server',
+                'os_version': '10.0.fixture', 'os_install_date': '2025-01-02 03:04:05',
+                'web': [{'product': 'IIS', 'version': '10.0', 'path': r'C:\Windows\System32\inetsrv', 'status': 'running'}],
+                'was': [], 'db': []}
+LINUX, WINDOWS = json.dumps(LINUX_DATA), json.dumps(WINDOWS_DATA)
+TODAY = datetime(2026, 10, 14, 16, tzinfo=timezone.utc)
 
 
 def instances(count=2):
     return [{'InstanceId': f'i-fixture-{number:03}'} for number in range(count)]
 
 
-class MissingInvocation(Exception):
-    response = {'Error': {'Code': 'InvocationDoesNotExist'}}
+def aws_error(code, operation='GetCommandInvocation'):
+    return ClientError({'Error': {'Code': code, 'Message': 'SECRET exception credential'},
+                        'ResponseMetadata': {'HTTPStatusCode': 400}}, operation)
 
 
 class SsmClient:
+    """Boto-shaped single-step fake. No ListCommandInvocations method by design."""
     def __init__(self, count=2):
         self.information = {item['InstanceId']: {'InstanceId': item['InstanceId'], 'PingStatus': 'Online',
-            'PlatformType': 'Windows' if number % 2 else 'Linux', 'AssociationStatus': 'Failed'} for number, item in enumerate(instances(count))}
-        self.sent, self.plugins, self.filters = [], [], []
-        self.fail, self.pending, self.missing, self.skip = set(), set(), set(), set()
+            'PlatformType': 'Windows' if number % 2 else 'Linux', 'AssociationStatus': 'Failed'}
+            for number, item in enumerate(instances(count))}
+        self.sent, self.requests, self.filters = [], [], []
+        self.fail, self.pending, self.missing = set(), set(), set()
+        self.outputs, self.responses = {}, {}
         self.lock = threading.Lock()
-        self.active, self.peak = 0, 0
 
     def describe_instance_information(self, **kwargs):
         self.filters.append(kwargs)
-        ids = kwargs['Filters'][0]['Values']
-        # Include a hybrid/foreign managed node to prove it is never targeted.
-        return {'InstanceInformationList': [*self.information.values(), {'InstanceId': 'mi-fixture', 'PingStatus': 'Online', 'PlatformType': 'Linux'}]}
+        return {'InstanceInformationList': [*self.information.values(),
+                {'InstanceId': 'mi-fixture', 'PingStatus': 'Online', 'PlatformType': 'Linux'}]}
 
     def send_command(self, **kwargs):
-        assert kwargs['DocumentName'] == DOCUMENT == 'LNL-ServerInventory'
-        assert 'Parameters' not in kwargs and len(kwargs['InstanceIds']) == 1
         identifier = kwargs['InstanceIds'][0]
-        self.sent.append(identifier)
-        return {'Command': {'CommandId': identifier}}
-
-    def list_command_invocations(self, **kwargs):
-        assert kwargs['Details'] is True
-        identifier = kwargs['InstanceId']
-        return {'CommandInvocations': [{'InstanceId': identifier, 'CommandId': kwargs['CommandId'],
-                'CommandPlugins': [{'Name': 'actual-step-fixture', 'Status': 'Success'}]}]}
+        platform = self.information[identifier]['PlatformType']
+        assert kwargs['DocumentName'] == DOCUMENTS[platform][0]
+        assert set(kwargs['Parameters']) == {'commands', 'executionTimeout'}
+        assert len(kwargs['Parameters']['commands']) == 1
+        assert kwargs['Parameters']['executionTimeout'] == ['60']
+        assert kwargs['Parameters']['commands'][0] == (Path(__file__).parents[1] / 'backend/services/ssm_scripts' / DOCUMENTS[platform][1]).read_text()
+        self.sent.append(identifier); self.requests.append(kwargs)
+        return {'Command': {'CommandId': 'fixture-command-' + identifier, 'DocumentName': kwargs['DocumentName'],
+                            'InstanceIds': [identifier], 'Status': 'Pending'}}
 
     def get_command_invocation(self, **kwargs):
+        assert set(kwargs) == {'InstanceId', 'CommandId'}
         identifier = kwargs['InstanceId']
-        self.plugins.append(kwargs.get('PluginName'))
-        assert 'PluginName' not in kwargs
-        if identifier in self.fail: raise RuntimeError('fixture failure')
+        assert kwargs['CommandId'] == 'fixture-command-' + identifier
+        if identifier in self.fail: raise aws_error('AccessDeniedException')
         if identifier in self.missing:
-            self.missing.remove(identifier); raise MissingInvocation()
-        if identifier in self.pending: return {'Status': 'InProgress'}
-        output = WINDOWS if self.information[identifier]['PlatformType'] == 'Windows' else LINUX
-        if identifier in self.skip: output = 'Step execution skipped due to unsupported plugin: aws:runShellScript'
-        return {'Status': 'Success', 'ResponseCode': 0, 'StandardOutputContent': output}
+            self.missing.remove(identifier); raise aws_error('InvocationDoesNotExist')
+        base = {'CommandId': kwargs['CommandId'], 'InstanceId': identifier,
+                'DocumentName': DOCUMENTS[self.information[identifier]['PlatformType']][0],
+                'Status': 'Success', 'ResponseCode': 0,
+                'StandardOutputContent': self.outputs.get(identifier, WINDOWS if self.information[identifier]['PlatformType'] == 'Windows' else LINUX),
+                'StandardErrorContent': '', 'StandardOutputUrl': 'https://example.invalid/output'}
+        if identifier in self.pending: base.update(Status='InProgress', ResponseCode=-1, StandardOutputContent='')
+        base.update(self.responses.get(identifier, {}))
+        return base
 
 
-def collector(root, client, now=TODAY):
+def collector(root, client, now=TODAY, **kwargs):
     credentials(root)
-    return SsmInventoryCollector(root, lambda _: client, now=lambda: now, poll_interval=0, sleep=lambda _: None)
+    return SsmInventoryCollector(root, lambda _: client, now=lambda: now,
+                                 poll_interval=0, sleep=lambda _: None, jitter=lambda: 0.5, **kwargs)
 
 
-@pytest.mark.parametrize('output,name,os_date', [(LINUX, 'fixture-linux', None), (WINDOWS, 'fixture-windows', '2025-01-02 03:04:05')])
-def test_platform_output_parser(output, name, os_date):
-    row = parse_inventory(output)
-    assert row['hostname'] == name and row['os_install_date'] == os_date
-    assert 'HOSTNAME=' not in json.dumps(row)
-    if output == WINDOWS: assert row['was'] == row['db'] == []
-    else: assert row['db'][0]['version'] is None
+@pytest.mark.parametrize('platform,data', [('Linux', LINUX_DATA), ('Windows', WINDOWS_DATA)])
+def test_platform_json_collection_and_single_step_document(tmp_path, platform, data):
+    client = SsmClient(1); identifier = instances(1)[0]['InstanceId']
+    client.information[identifier]['PlatformType'] = platform
+    result = collector(tmp_path, client).collect(instances(1))
+    record = result['instances'][identifier]
+    assert result['status'] == 'success' and record['status'] == 'success'
+    for key, value in data.items(): assert record[key] == value
+    assert client.requests[0]['DocumentName'] == ('AWS-RunPowerShellScript' if platform == 'Windows' else 'AWS-RunShellScript')
 
 
-@pytest.mark.parametrize('version', ['unknown', 'N/A', '', 'null'])
-def test_null_versions_and_repeated_products(version):
-    row = parse_inventory(f'HOSTNAME=fixture\nOS=Example\nWAS=App|{version}|/a|running\nWAS=App2|2|/b|running\nWEB=None\nWEB=Web|3|/c|running\nWEB=Web2|4|/d|running\nDB=None\nDB=DB1|{version}|/e|running\nDB=DB2|5|/f|running')
-    assert row['was'][0]['version'] is row['db'][0]['version'] is None
-    assert len(row['was']) == len(row['web']) == len(row['db']) == 2
+@pytest.mark.parametrize('version', ['unknown', 'N/A', '', None])
+def test_json_arrays_multiple_products_and_nullable_versions(version):
+    data = {**LINUX_DATA, 'web': [], 'db': [], 'was': [
+        {'product': 'App', 'version': version, 'path': None, 'status': 'running'},
+        {'product': 'App2', 'version': '2.0'}]}
+    result = validate_inventory(json.loads(json.dumps(data)))
+    assert result['was'][0]['version'] is None and result['was'][1]['version'] == '2.0'
+    assert result['web'] == result['db'] == []
 
 
-def test_seoul_date_same_day_new_instance_and_next_day(tmp_path):
-    client = SsmClient()
-    target = collector(tmp_path, client)
-    cache = target.collect(instances())
-    assert cache['snapshot_date'] == '2026-10-15' and cache['status'] == 'success'
-    assert len(client.sent) == 2 and set(client.plugins) == {None}
-    original = copy.deepcopy(cache)
+@pytest.mark.parametrize('data', [None, [], {}, {**LINUX_DATA, 'hostname': None},
+    {**LINUX_DATA, 'os': {}}, {**LINUX_DATA, 'web': None}, {**LINUX_DATA, 'db': ['invalid']},
+    {**LINUX_DATA, 'was': [{'product': None}]}, {**LINUX_DATA, 'was': [{'product': 'App', 'version': 3}]}])
+def test_schema_validation_rejects_invalid_inventory(data):
+    with pytest.raises(ValueError): validate_inventory(data)
+
+
+@pytest.mark.parametrize('response,reason,stage', [
+    ({'Status': 'Failed', 'ResponseCode': 1}, 'terminal_failed', 'terminal_status'),
+    ({'Status': 'TimedOut', 'ResponseCode': -1}, 'terminal_failed', 'terminal_status'),
+    ({'Status': 'Success', 'ResponseCode': 1}, 'nonzero_response_code', 'terminal_status'),
+    ({'StandardOutputContent': ''}, 'empty_output', 'parse'),
+    ({'StandardOutputContent': '  \r\n'}, 'empty_output', 'parse'),
+    ({'StandardOutputContent': 'not JSON SECRET'}, 'json_parse_failed', 'parse'),
+    ({'StandardOutputContent': '{}'}, 'schema_validation_failed', 'parse'),
+])
+def test_failure_reasons_and_safe_logs(tmp_path, caplog, response, reason, stage):
+    client = SsmClient(1); identifier = instances(1)[0]['InstanceId']
+    client.responses[identifier] = {**response, 'StandardErrorContent': 'SECRET stderr'}
+    result = collector(tmp_path, client).collect(instances(1))
+    assert result['instances'][identifier]['error'] == reason
+    assert f'stage={stage}' in caplog.text and f'reason={reason}' in caplog.text
+    for field in ('instance_id=', 'platform_type=Linux', 'exception_type=', 'aws_error_code=', 'status=', 'response_code=', 'output_length='):
+        assert field in caplog.text
+    assert 'SECRET' not in caplog.text + json.dumps(result)
+    assert 'fixture-command-' not in caplog.text + json.dumps(result)
+
+
+class Clock:
+    def __init__(self): self.value = 0; self.delays = []
+    def __call__(self): return self.value
+    def sleep(self, seconds): self.delays.append(seconds); self.value += seconds
+
+
+def test_initial_invocation_not_ready_then_success(tmp_path):
+    client = SsmClient(1); client.missing.add(instances(1)[0]['InstanceId'])
+    assert collector(tmp_path, client).collect(instances(1))['status'] == 'success'
+
+
+@pytest.mark.parametrize('missing,reason', [(True, 'invocation_not_ready'), (False, 'polling_timeout')])
+def test_bounded_polling(tmp_path, missing, reason):
+    client = SsmClient(1); clock = Clock(); calls = []
+    def invocation(**kwargs):
+        calls.append(1)
+        if missing: raise aws_error('InvocationDoesNotExist')
+        return {'Status': 'InProgress', 'ResponseCode': -1, 'StandardOutputContent': ''}
+    client.get_command_invocation = invocation
+    target = collector(tmp_path, client, timeout=3, clock=clock)
+    target.sleep, target.poll_interval = clock.sleep, 1
+    result = target.collect(instances(1))
+    assert result['instances'][instances(1)[0]['InstanceId']]['error'] == reason
+    assert len(calls) == 3 and clock.value == 3
+
+
+@pytest.mark.parametrize('operation', ['send_command', 'get_command_invocation', 'describe_instance_information'])
+@pytest.mark.parametrize('exhausted', [False, True])
+def test_throttling_backoff_retry_and_limit(tmp_path, operation, exhausted, caplog):
+    client = SsmClient(1); clock = Clock(); calls = []; original = getattr(client, operation)
+    def throttled(**kwargs):
+        calls.append(1)
+        if exhausted or len(calls) <= 2: raise aws_error('ThrottlingException', operation)
+        return original(**kwargs)
+    setattr(client, operation, throttled)
+    target = collector(tmp_path, client, clock=clock)
+    target.sleep = clock.sleep
+    result = target.collect(instances(1))
+    if exhausted:
+        assert len(calls) == 5
+        assert result['instances'][instances(1)[0]['InstanceId']]['error'] == 'throttled'
+        assert 'aws_error_code=ThrottlingException' in caplog.text
+    else:
+        assert len(calls) == 3 and result['status'] == 'success'
+    assert all(0 < delay <= 4 for delay in clock.delays)
+    assert clock.delays == sorted(clock.delays)
+    assert 'SECRET' not in caplog.text + json.dumps(result)
+
+
+def test_throttling_stops_at_collection_deadline(tmp_path):
+    client = SsmClient(1); clock = Clock(); calls = []
+    def throttled(**kwargs): calls.append(1); raise aws_error('ThrottlingException')
+    client.send_command = throttled
+    target = collector(tmp_path, client, clock=clock, collection_timeout=0.2)
+    target.sleep = clock.sleep
+    result = target.collect(instances(1))
+    assert result['instances'][instances(1)[0]['InstanceId']]['error'] == 'throttled'
+    assert len(calls) <= 2 and clock.value <= 0.2
+
+
+def test_stale_daily_attempt_force_new_instance_and_next_day(tmp_path):
+    client = SsmClient(); target = collector(tmp_path, client)
+    first = target.collect(instances())
+    client.fail.add(instances()[0]['InstanceId'])
+    next_target = collector(tmp_path, client, TODAY + timedelta(days=1))
+    failed = next_target.collect(instances(), first)
+    identifier = instances()[0]['InstanceId']
+    row = failed['instances'][identifier]
+    assert row['status'] == 'stale'
+    for key in (*LINUX_DATA, 'platform_type', 'last_success_at'):
+        assert row[key] == first['instances'][identifier][key]
     client.sent.clear()
-    input_cache = cache
-    cache = target.collect(instances(), cache)
-    assert input_cache == original
-    assert client.sent == [] and cache['collected_at'] == original['collected_at']
+    assert next_target.collect(instances(), failed)['status'] == 'partial' and client.sent == []
     client.information.update(SsmClient(3).information)
-    cache = target.collect(instances(3), cache)
-    assert client.sent == [instances(3)[-1]['InstanceId']]
+    new = next_target.collect(instances(3), failed)
+    assert client.sent == [instances(3)[2]['InstanceId']]
     client.sent.clear()
-    cache = collector(tmp_path, client, TODAY + timedelta(days=1)).collect(instances(3), cache)
-    assert len(client.sent) == 3 and cache['snapshot_date'] == '2026-10-16'
+    forced = next_target.collect(instances(3), new, force=True)
+    assert len(client.sent) == 3
+    client.sent.clear()
+    collector(tmp_path, client, TODAY + timedelta(days=2)).collect(instances(3), forced)
+    assert len(client.sent) == 3
+
+
+def test_calendar_gate_uses_seoul_not_24h_and_no_client_when_attempted(tmp_path, monkeypatch):
+    client = SsmClient(1); before = datetime(2026, 10, 14, 14, 59, tzinfo=timezone.utc)
+    cached = collector(tmp_path, client, before).collect(instances(1))
+    client.sent.clear()
+    today = collector(tmp_path, client, before + timedelta(minutes=2))
+    cached = today.collect(instances(1), cached)
+    assert len(client.sent) == 1
+    cached['instances'][instances(1)[0]['InstanceId']].update(status='stale', last_attempt_at=TODAY.isoformat())
+    monkeypatch.setattr(today, '_client', lambda: pytest.fail('Already attempted today'))
+    assert today.collect(instances(1), cached)['status'] == 'partial'
 
 
 @pytest.mark.parametrize('state', ['ConnectionLost', 'Offline', 'Unknown'])
-def test_new_offline_instance_is_not_executed(tmp_path, state):
+def test_only_current_online_ec2s_run_despite_association_failed(tmp_path, state):
+    client = SsmClient(2); client.information[instances()[0]['InstanceId']]['PingStatus'] = state
+    result = collector(tmp_path, client).collect(instances())
+    assert client.sent == [instances()[1]['InstanceId']]
+    assert result['instances'][instances()[0]['InstanceId']]['error'] == 'not_online'
+
+
+def test_discovery_failure_preserves_data_and_latest_attempt(tmp_path):
     client = SsmClient(); target = collector(tmp_path, client)
-    cache = target.collect(instances())
-    client.information.update(SsmClient(3).information)
-    identifier = instances(3)[-1]['InstanceId']
-    client.information[identifier]['PingStatus'] = state
-    client.sent.clear()
-    result = target.collect(instances(3), cache)
-    assert client.sent == [] and result['instances'][identifier]['status'] == 'failed'
-
-
-def test_same_date_force_collects_all_online_but_not_hybrid(tmp_path):
-    client = SsmClient(); target = collector(tmp_path, client)
-    cache = target.collect(instances())
-    client.sent.clear()
-    result = collector(tmp_path, client, TODAY + timedelta(hours=2)).collect(instances(), cache, force=True)
-    assert set(client.sent) == {item['InstanceId'] for item in instances()}
-    assert result['collected_at'] != cache['collected_at']
-
-
-@pytest.mark.parametrize('failure', ['fail', 'pending', 'skip'])
-def test_failure_preserves_last_good_values_without_same_day_retry(tmp_path, failure):
-    client = SsmClient(); target = collector(tmp_path, client)
-    cache = target.collect(instances())
-    identifier = instances()[0]['InstanceId']
-    getattr(client, failure).add(identifier)
-    result = collector(tmp_path, client, TODAY + timedelta(days=1)).collect(instances(), cache)
-    record = result['instances'][identifier]
-    assert record['status'] == 'stale'
-    for key in ('was', 'web', 'db', 'hostname', 'kernel', 'last_success_at'):
-        assert record[key] == cache['instances'][identifier][key]
-    assert record['last_attempt_at'] != cache['instances'][identifier]['last_attempt_at']
-    client.sent.clear()
-    collector(tmp_path, client, TODAY + timedelta(days=1)).collect(instances(), result)
-    assert client.sent == []
-
-
-def test_invocation_missing_retries_and_skip_never_parses_success(tmp_path):
-    client = SsmClient(); identifier = instances()[0]['InstanceId']; client.missing.add(identifier)
-    assert collector(tmp_path, client).collect(instances())['status'] == 'success'
-    client.skip.add(identifier)
-    result = collector(tmp_path, client).collect(instances(), force=True)
-    assert result['instances'][identifier]['status'] == 'failed'
-    assert result['instances'][identifier].get('hostname') is None
+    cached = target.collect(instances()); before = copy.deepcopy(cached)
+    def fail(**_): raise aws_error('AccessDeniedException')
+    client.describe_instance_information = fail
+    result = target.collect(instances(), cached, force=True)
+    assert cached == before and result['status'] == 'stale'
+    assert result['instances'][instances()[0]['InstanceId']]['was'] == before['instances'][instances()[0]['InstanceId']]['was']
 
 
 def test_small_concurrency(tmp_path):
-    client = SsmClient(12)
-    actual = client.get_command_invocation
-    barrier = threading.Barrier(5)
+    client = SsmClient(9); original = client.get_command_invocation
+    barrier = threading.Barrier(3); active = 0; peak = 0; calls = 0
     def invocation(**kwargs):
+        nonlocal active, peak, calls
         with client.lock:
-            client.active += 1; client.peak = max(client.active, client.peak)
-            first = len(client.plugins) < 5
-            client.plugins.append('started')
+            active += 1; peak = max(peak, active); calls += 1; first = calls <= 3
         if first: barrier.wait(timeout=5)
-        try: return actual(**kwargs)
+        try: return original(**kwargs)
         finally:
-            with client.lock: client.active -= 1
+            with client.lock: active -= 1
     client.get_command_invocation = invocation
-    assert collector(tmp_path, client).collect(instances(12))['status'] == 'success'
-    assert client.peak <= 5 and len(client.sent) == 12
+    assert collector(tmp_path, client).collect(instances(9))['status'] == 'success'
+    assert peak == 3
 
 
-def test_date_boundary_is_not_24_hour_ttl(tmp_path):
-    client = SsmClient()
-    before_midnight = datetime(2026, 10, 14, 14, 59, tzinfo=timezone.utc)
-    cache = collector(tmp_path, client, before_midnight).collect(instances())
-    client.sent.clear()
-    after = collector(tmp_path, client, before_midnight + timedelta(minutes=2)).collect(instances(), cache)
-    assert len(client.sent) == 2 and after['snapshot_date'] == '2026-10-15'
-    client.sent.clear()
-    collector(tmp_path, client, before_midnight + timedelta(hours=20)).collect(instances(), after)
-    assert client.sent == []
-
-
-def test_discovery_failure_preserves_good_cache_and_no_raw_output(tmp_path, monkeypatch):
-    client = SsmClient(); target = collector(tmp_path, client)
-    cache = target.collect(instances())
-    def failed(**_): raise RuntimeError('raw fixture response must never be saved')
-    monkeypatch.setattr(client, 'describe_instance_information', failed)
-    result = target.collect(instances(), cache, force=True)
-    assert result['status'] == 'stale'
-    assert result['instances'][instances()[0]['InstanceId']]['was'] == cache['instances'][instances()[0]['InstanceId']]['was']
-    assert 'raw fixture response' not in json.dumps(result)
-    assert 'StandardOutputContent' not in json.dumps(result)
-
-
-def test_discovery_paginates_and_bounds_filters(tmp_path):
+def test_discovery_pagination_and_filter_batches(tmp_path):
     client = SsmClient(52); calls = []
     def describe(**kwargs):
-        calls.append(kwargs.copy())
-        ids = kwargs['Filters'][0]['Values']
-        if not kwargs.get('NextToken'):
+        calls.append(copy.deepcopy(kwargs)); ids = kwargs['Filters'][0]['Values']
+        if 'NextToken' not in kwargs:
             return {'InstanceInformationList': [client.information[ids[0]]], 'NextToken': 'fixture-next'}
         return {'InstanceInformationList': [client.information[key] for key in ids[1:]]}
     client.describe_instance_information = describe
     assert collector(tmp_path, client).collect(instances(52))['status'] == 'success'
-    assert [len(call['Filters'][0]['Values']) for call in calls] == [50, 50, 2, 2]
-    assert len(client.sent) == 52
+    assert [len(item['Filters'][0]['Values']) for item in calls] == [50, 50, 2, 2]
 
 
-def test_same_day_cache_does_not_even_create_ssm_client(tmp_path, monkeypatch):
-    client = SsmClient(); target = collector(tmp_path, client)
-    cache = target.collect(instances())
-    monkeypatch.setattr(target, '_client', lambda: pytest.fail('Unnecessary SSM lookup'))
-    assert target.collect(instances(), cache)['status'] == 'success'
+def test_linux_script_emits_one_json_object_without_extra_dependency():
+    script = Path(__file__).parents[1] / 'backend/services/ssm_scripts/linux.sh'
+    result = subprocess.run(['sh', str(script)], capture_output=True, text=True, timeout=30, check=True)
+    data = json.loads(result.stdout)
+    validate_inventory(data)
+    assert data['os_install_date'] is None
+    assert all(isinstance(data[key], list) for key in ('was', 'web', 'db'))
 
 
-def test_only_missing_instance_ids_are_queried(tmp_path):
-    client = SsmClient(); target = collector(tmp_path, client)
-    cache = target.collect(instances())
-    client.information.update(SsmClient(3).information)
-    client.filters.clear()
-    target.collect(instances(3), cache)
-    assert client.filters[0]['Filters'] == [{'Key': 'InstanceIds', 'Values': [instances(3)[-1]['InstanceId']]}]
-
-
-def test_failed_new_platform_attempt_preserves_entire_last_success(tmp_path):
-    client = SsmClient(); target = collector(tmp_path, client)
-    cache = target.collect(instances())
-    identifier = instances()[0]['InstanceId']
-    client.information[identifier]['PlatformType'] = 'Windows'
-    client.fail.add(identifier)
-    result = target.collect(instances(), cache, force=True)
-    record = result['instances'][identifier]
-    assert record['status'] == 'stale'
-    for key in ['platform_type', 'hostname', 'kernel', 'os', 'os_install_date', 'was', 'web', 'db', 'last_success_at']:
-        assert record[key] == cache['instances'][identifier][key]
-    assert client.plugins and all(plugin is None for plugin in client.plugins)
-
-
-@pytest.mark.parametrize('output', [WINDOWS, LINUX])
-def test_bom_crlf_whitespace_and_product_fields(output):
-    decorated = '\ufeff' + '\r\n'.join('  ' + line + '  ' for line in output.splitlines())
-    assert parse_inventory(decorated) == parse_inventory(output)
-    if output == WINDOWS:
-        assert parse_inventory(decorated)['web'][0] == {
-            'product': 'IIS', 'version': '10.0', 'path': r'C:\Windows\inetsrv', 'status': 'running'}
-
-
-def test_s3_output_url_is_not_a_failure(tmp_path):
-    client = SsmClient(); original = client.get_command_invocation
-    def invocation(**kwargs):
-        return {**original(**kwargs), 'StandardOutputUrl': 'https://example.invalid/sensitive-output'}
-    client.get_command_invocation = invocation
-    assert collector(tmp_path, client).collect(instances())['status'] == 'success'
-
-
-@pytest.mark.parametrize('kind,stage,reason,status,code', [
-    ('send', 'send_command', 'send_command_failed', None, None),
-    ('get', 'get_command_invocation', 'get_command_invocation_failed', None, None),
-    ('missing', 'get_command_invocation', 'invocation_not_found_timeout', None, None),
-    ('pending', 'get_command_invocation', 'invocation_poll_timeout', 'InProgress', -1),
-    ('failed', 'terminal_status', 'terminal_failed', 'Failed', 1),
-    ('timedout', 'terminal_status', 'terminal_timed_out', 'TimedOut', -1),
-    ('nonzero', 'terminal_status', 'response_code_nonzero', 'Success', 2),
-    ('parse', 'parse', 'parse_failed', 'Success', 0),
-    ('truncated', 'parse', 'output_may_be_truncated', 'Success', 0),
-])
-def test_failure_diagnostics_and_cache_are_safe(tmp_path, caplog, kind, stage, reason, status, code):
-    client = SsmClient(1)
-    class AwsFailure(Exception):
-        response = {'Error': {'Code': 'AccessDeniedException'}}
-    def fail(**kwargs): raise AwsFailure('SECRET exception credential command-id')
-    if kind == 'send': client.send_command = fail
-    elif kind == 'get': client.get_command_invocation = fail
-    elif kind == 'missing':
-        def missing(**kwargs): raise MissingInvocation('SECRET command-id')
-        client.get_command_invocation = missing
-    else:
-        client.get_command_invocation = lambda **_: {
-            'Status': status, 'ResponseCode': code,
-            'StandardOutputContent': 'SECRET' * 4000 if kind == 'truncated' else 'SECRET output',
-            'StandardErrorContent': 'SECRET stderr', 'CommandId': 'SECRET command-id'}
-    result = collector(tmp_path, client).collect(instances(1))
-    record = result['instances'][instances(1)[0]['InstanceId']]
-    assert record['error'] == reason
-    assert f'stage={stage}' in caplog.text and f'reason={reason}' in caplog.text
-    assert 'instance_id=i-fixture-000 platform_type=Linux' in caplog.text
-    assert f'status={status}' in caplog.text and f'response_code={code}' in caplog.text
-    if kind in {'send', 'get'}:
-        assert 'aws_error_code=AccessDeniedException' in caplog.text
-        assert 'exception_type=AwsFailure' in caplog.text
-    if kind == 'missing': assert 'aws_error_code=InvocationDoesNotExist' in caplog.text
-    assert 'SECRET' not in caplog.text + json.dumps(result)
-    assert 'CommandId' not in caplog.text + json.dumps(result)
-
-
-def test_failed_attempt_daily_gate_force_new_instance_and_next_day(tmp_path):
-    client = SsmClient(); client.fail.add(instances()[0]['InstanceId'])
+def test_first_failure_is_attempted_only_once_until_force_or_next_date(tmp_path):
+    client = SsmClient(1); identifier = instances(1)[0]['InstanceId']; client.fail.add(identifier)
     target = collector(tmp_path, client)
-    cache = target.collect(instances())
+    failed = target.collect(instances(1))
+    assert failed['status'] == 'failed' and not failed['instances'][identifier].get('last_success_at')
     client.sent.clear()
-    same = target.collect(instances(), cache)
-    assert client.sent == [] and same['status'] == 'partial'
-    assert same['instances'] == cache['instances']
-    client.information.update(SsmClient(3).information)
-    cache = target.collect(instances(3), same)
-    assert client.sent == [instances(3)[2]['InstanceId']]
+    assert target.collect(instances(1), failed)['status'] == 'failed' and client.sent == []
+    target.collect(instances(1), failed, force=True)
+    assert client.sent == [identifier]
     client.sent.clear()
-    cache = target.collect(instances(3), cache, force=True)
-    assert len(client.sent) == 3
-    client.sent.clear()
-    collector(tmp_path, client, TODAY + timedelta(days=1)).collect(instances(3), cache)
-    assert len(client.sent) == 3
+    collector(tmp_path, client, TODAY + timedelta(days=1)).collect(instances(1), failed)
+    assert client.sent == [identifier]
 
 
-def test_windows_document_output_regression():
-    # Synthetic hostname; preserve the reported Windows document's other fields.
-    output = ('HOSTNAME=fixture-windows\nKERNEL=10.0.14393\n'
-              'OS=Microsoft Windows Server 2016 Datacenter\n'
-              'OS_INSTALL_DATE=2025-01-14 19:48:22\n'
-              'WEB=IIS|10.0|C:\\Windows\\System32\\inetsrv|running\nWAS=None\nDB=None')
-    row = parse_inventory('\ufeff' + output.replace('\n', '\r\n'))
-    assert row['kernel'] == '10.0.14393'
-    assert row['os'] == 'Microsoft Windows Server 2016 Datacenter'
-    assert row['os_install_date'] == '2025-01-14 19:48:22'
-    assert row['was'] == row['db'] == []
-    assert row['web'] == [{'product': 'IIS', 'version': '10.0',
-                           'path': r'C:\Windows\System32\inetsrv', 'status': 'running'}]
-
-
-def test_failed_attempt_gate_converts_timestamp_to_seoul(tmp_path):
-    client = SsmClient(1); identifier = instances(1)[0]['InstanceId']
-    previous = {'instances': {identifier: {'status': 'failed', 'error': 'terminal_failed',
-                                         'last_attempt_at': TODAY.isoformat()}}}
-    # UTC 14th is already Seoul 15th: do not retry, nor claim success.
-    result = collector(tmp_path, client).collect(instances(1), previous)
-    assert client.sent == client.filters == [] and result['status'] == 'failed'
-    assert result['instances'] == previous['instances']
-
-
-@pytest.mark.parametrize('platform', ['Windows', 'Linux'])
-@pytest.mark.parametrize('multiple', [False, True])
-def test_actual_plugin_metadata_single_omission_and_multi_name(tmp_path, platform, multiple):
-    client = SsmClient(1); identifier = instances(1)[0]['InstanceId']
-    client.information[identifier]['PlatformType'] = platform
-    calls = []
-    actual_name = 'runtime-generated-step-42'
-    def listing(**kwargs):
-        plugins = [{'Name': actual_name, 'Status': 'Success'}]
-        if multiple:
-            plugins.insert(0, {'Name': 'inactive-step', 'Status': 'Success',
-                              'Output': 'Step execution skipped due to unsupported plugin: aws:runShellScript'})
-        return {'CommandInvocations': [{'CommandId': kwargs['CommandId'], 'InstanceId': identifier,
-                                       'CommandPlugins': plugins}]}
-    class InvalidPluginName(Exception):
-        response = {'Error': {'Code': 'InvalidPluginName'}}
-    def invocation(**kwargs):
-        calls.append(kwargs)
-        if (multiple and kwargs.get('PluginName') != actual_name) or (not multiple and 'PluginName' in kwargs):
-            raise InvalidPluginName('SECRET')
-        return {'Status': 'Success', 'ResponseCode': 0, 'StandardOutputUrl': 'https://example.invalid/output',
-                'StandardOutputContent': '\ufeff' + (WINDOWS if platform == 'Windows' else LINUX)}
-    client.list_command_invocations = listing
-    client.get_command_invocation = invocation
+def test_send_error_is_not_retried_without_explicit_throttling(tmp_path, caplog):
+    client = SsmClient(1); calls = []
+    def fail(**_): calls.append(1); raise aws_error('AccessDeniedException', 'SendCommand')
+    client.send_command = fail
     result = collector(tmp_path, client).collect(instances(1))
-    assert result['status'] == 'success'
-    assert result['instances'][identifier]['platform_type'] == platform
     assert len(calls) == 1
-    assert calls[0].get('PluginName') == (actual_name if multiple else None)
+    assert result['instances'][instances(1)[0]['InstanceId']]['error'] == 'send_command_failed'
+    assert 'stage=send_command' in caplog.text and 'SECRET' not in caplog.text
 
 
-def test_invalid_plugin_name_is_query_error_not_execution_failure(tmp_path, caplog):
-    client = SsmClient(1)
-    class InvalidPluginName(Exception):
-        response = {'Error': {'Code': 'InvalidPluginName'}}
-    def invocation(**_): raise InvalidPluginName('SECRET')
-    client.get_command_invocation = invocation
-    result = collector(tmp_path, client).collect(instances(1))
-    assert result['instances'][instances(1)[0]['InstanceId']]['error'] == 'invalid_plugin_name'
-    assert 'stage=get_command_invocation' in caplog.text
-    assert 'aws_error_code=InvalidPluginName' in caplog.text
-    assert 'terminal_failed' not in caplog.text and 'SECRET' not in caplog.text
+def test_whole_collection_deadline_prevents_new_calls_after_discovery(tmp_path):
+    client = SsmClient(2); clock = Clock(); original = client.describe_instance_information
+    def describe(**kwargs):
+        response = original(**kwargs); clock.value = 5; return response
+    client.describe_instance_information = describe
+    result = collector(tmp_path, client, clock=clock, collection_timeout=3).collect(instances())
+    assert client.sent == []
+    assert all(record['error'] == 'polling_timeout' for record in result['instances'].values())
 
 
-@pytest.mark.parametrize('metadata', ['empty', 'pending', 'ambiguous'])
-def test_plugin_resolution_bounded_and_never_guesses(tmp_path, metadata):
-    client = SsmClient(1); identifier = instances(1)[0]['InstanceId']; calls = []
-    def listing(**kwargs):
-        calls.append(1)
-        plugins = [] if metadata == 'empty' else [
-            {'Name': 'step-one', 'Status': 'Pending' if metadata == 'pending' else 'Success'},
-            {'Name': 'step-two', 'Status': 'Pending' if metadata == 'pending' else 'Success'}]
-        return {'CommandInvocations': [{'CommandId': kwargs['CommandId'], 'InstanceId': identifier,
-                                       'CommandPlugins': plugins}]}
-    client.list_command_invocations = listing
-    client.get_command_invocation = lambda **_: pytest.fail('Must not guess PluginName')
-    result = collector(tmp_path, client).collect(instances(1))
-    reason = result['instances'][identifier]['error']
-    assert reason == ('ambiguous_inventory_plugin' if metadata == 'ambiguous' else 'invocation_poll_timeout')
-    assert len(calls) <= 46
-
-
-def test_metadata_eventual_consistency_then_actual_failed_exit_code(tmp_path, caplog):
-    client = SsmClient(1); identifier = instances(1)[0]['InstanceId']; calls = []
-    original = client.list_command_invocations
-    def listing(**kwargs):
-        calls.append(1)
-        if len(calls) == 1: return {'CommandInvocations': []}
-        return original(**kwargs)
-    client.list_command_invocations = listing
-    client.get_command_invocation = lambda **_: {'Status': 'Failed', 'ResponseCode': 1,
-                                                'StandardErrorContent': 'SECRET', 'StandardOutputContent': 'SECRET'}
-    result = collector(tmp_path, client).collect(instances(1))
-    assert result['instances'][identifier]['error'] == 'terminal_failed'
-    assert len(calls) == 2
-    assert 'stage=terminal_status' in caplog.text and 'status=Failed response_code=1' in caplog.text
-    assert 'invalid_plugin_name' not in caplog.text and 'SECRET' not in caplog.text
+@pytest.mark.parametrize('platform', ['Linux', 'Windows'])
+def test_official_boto_response_and_request_shapes_without_pluginname(tmp_path, platform, monkeypatch):
+    import boto3
+    import botocore.session
+    from botocore.stub import Stubber
+    # Use explicit synthetic credentials and no ambient profile; Stubber makes no API calls.
+    monkeypatch.delenv('AWS_PROFILE', raising=False)
+    monkeypatch.delenv('AWS_DEFAULT_PROFILE', raising=False)
+    session = botocore.session.get_session()
+    client = boto3.Session(botocore_session=session).client('ssm', region_name='ap-northeast-2',
+        aws_access_key_id='fixture-access', aws_secret_access_key='fixture-secret')
+    target = collector(tmp_path, client)
+    identifier = 'i-00000000000000000'
+    command = '00000000-0000-0000-0000-000000000000'
+    document, filename = DOCUMENTS[platform]
+    script = (Path(__file__).parents[1] / 'backend/services/ssm_scripts' / filename).read_text()
+    with Stubber(client) as stub:
+        stub.add_response('send_command', {'Command': {'CommandId': command, 'DocumentName': document,
+                          'InstanceIds': [identifier], 'Status': 'Pending'}},
+                          {'DocumentName': document, 'InstanceIds': [identifier], 'TimeoutSeconds': 60,
+                           'Parameters': {'commands': [script], 'executionTimeout': ['60']}})
+        stub.add_client_error('get_command_invocation', service_error_code='InvocationDoesNotExist',
+                              expected_params={'InstanceId': identifier, 'CommandId': command})
+        stub.add_response('get_command_invocation', {'CommandId': command, 'InstanceId': identifier,
+                          'DocumentName': document, 'Status': 'Success', 'ResponseCode': 0,
+                          'StandardOutputContent': WINDOWS if platform == 'Windows' else LINUX,
+                          'StandardErrorContent': ''}, {'InstanceId': identifier, 'CommandId': command})
+        result = target._invoke(client, identifier, platform, target.clock() + 90)
+        assert result['hostname'] == ('fixture-windows' if platform == 'Windows' else 'fixture-linux')
+        stub.assert_no_pending_responses()
