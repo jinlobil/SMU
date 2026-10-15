@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 
 type Job = { id: string; status: "queued" | "running" | "completed" | "failed"; message: string; error?: { message: string } };
 
-export function RefreshButton({ target, onComplete }: { target: "endpoints" | "organizations" | "aws"; onComplete: () => void }) {
+export function RefreshButton({ target, onComplete, disabled = false }: { target: "endpoints" | "organizations" | "aws" | "ssm-inventory"; onComplete: () => void; disabled?: boolean }) {
   const [job, setJob] = useState<Job | null>(null);
   const [error, setError] = useState("");
   const mounted = useRef(true);
@@ -29,7 +29,7 @@ export function RefreshButton({ target, onComplete }: { target: "endpoints" | "o
   const start = async () => {
     setError("");
     try {
-      const response = await fetch(`/api/jobs/refresh/${target}`, { method: "POST" });
+      const response = await fetch(target === "ssm-inventory" ? "/api/jobs/aws/ssm-inventory" : `/api/jobs/refresh/${target}`, { method: "POST" });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload?.error?.message || `HTTP ${response.status}`);
       setJob(payload.data as Job);
@@ -42,7 +42,7 @@ export function RefreshButton({ target, onComplete }: { target: "endpoints" | "o
 
   const running = job?.status === "queued" || job?.status === "running";
   return <div className="refresh-area">
-    <button className="refresh-button" disabled={running} onClick={start}>{running ? "새로고침 중..." : target === "aws" ? "AWS 새로고침" : "Sophos 새로고침"}</button>
+    <button className="refresh-button" disabled={running || disabled} onClick={start}>{running ? "새로고침 중..." : target === "ssm-inventory" ? "지금 갱신" : target === "aws" ? "AWS 새로고침" : "Sophos 새로고침"}</button>
     {running && <span>{job?.message}</span>}
     {job?.status === "completed" && <span className="refresh-success">완료</span>}
     {error && <span className="refresh-error" title={error}>오류 발생 · 로그 확인</span>}
