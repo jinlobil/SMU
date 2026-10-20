@@ -10,6 +10,7 @@ from backend.services.detections import DetectionService, sensor_type
 from backend.services.email_security import EmailSecurityService, XDR_RULES
 from backend.services.endpoints import EndpointService, endpoint_principal, load_json_list, normalize_key
 from backend.services.transfers import TransferService, load_jsonl
+from backend.services.dlp_fields import normalize_dlp_row
 from backend.services import legacy_report
 from backend.services.exceptions import ExceptionService, normalize_identity
 from backend.services.exporting import normalize_report_sections
@@ -116,7 +117,7 @@ class ReportService:
             return rows
 
         def dlp_rows(start: str, end: str) -> list[dict]:
-            return [row for day in self.transfers._dates(*dates(start, end)) for row in load_jsonl(self.transfers.dlp_dir / f"{day.isoformat()}.jsonl")]
+            return [normalize_dlp_row(row) for day in self.transfers._dates(*dates(start, end)) for row in load_jsonl(self.transfers.dlp_dir / f"{day.isoformat()}.jsonl")]
 
         # The legacy renderer consumes Raw dictionaries. Do not build discarded
         # display rows or run per-event exception resolution for report input.

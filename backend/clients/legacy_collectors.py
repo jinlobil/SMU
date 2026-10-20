@@ -1,6 +1,7 @@
 import base64, html, json, logging, math, os, re, secrets, time
 from datetime import datetime
 from pathlib import Path
+from backend.services.dlp_fields import normalize_dlp_row
 
 import requests
 from bs4 import BeautifulSoup
@@ -455,6 +456,9 @@ class DlpClient:
     def __init__(self, progress_cb=None):
         env = load_dlp_env(DLP_ENV_PATH)
         self.progress_cb = progress_cb
+        self.log_module = str(env.get('DLP_LOG_MODULE', 'cap_logs_crate')).strip()
+        if self.log_module not in {'cap_logs_crate', 'cf_log'}:
+            raise ValueError('DLP_LOG_MODULE must be cap_logs_crate or cf_log')
 
         self.base_url = str(env.get("DLP_BASE_URL", "")).strip().rstrip("/")
         self.username = str(env.get("DLP_USERNAME", "")).strip()
@@ -503,7 +507,7 @@ class DlpClient:
 
     @property
     def cf_log_list_url(self):
-        return f"{self.base_url}/index.php/cf_log/list"
+        return f"{self.base_url}/index.php/{self.log_module}/list"
 
     def fetch_login_page(self):
         r = self.session.get(
@@ -577,9 +581,29 @@ class DlpClient:
         if not self.is_logged_in(r.text) and not (redirected_to_index and has_ratool_cookie):
             raise RuntimeError("DLP login failed. Check credentials or login flow.")
 
-    def build_cf_log_payload(self, date_str: str, draw: int = 1, start: int = 0, length: int = -1, start_dt: str = None, end_dt: str = None):
+    def build_cf_log_payload(self, date_str, draw=1, start=0, length=-1, start_dt=None, end_dt=None):
+        if self.log_module == 'cf_log':
+            return self._build_legacy_payload(date_str, draw, start, length, start_dt, end_dt)
+        columns = ('has_details', 'event_name', 'event_time_local', 'client_time_utc', 'machine_name',
+                   'client_name', 'file_name', 'destination', 'destination_type', 'file_size',
+                   'justification', 'formatted_timestamp', 'ip', 'destination_details', 'email_sender',
+                   'email_subject', 'file_hash', 'os_type', 'vid', 'pid', 'serial_no',
+                   'epp_client_version', 'shadow_exists')
+        payload = {'draw': str(draw), 'start': str(start), 'length': str(length),
+                   'order[0][column]': '2', 'order[0][dir]': 'desc',
+                   'search[value]': '', 'search[regex]': 'false',
+                   'startDate': start_dt or f'{date_str} 00:00:00',
+                   'endDate': end_dt or f'{date_str} 23:59:59'}
+        for index, name in enumerate(columns):
+            payload.update({f'columns[{index}][data]': name, f'columns[{index}][name]': '',
+                            f'columns[{index}][searchable]': 'true',
+                            f'columns[{index}][orderable]': 'false' if index == 0 else 'true',
+                            f'columns[{index}][search][value]': '', f'columns[{index}][search][regex]': 'false'})
+        return payload
+
+    def _build_legacy_payload(self, date_str: str, draw: int = 1, start: int = 0, length: int = -1, start_dt: str = None, end_dt: str = None):
         start_dt = start_dt or f"{date_str} 00:00:00"
-        end_dt = end_dt or f"{date_str} 23:30:00"
+        end_dt = end_dt or f"{date_str} 23:59:59"
 
         columns = [
             ("id", False),
@@ -676,27 +700,27 @@ class DlpClient:
         )
         r.raise_for_status()
         content_type = str(r.headers.get("Content-Type", "") or "")
-        body_preview = r.text[:600]
         log.info(
-            f"DLP cf_log/list status={r.status_code} url={r.url} content_type={content_type} "
+            f"DLP {self.log_module}/list status={r.status_code} url={r.url} content_type={content_type} "
             f"body_len={len(r.text)}"
         )
 
         if self._looks_like_login_html(r.text):
-            raise RuntimeError("DLP cf_log/list returned login/main HTML instead of JSON")
+            raise RuntimeError(f"DLP {self.log_module}/list returned login/main HTML instead of JSON")
 
         try:
             result = r.json()
         except Exception as e:
-            raise RuntimeError(f"Failed to parse DLP response as JSON: {body_preview}") from e
+            raise RuntimeError(f"DLP {self.log_module}/list returned invalid JSON") from e
 
-        if "data" not in result:
+        if not isinstance(result, dict) or "data" not in result:
             keys = list(result.keys()) if isinstance(result, dict) else []
-            raise RuntimeError(f"Unexpected DLP response keys={keys} preview={body_preview}")
+            raise RuntimeError(f"Unexpected DLP response keys={keys}")
 
         rows = result.get("data", [])
-        if not isinstance(rows, list):
-            rows = []
+        if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+            raise RuntimeError('DLP data must be an array of log objects')
+        rows = [normalize_dlp_row(row) for row in rows]
 
         records_total = result.get("recordsTotal", len(rows))
         records_filtered = result.get("recordsFiltered", len(rows))
@@ -710,12 +734,13 @@ class DlpClient:
             records_filtered = len(rows)
 
         log.info(
-            f"DLP cf_log/list parsed recordsTotal={records_total} recordsFiltered={records_filtered} rows={len(rows)}"
+            f"DLP {self.log_module}/list parsed recordsTotal={records_total} recordsFiltered={records_filtered} rows={len(rows)}"
         )
 
         return {
             "rows": rows,
             "records_filtered": max(records_filtered, 0),
+            "records_total": max(records_total, 0),
             "raw": result,
         }
 
@@ -737,8 +762,10 @@ class DlpClient:
             if not isinstance(row, dict):
                 continue
             key = (
-                row.get("log_id")
+                row.get("_id")
+                or row.get("log_id")
                 or row.get("id")
+                or row.get("loc_log_id")
                 or row.get("loclogid")
                 or "|".join([
                     str(row.get("timestamp", "")),
@@ -758,19 +785,19 @@ class DlpClient:
             first_try = self.fetch_daily_logs_window(
                 date_str=date_str,
                 start_dt=f"{date_str} 00:00:00",
-                end_dt=f"{date_str} 23:30:00",
+                end_dt=f"{date_str} 23:59:59",
                 length=-1,
                 draw=1,
             )
             first_rows = first_try.get("rows", [])
             first_filtered = int(first_try.get("records_filtered", len(first_rows)) or 0)
-            if first_filtered > 0 and len(first_rows) == 0:
+            if first_filtered > len(first_rows):
                 log.warning(
-                    f"DLP full-day fetch returned 0 rows but recordsFiltered={first_filtered}. "
+                    f"DLP full-day fetch incomplete rows={len(first_rows)} recordsFiltered={first_filtered}. "
                     "Retry with paged fetch (start/length)."
                 )
             else:
-                return first_rows
+                return self._merge_rows_unique(first_rows)
         except requests.exceptions.Timeout:
             log.warning(f"DLP full-day fetch timed out ({date_str}). Retry with paged fetch (start/length).")
         except requests.exceptions.RequestException as e:
@@ -779,7 +806,7 @@ class DlpClient:
             log.warning(f"DLP full-day fetch timed out ({date_str}). Retry with paged fetch (start/length).")
 
         start_dt = f"{date_str} 00:00:00"
-        end_dt = f"{date_str} 23:30:00"
+        end_dt = f"{date_str} 23:59:59"
         page_size = 500
         fallback_timeout = max(self.timeout, 60)
         retry_count = 2
@@ -815,17 +842,21 @@ class DlpClient:
             log.info(f"DLP fallback paged fetch completed ({date_str}) total={total_count} raw={len(all_rows)} unique={len(merged)}")
             return merged
 
-        page_count = (total_count + page_size - 1) // page_size
-        for page_index in range(1, page_count):
-            page_start = page_index * page_size
-            self._notify_progress(f"DLP 2차 조회 진행중 {page_index + 1}/{page_count} (start={page_start})")
+        # Advance by rows actually returned: newer servers may cap a page below length.
+        page_start, page_index = len(all_rows), 1
+        while page_start < total_count:
+            self._notify_progress(f"DLP 2차 조회 진행중 {page_index + 1} (start={page_start}, total={total_count})")
             page = fetch_page_with_retry(page_start, page_index + 1)
             page_rows = page.get("rows", [])
             if not page_rows:
-                break
+                raise RuntimeError('DLP pagination returned an empty page before recordsFiltered was reached')
             all_rows.extend(page_rows)
+            page_start += len(page_rows)
+            page_index += 1
 
         merged = self._merge_rows_unique(all_rows)
+        if self.log_module == 'cap_logs_crate' and len(merged) < total_count:
+            raise RuntimeError('DLP pagination did not return recordsFiltered unique records')
         log.info(f"DLP fallback paged fetch completed ({date_str}) total={total_count} raw={len(all_rows)} unique={len(merged)}")
         self._notify_progress(f"DLP 2차 조회 완료 total={total_count} raw={len(all_rows)} unique={len(merged)}")
         return merged

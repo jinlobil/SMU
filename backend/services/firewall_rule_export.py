@@ -306,6 +306,7 @@ def parse_firewall_rules(payloads: dict[str, str], rule_entity: str | None = Non
             "Destination Zone": _join(_under_direct(policy, {"DestinationZones", "DestinationZone"})),
             "Destination Object": _join(destination),
             "Destination Resolved": _join([resolved_objects.get(value, value) for value in destination]),
+            "_Source FQDNs": [pattern for name in source for pattern in fqdn_objects.get(name, [])],
             "_Destination FQDNs": [pattern for name in destination for pattern in fqdn_objects.get(name, [])],
             "Service": _join(services),
             "Service Resolved / Protocol / Port": _join([resolved_services.get(value, value) for value in services]),

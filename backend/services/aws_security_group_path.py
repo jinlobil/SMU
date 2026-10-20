@@ -203,11 +203,17 @@ class AwsSecurityGroupPathService:
         return result
 
     def check(self, source, destination, protocol: str, port: int | None, protocol_number: int | None,
-              path: list[str], partial: bool, *, fqdn: bool = False, destination_queries: list | None = None) -> dict[str, Any]:
+              path: list[str], partial: bool, *, fqdn: bool = False, destination_queries: list | None = None,
+              source_fqdn: bool = False, source_queries: list | None = None) -> dict[str, Any]:
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
             if not isinstance(data, dict): raise ValueError("AWS Cache object required")
-            source_endpoint = self._endpoint(source, data)
+            if source_fqdn:
+                endpoints = [self._endpoint(query, data) for query in source_queries or []]
+                identities = {(item.get("state"), item.get("instanceId"), item.get("eniId")) for item in endpoints}
+                source_endpoint = endpoints[0] if len(identities) == 1 else self._unknown_endpoint("FQDN의 AWS Endpoint 확인 불가 · DNS 미확인 또는 여러 대상")
+            else:
+                source_endpoint = self._endpoint(source, data)
             if fqdn:
                 endpoints = [self._endpoint(query, data) for query in destination_queries or []]
                 identities = {(item.get("state"), item.get("instanceId"), item.get("eniId")) for item in endpoints}
@@ -223,15 +229,15 @@ class AwsSecurityGroupPathService:
                 network_path = {"path": path, "partialPath": partial,
                                 "mode": "same_vpc" if same_vpc else "unknown",
                                 "reason": "동일 VPC · AWS SG 정책 검사" if same_vpc else "AWS 중간 Network Path 확인 불가 · Routing 정보 미수집"}
-            return {"networkPath": network_path, "outbound": self._step("Outbound", source_endpoint, destination_endpoint, destination, protocol, port, protocol_number, data, path, partial, port_only=fqdn),
-                    "inbound": self._step("Inbound", destination_endpoint, source_endpoint, source, protocol, port, protocol_number, data, path, partial, port_only=fqdn),
+            return {"networkPath": network_path, "outbound": self._step("Outbound", source_endpoint, destination_endpoint, destination, protocol, port, protocol_number, data, path, partial, port_only=fqdn or source_fqdn),
+                    "inbound": self._step("Inbound", destination_endpoint, source_endpoint, source, protocol, port, protocol_number, data, path, partial, port_only=fqdn or source_fqdn),
                     "cache": {"path": str(self.path), "exists": True, "fetchedAt": (data.get("metadata") or {}).get("fetched_at")}}
         except Exception as exc:
             # AWS data must never discard the already-evaluated Firewall hops.
             log.warning("AWS SG check unavailable error_type=%s", type(exc).__name__)
             reason = "AWS Cache 없음" if isinstance(exc, FileNotFoundError) else "AWS Cache 데이터 확인 불가"
             return {key: {"kind": "aws_sg", "label": f"AWS SG {direction}", "direction": direction, "state": "UNKNOWN", "reason": reason,
-                          "queryMode": "fqdn" if fqdn else "ip", "endpoint": self._unknown_endpoint(reason), "groups": [], "matches": [], "evaluations": [], "broadQuery": broad_query(protocol, port, protocol_number)}
+                          "queryMode": "fqdn" if fqdn or source_fqdn else "ip", "endpoint": self._unknown_endpoint(reason), "groups": [], "matches": [], "evaluations": [], "broadQuery": broad_query(protocol, port, protocol_number)}
                     for key, direction in [("outbound", "Outbound"), ("inbound", "Inbound")]}
 
 

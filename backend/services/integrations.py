@@ -156,6 +156,9 @@ class IntegrationService:
         elif current_kind == "dlp":
             self._required(merged, ("baseUrl", "username", "password")); path = self.env_dir / "DLP_env.txt"
             data = {"DLP_BASE_URL": str(merged["baseUrl"]).strip(), "DLP_USERNAME": str(merged["username"]).strip(), "DLP_PASSWORD": str(merged["password"]).strip(), "DLP_VERIFY_SSL": str(self._bool(merged.get("verifySsl"))).lower(), "DLP_TIMEOUT": str(merged.get("timeout", "30"))}
+            module = self._read_values(path).get("DLP_LOG_MODULE")
+            if module is not None:
+                data["DLP_LOG_MODULE"] = module
         else:
             self._required(merged, ("host", "port", "username", "password")); path = self.env_dir / "Firewall_env.txt"; data = self._read_values(path)
             _name, prefix = self.FIREWALL_IDS[current_instance]; stem = f"FW_{prefix}"
