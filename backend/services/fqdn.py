@@ -8,19 +8,19 @@ import socket
 import threading
 
 
-def normalize_fqdn(value: str, *, wildcard: bool = False) -> str:
+def normalize_fqdn(value: str, *, wildcard: bool = False, side: str = "Destination") -> str:
     value = value.strip().removesuffix('.').casefold()
     prefix = '*.' if wildcard and value.startswith('*.') else ''
     value = value[2:] if prefix else value
     try:
         value = value.encode('idna').decode('ascii')
     except UnicodeError as exc:
-        raise ValueError('Destination FQDN 형식을 확인하세요') from exc
+        raise ValueError(f'{side} FQDN 형식을 확인하세요') from exc
     labels = value.split('.')
     if len(value) > 253 or len(labels) < 2 or any(not re.fullmatch(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?', label) for label in labels):
-        raise ValueError('Destination IP / CIDR 또는 FQDN 형식을 확인하세요')
+        raise ValueError(f'{side} IP / CIDR 또는 FQDN 형식을 확인하세요')
     if all(label.isdigit() for label in labels):
-        raise ValueError('Destination IP 형식을 확인하세요')
+        raise ValueError(f'{side} IP 형식을 확인하세요')
     return prefix + value
 
 

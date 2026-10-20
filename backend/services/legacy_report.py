@@ -881,7 +881,7 @@ class LegacySecurityReport:
         if not isinstance(row, dict):
             return False
 
-        event_name = str(row.get("event_id", "")).strip()
+        event_name = str(row.get("event_name") or row.get("event_id", "")).strip()
         return "차단" in event_name
 
     def build_report_identity_resolver(self):
@@ -3793,7 +3793,7 @@ class LegacySecurityReport:
                 continue
 
             machine_name = str(row.get("machine_name", "") or "").strip()
-            event_name = str(row.get("event_id", "") or row.get("content_policy", "") or "").strip()
+            event_name = str(row.get("event_name") or row.get("event_id", "") or row.get("content_policy", "") or "").strip()
 
             source_name = str(
                 row.get("filename", "")

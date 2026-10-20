@@ -7,6 +7,7 @@ from typing import Any, Callable
 
 from backend.services.endpoints import EndpointService, endpoint_principal, load_json_list, normalize_key
 from backend.services.event_list_index import EventListIndex
+from backend.services.dlp_fields import normalize_dlp_row
 
 
 EVENT_NAMES = {"Content Threat Detected": "탐지됨", "Content Threat Blocked": "차단"}
@@ -62,11 +63,12 @@ class TransferService:
             if progress: progress(f"DLP 원본 읽는 중 · {path.name}")
             files.append(path.name)
             for index, raw in enumerate(load_jsonl(path, progress)):
+                raw = normalize_dlp_row(raw)
                 machine = str(raw.get("machine_name") or "None"); identity = identities.get(normalize_key(machine), {})
                 record_id = self._id("dlp", path, index)
                 principal = identity.get("principal", ""); fallback_user = identity.get("user") or str(raw.get("client_name") or "None")
                 final = self.exception_service.finalize(principal=principal, hostname=machine, user_name=fallback_user, department=identity.get("dept", "미분류"))
-                row = {"id": record_id, "_sourceFile": str(path.resolve()), "event": EVENT_NAMES.get(str(raw.get("event_id") or "None"), str(raw.get("event_id") or "None")), "time": str(raw.get("eventtimelocal") or "None"), "computer": machine, "principal": principal, "dept": final["dept"], "sourceIp": str(raw.get("ip") or "None"), "username": final["user"], "source": str(raw.get("filename") or "None"), "destination": str(raw.get("destination") or "None"), "destinationType": str(raw.get("destination_type") or "None"), "destinationDetail": str(raw.get("item_details") or raw.get("destinationDetails") or "None"), "fileSize": str(raw.get("filesize") or "None"), "fileHash": str(raw.get("filehash") or "None")}
+                row = {"id": record_id, "_sourceFile": str(path.resolve()), "event": EVENT_NAMES.get(str(raw.get("event_name") or raw.get("event_id") or "None"), str(raw.get("event_name") or raw.get("event_id") or "None")), "time": str(raw.get("eventtimelocal") or "None"), "computer": machine, "principal": principal, "dept": final["dept"], "sourceIp": str(raw.get("ip") or "None"), "username": final["user"], "source": str(raw.get("filename") or "None"), "destination": str(raw.get("destination") or "None"), "destinationType": str(raw.get("destination_type") or "None"), "destinationDetail": str(raw.get("destination_details") or raw.get("item_details") or raw.get("destinationDetails") or "None"), "fileSize": str(raw["filesize"]) if raw.get("filesize") is not None else "None", "fileHash": str(raw.get("filehash") or "None")}
                 records.append((record_id, raw, row))
         return records, files
 
