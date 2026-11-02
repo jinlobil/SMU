@@ -310,7 +310,12 @@ class AwsAssetService:
                 rule_counts[group_id]["outbound" if rule.get("IsEgress") else "inbound"] += 1
         attached_groups = [{"id": str(item.get("GroupId")), "name": str(item.get("GroupName") or "-"), **rule_counts[str(item.get("GroupId"))]}
                            for item in data.get("security_groups", []) if str(item.get("GroupId")) in group_ids]
-        return {"instance": instance,
+        inventory_root = data.get("ssm_inventory")
+        records = inventory_root.get("instances") if isinstance(inventory_root, dict) else None
+        record = records.get(instance_id) if isinstance(records, dict) else None
+        record = record if isinstance(record, dict) else {}
+        inventory = {**record, **{key: record.get(key) for key in ("was_platform", "web_platform", "db_platform")}}
+        return {"instance": instance, "ssmInventory": inventory,
                 "securityGroups": [item for item in data.get("security_groups", []) if str(item.get("GroupId")) in group_ids],
                 "attachedSecurityGroups": attached_groups,
                 "securityGroupRules": [item for item in data.get("security_group_rules", []) if str(item.get("GroupId")) in group_ids],
