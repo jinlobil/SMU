@@ -54,7 +54,7 @@ class OutputParseError(ValueError):
 
 def parse_inventory(output):
     """Parse the unmodified Custom Document's KV/product contract, never stdout JSON."""
-    fields = ('hostname', 'kernel', 'os', 'os_install_date')
+    fields = ('hostname', 'kernel', 'os', 'os_install_date', 'was_platform', 'web_platform', 'db_platform')
     products = ('was', 'web', 'db')
     result = dict.fromkeys((*fields, 'os_version'))
     result.update(was=[], web=[], db=[])

@@ -5,9 +5,24 @@ import { RefreshButton } from "../components/RefreshButton";
 type Group = { id: string; name: string };
 type Instance = { name: string; instanceId: string; state: string; privateIp: string; publicIp: string; os: string; description: string; securityGroups: Group[] };
 type Summary={total:number;running:number;stopped:number;other:number};
-type Detail={instance:Record<string,unknown>;attachedSecurityGroups:{id:string;name:string;inbound:number;outbound:number}[]};
+type InventoryProduct = { product?: string | null; version?: string | null; path?: string | null; status?: string | null };
+type Inventory = { hostname?: string | null; kernel?: string | null; os?: string | null; os_install_date?: string | null; was_platform?: string | null; web_platform?: string | null; db_platform?: string | null; was?: InventoryProduct[]; web?: InventoryProduct[]; db?: InventoryProduct[]; status?: string };
+type Detail={ssmInventory?: Inventory;instance:Record<string,unknown>;attachedSecurityGroups:{id:string;name:string;inbound:number;outbound:number}[]};
 type Response = { data: { items: Instance[]; pagination: { page: number; total: number; totalPages: number }; summary:Summary;source: { exists: boolean }; metadata: { region?: string } } };
 const searchFields = [["all", "전체"], ["name", "Name"], ["instanceId", "Instance ID"], ["privateIp", "Private IP"], ["publicIp", "Public IP"], ["description", "Description"], ["securityGroups", "Security Group"]];
+
+function ServerInventory({ inventory }: { inventory?: Inventory }) {
+  const fields: [string, string | null | undefined][] = [
+    ["Hostname", inventory?.hostname], ["OS", inventory?.os], ["Kernel", inventory?.kernel], ["OS 설치일", inventory?.os_install_date],
+    ["WAS Platform", inventory?.was_platform], ["WEB Platform", inventory?.web_platform], ["DB Platform", inventory?.db_platform],
+  ];
+  return <><h3>Server Inventory (SSM)</h3>{inventory?.status === "stale" && <span className="status-pill">이전 정상 수집 데이터</span>}
+    <div className="table-wrap"><table><thead><tr><th>항목</th><th>값</th></tr></thead><tbody>{fields.map(([label, value]) => <tr key={label}><th>{label}</th><td>{value || "-"}</td></tr>)}</tbody></table></div>
+    <div className="table-wrap"><table><thead><tr><th>종류</th><th>Product</th><th>Version</th><th>Path</th><th>Status</th></tr></thead><tbody>{(["was", "web", "db"] as const).map(kind => {
+      const items = inventory?.[kind] || [];
+      return items.length ? items.map((item, index) => <tr key={`${kind}-${index}`}><th>{kind.toUpperCase()}</th><td>{item.product || "-"}</td><td>{item.version || "-"}</td><td>{item.path || "-"}</td><td>{item.status || "-"}</td></tr>) : <tr key={kind}><th>{kind.toUpperCase()}</th><td colSpan={4}>-</td></tr>;
+    })}</tbody></table></div></>;
+}
 
 export function AwsAssetPage() {
   const [ssm, setSsm] = useState<{snapshot_date?:string;collected_at?:string;status?:string;running?:boolean}>({});
@@ -35,6 +50,6 @@ export function AwsAssetPage() {
       {error && <div className="error-banner">AWS 조회 오류: {error}</div>}{!sourceExists && !error && <div className="empty-banner">AWS Raw Cache가 없습니다. AWS Credential 설정 후 새로고침을 실행해주세요.</div>}
       <div className="table-wrap"><table><thead><tr><th>Name</th><th>Instance ID</th><th>State</th><th>Private IP</th><th>Public IP</th><th>OS</th><th>Description</th><th>Security Groups</th></tr></thead><tbody>{loading ? <tr><td colSpan={8} className="state-cell">데이터를 불러오는 중입니다...</td></tr> : !items.length ? <tr><td colSpan={8} className="state-cell">표시할 AWS Instance가 없습니다.</td></tr> : items.map(item => <tr key={item.instanceId} onDoubleClick={() => openDetail(item.instanceId)}><td className="hostname">{item.name}</td><td>{item.instanceId}</td><td><span className="status-pill">{item.state}</span></td><td>{item.privateIp}</td><td>{item.publicIp}</td><td>{item.os}</td><td>{item.description}</td><td><div className="integration-tags">{item.securityGroups.slice(0, 2).map(group => <i key={group.id}>{group.name}</i>)}{item.securityGroups.length > 2 && <i>+{item.securityGroups.length - 2}</i>}</div></td></tr>)}</tbody></table></div>
       <footer className="pagination"><span>총 {total.toLocaleString()}개</span><div><button disabled={page <= 1} onClick={() => setPage(page - 1)}>이전</button><b>{page} / {totalPages}</b><button disabled={page >= totalPages} onClick={() => setPage(page + 1)}>다음</button></div></footer></section>
-    {detail && <div className="modal-backdrop" onMouseDown={() => {setDetail(null);setParams({})}}><section className="detail-modal" onMouseDown={event => event.stopPropagation()}><header><div><span>AWS Instance Detail</span><h2>{String(detail.instance.InstanceId || "AWS Instance")}</h2></div><button onClick={() => {setDetail(null);setParams({})}}>×</button></header><div className="table-wrap"><table><thead><tr><th>SG Name</th><th>SG ID</th><th>Inbound</th><th>Outbound</th></tr></thead><tbody>{detail.attachedSecurityGroups.map(group=><tr key={group.id}><td><button className="sort-button" onClick={()=>navigate(`/assets/aws-sg?groupId=${encodeURIComponent(group.id)}`)}>{group.name}</button></td><td>{group.id}</td><td>{group.inbound}</td><td>{group.outbound}</td></tr>)}</tbody></table></div><pre>{JSON.stringify(detail.instance, null, 2)}</pre></section></div>}
+    {detail && <div className="modal-backdrop" onMouseDown={() => {setDetail(null);setParams({})}}><section className="detail-modal" style={{ overflowY: "auto" }} onMouseDown={event => event.stopPropagation()}><header><div><span>AWS Instance Detail</span><h2>{String(detail.instance.InstanceId || "AWS Instance")}</h2></div><button onClick={() => {setDetail(null);setParams({})}}>×</button></header><ServerInventory inventory={detail.ssmInventory} /><div className="table-wrap"><table><thead><tr><th>SG Name</th><th>SG ID</th><th>Inbound</th><th>Outbound</th></tr></thead><tbody>{detail.attachedSecurityGroups.map(group=><tr key={group.id}><td><button className="sort-button" onClick={()=>navigate(`/assets/aws-sg?groupId=${encodeURIComponent(group.id)}`)}>{group.name}</button></td><td>{group.id}</td><td>{group.inbound}</td><td>{group.outbound}</td></tr>)}</tbody></table></div><pre>{JSON.stringify(detail.instance, null, 2)}</pre></section></div>}
   </>;
 }
