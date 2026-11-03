@@ -54,11 +54,11 @@ def test_excel_ssm_join_exact_primary_ip_and_style_cache_only(tmp_path, monkeypa
         sheet = ET.fromstring(archive.read('xl/worksheets/sheet1.xml'))
         styles = ET.fromstring(archive.read('xl/styles.xml'))
         refs = cells(sheet)
-        assert text(refs['AA1']) == 'Anti Virus' and text(refs['AB1']) == 'Anti Virus Version'
-        assert text(refs['AB2']) == 'fixture-version'
-        assert sheet.find('m:autoFilter', NS).attrib['ref'].startswith('A1:AB')
-        assert style_info(styles, refs['AA2'])[:3] == ('FF2463B5', 'FFFFFFFF', True)
-        assert style_info(styles, refs['AB2'])[:3] == ('FFFFFFFF', 'FF000000', False)
+        assert text(refs['AC1']) == 'Anti Virus' and text(refs['AD1']) == 'Anti Virus Version'
+        assert text(refs['AD2']) == 'fixture-version'
+        assert sheet.find('m:autoFilter', NS).attrib['ref'].startswith('A1:AD')
+        assert style_info(styles, refs['AC2'])[:3] == ('FF2463B5', 'FFFFFFFF', True)
+        assert style_info(styles, refs['AD2'])[:3] == ('FFFFFFFF', 'FF000000', False)
 
 
 def test_primary_ip_exact_no_secondary_or_hostname_antivirus_match(tmp_path):

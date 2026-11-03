@@ -12,8 +12,8 @@ from backend.services.spreadsheet import LEDGER_STYLES, write_xlsx_workbook
 
 
 EC2_COLUMNS = list(zip(
-    ["no", "type", "tier", "project", "hostname", "name", "purpose", "instanceId", "instanceType", "cpu", "memory", "ebs", "os", "osType", "kernel", "osEos", "was", "web", "db", "dbPlatform", "dbEos", "eip", "eipRequired", "privateIp", "installedAt", "state", "antivirus", "antivirusVersion"],
-    ["NO", "Type", "티어", "종류", "Hostname", "Name", "용도", "Instance ID", "Instance", "vCPU(core)", "MEM", "EBS", "OS", "Platform", "Kernel", "OS EOS", "WAS", "WEB", "DB", "DB Platform", "DB EOS", "EIP", "EIP 필수 여부", "IP", "설치일", "Status", "Anti Virus", "Anti Virus Version"],
+    ["no", "type", "tier", "project", "hostname", "name", "purpose", "instanceId", "instanceType", "cpu", "memory", "ebs", "os", "osType", "kernel", "osEos", "was", "wasPlatform", "web", "webPlatform", "db", "dbPlatform", "dbEos", "eip", "eipRequired", "privateIp", "installedAt", "state", "antivirus", "antivirusVersion"],
+    ["NO", "Type", "티어", "종류", "Hostname", "Name", "용도", "Instance ID", "Instance", "vCPU(core)", "MEM", "EBS", "OS", "Platform", "Kernel", "OS EOS", "WAS", "WAS Platform", "WEB", "WEB Platform", "DB", "DB Platform", "DB EOS", "EIP", "EIP 필수 여부", "IP", "설치일", "Status", "Anti Virus", "Anti Virus Version"],
 ))
 MAPPING_COLUMNS = list(zip(
     ["no", "ec2Name", "hostname", "instanceId", "state", "privateIp", "publicIp", "name", "groupId", "direction", "protocol", "fromPort", "toPort", "sourceType", "source", "destinationType", "destination", "description", "eniId", "vpcId", "subnetId"],
@@ -86,7 +86,9 @@ def ssm_excel_values(record):
         values.update({"hostname": normalized(record.get("hostname")) or "-", "osType": normalized(record.get("os")) or "-",
                        "kernel": normalized(record.get("kernel")) or "-", "installedAt": normalized(record.get("os_install_date")) or "-",
                        "was": product_cell("was"), "web": product_cell("web"), "db": product_cell("db", name_only=True),
-                       "dbPlatform": product_cell("db", require_version=True)})
+                       "wasPlatform": normalized(record.get("was_platform")) or "-",
+                       "webPlatform": normalized(record.get("web_platform")) or "-",
+                       "dbPlatform": normalized(record.get("db_platform")) or product_cell("db", require_version=True)})
     return values
 
 

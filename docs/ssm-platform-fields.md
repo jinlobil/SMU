@@ -67,7 +67,7 @@ WAS/WEB/DB 제품은 버전/경로/상태를 잃지 않도록 별도 제품 테�
 
 운영 SSM Document 자체, SendCommand/PluginName/25초 grace/Throttling retry,
 Asia/Seoul 일 1회/force 정책은 변경하지 않았다. 운영 AWS 호출도 하지 않는다.
-이번 요청은 웹 표시까지의 확장으로, Excel 컬럼과 기존 DB Platform 계산은 변경하지 않았다.
+최초 웹 확장 이후 EC2 Excel Export도 아래 계약에 맞춰 연동했다.
 기존 Excel Sheet/Style/소비 동작은 회귀 테스트로 확인한다.
 
 운영에서는 새 필드가 실제 stdout에 포함되는지 기존 SSM 전용 강제 갱신 후 확인하면 된다.
@@ -84,3 +84,34 @@ Asia/Seoul 일 1회/force 정책은 변경하지 않았다. 운영 AWS 호출도
   test_search_all_is_not_limited_by_timeline_group_item_cap의 기대 150/실제 100 불일치.
 - npm run typecheck, npm run build, git diff --check 통과. 기존 Vite 큰 chunk 경고는 유지된다.
 - 운영 AWS 호출, Document 변경, Cache 초기화는 하지 않았다.
+
+
+## EC2 Excel Export 추가 연동
+
+backend/services/aws_export.py의 EC2_COLUMNS는 아래 순서로 확장한다.
+WAS(was) → WAS Platform(wasPlatform) → WEB(web) → WEB Platform(webPlatform)
+→ DB(db) → DB Platform(dbPlatform). 기존 컬럼은 모두 유지한다.
+
+ssm_excel_values는 success/stale 정상 Inventory의 was_platform/web_platform/db_platform을
+직접 매핑하며 문자열과 세미콜론 구분을 보존한다. WAS/WEB Platform의 과거/빈 값은 '-'다.
+DB Platform은 의미 있는 db_platform이 있으면 반드시 우선하고, 없거나 기존 null 규칙에 해당하면
+기존 DB 제품/버전 조합으로 fallback한다. 기존 WAS/WEB/DB 제품 생성은 변경하지 않았다.
+parse_inventory에는 세 scalar 필드가 이미 있어 수정하지 않았다.
+
+컬럼 두 개 추가로 State는 AB, Anti Virus는 AC, Anti Virus Version은 AD로 이동한다.
+기존 공통 spreadsheet helper가 header/body style, border, alignment, freeze pane,
+column width, autofilter를 적용한다. helper/색상/레이아웃 로직은 변경하지 않았다.
+Network Interfaces와 AWS SG Sheet는 그대로다. Export는 기존 aws.json/Sophos Cache만 읽는다.
+
+변경 파일: backend/services/aws_export.py, tests/test_aws_export_inventory.py,
+tests/test_ssm_excel.py, docs/ssm-platform-fields.md.
+실제 XLSX의 Q~V 헤더와 R/T/V 셀, A1:AD 필터, 기존 State/Sophos 색상,
+Network Interfaces XML 보존 및 API 미호출을 검증한다.
+
+Excel 추가 연동 검증:
+- 관련 Export/Parser/공통 스타일: 68 passed (0.88s).
+- 전체 pytest (Chromium 포함, skip 없음): 772 passed, 2 failed (39.44s).
+- 실패는 기존 ScheduledIndex.mode 테스트 대역 누락과 Timeline 기대 150/실제 100 불일치로 동일하다.
+- 테스트 데이터의 실제 XLSX를 runtime/review/ec2-platform-export-sample.xlsx에 생성했다.
+  복수 Platform, Sybase→ASE 우선 사용, 기존 Oracle 버전 fallback의 헤더/셀을 직접 검증했다.
+- git diff --check 통과. Export에서 운영 AWS/SSM/Sophos API 호출 없음.
