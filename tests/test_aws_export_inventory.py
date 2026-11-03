@@ -13,7 +13,7 @@ from backend.services.aws_export import AwsExportService, SophosMatcher
 from backend.services.spreadsheet import MAIN_NS, write_xlsx_workbook
 
 NS = {"m": MAIN_NS}
-EC2_HEADERS = ["NO", "Type", "티어", "종류", "Hostname", "Name", "용도", "Instance ID", "Instance", "vCPU(core)", "MEM", "EBS", "OS", "Platform", "Kernel", "OS EOS", "WAS", "WEB", "DB", "DB Platform", "DB EOS", "EIP", "EIP 필수 여부", "IP", "설치일", "Status", "Anti Virus", "Anti Virus Version"]
+EC2_HEADERS = ["NO", "Type", "티어", "종류", "Hostname", "Name", "용도", "Instance ID", "Instance", "vCPU(core)", "MEM", "EBS", "OS", "Platform", "Kernel", "OS EOS", "WAS", "WAS Platform", "WEB", "WEB Platform", "DB", "DB Platform", "DB EOS", "EIP", "EIP 필수 여부", "IP", "설치일", "Status", "Anti Virus", "Anti Virus Version"]
 POLICY_HEADERS = ["NO", "EC2 Name", "Hostname", "Instance ID", "State", "Private IP", "Public IP", "SG Name", "SG ID", "Direction", "Protocol", "From Port", "To Port", "Source Type", "Source", "Destination Type", "Destination", "Rule Description", "ENI ID", "VPC ID", "Subnet ID"]
 
 
@@ -139,7 +139,7 @@ def test_inventory_sources_and_no_inferred_values(tmp_path):
     assert second["tier"] == "DEV" and second["purpose"] == "Batch" and second["state"] == "Stop"
     assert third["tier"] == "QA" and third["state"] == "Pending" and third["purpose"] == "-"
     for row in spec["rows"]:
-        assert all(row[key] == "-" for key in ["kernel", "osEos", "was", "web", "db", "dbPlatform", "dbEos", "eipRequired", "installedAt"])
+        assert all(row[key] == "-" for key in ["kernel", "osEos", "was", "wasPlatform", "web", "webPlatform", "db", "dbPlatform", "dbEos", "eipRequired", "installedAt"])
     assert second["cpu"] == second["memory"] == "-"
 
 
@@ -245,7 +245,7 @@ def test_real_workbooks_styles_merge_xml_and_cache_only_export(tmp_path, monkeyp
         sheet = ET.fromstring(archive.read("xl/worksheets/sheet1.xml"))
         refs = cells(sheet)
         assert [text(cell) for cell in sheet.find("m:sheetData/m:row", NS)] == EC2_HEADERS
-        for ref, color in [("Z2", "FF228B46"), ("Z3", "FFC62828"), ("AA2", "FF2463B5"), ("AA3", "FFC62828")]:
+        for ref, color in [("AB2", "FF228B46"), ("AB3", "FFC62828"), ("AC2", "FF2463B5"), ("AC3", "FFC62828")]:
             fill, font, bold, xf, border = style_info(styles, refs[ref])
             assert (fill, font, bold) == (color, "FFFFFFFF", True)
         fill, font, bold, xf, border = style_info(styles, refs["B2"])
@@ -357,3 +357,75 @@ def test_existing_laborer_job_generates_inventory_workbook(tmp_path, kind):
         agent.wake.set()
         worker.join(timeout=2)
         assert not worker.is_alive()
+
+
+@pytest.mark.parametrize('values,db_product', [
+    (('Java 1.8.0_131', 'PHP 5.1.4', 'Oracle 12.1.0'), 'Oracle'),
+    (('Java 1.8.0_131; Java 17.0.12', 'PHP 5.1.4; Node.js 20.18.0', 'Oracle 12.1.0; ASE 16.0.03.03'), 'Oracle'),
+    ((None, None, 'ASE 16.0.03.03'), 'Sybase'),
+])
+def test_ssm_runtime_platforms_in_real_xlsx_headers_cells_and_styles(tmp_path, monkeypatch, values, db_product):
+    from backend.services.ssm_inventory import parse_inventory
+    exporter, data = prepare(tmp_path)
+    baseline = exporter.build('aws_ec2')
+    with ZipFile(baseline['path']) as archive: interface_xml = archive.read('xl/worksheets/sheet2.xml')
+    output = ('HOSTNAME=fixture-server\nOS=Example OS\n'
+              'WAS=WebLogic|12.2.1.1.0|/srv/wls|running\nWAS=Tomcat|7.0.68|/srv/tomcat|running\n'
+              'WEB=Apache|2.2.22|/srv/apache|running\n'
+              f'DB={db_product}|0.0.1|/srv/db|running\n' +
+              '\n'.join(f'{key.upper()}={value if value is not None else "None"}' for key, value in zip(
+                  ('was_platform', 'web_platform', 'db_platform'), values)))
+    record = {**parse_inventory(output), 'status': 'stale', 'platform_type': 'Linux',
+              'last_success_at': '2026-11-01T09:00:00+09:00'}
+    assert tuple(record[key] for key in ('was_platform', 'web_platform', 'db_platform')) == values
+    data['ssm_inventory'] = {'instances': {data['instances'][0]['InstanceId']: record}}
+    (tmp_path / 'cache/aws.json').write_text(json.dumps(data))
+    import boto3
+    import requests
+    monkeypatch.setattr(boto3, 'client', lambda *a, **kw: pytest.fail('Export called AWS/SSM'))
+    monkeypatch.setattr(requests.sessions.Session, 'request', lambda *a, **kw: pytest.fail('Export called an external API'))
+    spec = exporter._ec2_sheets(data)[0]
+    assert spec['columns'][16:22] == ['was', 'wasPlatform', 'web', 'webPlatform', 'db', 'dbPlatform']
+    row = spec['rows'][0]
+    assert tuple(row[key] for key in ('wasPlatform', 'webPlatform', 'dbPlatform')) == tuple(value or '-' for value in values)
+    assert row['was'] == 'WebLogic 12.2.1.1.0; Tomcat 7.0.68'
+    assert row['web'] == 'Apache 2.2.22' and row['db'] == db_product
+    result = exporter.build('aws_ec2'); validate_xlsx(result['path'])
+    with ZipFile(result['path']) as archive:
+        sheet = ET.fromstring(archive.read('xl/worksheets/sheet1.xml'))
+        styles = ET.fromstring(archive.read('xl/styles.xml')); refs = cells(sheet)
+        assert [text(cell) for cell in sheet.find('m:sheetData/m:row', NS)] == EC2_HEADERS
+        assert [text(refs[ref]) for ref in ('Q1', 'R1', 'S1', 'T1', 'U1', 'V1')] == [
+            'WAS', 'WAS Platform', 'WEB', 'WEB Platform', 'DB', 'DB Platform']
+        assert tuple(text(refs[ref]) for ref in ('R2', 'T2', 'V2')) == tuple(value or '-' for value in values)
+        assert text(refs['U2']) == db_product
+        assert sheet.find('m:autoFilter', NS).attrib['ref'] == 'A1:AD4'
+        assert sheet.find('m:sheetViews/m:sheetView/m:pane', NS).attrib['topLeftCell'] == 'A2'
+        widths = sheet.findall('m:cols/m:col', NS)
+        assert len(widths) == 30 and all(10 <= float(col.attrib['width']) <= 60 for col in widths)
+        for ref in ('R2', 'T2', 'V2'):
+            fill, font, bold, xf, border = style_info(styles, refs[ref])
+            assert (fill, font, bold) == ('FFFFFFFF', 'FF000000', False)
+            assert xf.find('m:alignment', NS).attrib['vertical'] == 'center'
+            assert all(border.find(f'm:{edge}', NS).attrib['style'] == 'thin' for edge in ('left', 'right', 'top', 'bottom'))
+        assert refs['R1'].attrib['s'] == refs['Q1'].attrib['s'] == refs['T1'].attrib['s']
+        assert style_info(styles, refs['AB2'])[:3] == ('FF228B46', 'FFFFFFFF', True)
+        assert style_info(styles, refs['AC2'])[:3] == ('FF2463B5', 'FFFFFFFF', True)
+        assert archive.read('xl/worksheets/sheet2.xml') == interface_xml
+
+
+@pytest.mark.parametrize('platform', ['missing', None, '', 'unknown', 'N/A'])
+def test_legacy_platform_fallback_in_real_xlsx(tmp_path, platform):
+    exporter, data = prepare(tmp_path)
+    record = {'status': 'success', 'last_success_at': '2026-11-01T09:00:00+09:00',
+              'was': [{'product': 'Tomcat', 'version': '7.0.68'}], 'web': [],
+              'db': [{'product': 'Oracle', 'version': '12.1.0'}]}
+    if platform != 'missing':
+        record.update(was_platform=platform, web_platform=platform, db_platform=platform)
+    data['ssm_inventory'] = {'instances': {data['instances'][0]['InstanceId']: record}}
+    (tmp_path / 'cache/aws.json').write_text(json.dumps(data))
+    with ZipFile(exporter.build('aws_ec2')['path']) as archive:
+        refs = cells(ET.fromstring(archive.read('xl/worksheets/sheet1.xml')))
+        assert text(refs['R2']) == text(refs['T2']) == '-'
+        assert text(refs['V2']) == 'Oracle 12.1.0'
+        assert text(refs['Q2']) == 'Tomcat 7.0.68'
