@@ -197,3 +197,122 @@ def test_child_process_output_is_forced_to_utf8(monkeypatch, tmp_path):
     assert captured["encoding"] == "utf-8"
     assert captured["env"]["PYTHONUTF8"] == "1"
     assert captured["env"]["PYTHONIOENCODING"] == "utf-8"
+
+
+@pytest.mark.parametrize('failure', ['timeout', 'http_503'])
+def test_live_backend_unhealthy_never_recovers_or_kills_even_with_exhausted_budget(monkeypatch, failure):
+    import logging
+    from urllib.error import HTTPError
+    backend = service('backend', FakeProcess(pid=8765))
+    backend.restart_times = [80.0, 90.0, 95.0]
+    messages = []
+    monkeypatch.setattr(run_local, 'write_line', lambda message, **kw: messages.append((message, kw.get('level', logging.INFO))))
+    def probe(*args, **kwargs):
+        if failure == 'timeout': raise TimeoutError('fixture timeout')
+        raise HTTPError(backend.url, 503, 'Service unavailable', {}, None)
+    monkeypatch.setattr(run_local.urllib.request, 'urlopen', probe)
+    monkeypatch.setattr(run_local, 'restart_service', lambda *a, **kw: pytest.fail('Live backend must not invoke recovery'))
+    monkeypatch.setattr(run_local, '_restart_allowed', lambda *a: pytest.fail('Health must not consult recovery budget'))
+    monkeypatch.setattr(run_local, 'stop_process_tree', lambda *a: pytest.fail('Live backend must not be stopped'))
+    monkeypatch.setattr(run_local.subprocess, 'run', lambda *a, **kw: pytest.fail('Health must not execute taskkill'))
+    for _ in range(12): run_local.monitor_service(backend, now=100.0)
+    assert backend.process.poll() is None and backend.health_failures == 12
+    assert backend.last_health is False and backend.disabled is False
+    assert backend.restart_times == [80.0, 90.0, 95.0]
+    assert not backend.process.killed and not backend.process.waited
+    warnings = [message for message, level in messages if level == logging.WARNING]
+    assert len(warnings) == 12
+    assert all('process_exit_code=None http_health=unhealthy' in message for message in warnings)
+    assert not any('recovery exhausted' in message or 'Restart attempt' in message for message, _ in messages)
+
+
+def test_backend_health_recovers_without_restart_and_resets_status(monkeypatch):
+    backend = service('backend'); health = iter([False, False, True, True]); messages = []
+    monkeypatch.setattr(run_local, 'write_line', lambda message, **kw: messages.append(message))
+    monkeypatch.setattr(run_local, 'http_service_healthy', lambda _: next(health))
+    monkeypatch.setattr(run_local, 'restart_service', lambda *a, **kw: pytest.fail('Live backend must not restart'))
+    for _ in range(4): run_local.monitor_service(backend, now=100)
+    assert backend.last_health is True and backend.health_failures == 0 and backend.restart_times == []
+    assert any('http_health=healthy' in message for message in messages)
+
+
+@pytest.mark.parametrize('ready', [True, False, 'probe_error'])
+def test_actual_backend_exit_recovers_once_and_keeps_unready_replacement_running(monkeypatch, ready):
+    import logging
+    backend = service('backend', FakeProcess(pid=8765, return_code=1))
+    frontend = service('frontend', FakeProcess(pid=5173))
+    backend.restart_times = [80.0, 90.0]  # Last permitted recovery must not become fatal just for HTTP.
+    replacement = FakeProcess(pid=8766); started = []; cleaned = []; messages = []
+    monkeypatch.setattr(run_local, 'write_line', lambda message, **kw: messages.append((message, kw.get('level', logging.INFO))))
+    monkeypatch.setattr(run_local, 'http_service_healthy', lambda _: False)
+    def cleanup(name, process):
+        assert process.poll() is not None, 'Must never clean up a live replacement for HTTP failures'
+        cleaned.append((name, process.pid))
+    monkeypatch.setattr(run_local, 'stop_process_tree', cleanup)
+    monkeypatch.setattr(run_local, 'start_process', lambda name, *args: started.append(name) or replacement)
+    def readiness(*args):
+        if ready == 'probe_error': raise RuntimeError('fixture readiness probe error')
+        return ready
+    monkeypatch.setattr(run_local, 'wait_for_service', readiness)
+    monkeypatch.setattr(run_local.subprocess, 'run', lambda *a, **kw: pytest.fail('No taskkill for live replacement'))
+    run_local.monitor_service(backend, now=100)
+    for _ in range(5): run_local.monitor_service(backend, now=101)
+    assert started == ['backend'] and cleaned == [('backend', 8765)]
+    assert backend.process is replacement and replacement.poll() is None
+    assert backend.restart_times == [80.0, 90.0, 100]
+    assert not replacement.killed and not replacement.waited
+    assert frontend.process.poll() is None and not frontend.process.killed
+    assert not any('recovery exhausted' in message for message, _ in messages)
+    if ready is not True: assert any('Backend readiness warning' in message and level == logging.WARNING for message, level in messages)
+
+
+def test_dead_backend_recovers_even_if_http_is_served_by_another_process(monkeypatch):
+    quiet(monkeypatch)
+    backend = service('backend', FakeProcess(return_code=1)); restarted = []
+    monkeypatch.setattr(run_local, 'http_service_healthy', lambda _: True)
+    monkeypatch.setattr(run_local, 'restart_service', lambda target, now: restarted.append(target.name) or True)
+    run_local.monitor_service(backend, now=100)
+    assert restarted == ['backend'] and backend.health_failures == 0
+
+
+def test_live_frontend_keeps_existing_health_threshold_recovery(monkeypatch):
+    quiet(monkeypatch)
+    frontend = service(); restarted = []
+    monkeypatch.setattr(run_local, 'http_service_healthy', lambda _: False)
+    monkeypatch.setattr(run_local, 'restart_service', lambda target, now: restarted.append(target.name) or True)
+    for _ in range(run_local.HEALTH_FAILURE_THRESHOLD): run_local.monitor_service(frontend, now=100)
+    assert restarted == ['frontend']
+
+
+def test_defensive_restart_guard_does_not_touch_live_backend_or_budget(monkeypatch):
+    import logging
+    backend = service('backend'); backend.restart_times = [80, 90, 95]; warnings = []
+    monkeypatch.setattr(run_local, 'write_line', lambda message, **kw: warnings.append(kw.get('level')))
+    monkeypatch.setattr(run_local, '_restart_allowed', lambda *a: pytest.fail('Live backend must not use budget'))
+    monkeypatch.setattr(run_local, 'stop_process_tree', lambda *a: pytest.fail('Must not kill backend'))
+    monkeypatch.setattr(run_local, 'start_process', lambda *a: pytest.fail('Must not spawn backend'))
+    assert run_local.restart_service(backend, now=100) is True
+    assert backend.restart_times == [80, 90, 95] and warnings == [logging.WARNING]
+
+
+def test_backend_initial_readiness_timeout_continues_to_monitor_until_user_shutdown(monkeypatch):
+    backend, frontend = FakeProcess(pid=8765), FakeProcess(pid=5173)
+    events = []; messages = []
+    monkeypatch.setattr(run_local, 'write_line', lambda message, **kw: messages.append(message))
+    monkeypatch.setattr(run_local.shutil, 'which', lambda _: 'npm')
+    monkeypatch.setattr(run_local, 'ensure_frontend_dependencies', lambda *a: None)
+    monkeypatch.setattr(run_local, 'resolve_frontend_command', lambda: ['node', 'vite'])
+    monkeypatch.setattr(run_local, 'ensure_port_available', lambda *a: None)
+    monkeypatch.setattr(run_local, 'start_process', lambda name, *a: backend if name == 'backend' else frontend)
+    monkeypatch.setattr(run_local, 'wait_for_service', lambda url, process, name, *a: name != 'backend')
+    def monitor(target):
+        events.append(('monitor', target.name))
+        assert target.process.poll() is None
+        raise KeyboardInterrupt()  # Only deliberate shutdown may clean the live processes.
+    monkeypatch.setattr(run_local, 'monitor_service', monitor)
+    monkeypatch.setattr(run_local, 'stop_processes', lambda processes: events.append(('shutdown', [name for name, _ in processes])))
+    monkeypatch.setattr(run_local, 'restart_service', lambda *a, **kw: pytest.fail('Readiness must not trigger recovery'))
+    assert run_local.main() == 0
+    assert events == [('monitor', 'backend'), ('shutdown', ['backend', 'frontend'])]
+    assert any('Backend readiness warning' in message for message in messages)
+    assert not any('FATAL' in message or 'recovery exhausted' in message for message in messages)
