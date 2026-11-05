@@ -53,12 +53,12 @@ def configure_launcher_log() -> None:
     launcher_log.addHandler(daily_file_handler(LAUNCH_LOG, retention_days=30))
 
 
-def write_line(message: str) -> None:
+def write_line(message: str, *, level: int = logging.INFO) -> None:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     configure_launcher_log()
     line = f"{dt.datetime.now().isoformat(timespec='seconds')} {message}"
     print(line, flush=True)
-    launcher_log.info(message)
+    launcher_log.log(level, message)
 
 
 def relay_output(name: str, process: subprocess.Popen[str]) -> None:
@@ -210,6 +210,9 @@ def _restart_allowed(service: ManagedService, now: float) -> bool:
 
 
 def restart_service(service: ManagedService, now: float | None = None) -> bool:
+    if service.name == "backend" and service.process is not None and service.process.poll() is None:
+        write_line("Backend recovery skipped: process_exit_code=None; monitored process is still running", level=logging.WARNING)
+        return True
     now = time.monotonic() if now is None else now
     if not _restart_allowed(service, now):
         return False
@@ -221,18 +224,34 @@ def restart_service(service: ManagedService, now: float | None = None) -> bool:
     try:
         service.process = start_process(service.name, service.command, service.cwd)
         if not wait_for_service(service.url, service.process, service.name):
+            if service.name == "backend" and service.process.poll() is None:
+                service.health_failures += 1
+                service.last_health = False
+                write_line(
+                    f"Backend readiness warning: monitored_pid={service.process.pid} process_exit_code=None "
+                    "http_health=unhealthy; process remains running; continuing monitoring",
+                    level=logging.WARNING,
+                )
+                return True
             raise RuntimeError(f"HTTP readiness timeout: {service.url}")
         service.health_failures = 0
         service.last_health = True
         return True
     except Exception as exc:
         service.last_health = False
+        if service.name == "backend" and service.process is not None and service.process.poll() is None:
+            write_line(
+                f"Backend readiness warning: monitored_pid={service.process.pid} process_exit_code=None "
+                f"http_health=unhealthy error_type={type(exc).__name__}; continuing monitoring",
+                level=logging.WARNING,
+            )
+            return True
         write_line(f"Restart failed: service={service.name} attempt={attempt} error={type(exc).__name__}: {exc}")
         return False
 
 
 def monitor_service(service: ManagedService, now: float | None = None) -> None:
-    """Health-check and independently recover one service; raise only after its restart budget is exhausted."""
+    """Monitor readiness; Backend recovery is driven only by monitored process exit."""
     if service.disabled:
         return
     process = service.process
@@ -246,10 +265,21 @@ def monitor_service(service: ManagedService, now: float | None = None) -> None:
     service.last_health = healthy
     if healthy:
         service.health_failures = 0
-        if return_code is not None:
-            write_line(f"Process/HTTP mismatch: service={service.name} wrapper_exited=true HTTP service remains healthy; no dependent service will be stopped")
+        if service.name != "backend":
+            if return_code is not None:
+                write_line(f"Process/HTTP mismatch: service={service.name} wrapper_exited=true HTTP service remains healthy; no dependent service will be stopped")
+            return
+    else:
+        service.health_failures += 1
+    if service.name == "backend" and return_code is None:
+        if not healthy:
+            write_line(
+                f"Backend health warning: service=backend monitored_pid={getattr(process, 'pid', None)} "
+                f"process_exit_code=None http_health=unhealthy failures={service.health_failures}; "
+                "no process exit confirmed; continuing monitoring without restart",
+                level=logging.WARNING,
+            )
         return
-    service.health_failures += 1
     if return_code is None and service.health_failures < HEALTH_FAILURE_THRESHOLD:
         return
     now = time.monotonic() if now is None else now
@@ -259,7 +289,7 @@ def monitor_service(service: ManagedService, now: float | None = None) -> None:
         return
     reason = (
         f"{service.name} recovery exhausted: attempts={MAX_RESTARTS_PER_WINDOW} "
-        f"window_seconds={RESTART_WINDOW_SECONDS:.0f} process_exit_code={return_code} http_health=unhealthy"
+        f"window_seconds={RESTART_WINDOW_SECONDS:.0f} process_exit_code={return_code} http_health={'healthy' if healthy else 'unhealthy'}"
     )
     if service.essential:
         raise RuntimeError(reason)
@@ -290,7 +320,14 @@ def main() -> int:
         services.append(backend)
         write_line("Waiting for backend before starting frontend...")
         if not wait_for_service(backend.url, backend.process, backend.name, BACKEND_READY_TIMEOUT_SECONDS):
-            raise RuntimeError(f"Backend did not become ready within {BACKEND_READY_TIMEOUT_SECONDS:.0f} seconds: {backend.url}")
+            if backend.process.poll() is not None:
+                raise RuntimeError("Backend process exited before readiness")
+            backend.last_health = False
+            write_line(
+                f"Backend readiness warning: monitored_pid={backend.process.pid} process_exit_code=None "
+                f"http_health=unhealthy after {BACKEND_READY_TIMEOUT_SECONDS:.0f}s; continuing startup and monitoring",
+                level=logging.WARNING,
+            )
 
         frontend = ManagedService("frontend", "http://127.0.0.1:5173", frontend_command, ROOT / "frontend")
         frontend.process = start_process(frontend.name, frontend.command, frontend.cwd)

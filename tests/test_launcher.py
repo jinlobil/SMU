@@ -50,3 +50,12 @@ def test_wait_for_service_fails_fast_when_process_exits() -> None:
         assert "backend process exited during startup" in str(error)
     else:
         raise AssertionError("Expected early backend exit to raise RuntimeError")
+
+
+def test_warning_is_persisted_at_warning_level(tmp_path, monkeypatch):
+    import logging
+    monkeypatch.setattr(run_local, 'LOG_DIR', tmp_path)
+    monkeypatch.setattr(run_local, 'LAUNCH_LOG', tmp_path / 'launcher.log')
+    run_local.write_line('Backend is alive but HTTP is unhealthy', level=logging.WARNING)
+    content = (tmp_path / 'launcher.log').read_text(encoding='utf-8')
+    assert 'WARNING' in content and 'Backend is alive but HTTP is unhealthy' in content
