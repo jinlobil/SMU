@@ -138,6 +138,7 @@ class SsmInventoryCollector:
         self.now = now or (lambda: datetime.now(timezone.utc))
         self.timeout, self.collection_timeout = timeout, collection_timeout
         self.poll_interval, self.clock, self.sleep, self.jitter = poll_interval, clock, sleep, jitter
+        self._raw_records = None
 
     def _client(self):
         credentials = load_aws_credentials(self.root / 'env/aws_env.txt')
@@ -198,10 +199,51 @@ class SsmInventoryCollector:
                 seen.add(token); args['NextToken'] = token
         return output
 
+    def _capture_raw(self, identifier, platform, command=None, invocation=None):
+        if self._raw_records is None or identifier not in self._raw_records:
+            return
+        record = self._raw_records[identifier]
+        record.update(platform=platform, plugin=STEPS[platform])
+        if command is not None: record['command'] = command
+        if invocation is not None:
+            output = invocation.get('StandardOutputContent', '')
+            record.update(status=invocation.get('Status'), response_code=invocation.get('ResponseCode'),
+                          raw=[line.partition('=')[2] for line in output.splitlines()
+                               if line.lstrip('\ufeff \t').startswith('SSM_RAW=')] if isinstance(output, str) else [])
+
+    def _save_raw_txt(self):
+        collected = self.now().astimezone(SEOUL)
+        directory = self.root / 'runtime' / 'ssm_raw'
+        directory.mkdir(parents=True, exist_ok=True)
+        stem = f'ssm_raw_{collected:%Y%m%d_%H%M%S}'
+        suffix = 0
+        while True:
+            path = directory / f'{stem}{"_" + str(suffix) if suffix else ""}.txt'
+            try:
+                stream = path.open('x', encoding='utf-8', errors='replace')
+                break
+            except FileExistsError:
+                suffix += 1
+        with stream:
+            stream.write(f'===== SSM RAW INVENTORY =====\nCollected At: {collected:%Y-%m-%d %H:%M:%S}\n')
+            for identifier, record in sorted(self._raw_records.items()):
+                stream.write('\n' + '=' * 60 + '\n')
+                for label, value in [('Instance ID', identifier), ('Platform', record.get('platform')),
+                                     ('Plugin', record.get('plugin')), ('Command ID', record.get('command')),
+                                     ('Status', record.get('status')), ('Response Code', record.get('response_code'))]:
+                    stream.write(f'{label}: {value if value is not None else "-"}\n')
+                stream.write('=' * 60 + '\n')
+                if record.get('raw'):
+                    for value in record['raw']: stream.write(f'SSM_RAW={value}\n')
+                else:
+                    marker = 'NOT_FOUND' if record.get('status') == 'Success' and record.get('response_code') == 0 else 'NOT_AVAILABLE'
+                    stream.write(f'SSM_RAW: {marker}\n')
+
     def _invoke(self, client, identifier, platform, collection_deadline):
         started = self.clock()
         deadline = min(collection_deadline, started + self.timeout)
         step = STEPS[platform]
+        self._capture_raw(identifier, platform)
         diagnostics = {'instance_id': identifier, 'platform_type': platform, 'started': started,
                        'attempts': {'send_command': 0, 'get_command_invocation': 0},
                        'throttle_retries': {'send_command': 0, 'get_command_invocation': 0},
@@ -213,6 +255,7 @@ class SsmInventoryCollector:
                 sent = self._request(client.send_command, 'send_command', deadline, diagnostics=diagnostics,
                     InstanceIds=[identifier], DocumentName=DOCUMENT, TimeoutSeconds=60)
                 command = sent['Command']['CommandId']
+                self._capture_raw(identifier, platform, command=command)
             except InventoryFailure: raise
             except Exception as exc:
                 raise InventoryFailure('send_command', 'send_command_failed', cause=exc) from None
@@ -251,6 +294,7 @@ class SsmInventoryCollector:
                     last_plugin_failure = None
                     not_ready, registered = False, True
                     state, response_code = invocation.get('Status'), invocation.get('ResponseCode')
+                    self._capture_raw(identifier, platform, command, invocation)
                     metadata = output_diagnostics(invocation.get('StandardOutputContent', ''))
                     safe_status = state if state in {'Pending', 'InProgress', 'Delayed', 'Cancelling', 'Success', 'Failed', 'TimedOut', 'Cancelled'} else None
                     self._log_diagnostic(diagnostics, 'get_command_invocation',
@@ -309,6 +353,9 @@ class SsmInventoryCollector:
             target_count=1 if failure.stage == 'send_command' else None)
 
     def collect(self, ec2_instances, previous=None, *, force=False, progress=lambda _: None):
+        self._raw_records = {item['InstanceId']: {'status': 'Failed', 'raw': []}
+                             for item in ec2_instances if isinstance(item.get('InstanceId'), str)
+                             and item['InstanceId'].startswith('i-')} if force else None
         try:
             return self._collect(ec2_instances, previous, force=force, progress=progress)
         except Exception as exc:
@@ -323,6 +370,13 @@ class SsmInventoryCollector:
                     self._failed(records, identifier, timestamp, 'collection_failed')
             result.update(last_attempt_at=timestamp, status='stale' if any(item.get('last_success_at') for item in records.values()) else 'failed')
             return result
+        finally:
+            try:
+                if self._raw_records is not None: self._save_raw_txt()
+            except OSError as exc:
+                log.warning('SSM RAW TXT save failed error_type=%s', type(exc).__name__)
+            finally:
+                self._raw_records = None
 
     def _collect(self, ec2_instances, previous=None, *, force=False, progress=lambda _: None):
         result = copy.deepcopy(previous) if isinstance(previous, dict) else {}
