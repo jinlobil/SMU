@@ -100,6 +100,7 @@ def test_three_hana_shapes_force_refresh_cache_excel_eos_and_diagnostics(tmp_pat
 
 
 @pytest.mark.parametrize('bad,kind,count,flags', [
+    ('WAS=Tomcat|8.5.23', 'WAS', 2, 'product=true, version=true, status=false'),
     ('WAS=Tomcat|8.5.23|/PRIVATE/path', 'WAS', 3, 'product=true, version=true, status=false'),
     ('DB=SAP HANA|2.0 SP48 (2.00.048.02)|/PRIVATE/path|running|extra', 'DB', 5, 'product=true, version=true, status=true'),
     ('WEB=|2.4|/PRIVATE/path|running', 'WEB', 4, 'product=false, version=true, status=true'),

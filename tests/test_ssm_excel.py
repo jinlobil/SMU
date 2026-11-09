@@ -129,3 +129,52 @@ def test_eos_does_not_fabricate_inventory_for_failed_first_attempt(tmp_path):
         'status': 'failed', 'os': 'Ubuntu 24.04 LTS', 'db': [{'product': 'Oracle', 'version': '12.1.0'}]}}}
     row = exporter._ec2_sheets(data)[0]['rows'][0]
     assert row['osEos'] == row['dbEos'] == '-'
+
+
+@pytest.mark.parametrize('platform,expected', [
+    ('Win 2016 D.E', '2027-01-12'),
+    ('Windows 2016 D.E', '2027-01-12'),
+    ('SLES for SAP12 SP2', '2018-03-31'),
+    ('SLES for SAP12 SP3', '2019-06-30'),
+    ('SLES for SAP12 SP4', '2020-06-30'),
+    ('SUSE 12', '2024-10-31'),
+    ('DSM 6.2', '2024-10-01'),
+])
+@pytest.mark.parametrize('state', ['failed', 'missing', 'success_without_os'])
+def test_os_eos_uses_final_platform_without_successful_ssm(tmp_path, monkeypatch, platform, expected, state):
+    from pathlib import Path
+    exporter, data = prepare(tmp_path)
+    env = tmp_path / 'env'; env.mkdir(exist_ok=True)
+    (env / 'os_eos').write_text((Path(__file__).resolve().parents[1] / 'env/os_eos').read_text())
+    instance = data['instances'][0]
+    instance['Tags'] = [tag for tag in instance.get('Tags', []) if tag['Key'] != 'OS_type']
+    instance['Tags'].append({'Key': 'OS_type', 'Value': platform})
+    if state != 'missing':
+        record = {'status': 'failed', 'os': 'Ubuntu 24.04 LTS'}
+        if state == 'success_without_os':
+            record = {'status': 'success', 'last_success_at': '2026-11-09T09:00:00+09:00', 'os': None}
+        data['ssm_inventory'] = {'instances': {instance['InstanceId']: record}}
+    (tmp_path / 'cache/aws.json').write_text(json.dumps(data))
+    import boto3
+    import requests
+    monkeypatch.setattr(boto3, 'client', lambda *a, **kw: pytest.fail('Export called AWS/SSM'))
+    monkeypatch.setattr(requests.sessions.Session, 'request', lambda *a, **kw: pytest.fail('Export called API'))
+    before = copy.deepcopy(data)
+    row = exporter._ec2_sheets(data)[0]['rows'][0]
+    assert row['osType'] == platform and row['osEos'] == expected
+    assert row['dbEos'] == '-'
+    with ZipFile(exporter.build('aws_ec2')['path']) as archive:
+        refs = cells(ET.fromstring(archive.read('xl/worksheets/sheet1.xml')))
+        assert text(refs['N2']) == platform
+        assert text(refs['P2']) == expected
+    assert data == before == json.loads((tmp_path / 'cache/aws.json').read_text())
+
+
+def test_valid_ssm_os_precedes_aws_platform_for_eos(tmp_path):
+    from test_hana_inventory_eos import catalogs
+    exporter, data = prepare(tmp_path); catalogs(tmp_path)
+    data['instances'][0]['Tags'].append({'Key': 'OS_type', 'Value': 'SUSE 12'})
+    data['ssm_inventory'] = {'instances': {data['instances'][0]['InstanceId']: {
+        'status': 'stale', 'last_success_at': '2026-11-08T09:00:00+09:00', 'os': 'SLES for SAP12 SP3'}}}
+    row = exporter._ec2_sheets(data)[0]['rows'][0]
+    assert row['osType'] == 'SLES for SAP12 SP3' and row['osEos'] == '2019-06-30'

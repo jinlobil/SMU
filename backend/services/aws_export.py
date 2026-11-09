@@ -91,7 +91,6 @@ def ssm_excel_values(record, eos=None):
                        "webPlatform": normalized(record.get("web_platform")) or "-",
                        "dbPlatform": normalized(record.get("db_platform")) or product_cell("db", require_version=True)})
         if eos is not None:
-            values["osEos"] = eos.os(record.get("os"))
             values["dbEos"] = "; ".join(eos.db(item["product"], item.get("version"))
                 for item in record.get("db", []) or [] if isinstance(item, dict) and normalized(item.get("product"))) or "-"
     return values
@@ -172,7 +171,10 @@ class AwsExportService:
                 "antivirusVersion": core_agent_version(endpoint), **resources.values(instance)})
             ssm_values = ssm_excel_values((data.get("ssm_inventory") or {}).get("instances", {}).get(instance_id), eos)
             if ssm_values.get("hostname") == "-": ssm_values.pop("hostname")
+            if ssm_values.get("osType") == "-": ssm_values.pop("osType")
             row.update(ssm_values)
+            # Resolve EOS from the final Platform, including cached AWS tag fallback.
+            row["osEos"] = eos.os(row["osType"])
             instances.append(row)
             for interface in instance.get("NetworkInterfaces", []):
                 private_ips = [str(item.get("PrivateIpAddress")) for item in interface.get("PrivateIpAddresses", []) if item.get("PrivateIpAddress")]
