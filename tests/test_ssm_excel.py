@@ -43,7 +43,8 @@ def test_excel_ssm_join_exact_primary_ip_and_style_cache_only(tmp_path, monkeypa
     assert row['kernel'] == '6.1-fixture' and row['installedAt'] == '-'
     assert row['was'] == 'Tomcat 9.0.1; SecondApp' and row['web'] == 'Tengine 1.2; SecondWeb'
     assert row['db'] == 'MySQL; PostgreSQL' and row['dbPlatform'] == '-; PostgreSQL 12.3'
-    assert row['osEos'] == row['dbEos'] == '-'
+    assert row['osEos'] == '-'
+    assert row['dbEos'] == '-; -'  # One unmatched EOS placeholder per DB, preserving order.
     assert row['antivirus'] == 'Sophos' and row['antivirusVersion'] == 'fixture-version'
     assert spec['rows'][2]['antivirus'] == '미설치' and spec['rows'][2]['antivirusVersion'] == '-'
     assert list(spec['headers'].values())[-3:] == ['Status', 'Anti Virus', 'Anti Virus Version']
@@ -87,3 +88,44 @@ def test_windows_columns_and_unknown_single_db_platform(tmp_path):
     assert row['db'] == 'FixtureDB' and row['dbPlatform'] == '-'
     record['hostname'] = None
     assert exporter._ec2_sheets(data)[0]['rows'][0]['hostname'] == 'host-from-sophos'
+
+
+def test_eos_multiple_db_order_placeholders_and_local_files_only_real_xlsx(tmp_path, monkeypatch):
+    from test_hana_inventory_eos import catalogs
+    exporter, data = prepare(tmp_path); catalogs(tmp_path)
+    record = {**parse_inventory('HOSTNAME=fixture\nKERNEL=fixture-kernel\nOS=Ubuntu 24.04.5 LTS\n'
+                               'WAS=None\nWEB=None\nDB=Oracle|12.1.0|/srv/oracle|running\n'
+                               'DB=UnknownDB|unknown|/srv/unknown|running\nDB=MariaDB|10.2.19|/srv/maria|running'),
+              'status': 'stale', 'last_success_at': '2026-11-08T09:00:00+09:00'}
+    # EOS must come from original DB records, never a reparsed display string.
+    record['db_platform'] = 'different display text retained verbatim'
+    data['ssm_inventory'] = {'instances': {data['instances'][0]['InstanceId']: record}}
+    (tmp_path / 'cache/aws.json').write_text(json.dumps(data))
+    import boto3
+    import requests
+    monkeypatch.setattr(boto3, 'client', lambda *a, **kw: pytest.fail('EOS export called AWS/SSM'))
+    monkeypatch.setattr(requests.sessions.Session, 'request', lambda *a, **kw: pytest.fail('EOS export called internet'))
+    row = exporter._ec2_sheets(data)[0]['rows'][0]
+    assert row['db'] == 'Oracle; UnknownDB; MariaDB'
+    assert row['dbPlatform'] == 'different display text retained verbatim'
+    assert row['dbEos'] == '2022-07-31; -; 2022-05-23'
+    with ZipFile(exporter.build('aws_ec2')['path']) as archive:
+        refs = cells(ET.fromstring(archive.read('xl/worksheets/sheet1.xml')))
+        assert text(refs['P2']) == '2029-05-31'
+        assert text(refs['U2']) == 'Oracle; UnknownDB; MariaDB'
+        assert text(refs['W2']) == '2022-07-31; -; 2022-05-23'
+    # Reusing an exporter must pick up the local operator file's new value.
+    (tmp_path / 'env/os_eos').write_text('Ubuntu|24.04=2030-05-31\n')
+    with ZipFile(exporter.build('aws_ec2')['path']) as archive:
+        refs = cells(ET.fromstring(archive.read('xl/worksheets/sheet1.xml')))
+        assert text(refs['P2']) == '2030-05-31'
+    assert json.loads((tmp_path / 'cache/aws.json').read_text()) == data
+
+
+def test_eos_does_not_fabricate_inventory_for_failed_first_attempt(tmp_path):
+    from test_hana_inventory_eos import catalogs
+    exporter, data = prepare(tmp_path); catalogs(tmp_path)
+    data['ssm_inventory'] = {'instances': {data['instances'][0]['InstanceId']: {
+        'status': 'failed', 'os': 'Ubuntu 24.04 LTS', 'db': [{'product': 'Oracle', 'version': '12.1.0'}]}}}
+    row = exporter._ec2_sheets(data)[0]['rows'][0]
+    assert row['osEos'] == row['dbEos'] == '-'

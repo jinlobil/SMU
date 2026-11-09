@@ -8,6 +8,7 @@ from typing import Any
 
 from backend.services.aws_assets import AwsAssetService
 from backend.services.endpoints import load_json_list
+from backend.services.eos import EosCatalog
 from backend.services.spreadsheet import LEDGER_STYLES, write_xlsx_workbook
 
 
@@ -69,7 +70,7 @@ def core_agent_version(endpoint):
     return "-"
 
 
-def ssm_excel_values(record):
+def ssm_excel_values(record, eos=None):
     from backend.services.ssm_inventory import normalized
     if not isinstance(record, dict): return {}
     def product_cell(category, *, require_version=False, name_only=False):
@@ -89,6 +90,10 @@ def ssm_excel_values(record):
                        "wasPlatform": normalized(record.get("was_platform")) or "-",
                        "webPlatform": normalized(record.get("web_platform")) or "-",
                        "dbPlatform": normalized(record.get("db_platform")) or product_cell("db", require_version=True)})
+        if eos is not None:
+            values["osEos"] = eos.os(record.get("os"))
+            values["dbEos"] = "; ".join(eos.db(item["product"], item.get("version"))
+                for item in record.get("db", []) or [] if isinstance(item, dict) and normalized(item.get("product"))) or "-"
     return values
 
 
@@ -151,6 +156,7 @@ class AwsExportService:
     def _ec2_sheets(self, data: dict[str, Any]) -> list[dict[str, Any]]:
         groups = {str(item.get("GroupId")): item for item in data.get("security_groups", [])}
         matcher, resources = SophosMatcher(self.root), InventoryResources(data)
+        eos = EosCatalog(self.root / "env")
         instances, interfaces = [], []
         for number, instance in enumerate(data.get("instances", []), 1):
             tags = _tags(instance); instance_id = str(instance.get("InstanceId") or "-"); name = tags.get("Name") or "-"
@@ -164,7 +170,7 @@ class AwsExportService:
                 "instanceType": instance.get("InstanceType") or "-", "os": tags.get("OS") or "-", "osType": tags.get("OS_type") or "-",
                 "privateIp": instance.get("PrivateIpAddress") or "-", "state": _state(instance), "antivirus": "Sophos" if endpoint is not None else "미설치",
                 "antivirusVersion": core_agent_version(endpoint), **resources.values(instance)})
-            ssm_values = ssm_excel_values((data.get("ssm_inventory") or {}).get("instances", {}).get(instance_id))
+            ssm_values = ssm_excel_values((data.get("ssm_inventory") or {}).get("instances", {}).get(instance_id), eos)
             if ssm_values.get("hostname") == "-": ssm_values.pop("hostname")
             row.update(ssm_values)
             instances.append(row)

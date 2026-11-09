@@ -47,9 +47,11 @@ def normalized(value):
 
 
 class OutputParseError(ValueError):
-    def __init__(self, reason, keys_present):
+    def __init__(self, reason, keys_present, *, record_key=None, line_number=None, field_count=None, fields_present=None):
         super().__init__(reason)
         self.reason, self.keys_present = reason, keys_present
+        self.record_key, self.line_number, self.field_count = record_key, line_number, field_count
+        self.fields_present = fields_present
 
 
 def parse_inventory(output):
@@ -62,24 +64,26 @@ def parse_inventory(output):
     keys = dict.fromkeys(INVENTORY_KEYS, False)
     if not isinstance(output, str) or not output.strip().strip('\ufeff').strip():
         raise OutputParseError('empty_output', keys)
-    for line in output.splitlines():
+    for line_number, line in enumerate(output.splitlines(), 1):
         key, sep, value = line.partition('=')
         key = key.strip().lstrip('\ufeff').strip().casefold()
         if not sep: continue
         if key in keys: keys[key] = True
-        if key in fields or key in products: records.append((key, value))
+        if key in fields or key in products: records.append((key, value, line_number))
     # AWS returns only the first 24,000 stdout characters. Do not save a partial inventory.
     if len(output) >= 24000:
         raise OutputParseError('output_truncated', keys)
-    for key, value in records:
+    for key, value, line_number in records:
         if key in products:
             if normalized(value) is None: continue
             parts = value.split('|')
+            fields_present = {name: len(parts) > index and bool(parts[index].strip())
+                              for name, index in (('product', 0), ('version', 1), ('status', 3))}
             if len(parts) != 4:
-                raise OutputParseError('invalid_product_record', keys)
+                raise OutputParseError('invalid_product_record', keys, record_key=key, line_number=line_number, field_count=len(parts), fields_present=fields_present)
             item = dict(zip(('product', 'version', 'path', 'status'), map(normalized, parts)))
             if not item['product']:
-                raise OutputParseError('invalid_product_record', keys)
+                raise OutputParseError('invalid_product_record', keys, record_key=key, line_number=line_number, field_count=len(parts), fields_present=fields_present)
             result[key].append(item)
         else:
             result[key] = normalized(value)
@@ -233,6 +237,19 @@ class SsmInventoryCollector:
                                      ('Status', record.get('status')), ('Response Code', record.get('response_code'))]:
                     stream.write(f'{label}: {value if value is not None else "-"}\n')
                 stream.write('=' * 60 + '\n')
+                stream.write(f'Parse Status: {record.get("parse_status", "Not Attempted")}\n')
+                if record.get('parse_error'): stream.write(f'Parse Error: {record["parse_error"]}\n')
+                diagnostics = record.get('parse_diagnostics')
+                if diagnostics:
+                    stream.write('Keys Present: ' + ', '.join(f'{key}={str(value).lower()}' for key, value in diagnostics['keys_present'].items()) + '\n')
+                    stream.write('Record Counts: ' + ', '.join(f'{key}={value}' for key, value in diagnostics['record_counts'].items()) + '\n')
+                    stream.write(f'Output Length: {diagnostics["output_length"]}\n')
+                if record.get('invalid_record_key'):
+                    stream.write(f'Invalid Record Key: {record["invalid_record_key"].upper()}\n')
+                    stream.write(f'Invalid Record Line: {record["invalid_record_line"]}\n')
+                    stream.write(f'Invalid Record Field Count: {record["invalid_record_field_count"]}\n')
+                    stream.write('Invalid Record Fields Present: ' + ', '.join(
+                        f'{key}={str(value).lower()}' for key, value in record['invalid_record_fields_present'].items()) + '\n')
                 if record.get('raw'):
                     for value in record['raw']: stream.write(f'SSM_RAW={value}\n')
                 else:
@@ -306,8 +323,15 @@ class SsmInventoryCollector:
                         try:
                             inventory = parse_inventory(invocation.get('StandardOutputContent', ''))
                         except OutputParseError as exc:
+                            if self._raw_records is not None and identifier in self._raw_records:
+                                self._raw_records[identifier].update(parse_status='Failed', parse_error=exc.reason,
+                                    parse_diagnostics=metadata, invalid_record_key=exc.record_key,
+                                    invalid_record_line=exc.line_number, invalid_record_field_count=exc.field_count,
+                                    invalid_record_fields_present=exc.fields_present)
                             raise InventoryFailure('parse', exc.reason, cause=exc, status=state, response_code=response_code,
                                                    output_length=metadata['output_length'], keys_present=exc.keys_present) from None
+                        if self._raw_records is not None and identifier in self._raw_records:
+                            self._raw_records[identifier].update(parse_status='Success', parse_diagnostics=metadata)
                         self._log_diagnostic(diagnostics, 'parse', 'inventory_parsed', status=state, response_code=response_code, **metadata)
                         return inventory
                     if state not in {'Pending', 'InProgress', 'Delayed', 'Cancelling'}:
