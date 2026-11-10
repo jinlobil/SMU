@@ -227,6 +227,8 @@ class SsmInventoryCollector:
         if command is not None: record['command'] = command
         if invocation is not None:
             output = invocation.get('StandardOutputContent', '')
+            record['disk_lines'] = [line.lstrip('\ufeff \t') for line in output.splitlines()
+                                    if line.lstrip('\ufeff \t').startswith('DISK=')] if isinstance(output, str) else []
             record.update(status=invocation.get('Status'), response_code=invocation.get('ResponseCode'),
                           raw=[line.partition('=')[2] for line in output.splitlines()
                                if line.lstrip('\ufeff \t').startswith('SSM_RAW=')] if isinstance(output, str) else [])
@@ -266,11 +268,11 @@ class SsmInventoryCollector:
                     stream.write(f'Invalid Record Field Count: {record["invalid_record_field_count"]}\n')
                     stream.write('Invalid Record Fields Present: ' + ', '.join(
                         f'{key}={str(value).lower()}' for key, value in record['invalid_record_fields_present'].items()) + '\n')
+                disk_lines = record.get('disk_lines', [])
+                stream.write(f'Disk Record Counts: {len(disk_lines)}\n')
+                for line in disk_lines: stream.write(line + '\n')
                 if record.get('raw'):
                     for value in record['raw']: stream.write(f'SSM_RAW={value}\n')
-                else:
-                    marker = 'NOT_FOUND' if record.get('status') == 'Success' and record.get('response_code') == 0 else 'NOT_AVAILABLE'
-                    stream.write(f'SSM_RAW: {marker}\n')
 
     def _invoke(self, client, identifier, platform, collection_deadline):
         started = self.clock()
