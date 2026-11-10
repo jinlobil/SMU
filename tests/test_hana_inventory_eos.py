@@ -88,12 +88,12 @@ def test_three_hana_shapes_force_refresh_cache_excel_eos_and_diagnostics(tmp_pat
     with ZipFile(result['path']) as archive:
         sheet = ET.fromstring(archive.read('xl/worksheets/sheet1.xml')); refs = cells(sheet)
         styles = ET.fromstring(archive.read('xl/styles.xml'))
-        assert text(refs['P2']) == '2019-06-30'
-        assert text(refs['W2']) == '2020-06-30; 2020-06-30'
-        assert text(refs['W3']) == text(refs['W4']) == '2021-06-30'
-        assert text(refs['R2']) == 'Java 1.8.0_162' and text(refs['Q2']) != '-'
-        assert style_info(styles, refs['AB2'])[:3] == ('FF228B46', 'FFFFFFFF', True)
-        assert sheet.find('m:autoFilter', NS).attrib['ref'] == 'A1:AD4'
+        assert text(refs['R2']) == '2019-06-30'
+        assert text(refs['Y2']) == '2020-06-30; 2020-06-30'
+        assert text(refs['Y3']) == text(refs['Y4']) == '2021-06-30'
+        assert text(refs['T2']) == 'Java 1.8.0_162' and text(refs['S2']) != '-'
+        assert style_info(styles, refs['AD2'])[:3] == ('FF228B46', 'FFFFFFFF', True)
+        assert sheet.find('m:autoFilter', NS).attrib['ref'] == 'A1:AF4'
     # New local EOS values do not affect ENIs or SG sheets.
     assert exporter._ec2_sheets({**cache, 'ssm_inventory': {}})[1] == interfaces
     assert exporter._sg_sheets(cache) == exporter._sg_sheets(data)

@@ -1,6 +1,8 @@
 """Collect the existing LNL-ServerInventory contract; consumers use cache only."""
 from __future__ import annotations
 
+import re
+
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -59,7 +61,7 @@ def parse_inventory(output):
     fields = ('hostname', 'kernel', 'os', 'os_install_date', 'was_platform', 'web_platform', 'db_platform')
     products = ('was', 'web', 'db')
     result = dict.fromkeys((*fields, 'os_version'))
-    result.update(was=[], web=[], db=[])
+    result.update(was=[], web=[], db=[], disks=[])
     records = []
     keys = dict.fromkeys(INVENTORY_KEYS, False)
     if not isinstance(output, str) or not output.strip().strip('\ufeff').strip():
@@ -69,12 +71,26 @@ def parse_inventory(output):
         key = key.strip().lstrip('\ufeff').strip().casefold()
         if not sep: continue
         if key in keys: keys[key] = True
-        if key in fields or key in products: records.append((key, value, line_number))
+        if key in fields or key in products or key == "disk": records.append((key, value, line_number))
     # AWS returns only the first 24,000 stdout characters. Do not save a partial inventory.
     if len(output) >= 24000:
         raise OutputParseError('output_truncated', keys)
     for key, value, line_number in records:
-        if key in products:
+        if key == 'disk':
+            parts = [part.strip() for part in value.split('|')]
+            if len(parts) != 6: continue
+            ids, device, mount, total, used, state = parts
+            if state not in {'exact', 'shared', 'unmapped'}: continue
+            if not total.isascii() or not total.isdigit() or not used.isascii() or not used.isdigit(): continue
+            try: total, used = int(total), int(used)
+            except ValueError: continue
+            if total <= 0 or used > total or not device or not mount: continue
+            volume_ids = list(dict.fromkeys(re.split(r'[,;\s]+', ids))) if normalized(ids) else []
+            if any(not re.fullmatch(r'vol-[A-Za-z0-9]+', identifier) for identifier in volume_ids): continue
+            if state == 'exact' and len(volume_ids) != 1: continue
+            result['disks'].append({'volume_ids': volume_ids, 'device': device, 'mount': mount,
+                                    'total_bytes': total, 'used_bytes': used, 'state': state})
+        elif key in products:
             if normalized(value) is None: continue
             parts = value.split('|')
             fields_present = {name: len(parts) > index and bool(parts[index].strip())

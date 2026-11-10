@@ -55,11 +55,11 @@ def test_excel_ssm_join_exact_primary_ip_and_style_cache_only(tmp_path, monkeypa
         sheet = ET.fromstring(archive.read('xl/worksheets/sheet1.xml'))
         styles = ET.fromstring(archive.read('xl/styles.xml'))
         refs = cells(sheet)
-        assert text(refs['AC1']) == 'Anti Virus' and text(refs['AD1']) == 'Anti Virus Version'
-        assert text(refs['AD2']) == 'fixture-version'
-        assert sheet.find('m:autoFilter', NS).attrib['ref'].startswith('A1:AD')
-        assert style_info(styles, refs['AC2'])[:3] == ('FF2463B5', 'FFFFFFFF', True)
-        assert style_info(styles, refs['AD2'])[:3] == ('FFFFFFFF', 'FF000000', False)
+        assert text(refs['AE1']) == 'Anti Virus' and text(refs['AF1']) == 'Anti Virus Version'
+        assert text(refs['AF2']) == 'fixture-version'
+        assert sheet.find('m:autoFilter', NS).attrib['ref'].startswith('A1:AF')
+        assert style_info(styles, refs['AE2'])[:3] == ('FF2463B5', 'FFFFFFFF', True)
+        assert style_info(styles, refs['AF2'])[:3] == ('FFFFFFFF', 'FF000000', False)
 
 
 def test_primary_ip_exact_no_secondary_or_hostname_antivirus_match(tmp_path):
@@ -111,14 +111,14 @@ def test_eos_multiple_db_order_placeholders_and_local_files_only_real_xlsx(tmp_p
     assert row['dbEos'] == '2022-07-31; -; 2022-05-23'
     with ZipFile(exporter.build('aws_ec2')['path']) as archive:
         refs = cells(ET.fromstring(archive.read('xl/worksheets/sheet1.xml')))
-        assert text(refs['P2']) == '2029-05-31'
-        assert text(refs['U2']) == 'Oracle; UnknownDB; MariaDB'
-        assert text(refs['W2']) == '2022-07-31; -; 2022-05-23'
+        assert text(refs['R2']) == '2029-05-31'
+        assert text(refs['W2']) == 'Oracle; UnknownDB; MariaDB'
+        assert text(refs['Y2']) == '2022-07-31; -; 2022-05-23'
     # Reusing an exporter must pick up the local operator file's new value.
     (tmp_path / 'env/os_eos').write_text('Ubuntu|24.04=2030-05-31\n')
     with ZipFile(exporter.build('aws_ec2')['path']) as archive:
         refs = cells(ET.fromstring(archive.read('xl/worksheets/sheet1.xml')))
-        assert text(refs['P2']) == '2030-05-31'
+        assert text(refs['R2']) == '2030-05-31'
     assert json.loads((tmp_path / 'cache/aws.json').read_text()) == data
 
 
@@ -165,8 +165,8 @@ def test_os_eos_uses_final_platform_without_successful_ssm(tmp_path, monkeypatch
     assert row['dbEos'] == '-'
     with ZipFile(exporter.build('aws_ec2')['path']) as archive:
         refs = cells(ET.fromstring(archive.read('xl/worksheets/sheet1.xml')))
-        assert text(refs['N2']) == platform
-        assert text(refs['P2']) == expected
+        assert text(refs['P2']) == platform
+        assert text(refs['R2']) == expected
     assert data == before == json.loads((tmp_path / 'cache/aws.json').read_text())
 
 
