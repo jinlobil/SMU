@@ -127,7 +127,9 @@ def test_force_collect_persists_disks_without_raw(tmp_path):
     result = collector(tmp_path, client).collect(instances(1), force=True)
     assert result['instances'][identifier]['status'] == 'success'
     assert result['instances'][identifier]['disks'][0]['volume_ids'] == ['vol-a']
-    assert 'SSM_RAW: NOT_FOUND' in next((tmp_path / 'runtime/ssm_raw').glob('*.txt')).read_text()
+    content = next((tmp_path / 'runtime/ssm_raw').glob('*.txt')).read_text()
+    assert 'Disk Record Counts: 1' in content and disk() in content
+    assert 'SSM_RAW: NOT_FOUND' not in content
 
 
 def test_windows_exact_volume_id_and_stale_inventory(tmp_path):
@@ -143,3 +145,85 @@ def test_supplied_linux_bytes_and_windows_bytes(tmp_path):
     data['ssm_inventory']['instances']['i-1'].update(parse_inventory(
         WINDOWS + '\nDISK=vol-a|disk:0|C:\\|106300440576|68451041280|exact'))
     assert row_for(exporter, data)['ebsUsed'] == '63.8 / 99.0 GB (64.4%)\n-'
+
+
+@pytest.mark.parametrize('aws_device,os_device,root,expected', [
+    ('/dev/sda1', '/dev/xvda', '/dev/sda1', True),
+    ('/dev/sda1', '/dev/xvda', None, False),
+    ('/dev/sdf', '/dev/xvdf', '/dev/sda1', True),
+    ('/dev/sdf1', '/dev/xvdf', '/dev/sda1', False),
+    ('/dev/sda1', '/dev/xvda1', '/dev/sda1', False),
+    ('/dev/nvme0n1', '/dev/nvme0n1', '/dev/nvme0n1', False),
+])
+def test_v165_root_attachment_partition_normalization(tmp_path, aws_device, os_device, root, expected):
+    exporter, data = setup_export(tmp_path, LINUX + '\n' + disk('-', os_device, '/', state='unmapped'))
+    data['volumes'][1]['Attachments'][0]['Device'] = aws_device
+    if root: data['instances'][0]['RootDeviceName'] = root
+    row = row_for(exporter, data)
+    assert row['ebsUsed'] == ('64.0 / 100.0 GB (64.0%)\n-' if expected else '-\n-')
+    assert row['ebsVolumeMount'] == ('vol-a /\nvol-b -' if expected else 'vol-a -\nvol-b -')
+
+
+def test_shared_physical_devices_map_mounts_without_assigning_usage(tmp_path):
+    exporter, data = setup_export(tmp_path, LINUX + '\n' + disk('-', '/dev/xvdf,/dev/xvdg', '/data', 600, 400, 'shared'))
+    row = row_for(exporter, data)
+    assert row['ebsVolumeMount'] == 'vol-a /data\nvol-b /data'
+    assert row['ebsUsed'] == 'Shared\nShared'
+    # An ambiguous physical device is left unmapped; the unique member remains Shared.
+    data['volumes'].append({'VolumeId': 'vol-c', 'Size': 100, 'Attachments': [
+        {'InstanceId': 'i-1', 'Device': '/dev/xvdf', 'State': 'attached'}]})
+    row = row_for(exporter, data)
+    assert row['ebsVolumeMount'] == 'vol-a -\nvol-b /data\nvol-c -'
+    assert row['ebsUsed'] == '-\nShared\n-'
+
+
+def test_duplicate_filesystem_device_alias_does_not_double_count(tmp_path):
+    exporter, data = setup_export(tmp_path, LINUX + '\n' + '\n'.join([
+        disk('vol-a', '/dev/sdf1', '/', 98, 63),
+        disk('vol-a', '/dev/xvdf1', '/', 98, 63),
+        disk('vol-a', '/dev/xvdf2', '/boot', 2, 1),
+    ]))
+    row = row_for(exporter, data)
+    assert row['ebsVolumeMount'] == 'vol-a /, /boot\nvol-b -'
+    assert row['ebsUsed'] == '64.0 / 100.0 GB (64.0%)\n-'
+
+
+@pytest.mark.parametrize('platform,base,lines', [
+    ('Linux', LINUX, [disk('vol-a', '/dev/nvme0n1', '/'), disk('-', '/dev/xvdf,/dev/xvdg', '/data', state='shared')]),
+    ('Windows', WINDOWS, [disk('vol-a', 'disk:0', 'C:\\'), disk('-', 'disk:1', 'D:\\', state='unmapped')]),
+])
+def test_force_txt_contains_received_disk_lines_before_parsing(tmp_path, caplog, platform, base, lines):
+    client = SsmClient(1); identifier = instances(1)[0]['InstanceId']
+    client.information[identifier]['PlatformType'] = platform
+    # Malformed DISK stays in TXT for diagnosis, but is excluded from inventory.
+    bad = 'DISK=-|disk:9|fixture-mount|bad-number|0|unmapped'
+    client.outputs[identifier] = base + '\n' + '\n'.join(lines + [bad])
+    result = collector(tmp_path, client).collect(instances(1), force=True)
+    content = next((tmp_path / 'runtime/ssm_raw').glob('*.txt')).read_text()
+    assert 'Disk Record Counts: 3' in content
+    assert all(line in content for line in lines + [bad])
+    record = result['instances'][identifier]
+    assert record['status'] == 'success' and len(record['disks']) == 2
+    assert bad not in json.dumps(result) + caplog.text
+    assert 'HOSTNAME=' not in content and 'SSM_RAW: NOT_FOUND' not in content
+
+
+def test_v165_exact_unmapped_shared_lines_in_actual_xlsx(tmp_path):
+    output = LINUX + '\n' + '\n'.join([
+        disk('vol-a', '/dev/nvme1n1', '/exact', 100, 64),
+        disk('-', '/dev/xvda', '/', 100, 20, 'unmapped'),
+        disk('-', '/dev/xvdh,/dev/xvdi', '/data', 400, 300, 'shared'),
+    ])
+    exporter, data = setup_export(tmp_path, output)
+    data['instances'][0]['RootDeviceName'] = '/dev/sda1'
+    data['volumes'][0]['Size'] = 100
+    data['volumes'][0]['Attachments'][0]['Device'] = '/dev/sda1'
+    for identifier, device in [('vol-c', '/dev/sdh'), ('vol-d', '/dev/sdi')]:
+        data['volumes'].append({'VolumeId': identifier, 'Size': 200, 'Attachments': [
+            {'InstanceId': 'i-1', 'Device': device, 'State': 'attached'}]})
+    (tmp_path / 'cache/aws.json').write_text(json.dumps(data))
+    with ZipFile(exporter.build('aws_ec2')['path']) as archive:
+        refs = cells(ET.fromstring(archive.read('xl/worksheets/sheet1.xml')))
+        assert text(refs['L2']) == '600 GB'
+        assert text(refs['M2']) == 'vol-a /exact\nvol-b /\nvol-c /data\nvol-d /data'
+        assert text(refs['N2']) == '64.0 / 100.0 GB (64.0%)\n20.0 / 100.0 GB (20.0%)\nShared\nShared'

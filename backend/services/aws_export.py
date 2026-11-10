@@ -133,24 +133,31 @@ class InventoryResources:
         disks = (record.get('disks') or []) if isinstance(record, dict) and record.get('last_success_at') and record.get('status') in {'success', 'stale'} else []
         matched = {identifier: [] for identifier in volumes}
 
-        def linux_device(value):
-            # Only whole sd/xvd device aliases; never guess NVMe order or partitions.
-            match = re.fullmatch(r'/dev/(?:sd|xvd)([a-z]+)', str(value or ''))
+        def linux_device(value, *, attachment=False):
+            value = str(value or '')
+            # Only the AWS root attachment may contain a partition suffix.
+            if attachment and value == str(instance.get('RootDeviceName') or ''):
+                value = re.sub(r'(?<=[a-z])\d+$', '', value)
+            match = re.fullmatch(r'/dev/(?:sd|xvd)([a-z]+)', value)
             return match.group(1) if match else None
 
+        explicit_ids = {identifier for item in disks if isinstance(item, dict)
+                        and isinstance(item.get('volume_ids'), list) for identifier in item['volume_ids']}
         for disk in disks:
             if not isinstance(disk, dict): continue
             ids = disk.get('volume_ids')
             if not isinstance(ids, list): continue
             targets = [identifier for identifier in ids if identifier in volumes]
-            if not ids and disk.get('state') == 'unmapped' and record.get('platform_type') == 'Linux':
-                device = linux_device(disk.get('device'))
-                candidates = [identifier for identifier, attachment in volumes.items()
-                              if device and linux_device(attachment.get('Device')) == device]
-                # An explicit Volume ID match always wins over an inferred device match.
-                if len(candidates) == 1 and not any(candidates[0] in item.get('volume_ids', [])
-                        for item in disks if isinstance(item, dict) and isinstance(item.get('volume_ids'), list)):
-                    targets = candidates
+            if not ids and disk.get('state') in {'unmapped', 'shared'} and record.get('platform_type') == 'Linux':
+                devices = str(disk.get('device') or '').split(',')
+                # Multiple physical devices are meaningful only for a shared filesystem.
+                if disk.get('state') == 'unmapped' and len(devices) != 1: continue
+                for value in devices:
+                    device = linux_device(value.strip())
+                    candidates = [identifier for identifier, attachment in volumes.items()
+                                  if device and linux_device(attachment.get('Device'), attachment=True) == device]
+                    if len(candidates) == 1 and candidates[0] not in explicit_ids:
+                        targets.append(candidates[0])
             for identifier in set(targets): matched[identifier].append(disk)
         labels, usage = [], []
         for identifier in sorted(volumes):
@@ -164,7 +171,8 @@ class InventoryResources:
             for item in records:
                 total, used = item.get('total_bytes'), item.get('used_bytes')
                 if type(total) is int and type(used) is int and total > 0 and 0 <= used <= total:
-                    filesystems[(item.get('device'), item.get('mount'))] = (total, used)
+                    # The same mount/total may arrive under different device aliases.
+                    filesystems.setdefault((item.get('mount'), total), (total, used))
             total = sum(pair[0] for pair in filesystems.values())
             used = sum(pair[1] for pair in filesystems.values())
             usage.append(f'{used / 1024**3:.1f} / {total / 1024**3:.1f} GB ({used / total * 100:.1f}%)' if total else '-')

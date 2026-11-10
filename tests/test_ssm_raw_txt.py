@@ -46,12 +46,14 @@ def test_force_one_txt_for_multiple_platforms_raw_only_and_no_extra_requests(tmp
     assert target._raw_records is None
 
 
-def test_success_without_raw_and_terminal_failure_have_distinct_markers(tmp_path):
+def test_success_without_raw_and_terminal_failure_keep_status_and_disk_counts(tmp_path):
     client = SsmClient(2)
     client.responses[instances()[1]['InstanceId']] = {'Status': 'Failed', 'ResponseCode': 1, 'StandardOutputContent': ''}
     result = collector(tmp_path, client).collect(instances(), force=True)
     content = txt_files(tmp_path)[0].read_text()
-    assert 'SSM_RAW: NOT_FOUND' in content and 'SSM_RAW: NOT_AVAILABLE' in content
+    assert content.count('Disk Record Counts: 0') == 2
+    assert 'SSM_RAW: NOT_FOUND' not in content and 'SSM_RAW: NOT_AVAILABLE' not in content
+    assert 'Status: Success' in content and 'Response Code: 0' in content
     assert 'Status: Failed' in content and 'Response Code: 1' in content
     assert result['instances'][instances()[1]['InstanceId']]['error'] == 'terminal_failed'
 
@@ -91,16 +93,18 @@ def test_empty_and_repeated_raw_values_only_exact_keys_are_extracted(tmp_path):
     assert 'NOT_FOUND' not in content and 'not-captured' not in content
 
 
-def test_discovery_failure_and_offline_instances_have_not_available(tmp_path, monkeypatch):
+def test_discovery_failure_and_offline_instances_have_zero_disks_and_failed_status(tmp_path, monkeypatch):
     client = SsmClient(2); identifier = instances()[0]['InstanceId']
     client.information[identifier]['PingStatus'] = 'Offline'
     target = collector(tmp_path, client)
     result = target.collect(instances(), force=True)
     assert result['instances'][identifier]['error'] == 'not_online'
-    assert txt_files(tmp_path)[0].read_text().count('SSM_RAW: NOT_AVAILABLE') == 1
+    content = txt_files(tmp_path)[0].read_text()
+    assert content.count('Disk Record Counts: 0') == 2 and content.count('Status: Failed') == 1
     monkeypatch.setattr(client, 'describe_instance_information', lambda **_: (_ for _ in ()).throw(RuntimeError('fixture')))
     target.collect(instances(), force=True)
-    assert txt_files(tmp_path)[1].read_text().count('SSM_RAW: NOT_AVAILABLE') == 2
+    content = txt_files(tmp_path)[1].read_text()
+    assert content.count('Disk Record Counts: 0') == 2 and content.count('Status: Failed') == 2
 
 
 def test_disk_failure_does_not_change_collection_result_or_stale_policy(tmp_path, monkeypatch, caplog):
