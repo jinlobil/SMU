@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from decimal import Decimal
 from datetime import datetime
 from pathlib import Path
@@ -13,8 +14,8 @@ from backend.services.spreadsheet import LEDGER_STYLES, write_xlsx_workbook
 
 
 EC2_COLUMNS = list(zip(
-    ["no", "type", "tier", "project", "hostname", "name", "purpose", "instanceId", "instanceType", "cpu", "memory", "ebs", "os", "osType", "kernel", "osEos", "was", "wasPlatform", "web", "webPlatform", "db", "dbPlatform", "dbEos", "eip", "eipRequired", "privateIp", "installedAt", "state", "antivirus", "antivirusVersion"],
-    ["NO", "Type", "티어", "종류", "Hostname", "Name", "용도", "Instance ID", "Instance", "vCPU(core)", "MEM", "EBS", "OS", "Platform", "Kernel", "OS EOS", "WAS", "WAS Platform", "WEB", "WEB Platform", "DB", "DB Platform", "DB EOS", "EIP", "EIP 필수 여부", "IP", "설치일", "Status", "Anti Virus", "Anti Virus Version"],
+    ["no", "type", "tier", "project", "hostname", "name", "purpose", "instanceId", "instanceType", "cpu", "memory", "ebs", "ebsVolumeMount", "ebsUsed", "os", "osType", "kernel", "osEos", "was", "wasPlatform", "web", "webPlatform", "db", "dbPlatform", "dbEos", "eip", "eipRequired", "privateIp", "installedAt", "state", "antivirus", "antivirusVersion"],
+    ["NO", "Type", "티어", "종류", "Hostname", "Name", "용도", "Instance ID", "Instance", "vCPU(core)", "MEM", "EBS", "EBS Volume / Mount", "EBS Used", "OS", "Platform", "Kernel", "OS EOS", "WAS", "WAS Platform", "WEB", "WEB Platform", "DB", "DB Platform", "DB EOS", "EIP", "EIP 필수 여부", "IP", "설치일", "Status", "Anti Virus", "Anti Virus Version"],
 ))
 MAPPING_COLUMNS = list(zip(
     ["no", "ec2Name", "hostname", "instanceId", "state", "privateIp", "publicIp", "name", "groupId", "direction", "protocol", "fromPort", "toPort", "sourceType", "source", "destinationType", "destination", "description", "eniId", "vpcId", "subnetId"],
@@ -100,8 +101,12 @@ class InventoryResources:
     def __init__(self, data: dict[str, Any]):
         self.types = {item.get("InstanceType"): item for item in data.get("instance_types", [])}
         self.has_volumes = "volumes" in data
+        self.volume_details = {}
         self.volumes: dict[str, dict[str, int]] = {}
         for number, volume in enumerate(data.get("volumes", [])):
+            for attachment in volume.get("Attachments", []):
+                if volume.get("VolumeId") and attachment.get("InstanceId") and attachment.get("State") != "detached":
+                    self.volume_details.setdefault(str(attachment["InstanceId"]), {})[volume["VolumeId"]] = attachment
             if not isinstance(volume.get("Size"), (int, float)): continue
             for attachment in volume.get("Attachments", []):
                 if attachment.get("InstanceId") and attachment.get("State") != "detached":
@@ -121,6 +126,49 @@ class InventoryResources:
                 "memory": f"{format(size.normalize(), 'f')} GiB" if size is not None else "-",
                 "ebs": f"{sum(self.volumes.get(str(instance_id), {}).values()):g} GB" if self.has_volumes else "-",
                 "eip": "\n".join(eips) or "-"}
+
+
+    def disk_values(self, instance, record):
+        volumes = self.volume_details.get(str(instance.get("InstanceId")), {})
+        disks = (record.get('disks') or []) if isinstance(record, dict) and record.get('last_success_at') and record.get('status') in {'success', 'stale'} else []
+        matched = {identifier: [] for identifier in volumes}
+
+        def linux_device(value):
+            # Only whole sd/xvd device aliases; never guess NVMe order or partitions.
+            match = re.fullmatch(r'/dev/(?:sd|xvd)([a-z]+)', str(value or ''))
+            return match.group(1) if match else None
+
+        for disk in disks:
+            if not isinstance(disk, dict): continue
+            ids = disk.get('volume_ids')
+            if not isinstance(ids, list): continue
+            targets = [identifier for identifier in ids if identifier in volumes]
+            if not ids and disk.get('state') == 'unmapped' and record.get('platform_type') == 'Linux':
+                device = linux_device(disk.get('device'))
+                candidates = [identifier for identifier, attachment in volumes.items()
+                              if device and linux_device(attachment.get('Device')) == device]
+                # An explicit Volume ID match always wins over an inferred device match.
+                if len(candidates) == 1 and not any(candidates[0] in item.get('volume_ids', [])
+                        for item in disks if isinstance(item, dict) and isinstance(item.get('volume_ids'), list)):
+                    targets = candidates
+            for identifier in set(targets): matched[identifier].append(disk)
+        labels, usage = [], []
+        for identifier in sorted(volumes):
+            records = matched[identifier]
+            mounts = sorted({str(item['mount']) for item in records if item.get('mount')})
+            labels.append(f"{identifier} {', '.join(mounts) or '-'}")
+            if any(item.get('state') == 'shared' or len(item.get('volume_ids', [])) > 1 for item in records):
+                usage.append('Shared')
+                continue
+            filesystems = {}
+            for item in records:
+                total, used = item.get('total_bytes'), item.get('used_bytes')
+                if type(total) is int and type(used) is int and total > 0 and 0 <= used <= total:
+                    filesystems[(item.get('device'), item.get('mount'))] = (total, used)
+            total = sum(pair[0] for pair in filesystems.values())
+            used = sum(pair[1] for pair in filesystems.values())
+            usage.append(f'{used / 1024**3:.1f} / {total / 1024**3:.1f} GB ({used / total * 100:.1f}%)' if total else '-')
+        return {'ebsVolumeMount': '\n'.join(labels) or '-', 'ebsUsed': '\n'.join(usage) or '-'}
 
 
 def _tags(item: dict[str, Any]) -> dict[str, str]:
@@ -175,6 +223,7 @@ class AwsExportService:
             row.update(ssm_values)
             # Resolve EOS from the final Platform, including cached AWS tag fallback.
             row["osEos"] = eos.os(row["osType"])
+            row.update(resources.disk_values(instance, (data.get("ssm_inventory") or {}).get("instances", {}).get(instance_id)))
             instances.append(row)
             for interface in instance.get("NetworkInterfaces", []):
                 private_ips = [str(item.get("PrivateIpAddress")) for item in interface.get("PrivateIpAddresses", []) if item.get("PrivateIpAddress")]

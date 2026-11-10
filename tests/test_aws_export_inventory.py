@@ -13,7 +13,7 @@ from backend.services.aws_export import AwsExportService, SophosMatcher
 from backend.services.spreadsheet import MAIN_NS, write_xlsx_workbook
 
 NS = {"m": MAIN_NS}
-EC2_HEADERS = ["NO", "Type", "티어", "종류", "Hostname", "Name", "용도", "Instance ID", "Instance", "vCPU(core)", "MEM", "EBS", "OS", "Platform", "Kernel", "OS EOS", "WAS", "WAS Platform", "WEB", "WEB Platform", "DB", "DB Platform", "DB EOS", "EIP", "EIP 필수 여부", "IP", "설치일", "Status", "Anti Virus", "Anti Virus Version"]
+EC2_HEADERS = ["NO", "Type", "티어", "종류", "Hostname", "Name", "용도", "Instance ID", "Instance", "vCPU(core)", "MEM", "EBS", "EBS Volume / Mount", "EBS Used", "OS", "Platform", "Kernel", "OS EOS", "WAS", "WAS Platform", "WEB", "WEB Platform", "DB", "DB Platform", "DB EOS", "EIP", "EIP 필수 여부", "IP", "설치일", "Status", "Anti Virus", "Anti Virus Version"]
 POLICY_HEADERS = ["NO", "EC2 Name", "Hostname", "Instance ID", "State", "Private IP", "Public IP", "SG Name", "SG ID", "Direction", "Protocol", "From Port", "To Port", "Source Type", "Source", "Destination Type", "Destination", "Rule Description", "ENI ID", "VPC ID", "Subnet ID"]
 
 
@@ -245,7 +245,7 @@ def test_real_workbooks_styles_merge_xml_and_cache_only_export(tmp_path, monkeyp
         sheet = ET.fromstring(archive.read("xl/worksheets/sheet1.xml"))
         refs = cells(sheet)
         assert [text(cell) for cell in sheet.find("m:sheetData/m:row", NS)] == EC2_HEADERS
-        for ref, color in [("AB2", "FF228B46"), ("AB3", "FFC62828"), ("AC2", "FF2463B5"), ("AC3", "FFC62828")]:
+        for ref, color in [("AD2", "FF228B46"), ("AD3", "FFC62828"), ("AE2", "FF2463B5"), ("AE3", "FFC62828")]:
             fill, font, bold, xf, border = style_info(styles, refs[ref])
             assert (fill, font, bold) == (color, "FFFFFFFF", True)
         fill, font, bold, xf, border = style_info(styles, refs["B2"])
@@ -385,7 +385,7 @@ def test_ssm_runtime_platforms_in_real_xlsx_headers_cells_and_styles(tmp_path, m
     monkeypatch.setattr(boto3, 'client', lambda *a, **kw: pytest.fail('Export called AWS/SSM'))
     monkeypatch.setattr(requests.sessions.Session, 'request', lambda *a, **kw: pytest.fail('Export called an external API'))
     spec = exporter._ec2_sheets(data)[0]
-    assert spec['columns'][16:22] == ['was', 'wasPlatform', 'web', 'webPlatform', 'db', 'dbPlatform']
+    assert spec['columns'][18:24] == ['was', 'wasPlatform', 'web', 'webPlatform', 'db', 'dbPlatform']
     row = spec['rows'][0]
     assert tuple(row[key] for key in ('wasPlatform', 'webPlatform', 'dbPlatform')) == tuple(value or '-' for value in values)
     assert row['was'] == 'WebLogic 12.2.1.1.0; Tomcat 7.0.68'
@@ -395,22 +395,22 @@ def test_ssm_runtime_platforms_in_real_xlsx_headers_cells_and_styles(tmp_path, m
         sheet = ET.fromstring(archive.read('xl/worksheets/sheet1.xml'))
         styles = ET.fromstring(archive.read('xl/styles.xml')); refs = cells(sheet)
         assert [text(cell) for cell in sheet.find('m:sheetData/m:row', NS)] == EC2_HEADERS
-        assert [text(refs[ref]) for ref in ('Q1', 'R1', 'S1', 'T1', 'U1', 'V1')] == [
+        assert [text(refs[ref]) for ref in ('S1', 'T1', 'U1', 'V1', 'W1', 'X1')] == [
             'WAS', 'WAS Platform', 'WEB', 'WEB Platform', 'DB', 'DB Platform']
-        assert tuple(text(refs[ref]) for ref in ('R2', 'T2', 'V2')) == tuple(value or '-' for value in values)
-        assert text(refs['U2']) == db_product
-        assert sheet.find('m:autoFilter', NS).attrib['ref'] == 'A1:AD4'
+        assert tuple(text(refs[ref]) for ref in ('T2', 'V2', 'X2')) == tuple(value or '-' for value in values)
+        assert text(refs['W2']) == db_product
+        assert sheet.find('m:autoFilter', NS).attrib['ref'] == 'A1:AF4'
         assert sheet.find('m:sheetViews/m:sheetView/m:pane', NS).attrib['topLeftCell'] == 'A2'
         widths = sheet.findall('m:cols/m:col', NS)
-        assert len(widths) == 30 and all(10 <= float(col.attrib['width']) <= 60 for col in widths)
-        for ref in ('R2', 'T2', 'V2'):
+        assert len(widths) == 32 and all(10 <= float(col.attrib['width']) <= 60 for col in widths)
+        for ref in ('T2', 'V2', 'X2'):
             fill, font, bold, xf, border = style_info(styles, refs[ref])
             assert (fill, font, bold) == ('FFFFFFFF', 'FF000000', False)
             assert xf.find('m:alignment', NS).attrib['vertical'] == 'center'
             assert all(border.find(f'm:{edge}', NS).attrib['style'] == 'thin' for edge in ('left', 'right', 'top', 'bottom'))
-        assert refs['R1'].attrib['s'] == refs['Q1'].attrib['s'] == refs['T1'].attrib['s']
-        assert style_info(styles, refs['AB2'])[:3] == ('FF228B46', 'FFFFFFFF', True)
-        assert style_info(styles, refs['AC2'])[:3] == ('FF2463B5', 'FFFFFFFF', True)
+        assert refs['T1'].attrib['s'] == refs['S1'].attrib['s'] == refs['V1'].attrib['s']
+        assert style_info(styles, refs['AD2'])[:3] == ('FF228B46', 'FFFFFFFF', True)
+        assert style_info(styles, refs['AE2'])[:3] == ('FF2463B5', 'FFFFFFFF', True)
         assert archive.read('xl/worksheets/sheet2.xml') == interface_xml
 
 
@@ -426,6 +426,6 @@ def test_legacy_platform_fallback_in_real_xlsx(tmp_path, platform):
     (tmp_path / 'cache/aws.json').write_text(json.dumps(data))
     with ZipFile(exporter.build('aws_ec2')['path']) as archive:
         refs = cells(ET.fromstring(archive.read('xl/worksheets/sheet1.xml')))
-        assert text(refs['R2']) == text(refs['T2']) == '-'
-        assert text(refs['V2']) == 'Oracle 12.1.0'
-        assert text(refs['Q2']) == 'Tomcat 7.0.68'
+        assert text(refs['T2']) == text(refs['V2']) == '-'
+        assert text(refs['X2']) == 'Oracle 12.1.0'
+        assert text(refs['S2']) == 'Tomcat 7.0.68'
