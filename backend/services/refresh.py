@@ -4,7 +4,7 @@ from pathlib import Path
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Callable
 
-from backend.clients.sophos import SophosClient
+from backend.clients.sophos import SophosClient, SophosOutboundError
 from backend.services.endpoints import load_key_value_file
 
 
@@ -110,10 +110,63 @@ class RefreshService:
             raise RuntimeError("DLP 기간 수집 일부 실패: " + " | ".join(failures))
         return {"days": results, "rows": sum(int(item.get("count", 0)) for item in results)}
 
-    def refresh_outbound(self, day: date, progress: Callable[[str], None]) -> dict:
+    def refresh_outbound_legacy(self, day: date, progress: Callable[[str], None]) -> dict:
         from backend.clients.legacy_collectors import MailScreenClient
         progress(f"Outbound Mail {day.isoformat()} 인증 및 수집 중")
         return MailScreenClient(progress_cb=progress).refresh_mail_day(day.isoformat())
+
+    def refresh_outbound(self, day: date, progress: Callable[[str], None]) -> dict:
+        from system_monitor.collector import acquire_singleton
+        lease = acquire_singleton(self.project_root / 'runtime' / f'sophos-outbound-{day.isoformat()}.lock')
+        if lease is None: raise RuntimeError('Sophos Outbound date refresh already running')
+        try: return self._refresh_outbound_day(day, progress)
+        finally: lease.close()
+
+    def _refresh_outbound_day(self, day: date, progress: Callable[[str], None]) -> dict:
+        from backend.services.sophos_outbound import normalize_outbound
+        stage = 'collection'
+        try:
+            collected = self.client_factory(self.env_dir / 'Sophos_env.txt').fetch_outbound_emails(day, progress)
+            events = collected['items']
+            stage = 'normalization'
+            from backend.services.transfers import TransferService
+            rows = TransferService(self.project_root)._enrich_outbound(normalize_outbound(events))
+            progress(f'Outbound {len(rows):,}건 정규화 중')
+        except SophosOutboundError:
+            raise
+        except Exception as exc:
+            # Never surface upstream response bodies, URLs, token or secret values.
+            raise RuntimeError(f'Sophos Outbound {stage} failed ({type(exc).__name__})') from None
+        path = self.cache_dir / 'sophos_outbound' / f'{day.isoformat()}.json'
+        raw_path = self.cache_dir / 'sophos_outbound_raw' / f'{day.isoformat()}.json'
+        # Stage both complete files before either becomes visible. Keep old bytes
+        # for rollback if a local replace fails; normalized cache is committed last.
+        import uuid
+        staged = []
+        previous = {}
+        replaced = []
+        try:
+            for target, payload in ((raw_path, events), (path, rows)):
+                target.parent.mkdir(parents=True, exist_ok=True)
+                previous[target] = target.read_bytes() if target.exists() else None
+                temporary = target.with_name(target.name + '.' + uuid.uuid4().hex + '.tmp')
+                staged.append((target, temporary))
+                temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
+            for target, temporary in staged:
+                os.replace(temporary, target); replaced.append(target)
+        except Exception:
+            for target in reversed(replaced):
+                old = previous[target]
+                if old is None: target.unlink(missing_ok=True)
+                else:
+                    restore = target.with_name(target.name + '.restore.tmp')
+                    restore.write_bytes(old); os.replace(restore, target)
+            raise RuntimeError('Sophos Outbound cache save failed') from None
+        finally:
+            for _target, temporary in staged: temporary.unlink(missing_ok=True)
+        progress(f'Outbound {len(rows):,}건 저장 완료')
+        return {'date': day.isoformat(), 'rows': len(rows), 'count': len(rows), 'rawRows': len(events),
+                'normalizedRows': len(rows), 'pages': collected['pages'], 'path': str(path), 'rawPath': str(raw_path)}
 
     def refresh_outbound_range(self, start: date, end: date, progress: Callable[[str], None]) -> dict:
         results = []; failures = []

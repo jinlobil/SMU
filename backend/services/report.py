@@ -106,15 +106,11 @@ class ReportService:
             return [event for path in self.email._files(self.email.email_dir, *dates(start, end)) for event in load_json_list(path)]
 
         def outbound_rows(start: str, end: str) -> list[dict]:
-            rows = []
-            for day in self.transfers._dates(*dates(start, end)):
-                path = self.transfers.outbound_dir / f"mailscreen_mail_{day.isoformat()}.json"
-                if not path.exists():
-                    continue
-                payload = json.loads(path.read_text(encoding="utf-8"))
-                items = payload.get("items", []) if isinstance(payload, dict) else payload
-                rows.extend(item for item in items if isinstance(item, dict))
-            return rows
+            # Adapt Current canonical rows to the unchanged legacy PDF renderer.
+            mapping = {'mailProcess': 'mail_process', 'sendResult': 'send_result', 'senderEmail': 'sender_email',
+                       'senderName': 'sender_name', 'dept': 'sender_dept', 'attachment': 'attach'}
+            return [{mapping.get(key, key): value for key, value in row.items() if not key.startswith('_')}
+                    for _id, _raw, row in self.transfers._collect_outbound(*dates(start, end))[0]]
 
         def dlp_rows(start: str, end: str) -> list[dict]:
             return [normalize_dlp_row(row) for day in self.transfers._dates(*dates(start, end)) for row in load_jsonl(self.transfers.dlp_dir / f"{day.isoformat()}.jsonl")]

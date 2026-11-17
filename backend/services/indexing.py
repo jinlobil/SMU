@@ -114,6 +114,11 @@ class IndexService:
         result = fetch_job.get("result") or {}
         current = self._source_snapshot()
         source_files = self._source_files_from_fetch_result(result)
+        previous = self._load_manifest()
+        # A Fetcher-first upgrade must clean legacy-derived indexes before
+        # saving the new manifest, or a later smart cycle would miss migration.
+        source_files = sorted(set(source_files) | {path for path, meta in current.items()
+                              if meta.get('source') == 'mailscreen' and previous.get(path) != meta})
         progress(f"Fetcher 증분 · 갱신 파일 {len(source_files):,}개 확인")
         if not source_files:
             self._save_manifest(current)
@@ -144,9 +149,9 @@ class IndexService:
                 rows = self._event_rows_for_source_file(source, day, key, progress) if exists else []
                 self._replace_event_file(key, rows, progress)
                 touched_timeline += len(events); touched_events += len(rows)
-            elif source == "mailscreen":
-                events = self.timeline.events_between(day, day, {"Outbound Mail"}, progress) if exists else []
-                files = self.sensitive.file_records({"Outbound Mail"}, day, day, progress) if exists else []
+            elif source in {"mailscreen", "sophos_outbound"}:
+                events = self.timeline.events_between(day, day, {"Outbound Mail"}, progress) if exists and source == "sophos_outbound" else []
+                files = self.sensitive.file_records({"Outbound Mail"}, day, day, progress) if exists and source == "sophos_outbound" else []
                 self._replace_timeline_file(key, events, progress)
                 self._replace_sensitive_file("sensitive_files_index", key, files, progress)
                 rows = self._event_rows_for_source_file(source, day, key, progress) if exists else []
@@ -215,9 +220,9 @@ class IndexService:
                 events = self.timeline.events_between(day, day, {"Email"}, progress) if exists else []
                 self._replace_timeline_file(path, events, progress)
                 self._replace_event_file(path, self._event_rows_for_source_file(source, day, path, progress) if exists else [], progress)
-            elif source == "mailscreen":
-                events = self.timeline.events_between(day, day, {"Outbound Mail"}, progress) if exists else []
-                files = self.sensitive.file_records({"Outbound Mail"}, day, day, progress) if exists else []
+            elif source in {"mailscreen", "sophos_outbound"}:
+                events = self.timeline.events_between(day, day, {"Outbound Mail"}, progress) if exists and source == "sophos_outbound" else []
+                files = self.sensitive.file_records({"Outbound Mail"}, day, day, progress) if exists and source == "sophos_outbound" else []
                 self._replace_timeline_file(path, events, progress)
                 self._replace_sensitive_file("sensitive_files_index", path, files, progress)
                 self._replace_event_file(path, self._event_rows_for_source_file(source, day, path, progress) if exists else [], progress)
@@ -252,7 +257,7 @@ class IndexService:
         target_specs = {
             "detections": ("detections", self.root / "cache" / "detections", "{day}.json"),
             "inbound": ("emails", self.root / "cache" / "emails", "{day}.json"),
-            "outbound": ("mailscreen", self.root / "cache" / "mailscreen", "mailscreen_mail_{day}.json"),
+            "outbound": ("sophos_outbound", self.root / "cache" / "sophos_outbound", "{day}.json"),
             "dlp": ("dlp", self.root / "cache" / "dlp", "{day}.jsonl"),
         }
 
@@ -304,6 +309,8 @@ class IndexService:
             return {"source": "dlp", "date": match.group()}
         if name.startswith("mailscreen_mail_"):
             return {"source": "mailscreen", "date": match.group()}
+        if path.parent.name == "sophos_outbound":
+            return {"source": "sophos_outbound", "date": match.group()}
         if path.parent.name == "emails":
             return {"source": "emails", "date": match.group()}
         if path.parent.name == "detections":
@@ -380,7 +387,7 @@ class IndexService:
         return final
 
     def _event_rows_for_source_file(self, source: str, day: date, source_file: str, progress: Callable[[str], None]) -> list[dict[str, str]]:
-        kinds = {"detections": {"detections", "xdr", "firewall"}, "emails": {"inbound"}, "mailscreen": {"outbound"}, "dlp": {"dlp"}}.get(source, set())
+        kinds = {"detections": {"detections", "xdr", "firewall"}, "emails": {"inbound"}, "mailscreen": set(), "sophos_outbound": {"outbound"}, "dlp": {"dlp"}}.get(source, set())
         if not kinds:
             return []
         resolved = str(source_file)
@@ -457,7 +464,7 @@ class IndexService:
                 progress(f"스마트 증분 · Detection 리스트 SQLite {min(offset+len(batch),len(rows)):,}/{len(rows):,}건")
 
     def _source_snapshot(self) -> dict[str, dict]:
-        specs = (("detections", self.root/"cache/detections", "????-??-??.json"), ("emails", self.root/"cache/emails", "????-??-??.json"), ("mailscreen", self.root/"cache/mailscreen", "mailscreen_mail_????-??-??.json"), ("dlp", self.root/"cache/dlp", "????-??-??.jsonl"))
+        specs = (("detections", self.root/"cache/detections", "????-??-??.json"), ("emails", self.root/"cache/emails", "????-??-??.json"), ("mailscreen", self.root/"cache/mailscreen", "mailscreen_mail_????-??-??.json"), ("sophos_outbound", self.root/"cache/sophos_outbound", "????-??-??.json"), ("dlp", self.root/"cache/dlp", "????-??-??.jsonl"))
         result: dict[str, dict] = {}
         for source, directory, pattern in specs:
             if not directory.exists(): continue
@@ -465,7 +472,7 @@ class IndexService:
                 match = re.search(r"\d{4}-\d{2}-\d{2}", path.name)
                 if not match: continue
                 stat = path.stat(); key = str(path.resolve())
-                result[key] = {"source": source, "date": match.group(), "mtimeNs": stat.st_mtime_ns, "size": stat.st_size}
+                result[key] = {"source": source, "date": match.group(), "mtimeNs": stat.st_mtime_ns, "size": stat.st_size, **({"mode": "legacy-preserved"} if source == "mailscreen" else {})}
         for source, path in (("endpoints", self.root/"cache/endpoints.json"), ("orgs", self.root/"cache/user_groups.json"), ("users", self.root/"cache/users.json")):
             if path.exists():
                 stat = path.stat(); result[str(path.resolve())] = {"source": source, "date": "", "mtimeNs": stat.st_mtime_ns, "size": stat.st_size}

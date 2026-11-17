@@ -21,7 +21,7 @@ KIND_TO_SERIES = {
     "firewall": "Firewall",
 }
 EVENT_KINDS = tuple(KIND_TO_SERIES.keys())
-DASHBOARD_CACHE_VERSION = 4
+DASHBOARD_CACHE_VERSION = 5  # Current Outbound counts now exclude preserved MailScreen sources.
 
 
 class DashboardService:
