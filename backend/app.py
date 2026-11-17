@@ -407,7 +407,7 @@ def get_layout_image(floor: str):
 @app.get("/api/config/status")
 def config_status() -> dict:
     sources = {}
-    for name, relative in {"endpoints": "cache/endpoints.json", "organizations": "cache/user_groups.json", "aws": "cache/aws.json", "detections": "cache/detections", "inbound": "cache/emails", "outbound": "cache/mailscreen", "dlp": "cache/dlp"}.items():
+    for name, relative in {"endpoints": "cache/endpoints.json", "organizations": "cache/user_groups.json", "aws": "cache/aws.json", "detections": "cache/detections", "inbound": "cache/emails", "outbound": "cache/sophos_outbound", "dlp": "cache/dlp"}.items():
         path = PROJECT_ROOT / relative
         files = [path] if path.is_file() else list(path.glob("*")) if path.is_dir() else []
         sources[name] = {"exists": bool(files), "files": len(files), "bytes": sum(file.stat().st_size for file in files if file.is_file()), "latest": max((file.stat().st_mtime for file in files), default=None)}

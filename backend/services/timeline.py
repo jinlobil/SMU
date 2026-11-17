@@ -208,7 +208,7 @@ class TimelineService:
 
     def date_bounds(self) -> tuple[date, date] | None:
         dates = []
-        for directory in (self.project_root / "cache/detections", self.project_root / "cache/emails", self.project_root / "cache/mailscreen", self.project_root / "cache/dlp"):
+        for directory in (self.project_root / "cache/detections", self.project_root / "cache/emails", self.project_root / "cache/sophos_outbound", self.project_root / "cache/dlp"):
             if not directory.exists(): continue
             for path in directory.iterdir():
                 match = DATE_PATTERN.search(path.name)
@@ -282,6 +282,11 @@ class TimelineService:
             if any(not event.get("raw") for event in events):
                 page_dates = [date.fromisoformat(event["time"][:10]) for event in events if DATE_PATTERN.match(event.get("time", ""))]
                 raw_events = self.events_between(min(page_dates), max(page_dates), sources) if page_dates else []
+                # Existing legacy index rows retain Raw hydration until a rebuild;
+                # legacy records never enter Current collectors or new indexes.
+                if page_dates and 'Outbound Mail' in sources:
+                    raw_events.extend(self.event('Outbound Mail', row, raw) for _id, raw, row in
+                                      self.transfers._collect_outbound_legacy(min(page_dates), max(page_dates))[0])
                 raw_by_key = {self._event_key(event): event.get("raw", {}) for event in raw_events}
                 for event in events:
                     if not event.get("raw"):

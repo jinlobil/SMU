@@ -1977,10 +1977,10 @@ class LegacySecurityReport:
                     _stat["processes"][_mail_process] += 1
                     outbound_process_counter[_mail_process] += 1
 
-                if _send_result == "성공":
+                if _send_result in {"성공", "Success"}:
                     _stat["success"] += 1
                     outbound_success_count += 1
-                elif _send_result == "실패":
+                elif _send_result in {"실패", "Failed", "Partial Failed"}:
                     _stat["fail"] += 1
                     outbound_fail_count += 1
 

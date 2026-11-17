@@ -31,7 +31,9 @@ class TransferService:
         self.project_root = project_root
         self.endpoint_service = EndpointService(project_root)
         self.dlp_dir = project_root / "cache" / "dlp"
-        self.outbound_dir = project_root / "cache" / "mailscreen"
+        self.outbound_dir = project_root / "cache" / "sophos_outbound"
+        self.outbound_legacy_dir = project_root / "cache" / "mailscreen"
+        self.outbound_raw_dir = project_root / "cache" / "sophos_outbound_raw"
         self.exception_service = self.endpoint_service.exception_service
         self.event_index = EventListIndex(project_root)
 
@@ -72,10 +74,10 @@ class TransferService:
                 records.append((record_id, raw, row))
         return records, files
 
-    def _collect_outbound(self, start: date, end: date, progress=None):
+    def _collect_outbound_legacy(self, start: date, end: date, progress=None):
         records = []; files = []
         for day in self._dates(start, end):
-            path = self.outbound_dir / f"mailscreen_mail_{day.isoformat()}.json"
+            path = self.outbound_legacy_dir / f"mailscreen_mail_{day.isoformat()}.json"
             if not path.exists(): continue
             if progress: progress(f"Outbound Mail 원본 읽는 중 · {path.name}")
             files.append(path.name); payload = json.loads(path.read_text(encoding="utf-8")); items = payload.get("items", []) if isinstance(payload, dict) else payload
@@ -86,6 +88,44 @@ class TransferService:
                 sender_email = str(raw.get("sender_email") or (match.group(0) if match else sender)); sender_name = str(raw.get("sender_name") or ("None" if "@" in sender else sender)); base_dept = str(raw.get("sender_dept") or raw.get("dept") or "None")
                 final = self.exception_service.finalize(email=sender_email, user_name=sender_name, department=base_dept)
                 row = {"id": record_id, "_sourceFile": str(path.resolve()), "date": str(raw.get("date") or "None"), "mailProcess": str(raw.get("mail_process") or "None"), "sendResult": str(raw.get("send_result") or "None"), "subject": str(raw.get("subject") or "None"), "senderEmail": sender_email, "senderName": final["user"], "dept": final["dept"], "receiver": str(raw.get("receiver") or "None"), "size": str(raw.get("size") or "None"), "policy": str(raw.get("policy") or "None"), "attachment": str(raw.get("attach") or "None")}
+                records.append((record_id, raw, row))
+        return records, files
+
+    def _enrich_outbound(self, items):
+        from backend.services.email_security import EmailSecurityService
+        identities = EmailSecurityService(self.project_root)._directory_identity()
+        _org, departments, _exceptions = self.endpoint_service._department_context()
+        output = []
+        for item in items:
+            sender = str(item.get('senderEmail') or 'None')
+            identity = identities.get(normalize_key(sender), {})
+            department = identity.get('dept') or item.get('dept') or '미분류'
+            if department == '미분류': department = departments.get(normalize_key(sender), {}).get('dept', department)
+            final = self.exception_service.finalize(principal=identity.get('principal', ''), email=sender,
+                user_name=identity.get('user') or item.get('senderName'), department=department)
+            output.append({**item, 'senderName': final['user'], 'dept': final['dept']})
+        return output
+
+    def _collect_outbound(self, start: date, end: date, progress=None):
+        from backend.services.sophos_outbound import CANONICAL_FIELDS, message_groups
+        records, files = [], []
+        for day in self._dates(start, end):
+            path = self.outbound_dir / f'{day.isoformat()}.json'
+            if not path.exists(): continue
+            if progress: progress(f'Outbound Mail 원본 읽는 중 · {path.name}')
+            files.append(path.name)
+            items = self._enrich_outbound(load_json_list(path))
+            raw_path = self.outbound_raw_dir / path.name
+            events = load_json_list(raw_path)
+            groups = message_groups(events)
+            for index, item in enumerate(items):
+                key = item.get('_messageKey')
+                record_id = hashlib.sha256(f'outbound-sophos:{path.name}:{key}'.encode()).hexdigest()[:24] if key else self._id('outbound-sophos', path, index)
+                row = {field: str(item[field]) if item.get(field) is not None and item[field] != '' else 'None' for field in CANONICAL_FIELDS}
+                row.update(id=record_id, _sourceFile=str(path.resolve()))
+                indexes = groups.get(key, []) if key else item.get('_rawIndexes', [])
+                related = [events[i] for i in indexes if type(i) is int and 0 <= i < len(events)]
+                raw = {**item, 'events': related}
                 records.append((record_id, raw, row))
         return records, files
 

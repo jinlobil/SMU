@@ -10,6 +10,9 @@ from backend.services.event_list_schema import FIELD_COLUMNS, SCHEMA_VERSION
 class EventListIndex:
     """Read display-list rows from cache/index/events_index.db without loading Raw cache payloads."""
 
+    # Retained MailScreen-derived indexes must not appear as Current Outbound.
+    CURRENT_SOURCE = "(kind <> 'outbound' OR instr(replace(source_file, char(92), '/'), '/cache/mailscreen/') = 0)"
+
     def __init__(self, project_root: Path):
         self.project_root = project_root
         self.path = project_root / "cache" / "index" / "events_index.db"
@@ -57,7 +60,7 @@ class EventListIndex:
             "xdr": (self.project_root / "cache" / "detections", "{day}.json"),
             "firewall": (self.project_root / "cache" / "detections", "{day}.json"),
             "inbound": (self.project_root / "cache" / "emails", "{day}.json"),
-            "outbound": (self.project_root / "cache" / "mailscreen", "mailscreen_mail_{day}.json"),
+            "outbound": (self.project_root / "cache" / "sophos_outbound", "{day}.json"),
             "dlp": (self.project_root / "cache" / "dlp", "{day}.jsonl"),
         }
         if kind not in specs:
@@ -94,7 +97,7 @@ class EventListIndex:
                 f"""
                 SELECT kind, COUNT(*) AS total
                 FROM event_list_rows
-                WHERE kind IN ({placeholders}) AND event_time >= ? AND event_time < ?
+                WHERE kind IN ({placeholders}) AND event_time >= ? AND event_time < ? AND {self.CURRENT_SOURCE}
                 GROUP BY kind
                 """,
                 (*kinds, *self._range_bounds(start, end)),
@@ -110,7 +113,7 @@ class EventListIndex:
         size = self.path.stat().st_size
         with self._read_connection() as db:
             placeholders = ",".join("?" for _ in kinds)
-            rows = db.execute(f"SELECT kind, COUNT(*), MAX(event_time) FROM event_list_rows WHERE kind IN ({placeholders}) GROUP BY kind", kinds).fetchall()
+            rows = db.execute(f"SELECT kind, COUNT(*), MAX(event_time) FROM event_list_rows WHERE kind IN ({placeholders}) AND {self.CURRENT_SOURCE} GROUP BY kind", kinds).fetchall()
         for row in rows:
             output[str(row[0])] = {"indexedEvents": int(row[1]), "lastIndexed": row[2], "status": "ready", "indexFileBytes": size}
         return output
@@ -124,7 +127,7 @@ class EventListIndex:
                 f"""
                 SELECT kind, substr(event_time,1,10) AS day, COUNT(*) AS total
                 FROM event_list_rows
-                WHERE kind IN ({placeholders}) AND event_time >= ? AND event_time < ?
+                WHERE kind IN ({placeholders}) AND event_time >= ? AND event_time < ? AND {self.CURRENT_SOURCE}
                 GROUP BY kind, day
                 """,
                 (*kinds, *self._range_bounds(start, end)),
@@ -139,10 +142,10 @@ class EventListIndex:
             return []
         with self._read_connection() as db:
             rows = db.execute(
-                """
+                f"""
                 SELECT row_json
                 FROM event_list_rows
-                WHERE kind=? AND event_time >= ? AND event_time < ?
+                WHERE kind=? AND event_time >= ? AND event_time < ? AND {self.CURRENT_SOURCE}
                 """,
                 (kind, *self._range_bounds(start, end)),
             ).fetchall()
@@ -175,7 +178,7 @@ class EventListIndex:
         if direction not in {"asc", "desc"}:
             raise ValueError(f"Unsupported direction: {direction}")
 
-        where = ["kind=?", "event_time >= ?", "event_time < ?"]
+        where = ["kind=?", "event_time >= ?", "event_time < ?", self.CURRENT_SOURCE]
         parameters: list[Any] = [kind, *self._range_bounds(start, end)]
         validated_conditions: list[tuple[str, str, str]] = []
         for condition in conditions:
@@ -222,9 +225,9 @@ class EventListIndex:
                 (*parameters, page_size, offset),
             ).fetchall()
             source_rows = db.execute(
-                """
+                f"""
                 SELECT DISTINCT source_file FROM event_list_rows
-                WHERE kind=? AND event_time >= ? AND event_time < ? AND source_file <> ''
+                WHERE kind=? AND event_time >= ? AND event_time < ? AND source_file <> '' AND {self.CURRENT_SOURCE}
                 """,
                 (kind, *self._range_bounds(start, end)),
             ).fetchall()
