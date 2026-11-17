@@ -4,6 +4,9 @@ from typing import Any
 from backend.services.endpoints import load_json_list, load_key_value_file, normalize_key
 
 
+from backend.services.departments import department_names_with_directory
+
+
 SEARCH_FIELDS = {"all", "deptCode", "deptName", "user"}
 SORT_FIELDS = {"deptCode", "deptName", "user"}
 
@@ -15,7 +18,8 @@ class OrganizationService:
         self.department_names_path = project_root / "env" / "User_group_env.txt"
 
     def _rows(self) -> list[dict[str, str]]:
-        department_names = load_key_value_file(self.department_names_path)
+        department_names = department_names_with_directory(load_key_value_file(self.department_names_path),
+                                                         load_json_list(self.project_root / "cache" / "users.json"))
         rows: list[dict[str, str]] = []
         for department in load_json_list(self.cache_path):
             code = str(department.get("deptCode", "None") or "None")

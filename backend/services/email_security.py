@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from backend.services.detections import sensor_type
-from backend.services.endpoints import kst_time, load_json_list, normalize_key
+from backend.services.endpoints import kst_time, load_json_list, normalize_key, load_key_value_file, directory_department
 from backend.services.event_list_index import EventListIndex
 from backend.services.exceptions import ExceptionService
 
@@ -63,10 +63,11 @@ class EmailSecurityService:
 
     def _directory_identity(self) -> dict[str, dict[str, str]]:
         output = {}
+        dept_names = load_key_value_file(self.project_root / "env" / "User_group_env.txt")
         for user in load_json_list(self.project_root / "cache" / "users.json"):
             principal = str(user.get("exchangeLogin", "") or user.get("userId", "") or "")
             email = str(user.get("email", "") or "")
-            final = self.exception_service.finalize(principal=principal, email=email, user_name=user.get("name"), department=user.get("dept") or user.get("department") or "미분류")
+            final = self.exception_service.finalize(principal=principal, email=email, user_name=user.get("name"), department=user.get("dept") or user.get("department") or directory_department(user, dept_names)[0])
             entry = {"principal": principal, "userId": principal.split("\\")[-1] or "None", "user": final["user"], "dept": final["dept"]}
             for value in (user.get("email"), user.get("exchangeLogin"), user.get("name")):
                 if value:

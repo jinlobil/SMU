@@ -69,13 +69,14 @@ class ReportService:
                 })
         legacy_report.DIRECTORY_USER_INDEX = {}
         for user in load_json_list(self.root / "cache/users.json"):
+            directory = context[1].get(normalize_key(user.get("email"))) or context[1].get(normalize_key(user.get("exchangeLogin"))) or {}
             principal = str(user.get("exchangeLogin") or user.get("userId") or "")
             entry = {
                 "name": self.exceptions.resolve_user(principal, user.get("name")),
                 "user_id": principal,
                 "email": str(user.get("email") or ""),
-                "dept_name": str(user.get("dept") or user.get("department") or "미분류"),
-                "dept_code": "",
+                "dept_name": str(user.get("dept") or user.get("department") or directory.get("dept") or "미분류"),
+                "dept_code": directory.get("deptCode", ""),
             }
             for value in (entry["name"], entry["user_id"], entry["email"], entry["email"].split("@", 1)[0]):
                 if normalize_key(value):
