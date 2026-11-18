@@ -52,7 +52,8 @@ class TimelineService:
             person = endpoint.get("associatedPerson") if isinstance(endpoint.get("associatedPerson"), dict) else {}
             add(row.get("user"), row.get("dept"), row.get("userId"), endpoint_principal(person, row.get("hostname")), row.get("hostname"))
         for user in load_json_list(self.project_root / "cache/users.json"):
-            add(user.get("name"), user.get("dept") or user.get("department"), user.get("id"), user.get("userId"), user.get("exchangeLogin"), user.get("email"))
+            directory = context[1].get(normalize_key(user.get("email"))) or context[1].get(normalize_key(user.get("exchangeLogin"))) or {}
+            add(user.get("name"), user.get("dept") or user.get("department") or directory.get("dept"), user.get("id"), user.get("userId"), user.get("exchangeLogin"), user.get("email"))
         return by_alias, aliases_by_name
 
     @staticmethod

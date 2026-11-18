@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from backend.services.exceptions import ExceptionService
+from backend.services.departments import parse_department_display_name, department_names_with_directory
 
 
 SEARCH_FIELDS = {"all", "hostname", "userId", "user", "dept", "ip", "ztna"}
@@ -139,9 +140,9 @@ def directory_department(user: dict[str, Any], dept_names: dict[str, str]) -> tu
     for group in reversed(items):
         if not isinstance(group, dict):
             continue
-        code = str(group.get("displayName", "") or "").strip()
-        if code.isdigit():
-            return dept_names.get(normalize_key(code), code) or "미분류", code
+        department = parse_department_display_name(group.get("displayName"), dept_names)
+        if department:
+            return department["deptName"], department["deptCode"]
     return "미분류", ""
 
 
@@ -174,9 +175,11 @@ class EndpointService:
 
     def _department_context(self) -> tuple[dict[str, dict[str, str]], dict[str, dict[str, str]], dict[str, str]]:
         dept_names = load_key_value_file(self.env_dir / "User_group_env.txt")
+        users = load_json_list(self.cache_dir / "users.json")
+        dept_names = department_names_with_directory(dept_names, users)
         exceptions = load_key_value_file(self.env_dir / "Report_exception_List.txt")
         org_index = build_org_index(load_json_list(self.cache_dir / "user_groups.json"), dept_names)
-        directory_index = build_directory_index(load_json_list(self.cache_dir / "users.json"), dept_names)
+        directory_index = build_directory_index(users, dept_names)
         return org_index, directory_index, exceptions
 
     def _row(self, endpoint: dict[str, Any], context: tuple[dict[str, dict[str, str]], dict[str, dict[str, str]], dict[str, str]], fallback_id: str = "") -> dict[str, Any]:

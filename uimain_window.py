@@ -5448,10 +5448,10 @@ def get_directory_user_dept(user):
     for group in reversed(items):
         if not isinstance(group, dict):
             continue
-        dept_code = str(group.get("displayName", "") or "").strip()
-        if not dept_code.isdigit():
-            continue
-        return DEPT_MAP.get(dept_code, dept_code) or "미분류", dept_code
+        from backend.services.departments import parse_department_display_name
+        department = parse_department_display_name(group.get("displayName"), DEPT_MAP)
+        if department:
+            return department["deptName"], department["deptCode"]
 
     return "미분류", ""
 
@@ -9135,9 +9135,10 @@ class SophosClient:
             for g in items:
                 if not isinstance(g, dict):
                     continue
-                dept_code = g.get("displayName") or g.get("name") or "None"
-                dept_code = str(dept_code)
-                dept_name = DEPT_MAP.get(dept_code, dept_code)
+                from backend.services.departments import parse_department_display_name
+                department = parse_department_display_name(g.get("displayName") or g.get("name"), DEPT_MAP)
+                if department is None: continue
+                dept_code, dept_name = department["deptCode"], department["deptName"]
 
                 users_obj = g.get("users", {})
                 users = []

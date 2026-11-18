@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from backend.services.endpoints import load_key_value_file
+from backend.services.departments import parse_department_display_name
 
 
 class SophosOutboundError(RuntimeError):
@@ -103,13 +104,14 @@ class SophosClient:
         groups = self.paged_items("/common/v1/directory/user-groups")
         output: list[dict[str, Any]] = []
         for group in groups:
-            code = str(group.get("displayName") or group.get("name") or "None")
+            department = parse_department_display_name(group.get("displayName") or group.get("name"), department_names)
+            if department is None: continue
             users_value = group.get("users", {})
             raw_users = users_value.get("items", []) if isinstance(users_value, dict) else users_value
             users = []
             if isinstance(raw_users, list):
                 users = [dict(user, name=user.get("name", "None")) if isinstance(user, dict) else {"name": str(user)} for user in raw_users]
-            output.append({"deptCode": code, "deptName": department_names.get(code, code), "users": users})
+            output.append({**department, "users": users})
         return output, self.fetch_users()
 
     def fetch_detections(self, from_timestamp: str, to_timestamp: str, progress=lambda _message: None) -> list[dict[str, Any]]:
