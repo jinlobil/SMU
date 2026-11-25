@@ -9,7 +9,8 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-from backend.services.firewall import FirewallClient, FirewallService, parse_status
+from backend.services.firewall import FIREWALL_DEFINITIONS, FirewallClient, FirewallService, parse_status
+from backend.services.firewall_routes import parse_unicast_routes, route_cidr
 from backend.services.firewall_network_mapping import classify_analysis_sheet, classify_rule_side
 from backend.services.spreadsheet import write_xlsx_workbook
 
@@ -353,6 +354,30 @@ def classify_export_error(exc: Exception) -> str:
     return type(exc).__name__
 
 
+ROUTE_COLUMNS = ['Destination', 'Netmask', 'CIDR', 'Gateway', 'Interface', 'Distance',
+                 'Administrative Distance', 'Status', 'Blackhole', 'Description']
+
+
+def _safe_export_error(exc, entity=''):
+    # Never expose an upstream body, request XML/URL, login or exception message.
+    code = str(exc.code) if isinstance(exc, urllib.error.HTTPError) else ''
+    if not code:
+        match = re.search(r'Firewall API(?: entity [A-Za-z]+)? (\d{3})\b', str(exc))
+        code = match.group(1) if match else ''
+    if code: return f"Firewall API{(' entity ' + entity) if entity else ''} {code}"
+    if isinstance(exc, (TimeoutError, socket.timeout)): return 'timed out'
+    return type(exc).__name__
+
+
+def _route_export_rows(xml_text):
+    return [{'Destination': row['destination'], 'Netmask': row['netmask'],
+        'CIDR': route_cidr(row['destination'], row['netmask']), 'Gateway': row['gateway'],
+        'Interface': row['interface'], 'Distance': row['distance'],
+        'Administrative Distance': row['administrative_distance'], 'Status': row['status'],
+        'Blackhole': row['blackhole'], 'Description': row['description']}
+        for row in parse_unicast_routes(xml_text)]
+
+
 class FirewallRuleExportService:
     def __init__(self, project_root: Path):
         self.root = project_root
@@ -364,6 +389,7 @@ class FirewallRuleExportService:
         errors: list[dict[str, str]] = []
         counts: dict[str, int] = {}
         diagnostics: dict[str, dict[str, Any]] = {}
+        clients, parsed_rules = {}, {}
         analysis_rows: dict[str, list[dict[str, str]]] = {"LAN ↔ OFFICE": [], "LAN ↔ WAN": [], "ETC": []}
         analysis_columns: list[str] = []
         for config in configs:
@@ -371,6 +397,7 @@ class FirewallRuleExportService:
             progress(f"{name} Firewall Rule 및 Object 조회 중")
             try:
                 client = FirewallClient(config)
+                clients[name] = client
                 rule_response = client.get_rules_compatible()
                 diagnostics[name] = {"apiVersion": rule_response["apiVersion"], "ruleEntity": rule_response["entity"]}
                 log.info("Firewall rule API selected firewall=%s api_version=%s entity=%s", name, rule_response["apiVersion"] or "unknown", rule_response["entity"])
@@ -386,10 +413,11 @@ class FirewallRuleExportService:
                         payloads[entity] = raw
                         log.info("Firewall XML enrichment validated firewall=%s api_version=%s entity=%s status=%s", name, rule_response["apiVersion"] or "unknown", entity, entity_status["code"] or "unknown")
                     except Exception as exc:
-                        enrichment_errors.append(f"{entity}: {type(exc).__name__}: {exc}")
-                        log.warning("Firewall XML enrichment unavailable firewall=%s api_version=%s entity=%s error=%s", name, rule_response["apiVersion"] or "unknown", entity, exc)
+                        enrichment_errors.append(f"{entity}: {type(exc).__name__}: {_safe_export_error(exc, entity)}")
+                        log.warning("Firewall XML enrichment unavailable firewall=%s api_version=%s entity=%s error=%s", name, rule_response["apiVersion"] or "unknown", entity, _safe_export_error(exc, entity))
                 diagnostics[name]["enrichmentErrors"] = enrichment_errors
                 rows, columns = parse_firewall_rules(payloads, rule_response["entity"])
+                parsed_rules[name] = rows
                 sheets.append({"name": name, "rows": rows, "columns": columns})
                 counts[name] = len(rows)
                 if "Rule ID" in columns and "Rule ID" not in analysis_columns:
@@ -402,7 +430,7 @@ class FirewallRuleExportService:
                         **derived,
                     })
             except Exception as exc:
-                errors.append({"Firewall": name, "Error Type": classify_export_error(exc), "Message": str(exc)})
+                errors.append({"Firewall": name, "Error Type": classify_export_error(exc), "Message": _safe_export_error(exc)})
         base_columns = (["Rule ID"] if analysis_columns else []) + MANAGEMENT_COLUMNS
         derived_columns = ["Source Category", "Destination Category", "Source Site", "Destination Site"]
         for sheet_name in ("LAN ↔ OFFICE", "LAN ↔ WAN", "ETC"):
@@ -411,9 +439,35 @@ class FirewallRuleExportService:
         analysis_total = sum(len(rows) for rows in analysis_rows.values())
         if original_total != analysis_total:
             raise RuntimeError(f"Firewall analysis row count mismatch: original={original_total}, analysis={analysis_total}")
+        from backend.services.firewall_nat import NAT_COLUMNS, parse_nat_rules
+        extra_sheets, extra_counts = [], {'NAT': {}, 'Route': {}}
+        ordered_configs = sorted(configs, key=lambda config: list(FIREWALL_DEFINITIONS).index(config['name']))
+        for kind, entity, title, columns in [('NAT', 'NATRule', 'NAT Rules', NAT_COLUMNS),
+                                              ('Route', 'UnicastRoute', 'Static Routes', ROUTE_COLUMNS)]:
+            sections = []
+            for config in ordered_configs:
+                name = config['name']
+                section = {'title': f'{name} {title}', 'tableName': f'tbl_{kind.lower()}_{name.lower()}', 'rows': []}
+                progress(f'{name} {title} 조회 중')
+                try:
+                    client = clients.get(name)
+                    if client is None:
+                        client = FirewallClient(config); clients[name] = client
+                    raw = client.get(entity)
+                    section['rows'] = parse_nat_rules(raw, parsed_rules.get(name, [])) if kind == 'NAT' else _route_export_rows(raw)
+                    extra_counts[kind][name] = len(section['rows'])
+                except Exception as exc:
+                    message = _safe_export_error(exc, entity)
+                    section['message'] = f'조회 실패 · {entity}: {message}'
+                    errors.append({'Firewall': name, 'Error Type': f'{entity}: {classify_export_error(exc)}', 'Message': message})
+                    log.warning('Firewall supplemental export unavailable firewall=%s entity=%s error=%s', name, entity, message)
+                sections.append(section)
+            extra_sheets.append({'name': kind, 'columns': columns, 'sections': sections})
         if errors:
             sheets.append({"name": "Export Errors", "rows": errors, "columns": ["Firewall", "Error Type", "Message"]})
+        sheets.extend(extra_sheets)
+        progress("Excel 생성 중")
         export_dir = self.root / "exports"
         path = export_dir / f"Sophos_Firewall_Rules_{date.today().isoformat()}.xlsx"
         names = write_xlsx_workbook(path, sheets)
-        return {"filename": path.name, "path": str(path), "sheets": names, "counts": counts, "analysisCounts": {name: len(rows) for name, rows in analysis_rows.items()}, "errors": errors, "diagnostics": diagnostics}
+        return {"filename": path.name, "path": str(path), "sheets": names, "counts": counts, "analysisCounts": {name: len(rows) for name, rows in analysis_rows.items()}, "errors": errors, "diagnostics": diagnostics, "natCounts": extra_counts["NAT"], "routeCounts": extra_counts["Route"]}

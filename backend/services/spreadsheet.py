@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import copy
 import re
 from pathlib import Path
 from xml.etree.ElementTree import Element, SubElement, fromstring, tostring
@@ -18,9 +19,10 @@ INVALID_SHEET_CHARS = re.compile(r"[\\/*?:\[\]]")
 LEDGER_STYLES = {"header": 10, "body": 11, "running": 12, "stop": 13,
                  "sophos": 14, "inbound": 15, "outbound": 16, "center": 17, "allow": 26, "deny": 27, "neutral": 28}
 LEDGER_TOP_STYLE_OFFSET = 8
+SECTION_TOP_STYLE_OFFSET = 19
 
 
-def _ledger_styles(styles: str) -> bytes:
+def _ledger_styles(styles: str, section_top: bool = False) -> bytes:
     root = fromstring(styles)
     def tag(name): return f"{{{MAIN_NS}}}{name}"
     fonts, fills, borders, xfs = (root.find(tag(name)) for name in ("fonts", "fills", "borders", "cellXfs"))
@@ -59,6 +61,12 @@ def _ledger_styles(styles: str) -> bytes:
         xf = SubElement(xfs, tag("xf"), {"numFmtId": "0", "fontId": str(font_ids[0]), "fillId": str(fill_id),
             "borderId": "1", "xfId": "0", "applyFont": "1", "applyFill": "1", "applyBorder": "1", "applyAlignment": "1"})
         SubElement(xf, tag("alignment"), {"vertical": "center", "wrapText": "1"})
+    if section_top:
+        # Append only; all existing style indices and colors stay unchanged.
+        for original in list(xfs)[10:29]:
+            xf = copy.deepcopy(original)
+            xf.find(tag('alignment')).set('vertical', 'top')
+            xfs.append(xf)
     for node in [fonts, fills, borders, xfs]: node.set("count", str(len(node)))
     return b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' + tostring(root, encoding="utf-8")
 
@@ -167,6 +175,54 @@ def _worksheet(rows: list[dict], columns: list[str], headers: dict[str, str], ce
     return b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' + tostring(sheet, encoding="utf-8")
 
 
+def _section_worksheet(sections: list[dict], columns: list[str], headers: dict[str, str], first_table_id: int):
+    """Reuse ledger cells for independent tables separated by exactly one empty row."""
+    flat, titles, header_rows, blanks, tables = [], [], [], [], []
+    last_column = _column_name(len(columns))
+    for section in sections:
+        if flat:
+            flat.append({}); blanks.append(len(flat))
+        flat.append({columns[0]: section['title']}); titles.append(len(flat))
+        flat.append({column: headers.get(column, column) for column in columns})
+        header_row = len(flat); header_rows.append(header_row)
+        flat.extend(section.get('rows') or [{columns[0]: section.get('message') or 'No data'}])
+        tables.append({'id': first_table_id + len(tables), 'name': section['tableName'],
+                       'ref': f'A{header_row}:{last_column}{len(flat)}', 'headers': [headers.get(column, column) for column in columns]})
+    sheet = fromstring(_worksheet(flat, columns, headers))
+    tag = lambda name: f'{{{MAIN_NS}}}{name}'
+    data = sheet.find(tag('sheetData'))
+    data.remove(data[0])  # Sections supply their own header rows.
+    for row in data:
+        number = int(row.get('r')) - 1; row.set('r', str(number))
+        if number in blanks:
+            row.clear(); row.set('r', str(number)); continue
+        for cell in list(row):
+            cell.set('r', re.sub(r'\d+$', str(number), cell.get('r')))
+            if number in titles and cell is not row[0]: row.remove(cell); continue
+            style = LEDGER_STYLES['header'] if number in titles or number in header_rows else int(cell.get('s'))
+            cell.set('s', str(style + SECTION_TOP_STYLE_OFFSET))
+    sheet.remove(sheet.find(tag('autoFilter')))
+    pane = sheet.find(f"{tag('sheetViews')}/{tag('sheetView')}/{tag('pane')}")
+    pane.set('ySplit', '2'); pane.set('topLeftCell', 'A3')
+    merged = SubElement(sheet, tag('mergeCells'), {'count': str(len(titles))})
+    for number in titles: SubElement(merged, tag('mergeCell'), {'ref': f'A{number}:{last_column}{number}'})
+    parts = SubElement(sheet, tag('tableParts'), {'count': str(len(tables))})
+    rel_ns = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
+    for number in range(1, len(tables) + 1):
+        SubElement(parts, tag('tablePart'), {f'{{{rel_ns}}}id': f'rId{number}'})
+    return b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' + tostring(sheet, encoding='utf-8'), tables
+
+
+def _table_xml(table):
+    root = Element('table', {'xmlns': MAIN_NS, 'id': str(table['id']), 'name': table['name'],
+                    'displayName': table['name'], 'ref': table['ref'], 'totalsRowShown': '0'})
+    SubElement(root, 'autoFilter', {'ref': table['ref']})
+    columns = SubElement(root, 'tableColumns', {'count': str(len(table['headers']))})
+    for index, header in enumerate(table['headers'], 1):
+        SubElement(columns, 'tableColumn', {'id': str(index), 'name': str(header)})
+    return b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' + tostring(root, encoding='utf-8')
+
+
 def _report_summary_worksheet(report: dict[str, object]) -> bytes:
     """Build a cover-style summary sheet without table headers or AutoFilter."""
     sheet = Element("worksheet", {"xmlns": MAIN_NS})
@@ -224,9 +280,21 @@ def write_xlsx_workbook(path: Path, sheets: list[dict]) -> list[str]:
         columns = list(spec.get("columns") or list(dict.fromkeys(key for row in rows for key in row)))
         prepared.append((safe_sheet_name(str(spec.get("name") or "Data"), used), rows, columns, dict(spec.get("headers") or {}), dict(spec.get("cellStyles") or {}), spec.get("reportSummary"), spec))
 
+    section_sheets, table_names, table_count = {}, set(), 0
+    for index, (_name, _rows, columns, headers, _styles, _summary, spec) in enumerate(prepared, 1):
+        if not spec.get('sections'): continue
+        for section in spec['sections']:
+            name = section['tableName']
+            if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', name) or re.fullmatch(r'[A-Za-z]+[0-9]+', name) or name.casefold() in table_names:
+                raise ValueError('Excel table names must be unique identifiers')
+            table_names.add(name.casefold())
+        section_sheets[index] = _section_worksheet(spec['sections'], columns, headers, table_count + 1)
+        table_count += len(section_sheets[index][1])
     overrides = "".join(f'<Override PartName="/xl/worksheets/sheet{i}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>' for i in range(1, len(prepared)+1))
     content_types = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>{overrides}<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>'''
+    table_overrides = ''.join(f'<Override PartName="/xl/tables/table{i}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml"/>' for i in range(1, table_count + 1))
+    content_types = content_types.replace('</Types>', table_overrides + '</Types>')
     package_rels = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>'''
     sheet_defs = "".join(f'<sheet name="{_text(name).replace("&", "&amp;").replace(chr(34), "&quot;").replace("<", "&lt;").replace(">", "&gt;")}" sheetId="{i}" r:id="rId{i}"/>' for i, (name, *_rest) in enumerate(prepared, 1))
@@ -244,10 +312,21 @@ def write_xlsx_workbook(path: Path, sheets: list[dict]) -> list[str]:
         archive.writestr("_rels/.rels", package_rels)
         archive.writestr("xl/workbook.xml", workbook)
         archive.writestr("xl/_rels/workbook.xml.rels", workbook_rels)
-        archive.writestr("xl/styles.xml", _ledger_styles(styles))
+        archive.writestr("xl/styles.xml", _ledger_styles(styles, bool(section_sheets)))
         for index, (_name, rows, columns, headers, cell_styles, report_summary, spec) in enumerate(prepared, 1):
-            archive.writestr(f"xl/worksheets/sheet{index}.xml", _report_summary_worksheet(report_summary) if report_summary else _worksheet(rows, columns, headers, cell_styles,
-                True, spec.get("mergeColumns"), spec.get("groupKey")))
+            if index in section_sheets:
+                worksheet, tables = section_sheets[index]
+                archive.writestr(f'xl/worksheets/sheet{index}.xml', worksheet)
+                relationships = Element('Relationships', {'xmlns': 'http://schemas.openxmlformats.org/package/2006/relationships'})
+                for number, table in enumerate(tables, 1):
+                    SubElement(relationships, 'Relationship', {'Id': f'rId{number}',
+                        'Type': 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/table',
+                        'Target': f"../tables/table{table['id']}.xml"})
+                    archive.writestr(f"xl/tables/table{table['id']}.xml", _table_xml(table))
+                archive.writestr(f'xl/worksheets/_rels/sheet{index}.xml.rels', tostring(relationships, encoding='utf-8'))
+            else:
+                archive.writestr(f"xl/worksheets/sheet{index}.xml", _report_summary_worksheet(report_summary) if report_summary else _worksheet(rows, columns, headers, cell_styles,
+                    True, spec.get("mergeColumns"), spec.get("groupKey")))
     return [name for name, *_rest in prepared]
 
 

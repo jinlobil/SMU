@@ -4,16 +4,16 @@ import ipaddress
 import re
 import threading
 import time
-import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from backend.services.fqdn import fqdn_matches, normalize_fqdn, resolve_fqdn
+from backend.services.firewall_routes import parse_unicast_routes
 from backend.services.firewall import FirewallClient, FirewallService, parse_status
 from backend.services.aws_security_group_path import AwsSecurityGroupPathService, firewall_step, policy_summary
 from backend.services.firewall_network_mapping import IP_TOKEN, MASKED_NETWORK, determine_firewall_path, expected_zones_for_path, resolve_input_network
-from backend.services.firewall_rule_export import ENTITIES, _nodes, _tag, is_wildcard_value, parse_firewall_rules
+from backend.services.firewall_rule_export import ENTITIES, _nodes, is_wildcard_value, parse_firewall_rules
 
 
 PORT_RANGE = re.compile(r"(?<!\d)(\d{1,5})(?:\s*[:-]\s*(\d{1,5}))?(?!\d)")
@@ -239,15 +239,6 @@ def match_rules(
         return {"state": "order_check_required", "orderReliable": False, "matchedRule": None, "matches": matches, "evaluations": evaluations}
     return {"state": "no_matching_rule", "orderReliable": True, "matchedRule": None, "matches": matches, "evaluations": evaluations, "broadQuery": False}
 
-
-def parse_unicast_routes(xml_text: str) -> list[dict[str, str]]:
-    rows = []
-    for node in _nodes(xml_text, "UnicastRoute"):
-        values = {(_tag(child)): (child.text or "").strip() for child in node.iter() if child is not node and (child.text or "").strip()}
-        destination = values.get("Destination") or values.get("DestinationIP") or values.get("Network") or ""
-        netmask = values.get("Netmask") or values.get("SubnetMask") or values.get("Prefix") or ""
-        rows.append({"destination": destination, "netmask": netmask, "gateway": values.get("Gateway", ""), "interface": values.get("Interface", values.get("InterfaceName", "")), "distance": values.get("AdministrativeDistance", values.get("Distance", "")), "status": values.get("Status", ""), "description": values.get("Description", "")})
-    return rows
 
 
 def match_static_route(routes: list[dict[str, str]], destination: ipaddress.IPv4Network) -> dict[str, str] | None:

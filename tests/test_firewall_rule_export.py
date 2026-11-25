@@ -9,6 +9,8 @@ from backend.services.spreadsheet import safe_sheet_name
 
 
 XML = {
+    "NATRule": '<Response><Status code="200">OK</Status></Response>',
+    "UnicastRoute": '<Response><Status code="200">OK</Status></Response>',
     "FirewallRule": '''<Response APIVersion="2000.2"><Status code="200">OK</Status><FirewallRule><Name>FW_IN_SEOUL_VPN_PDA_TO_AWS_WMS</Name><Status>Enable</Status><PolicyType>Network</PolicyType><Description>Seoul VPN to WMS</Description><NetworkPolicy><PolicyGroup>SSL_PDA &gt; WMS</PolicyGroup><SourceZones><Zone>VPN</Zone></SourceZones><SourceNetworks><Network>Office Hosts</Network></SourceNetworks><DestinationZones><Zone>LAN</Zone></DestinationZones><DestinationNetworks><Network>portal.example.com</Network></DestinationNetworks><Services><Service>Web Ports</Service></Services><Exclusions><SourceNetworks><Network>Excluded Source</Network></SourceNetworks><DestinationNetworks><Network>Excluded Destination</Network></DestinationNetworks><Services><Service>Excluded Service</Service></Services></Exclusions><Action>Accept</Action><Schedule>All The Time</Schedule><IntrusionPrevention>LAN TO WAN</IntrusionPrevention><MalwareScanning>Enable</MalwareScanning><WebFilterPolicy>Default</WebFilterPolicy><ApplicationControlPolicy>Allow Apps</ApplicationControlPolicy><TrafficShapingPolicy>QoS Standard</TrafficShapingPolicy><MinimumSourceHBPermitted>Green</MinimumSourceHBPermitted><LinkedNATRule>NAT_37</LinkedNATRule><ProxyMode>Disable</ProxyMode><LogTraffic>Enable</LogTraffic></NetworkPolicy></FirewallRule></Response>''',
     "IPHost": '''<Response APIVersion="2000.2"><Status code="200">OK</Status><IPHost><Name>PC-1</Name><HostType>IP</HostType><IPAddress>10.0.0.1</IPAddress></IPHost><IPHost><Name>Office Network</Name><HostType>Network</HostType><IPAddress>10.10.0.0</IPAddress><Subnet>255.255.0.0</Subnet></IPHost><IPHost><Name>VPN Range</Name><HostType>IPRange</HostType><StartIPAddress>10.20.0.1</StartIPAddress><EndIPAddress>10.20.0.50</EndIPAddress></IPHost><IPHost><Name>DNS List</Name><HostType>IPList</HostType><ListOfIPAddresses><IPAddress>1.1.1.1</IPAddress><IPAddress>8.8.8.8</IPAddress></ListOfIPAddresses></IPHost></Response>''',
     "IPHostGroup": '''<Response APIVersion="2000.2"><Status code="200">OK</Status><IPHostGroup><Name>Office Hosts</Name><HostList><IPHost>PC-1</IPHost><IPHost>Office Network</IPHost><IPHost>VPN Range</IPHost><IPHost>DNS List</IPHost></HostList></IPHostGroup></Response>''',
@@ -65,7 +67,7 @@ def test_selected_firewalls_make_only_selected_sheets(tmp_path: Path, monkeypatc
     monkeypatch.setattr(FirewallClient, "get", lambda _self, entity: XML[entity])
     result = FirewallRuleExportService(tmp_path).build(["Cloud", "Icheon"])
     workbook = sheet_names(Path(result["path"]))
-    assert result["sheets"] == ["Cloud", "Icheon", "LAN ↔ OFFICE", "LAN ↔ WAN", "ETC"]
+    assert result["sheets"] == ["Cloud", "Icheon", "LAN ↔ OFFICE", "LAN ↔ WAN", "ETC", "NAT", "Route"]
     assert 'name="Seoul"' not in workbook and 'name="Anseong"' not in workbook
 
 
@@ -73,7 +75,7 @@ def test_all_configured_firewalls_make_one_sheet_each(tmp_path: Path, monkeypatc
     env(tmp_path)
     monkeypatch.setattr(FirewallClient, "get", lambda _self, entity: XML[entity])
     result = FirewallRuleExportService(tmp_path).build(["Cloud", "Seoul", "Icheon", "Anseong"])
-    assert result["sheets"] == ["Cloud", "Seoul", "Icheon", "Anseong", "LAN ↔ OFFICE", "LAN ↔ WAN", "ETC"]
+    assert result["sheets"] == ["Cloud", "Seoul", "Icheon", "Anseong", "LAN ↔ OFFICE", "LAN ↔ WAN", "ETC", "NAT", "Route"]
     assert sum(result["counts"].values()) == sum(result["analysisCounts"].values()) == 4
 
 
@@ -85,8 +87,9 @@ def test_one_firewall_failure_keeps_successful_sheets_and_error_sheet(tmp_path: 
         return XML[entity]
     monkeypatch.setattr(FirewallClient, "get", get)
     result = FirewallRuleExportService(tmp_path).build(["Cloud", "Seoul"])
-    assert result["sheets"] == ["Cloud", "LAN ↔ OFFICE", "LAN ↔ WAN", "ETC", "Export Errors"]
-    assert result["errors"] == [{"Firewall": "Seoul", "Error Type": "Connection Timeout", "Message": "timed out"}]
+    assert result["sheets"] == ["Cloud", "LAN ↔ OFFICE", "LAN ↔ WAN", "ETC", "Export Errors", "NAT", "Route"]
+    assert result["errors"][0] == {"Firewall": "Seoul", "Error Type": "Connection Timeout", "Message": "timed out"}
+    assert [row["Error Type"] for row in result["errors"][1:]] == ["NATRule: Connection Timeout", "UnicastRoute: Connection Timeout"]
 
 
 def test_export_queries_all_required_xml_entities(tmp_path: Path, monkeypatch) -> None:
@@ -95,14 +98,14 @@ def test_export_queries_all_required_xml_entities(tmp_path: Path, monkeypatch) -
         seen.append(entity); return XML[entity]
     monkeypatch.setattr(FirewallClient, "get", get)
     FirewallRuleExportService(tmp_path).build(["Cloud"])
-    assert seen == ["FirewallRule", *ENTITIES]
+    assert seen == ["FirewallRule", *ENTITIES, "NATRule", "UnicastRoute"]
 
 
 def test_malformed_rule_xml_is_reported_without_broken_workbook(tmp_path: Path, monkeypatch) -> None:
     env(tmp_path, ("Cloud",))
     monkeypatch.setattr(FirewallClient, "get", lambda _self, entity: "<broken" if entity == "FirewallRule" else XML[entity])
     result = FirewallRuleExportService(tmp_path).build(["Cloud"])
-    assert result["sheets"] == ["LAN ↔ OFFICE", "LAN ↔ WAN", "ETC", "Export Errors"]
+    assert result["sheets"] == ["LAN ↔ OFFICE", "LAN ↔ WAN", "ETC", "Export Errors", "NAT", "Route"]
     assert result["errors"][0]["Error Type"] == "XML Parse Error"
     assert Path(result["path"]).read_bytes().startswith(b"PK")
 
@@ -157,10 +160,10 @@ def test_legacy_firewall_fallback_builds_sheet_and_diagnostics(tmp_path: Path, m
             return '<Response APIVersion="1700.1"><Status code="529">Input request module is Invalid</Status></Response>'
         if "<SecurityPolicy/>" in request:
             return legacy_rules
-        return next(XML[entity] for entity in ENTITIES if f"<{entity}/>" in request)
+        return next(XML[entity] for entity in (*ENTITIES, "NATRule", "UnicastRoute") if f"<{entity}/>" in request)
     monkeypatch.setattr(FirewallClient, "_post_xml", post)
     result = FirewallRuleExportService(tmp_path).build(["Cloud"])
-    assert result["sheets"] == ["Cloud", "LAN ↔ OFFICE", "LAN ↔ WAN", "ETC"]
+    assert result["sheets"] == ["Cloud", "LAN ↔ OFFICE", "LAN ↔ WAN", "ETC", "NAT", "Route"]
     assert result["counts"] == {"Cloud": 1}
     assert result["diagnostics"]["Cloud"] == {"apiVersion": "1700.1", "ruleEntity": "SecurityPolicy", "enrichmentErrors": []}
 
@@ -173,7 +176,7 @@ def test_object_entity_529_is_reported_without_losing_rule_sheet(tmp_path: Path,
         return XML[entity]
     monkeypatch.setattr(FirewallClient, "get", get)
     result = FirewallRuleExportService(tmp_path).build(["Cloud"])
-    assert result["sheets"] == ["Cloud", "LAN ↔ OFFICE", "LAN ↔ WAN", "ETC"]
+    assert result["sheets"] == ["Cloud", "LAN ↔ OFFICE", "LAN ↔ WAN", "ETC", "NAT", "Route"]
     assert result["errors"] == []
     assert "entity IPHostGroup 529" in result["diagnostics"]["Cloud"]["enrichmentErrors"][0]
 
@@ -212,7 +215,7 @@ def test_services_failure_still_creates_rule_sheet(tmp_path: Path, monkeypatch) 
         return XML[entity]
     monkeypatch.setattr(FirewallClient, "get", get)
     result = FirewallRuleExportService(tmp_path).build(["Cloud"])
-    assert result["sheets"] == ["Cloud", "LAN ↔ OFFICE", "LAN ↔ WAN", "ETC"]
+    assert result["sheets"] == ["Cloud", "LAN ↔ OFFICE", "LAN ↔ WAN", "ETC", "NAT", "Route"]
     assert result["counts"] == {"Cloud": 1}
     assert result["errors"] == []
     assert result["diagnostics"]["Cloud"]["enrichmentErrors"][0].startswith("Services: TimeoutError")
