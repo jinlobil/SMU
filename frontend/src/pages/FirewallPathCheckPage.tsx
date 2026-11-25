@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 
 type Site = { input: string; network: string; site: string; category: string };
 type Candidate = {
@@ -46,37 +46,65 @@ function CandidateTable({ rows }: { rows: Candidate[] }) {
   return <div className="table-wrap path-candidate-table"><table><thead><tr><th>Rule Name</th><th>Status</th><th>Action</th><th>Source Zone</th><th>Source Object</th><th>Source Resolved</th><th>Destination Zone</th><th>Destination Object</th><th>Destination Resolved</th><th>Service / Group</th><th>Protocol</th><th>Port / Range</th></tr></thead><tbody>{rows.map((candidate, index) => <tr key={`${candidate.rule}-${index}`}><td>{candidate.rule || "-"}</td><td><span className={`result-pill ${candidate.status === "활성" || candidate.status.toLowerCase() === "enable" ? "success" : "exists"}`}>{candidate.status || "-"}</span></td><td><span className={`result-pill ${["allow", "accept"].includes(candidate.action.toLowerCase()) ? "success" : "fail"}`}>{candidate.action || "-"}</span></td><td>{candidate.sourceZone || "-"}</td><td>{addressValue(candidate.sourceObject, candidate.source_wildcard)}</td><td>{addressValue(candidate.sourceResolved, candidate.source_wildcard)}</td><td>{candidate.destinationZone || "-"}</td><td>{addressValue(candidate.destinationObject, candidate.destination_wildcard)}</td><td>{addressValue(candidate.destinationResolved, candidate.destination_wildcard)}</td><td>{candidate.anyService ? "Any" : candidate.service || "-"}</td><td>{candidate.serviceProtocols.map(value => value === "IP" && candidate.serviceProtocolNumbers.length ? `IP (${candidate.serviceProtocolNumbers.join(", ")})` : value).join(", ") || "-"}</td><td>{candidate.servicePorts.join(", ") || (candidate.serviceProtocolNumbers.length ? "해당 없음" : "-")}</td></tr>)}</tbody></table></div>;
 }
 
+
+type AnalysisStep = { type: string; label: string; status: string; reason: string; firewall?: string; reached?: boolean; ingressZone?: string; egressZone?: string; action?: string; matchedRule?: Candidate | null; route?: Record<string,string> | null; candidateRules?: Candidate[]; awsSg?: SGStep };
+type Summary = { status: string; source: string; destination: string; service: string; primaryReason: string; blockedAt?: string | null; warnings?: string[] };
+type AnalysisCase = { target?: string; source?: string; destination?: string; summary: Summary; analysisPath: AnalysisStep[] };
+type AnalysisResult = Partial<Result> & { mode?: string; summary?: Summary; analysisPath?: AnalysisStep[]; groups?: { label: string; status: string; reason: string; zone: string; networks: string[]; fqdns: string[]; results: AnalysisCase[] }[]; resolvedResults?: AnalysisCase[]; details?: unknown };
+const legacyCandidates = (item: FirewallResult) => (item.policy.matches || []).filter(candidate => item.policy.broadQuery || candidate.fullMatch);
+const analysisTone = (state: string) => state === "PASS" ? "success" : state === "BLOCK" ? "fail" : "exists";
+
+function Fold({ id, title, opened, toggle, children }: { id: string; title: ReactNode; opened: Set<string>; toggle: (id: string, open: boolean) => void; children: ReactNode }) {
+  return <details style={{ minWidth: 0, maxWidth: "100%", overflowWrap: "anywhere" }} open={opened.has(id)} onToggle={event => toggle(id, event.currentTarget.open)}><summary>{title}</summary>{children}</details>;
+}
+function AnalysisPath({ steps, prefix, opened, toggle, source, destination }: { steps: AnalysisStep[]; prefix: string; opened: Set<string>; toggle: (id: string, open: boolean) => void; source?: string; destination?: string }) {
+  return <section className="path-diagram">{source && <article className="panel"><b>Source</b><small>{source}</small></article>}{steps.map((step,index) => <div className="path-segment" key={index}><i>▶</i><article className="panel"><b>{step.label}</b><span className={`result-pill ${analysisTone(step.status)}`}>{step.status}</span>{step.reached === false && <small>Not reached due to upstream firewall/SG block</small>}{step.type === "firewall" && <><small>Ingress: {step.ingressZone || "미확인"} → Egress: {step.egressZone || "미확인"}</small><b>Matched Rule: {step.matchedRule?.rule || "-"}</b><small>Action: {step.action || "-"}</small>{step.route && <small>Route: {step.route.network} / {step.route.interface}</small>}</>}<small>{step.reason}</small><Fold id={`${prefix}-${index}`} title="세부 정책 및 경로 정보 보기" opened={opened} toggle={toggle}><>{step.candidateRules && <CandidateTable rows={step.candidateRules} />}<pre style={{ whiteSpace: "pre-wrap", minWidth: 0 }}>{JSON.stringify(step,null,2)}</pre></></Fold></article></div>)}{destination && <div className="path-segment"><i>▶</i><article className="panel"><b>Destination</b><small>{destination}</small></article></div>}</section>;
+}
 export function FirewallPathCheckPage() {
-  const [source, setSource] = useState("101.1.0.50");
-  const [destination, setDestination] = useState("100.1.2.10");
-  const [protocol, setProtocol] = useState("TCP");
-  const [port, setPort] = useState("389");
-  const [protocolNumber, setProtocolNumber] = useState("");
-  const [result, setResult] = useState<Result | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
+  const [source,setSource] = useState("101.1.0.50");
+  const [destination,setDestination] = useState("100.1.2.10");
+  const [protocol,setProtocol] = useState("TCP");
+  const [port,setPort] = useState("389");
+  const [protocolNumber,setProtocolNumber] = useState("");
+  const [result,setResult] = useState<AnalysisResult | null>(null);
+  const [loading,setLoading] = useState(false);
+  const [error,setError] = useState("");
+  const [opened,setOpened] = useState<Set<string>>(new Set());
+  const toggle = (id: string, open: boolean) => setOpened(previous => {
+    if (previous.has(id) === open) return previous;
+    const next = new Set(previous); if (open) next.add(id); else next.delete(id); return next;
+  });
+  const usesPort = protocol === "TCP" || protocol === "UDP";
+  const usesProtocolNumber = protocol === "IP";
   const run = async (refresh = false) => {
-    setLoading(true); setError("");
+    setLoading(true); setError(""); setOpened(new Set()); setResult(null);
     try {
-      const usesPort = protocol === "TCP" || protocol === "UDP";
+      if (!source.trim() && !destination.trim()) throw new Error("Source 또는 Destination을 입력하세요");
       const response = await fetch("/api/firewall/path-check", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ source, destination, protocol, port: usesPort && port.trim() ? Number(port) : null, protocolNumber: protocol === "IP" && protocolNumber.trim() ? Number(protocolNumber) : null, refresh }) });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload?.error?.message || "Path Check 실패");
       setResult(payload.data);
     } catch (reason) { setError(String(reason)); } finally { setLoading(false); }
   };
-  const node = (name: string, subtitle: string, firewall?: FirewallResult, sg?: SGStep) => <article className="panel"><b>{name}</b><small>{subtitle}</small>{firewall && <><span className={`result-pill ${tone(firewall.policy.state)}`}>{policyLabel[firewall.policy.state] || firewall.policy.state}</span><span className={`result-pill ${firewall.routing.destination ? "success" : "exists"}`}>{firewall.routing.destination ? "Static Route 확인" : "Static Route 미확인"}</span></>}{sg && <><span className={`result-pill ${sgTone(sg.state)}`}>{sg.queryMode === "fqdn" && sg.state === "UNKNOWN" ? "확인 필요" : sgLabel[sg.state]}</span><small>{sg.reason}</small></>}</article>;
-  const allRoutesConfirmed = Boolean(result?.firewalls.length) && result!.firewalls.every(item => item.routing.destination && item.routing.return);
-  const usesPort = protocol === "TCP" || protocol === "UDP";
-  const usesProtocolNumber = protocol === "IP";
-  const serviceSummary = result?.protocol === "IP" ? `IP / Protocol No. ${result.protocolNumber ?? "ANY"}` : result?.protocol === "TCP" || result?.protocol === "UDP" ? `${result.protocol} / ${result.port ?? "ANY"}` : result?.protocol || "ANY";
-  return <><header className="topbar"><div><p className="breadcrumb">Response / Firewall Path Check</p><h1>Firewall Path Check</h1></div>{result && <div><small>마지막 확인</small><b>{new Date(result.checkedAt).toLocaleString()}</b></div>}</header>
+  const fallbackSteps: AnalysisStep[] = (result?.steps || []).map(step => step.kind === "aws_sg"
+    ? { type: "aws_sg", label: step.label, status: step.state === "FAIL" ? "BLOCK" : step.state, reason: step.reason, awsSg: step }
+    : { type: "firewall", firewall: step.firewall, label: step.label, status: step.policy.state === "allow" ? "PASS" : ["deny","no_matching_rule"].includes(step.policy.state) ? "BLOCK" : "UNKNOWN", reason: policyLabel[step.policy.state], action: step.policy.matchedRule?.action, matchedRule: step.policy.matchedRule, candidateRules: legacyCandidates(step), route: step.routing.destination });
+  const steps = result?.analysisPath || fallbackSteps;
+  const summary: Summary | null = result ? result.summary || { status: result.policySummary?.state === "FAIL" ? "BLOCK" : result.policySummary?.state || "UNKNOWN", source: result.source?.input || source, destination: result.destination?.input || destination, service: `${result.protocol || protocol} / ${result.port ?? "ANY"}`, primaryReason: result.policySummary?.label || "Configuration 확인 필요" } : null;
+  const ids = ["configuration","legacy","resolved"];
+  steps.forEach((_,index) => ids.push(`path-${index}`));
+  result?.resolvedResults?.forEach((item,i) => item.analysisPath.forEach((_,j) => ids.push(`ip-${i}-${j}`)));
+  result?.groups?.forEach((group,i) => { ids.push(`group-${i}`); group.results.forEach((item,j) => item.analysisPath.forEach((_,k) => ids.push(`group-${i}-${j}-${k}`))); });
+  return <><header className="topbar"><div><p className="breadcrumb">Response / Firewall Path Check</p><h1>Firewall Path Analysis</h1></div>{result?.checkedAt && <div><small>마지막 확인</small><b>{new Date(result.checkedAt).toLocaleString()}</b></div>}</header>
     <section className="panel path-check-form"><div className="integration-form-pair"><label>Source IP / CIDR / FQDN<input value={source} onChange={event => setSource(event.target.value)} /></label><label>Destination IP / CIDR / FQDN<input value={destination} onChange={event => setDestination(event.target.value)} /></label></div><div className="integration-form-pair"><label>Protocol<select value={protocol} onChange={event => { const value = event.target.value; setProtocol(value); if (!["TCP", "UDP"].includes(value)) setPort(""); if (value !== "IP") setProtocolNumber(""); }}><option value="ANY">ANY</option><option value="TCP">TCP</option><option value="UDP">UDP</option><option value="ICMP">ICMP</option><option value="ICMPV6">ICMPv6</option><option value="IP">IP</option></select></label><label>{usesProtocolNumber ? "Protocol Number (Optional)" : "Destination Port (Optional)"}<input type="number" min={usesProtocolNumber ? 0 : 1} max={usesProtocolNumber ? 255 : 65535} value={usesProtocolNumber ? protocolNumber : port} onChange={event => usesProtocolNumber ? setProtocolNumber(event.target.value) : setPort(event.target.value)} placeholder={usesPort || usesProtocolNumber ? "ANY" : "Port 미사용"} disabled={!usesPort && !usesProtocolNumber} /></label></div><div className="firewall-buttons"><button className="primary-action" disabled={loading} onClick={() => run(false)}>{loading ? "확인 중..." : "Path Check"}</button>{result && <button disabled={loading} onClick={() => run(true)}>최신 정보 다시 조회</button>}</div>{error && <div className="error-banner">{error}</div>}</section>
-    {result && <><section className="panel path-summary"><div><b>Source</b><strong>{result.source.input}</strong><span>{result.source.site} · {result.source.category || "Mapping 미확인"}</span></div><div><b>Destination</b><strong>{result.destination.input}</strong><span>{result.destination.site} · {result.destination.category || "Mapping 미확인"}</span></div><div><b>Service</b><strong>{serviceSummary}</strong><span>{result.awsSecurityGroups.networkPath?.reason || (result.partialPath ? "Path 일부만 확인 가능" : "관리 Firewall Path 확인")}</span></div></section>
-      <section className="path-diagram">{node(result.source.site, result.source.input)}{result.steps.map((step, index) => <div className="path-segment" key={`${step.kind}-${index}`}><i>▶</i>{step.kind === "aws_sg" ? node(step.label, `${step.endpoint.name || "EC2 미확인"} · ${step.endpoint.eniId || "ENI 미확인"}`, undefined, step) : node(step.label, step.available ? "Configuration 확인" : "조회 불가", step)}</div>)}<div className="path-segment"><i>▶</i>{node(result.destination.site, `${result.destination.input} · ${serviceSummary}`)}</div></section>
-      <section className="panel path-summary"><div><b>Policy Path</b><strong>{result.policySummary.label}</strong><span className={`result-pill ${sgTone(result.policySummary.state)}`}>{sgLabel[result.policySummary.state]}</span></div><div><b>Static Route</b><strong>{!result.firewalls.length ? "해당 없음 · Firewall 경유 단계 없음" : allRoutesConfirmed ? "Static Route 확인됨" : "Static Route에서 일치 경로 미확인"}</strong></div><div><b>판정 범위</b><strong>Configuration 기반 Path Check</strong><span>실제 패킷 연결성을 단정하지 않습니다.</span></div></section>
-      <section className="panel path-summary"><div><b>Source AWS SG Outbound</b><span>{sgLabel[result.awsSecurityGroups.outbound.state]}</span></div><div><b>Destination AWS SG Inbound</b><span>{sgLabel[result.awsSecurityGroups.inbound.state]}</span></div></section>
-      {result.steps.map((item, index) => item.kind === "aws_sg" ? <SecurityGroupResult step={item} key={`${item.direction}-${index}`} /> : <section className="panel firewall-results path-firewall-result" key={item.firewall}><header><div><h2>{item.firewall} Firewall</h2><p>{item.policy.broadQuery ? "Address/Zone Candidate Rule을 표시합니다." : "Protocol/Port까지 일치하는 Rule만 표시합니다."}</p></div><span className={`result-pill ${tone(item.policy.state)}`}>{policyLabel[item.policy.state] || item.policy.state}</span></header><CandidateTable rows={(item.policy.matches || []).filter(candidate => item.policy.broadQuery || candidate.fullMatch)} /><div className="table-wrap path-route-table"><table><thead><tr><th>Destination Route</th><th>Return Route</th></tr></thead><tbody><tr><td>{routeLabel(item.routing.destination)}</td><td>{routeLabel(item.routing.return)}</td></tr></tbody></table></div></section>)}
+
+    {result && summary && <>
+      <section className="panel path-summary"><div><b>{result.mode || "PATH"}</b><strong className={`result-pill ${analysisTone(summary.status)}`}>{summary.status}</strong><span>{summary.source || "후보 Source"} → {summary.destination || "후보 Destination"}</span><b>{summary.service}</b></div><div><b>{summary.blockedAt ? `Blocked At: ${summary.blockedAt}` : "판정 근거"}</b><strong>{summary.primaryReason}</strong><span>Configuration 기반 분석 · 실제 연결성/장비 상태를 단정하지 않습니다.</span></div><div><b>Additional Findings</b>{summary.warnings?.slice(0,4).map((warning,index) => <span key={index}>{warning}</span>)}</div></section>
+      <div className="firewall-buttons"><button onClick={() => setOpened(new Set(ids))}>모두 펼치기</button><button onClick={() => setOpened(new Set())}>모두 접기</button></div>
+      {result.mode === "SOURCE_REACHABILITY" || result.mode === "DESTINATION_EXPOSURE" ? <section className="panel"><h2>{result.mode === "SOURCE_REACHABILITY" ? "접근 가능한 대상 / Reachable Destinations" : "접근 가능한 출발지 / Accessible Sources"}</h2>{!result.groups?.length && <p>확인 가능한 정책 Object가 없습니다. 미표시 범위를 허용으로 간주하지 마세요.</p>}{result.groups?.map((group,i) => <Fold key={i} id={`group-${i}`} title={<><b>{group.label}</b> <span className={`result-pill ${analysisTone(group.status)}`}>{group.status}</span> {group.zone}</>} opened={opened} toggle={toggle}><p>{group.reason}</p><p>{[...group.networks,...group.fqdns].join("; ")}</p>{group.results.map((item,j) => <div key={j}><b>{item.target} · {item.summary.status}</b><AnalysisPath steps={item.analysisPath} prefix={`group-${i}-${j}`} opened={opened} toggle={toggle} /></div>)}</Fold>)}</section>
+      : <AnalysisPath steps={steps} prefix="path" opened={opened} toggle={toggle} source={summary.source} destination={summary.destination} />}
+      {result.resolvedResults && <section className="panel"><Fold id="resolved" title={`Resolved IP별 결과 (${result.resolvedResults.length})`} opened={opened} toggle={toggle}>{result.resolvedResults.map((item,i) => <div key={i}><b>{item.source} → {item.destination} · {item.summary.status}</b><p>{item.summary.primaryReason}</p><AnalysisPath steps={item.analysisPath} prefix={`ip-${i}`} opened={opened} toggle={toggle} /></div>)}</Fold></section>}
+      <section className="panel"><Fold id="legacy" title="기존 정책 및 AWS SG 상세" opened={opened} toggle={toggle}>{result.steps?.map((item,index) => item.kind === "aws_sg" ? <SecurityGroupResult step={item} key={index} /> : <section key={index}><h2>{item.firewall} Firewall</h2><p>Matched Rule: {item.policy.matchedRule?.rule || "-"}</p><p>{routeLabel(item.routing.destination)}</p><p>Return: {routeLabel(item.routing.return)}</p></section>)}</Fold><Fold id="configuration" title="NAT / Route / Return Route / Interface / Zone / Gateway / Resolved Objects 상세" opened={opened} toggle={toggle}><pre>{JSON.stringify(result.details || result,null,2)}</pre></Fold></section>
     </>}
   </>;
 }
