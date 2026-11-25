@@ -177,12 +177,14 @@ def _worksheet(rows: list[dict], columns: list[str], headers: dict[str, str], ce
 
 def _section_worksheet(sections: list[dict], columns: list[str], headers: dict[str, str], first_table_id: int):
     """Reuse ledger cells for independent tables separated by exactly one empty row."""
-    flat, titles, header_rows, blanks, tables = [], [], [], [], []
+    flat, titles, notes, header_rows, blanks, tables = [], [], [], [], [], []
     last_column = _column_name(len(columns))
     for section in sections:
         if flat:
             flat.append({}); blanks.append(len(flat))
         flat.append({columns[0]: section['title']}); titles.append(len(flat))
+        for note in section.get('notes', []):
+            flat.append({columns[0]: note}); notes.append(len(flat))
         flat.append({column: headers.get(column, column) for column in columns})
         header_row = len(flat); header_rows.append(header_row)
         flat.extend(section.get('rows') or [{columns[0]: section.get('message') or 'No data'}])
@@ -198,14 +200,17 @@ def _section_worksheet(sections: list[dict], columns: list[str], headers: dict[s
             row.clear(); row.set('r', str(number)); continue
         for cell in list(row):
             cell.set('r', re.sub(r'\d+$', str(number), cell.get('r')))
-            if number in titles and cell is not row[0]: row.remove(cell); continue
+            if (number in titles or number in notes) and cell is not row[0]: row.remove(cell); continue
             style = LEDGER_STYLES['header'] if number in titles or number in header_rows else int(cell.get('s'))
             cell.set('s', str(style + SECTION_TOP_STYLE_OFFSET))
+            value = cell.find(f"{tag('is')}/{tag('t')}")
+            if value is not None and value.text and value.text != value.text.strip():
+                value.set('{http://www.w3.org/XML/1998/namespace}space', 'preserve')
     sheet.remove(sheet.find(tag('autoFilter')))
     pane = sheet.find(f"{tag('sheetViews')}/{tag('sheetView')}/{tag('pane')}")
-    pane.set('ySplit', '2'); pane.set('topLeftCell', 'A3')
-    merged = SubElement(sheet, tag('mergeCells'), {'count': str(len(titles))})
-    for number in titles: SubElement(merged, tag('mergeCell'), {'ref': f'A{number}:{last_column}{number}'})
+    pane.set('ySplit', str(header_rows[0])); pane.set('topLeftCell', f'A{header_rows[0] + 1}')
+    merged = SubElement(sheet, tag('mergeCells'), {'count': str(len(titles) + len(notes))})
+    for number in sorted(titles + notes): SubElement(merged, tag('mergeCell'), {'ref': f'A{number}:{last_column}{number}'})
     parts = SubElement(sheet, tag('tableParts'), {'count': str(len(tables))})
     rel_ns = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
     for number in range(1, len(tables) + 1):

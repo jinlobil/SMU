@@ -144,13 +144,13 @@ def test_real_workbook_all_four_devices_new_tables_and_existing_sheets_unchanged
     monkeypatch.setattr(module, 'write_xlsx_workbook', capture)
     messages = []
     result = FirewallRuleExportService(tmp_path).build(['Cloud', 'Seoul', 'Icheon', 'Anseong'], messages.append)
-    assert result['sheets'] == ['Cloud', 'Seoul', 'Icheon', 'Anseong', 'LAN ↔ OFFICE', 'LAN ↔ WAN', 'ETC', 'NAT', 'Route']
+    assert result['sheets'] == ['Cloud', 'Seoul', 'Icheon', 'Anseong', 'LAN ↔ OFFICE', 'LAN ↔ WAN', 'ETC', 'NAT', 'Route', 'Interface', 'Zone', 'Gateway']
     assert result['errors'] == []
     assert result['counts'] == {name: 1 for name in ('Cloud', 'Seoul', 'Icheon', 'Anseong')}
     assert result['natCounts'] == {name: 2 for name in result['counts']}
     assert result['routeCounts'] == {name: 1 for name in result['counts']}
     for device in result['counts']:
-        assert Counter(entity for name, entity in seen if name == device) == {entity: 1 for entity in ('FirewallRule', 'IPHost', 'IPHostGroup', 'FQDNHost', 'FQDNHostGroup', 'Services', 'ServiceGroup', 'NATRule', 'UnicastRoute')}
+        assert Counter(entity for name, entity in seen if name == device) == {entity: 1 for entity in ('FirewallRule', 'IPHost', 'IPHostGroup', 'FQDNHost', 'FQDNHostGroup', 'Services', 'ServiceGroup', 'NATRule', 'UnicastRoute', 'Interface', 'Alias', 'Zone', 'GatewayConfiguration')}
     assert any('Cloud NAT Rules' in message for message in messages) and messages[-1] == 'Excel 생성 중'
     before = tmp_path / 'before.xlsx'; write_xlsx_workbook(before, specs[:7])
     with ZipFile(result['path']) as archive, ZipFile(before) as baseline:
@@ -158,7 +158,7 @@ def test_real_workbook_all_four_devices_new_tables_and_existing_sheets_unchanged
         for filename in archive.namelist():
             if filename.endswith(('.xml', '.rels')): ET.fromstring(archive.read(filename))
         for i in range(1, 8): assert archive.read(f'xl/worksheets/sheet{i}.xml') == baseline.read(f'xl/worksheets/sheet{i}.xml')
-        assert len([filename for filename in archive.namelist() if filename.startswith('xl/tables/table')]) == 8
+        assert len([filename for filename in archive.namelist() if filename.startswith('xl/tables/table')]) == 20
         for number, suffix, step in [(8, 'NAT Rules', 5), (9, 'Static Routes', 4)]:
             sheet = ET.fromstring(archive.read(f'xl/worksheets/sheet{number}.xml'))
             rows = sheet.findall('m:sheetData/m:row', NS)
@@ -175,7 +175,7 @@ def test_errors_and_empty_sections_are_isolated_and_secrets_never_exported(tmp_p
                                 ('Seoul', 'UnicastRoute'): TimeoutError('secret request dump'),
                                 ('Anseong', 'NATRule'): empty, ('Anseong', 'UnicastRoute'): empty})
     result = FirewallRuleExportService(tmp_path).build(['Cloud', 'Seoul', 'Icheon', 'Anseong'])
-    assert result['sheets'][-3:] == ['Export Errors', 'NAT', 'Route']
+    assert result['sheets'][-6:] == ['Export Errors', 'NAT', 'Route', 'Interface', 'Zone', 'Gateway']
     assert result['natCounts'] == {'Cloud': 2, 'Seoul': 2, 'Anseong': 0}
     assert result['routeCounts'] == {'Cloud': 1, 'Icheon': 1, 'Anseong': 0}
     assert len(result['errors']) == 2 and {row['Firewall'] for row in result['errors']} == {'Icheon', 'Seoul'}
