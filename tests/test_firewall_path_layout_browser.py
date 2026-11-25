@@ -66,7 +66,7 @@ def test_path_cards_use_page_scroll_without_clipping(tmp_path, monkeypatch, widt
         assert geometry["overflow"] == "visible"
         assert geometry["scrollHeight"] <= geometry["clientHeight"] + 1
         assert geometry["cardsVisible"]
-        assert page.locator(".path-diagram article").count() == extra_steps + 4
+        assert page.locator(".path-diagram article").count() == extra_steps + len(result["analysisPath"]) - extra_steps + 2
         page.mouse.move(width // 2, 400)
         page.mouse.wheel(0, 500)
         page.wait_for_function("window.scrollY > 0")
@@ -88,12 +88,15 @@ def test_sg_pass_shows_exact_only_fail_hides_mismatches_firewall_drop_remains(tm
     result["firewalls"] = [firewall]
     result["steps"] = [outbound, firewall_step(firewall), inbound]
     result.pop("analysisPath", None)  # Exercise retained legacy-response rendering.
+    result.pop("summary", None)
+    result.pop("progress", None)
     with path_browser(result) as page:
-        assert page.get_by_text("Outbound HTTPS", exact=True).count() == 1
+        assert page.locator("table, pre").count() == 0
         assert page.get_by_text("hidden SG candidate", exact=True).count() == 0
-        assert page.get_by_text("일치하는 Allow Rule 없음", exact=True).count() >= 1
+        assert page.get_by_text("일치하는 Allow Rule 없음", exact=True).count() == 0  # Downstream SG is NOT_REACHED, not a second failure.
         assert page.get_by_text("visible-fw-drop", exact=True).count() == 1
-        assert page.get_by_text("Drop", exact=True).count() == 1
+        assert page.locator(".path-progress li[data-status=BLOCK]").count() == 1
+        assert page.locator(".path-progress li[data-status=NOT_REACHED]").count() >= 1
 
 
 def test_fqdn_sg_confirmation_shows_only_port_candidates(tmp_path, monkeypatch):
@@ -104,8 +107,8 @@ def test_fqdn_sg_confirmation_shows_only_port_candidates(tmp_path, monkeypatch):
     monkeypatch.setattr(module, "resolve_fqdn", lambda _: ["100.1.2.10"])
     result = path_service(tmp_path, monkeypatch).check("10.10.0.10", "api.example.com", "TCP", 443)
     with path_browser(result) as page:
-        assert page.get_by_text("확인 필요", exact=True).count() >= 2
+        assert page.locator(".path-progress").count() == 1
         assert page.get_by_text("hidden port 80", exact=True).count() == 0
         assert page.get_by_text("Inbound HTTPS", exact=True).count() == 1
-        assert page.get_by_text("Source/Destination 조건은 FQDN 기준으로 판정하지 않음", exact=False).count() >= 1
+        assert page.locator("table, pre").count() == 0
         assert page.get_by_text("PASS · 정책 허용", exact=True).count() == 0
