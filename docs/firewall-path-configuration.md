@@ -20,9 +20,10 @@
 flowchart TD
   A[수동 Refresh / 기존 Scheduler 선택 Target] --> B[기존 FirewallClient GET]
   B --> C[기존 Export parser + Group 사전 확장]
-  C --> D[Snapshot / Index 검증]
+  C --> D[Snapshot schema 검증]
   D --> E[장비별 JSON atomic replace]
-  E --> F[Refresh batch 완료 시 Memory reference swap]
+  E --> M[Index 생성 / ID 검증]
+  M --> F[Refresh batch 완료 시 Memory reference swap]
   F --> G[고정된 Snapshot / Index로 분석]
   H[Backend 시작] --> I[정상 JSON Load / Index Build]
   I --> G
@@ -84,7 +85,7 @@ cache/firewall_config/status.json
 - 응답 XML과 Response root, API status를 검증한다. 잘린 XML, 알려진 pagination/next-token/total-count 불일치는 거부한다.
 - 필수 entity 실패, 테이블/필드 타입 오류, Rule 이름 누락/중복, 잘못된 metadata, Snapshot/Index ID 불일치를 거부한다.
 - 모든 테이블이 빈 결과를 거부한다. 기존 Rule이 있는데 API가 total=0을 명시하지 않은 빈 Rule 결과로 바꾸는 것도 거부한다.
-- Index를 먼저 완성/검증한 다음 기존 `RefreshService.save_json_atomic()`의 임시 파일 + replace 규칙으로 저장한다.
+- API 수집 → Parsing → Validation → 기존 `RefreshService.save_json_atomic()`으로 Snapshot 저장 → Index 생성 → Memory 교체 순서로 실행한다. 저장 후 Index 생성에 실패하면 이전 JSON으로 복구하며, 최초 수집이면 새 파일을 제거한다.
 - 실패한 장비의 기존 JSON/Memory Snapshot/Index는 유지한다. 성공한 장비만 새 후보를 준비한다.
 - 장비별 수집이 끝날 때마다 Memory를 노출하지 않는다. batch 전체 종료 시 성공 후보와 실패 장비의 기존 데이터를 한 번에 공개한다.
 - 각 분석 요청은 하나의 고정된 Memory view를 사용한다. Refresh 중에도 이전 Index로 검색할 수 있다.
@@ -151,7 +152,7 @@ WAN Port selector를 가진 Default SNAT IPv4는 이 경로에서 완전히 제�
 |---|---|
 | 일반 분석 | 기존 `/api/firewall/path-check`, refresh=false, 로컬 Snapshot/Index만 사용 |
 | 최신화 시작 | `POST /api/firewall/configuration/refresh`, 202, 중복 실행 공유 |
-| 진행 상태 | `GET /api/firewall/configuration`, Memory 상태만 반환 |
+| 진행 상태 | `GET /api/firewall/configuration/status`, Memory 상태만 반환 |
 | 최신화 완료 | 새 batch 공개 → 현재 입력으로 다시 분석 |
 | 자동 최신화 | 기존 Scheduler의 `firewall_configuration` 선택 Target, 사용자가 저장한 Interval 적용 |
 
@@ -232,3 +233,11 @@ NAT pool/복잡한 다중 변환, 동적 routing 전체, 실시간 연결성을 
 처음 설치하거나 기존 Snapshot이 없는 경우에는 **최신 정보 다시 조회**를 한 번 실행해야 한다. 자동 Refresh는 Config의 기존 Scheduler에서 Firewall Configuration을 선택하고 원하는 Interval로 저장한다. 실패 장비는 이전 정상 Snapshot이 유지되고 Configuration 기준 시각도 새 검색 시각으로 위장하지 않는다.
 
 최종 재실행(전체 검증 후 NAT 상태 enum 도달 경로까지 확인): **1194 passed, 2 failed**, **81.31초**. 신규 60개 테스트의 수집 개수도 별도로 확인했다. 결과가 동일한 기존 두 실패 이외의 회귀는 발견하지 못했다. 코드 수정은 작업 트리에 남겼으며 HEAD는 이전 `fb0da4f` 그대로다.
+
+## 14. Snapshot이 없는 환경의 최초 Refresh
+
+기존 `GET /api/firewall/configuration`은 공개 장비 설정 목록 API다. 동일 경로에 Refresh 상태 API도 등록되어 있어, UI가 목록 응답의 누락된 `running`을 완료로 해석하고 수집 완료 전에 재분석할 수 있었다. 상태 조회를 `/api/firewall/configuration/status`로 분리하고 boolean `running`을 검증한다. 기존 설정 목록 API는 유지한다.
+
+Refresh Collector는 Snapshot-only guard를 사용하지 않고 각 장비 API를 직접 조회한다. 일반 분석은 계속 로컬 Snapshot/Memory Index만 사용한다. Refresh 완료 후 현재 Query를 재분석하며, 실패한 Firewall/Entity의 안전한 진단을 화면 오류와 상태 응답에 제공한다. 진단에는 firewall/entity/stage/exception_type/http_status/api_code/reason만 포함하며, URL·응답 원문·인증정보·전체 예외 문구는 기록하지 않는다. 설정 누락과 설정 로드 실패도 장비별로 보고한다.
+
+`tests/test_firewall_configuration_bootstrap.py`는 Snapshot 파일이 없는 임시 환경에서 실제 Refresh 버튼 → FastAPI → 기존 Collector → 파일 저장 → Index → 재분석 경로를 검증한다. HTTPS 전송만 mock하며 4대 장비의 13개 Entity 호출과 4개 Snapshot 생성을 확인한다. HTTP 403/API 529 진단은 mock 검증값이며 운영 실패 원인을 단정하지 않는다. 운영 API 호출은 수행하지 않았다.

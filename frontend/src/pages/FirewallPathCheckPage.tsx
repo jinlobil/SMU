@@ -110,12 +110,18 @@ export function FirewallPathCheckPage() {
     let cancelled = false, timer: ReturnType<typeof setTimeout>;
     const poll = async () => {
       try {
-        const response = await fetch("/api/firewall/configuration");
+        const response = await fetch("/api/firewall/configuration/status");
         if (!response.ok) throw new Error("Configuration Refresh 상태 조회 실패");
         const payload = await response.json();
         if (cancelled) return;
+        if (typeof payload?.data?.running !== "boolean") throw new Error("Configuration Refresh 상태 응답 형식 오류");
         if (payload.data.running) timer = setTimeout(poll, 1000);
-        else { setRefreshing(false); void runRef.current(false); }
+        else {
+          const failures = Object.entries(payload.data.firewalls || {}).filter(([, value]) => (value as { refresh_status?: string }).refresh_status === "failed");
+          const failureText = failures.map(([name, value]) => { const item = value as { error_code?: string; diagnostics?: { entity: string; reason: string; http_status?: number; api_code?: string }[] }; return `${name}: ${item.diagnostics?.map(error => `${error.entity} ${error.reason}${error.http_status ? ` HTTP ${error.http_status}` : ""}${error.api_code ? ` API ${error.api_code}` : ""}`).join("; ") || item.error_code || "최신화 실패"}`; }).join(" / ");
+          setRefreshing(false); await runRef.current(false);
+          if (failureText) setError(failureText);
+        }
       } catch (reason) { if (!cancelled) { setRefreshing(false); setError(String(reason)); } }
     };
     timer = setTimeout(poll, 500);

@@ -3,6 +3,10 @@ from __future__ import annotations
 import copy
 import ipaddress
 import json
+import re
+import socket
+import ssl
+import urllib.error
 import logging
 import threading
 import time
@@ -19,10 +23,49 @@ TABLES=('rules','natRules','routes','interfaces','aliases','zones','gateways')
 SCHEMA_VERSION=1
 
 
+SAFE_REASONS=frozenset({
+    'incomplete_snapshot','invalid_snapshot_tables','invalid_snapshot_objects','invalid_rule_name','duplicate_rule_name',
+    'invalid_snapshot_metadata','invalid_snapshot_field','invalid_object_values','invalid_fqdn_values','index_version_mismatch',
+    'configuration_missing','empty_snapshot','unconfirmed_empty_rules','partial_response','partial_response_count','invalid_response_root','authentication_failed',
+})
+
+
+def failure_diagnostic(exc,firewall,entity,stage,response=None):
+    """Allowlisted metadata only: never return/log URL, body, credential or exception message."""
+    from backend.services.firewall import parse_status
+    http_status=int(exc.code) if isinstance(exc,urllib.error.HTTPError) else None
+    api_code=None
+    if response:
+        code=parse_status(response).get('code','')
+        if re.fullmatch(r'[0-9]{3,8}',code):api_code=code
+    underlying=exc.reason if isinstance(exc,urllib.error.URLError) else exc
+    if http_status:reason='http_authentication_or_access_denied' if http_status in {401,403} else 'http_request_failed'
+    elif api_code and api_code!='200':reason='unsupported_entity' if api_code=='529' else 'firewall_api_error'
+    elif isinstance(underlying,(TimeoutError,socket.timeout)):reason='timeout'
+    elif isinstance(underlying,ssl.SSLCertVerificationError):reason='tls_certificate_verification_failed'
+    elif isinstance(underlying,ssl.SSLError):reason='tls_error'
+    elif isinstance(exc,urllib.error.URLError):reason='connection_failed'
+    elif isinstance(exc,PermissionError):reason='permission_denied'
+    elif isinstance(exc,OSError) and exc.errno==28:reason='disk_full'
+    elif type(exc) is ValueError and str(exc) in SAFE_REASONS:reason=str(exc)
+    else:
+        import xml.etree.ElementTree as ET
+        reason='invalid_xml' if isinstance(exc,ET.ParseError) else 'operation_failed'
+    return {'firewall':firewall,'entity':entity,'stage':stage,'exception_type':type(exc).__name__,
+            'http_status':http_status,'api_code':api_code,'reason':reason}
+
+
+def log_failure(diagnostic):
+    log.warning('Firewall refresh failed firewall=%s entity=%s stage=%s exception_type=%s http_status=%s api_code=%s reason=%s',
+        *(diagnostic.get(key) for key in ('firewall','entity','stage','exception_type','http_status','api_code','reason')))
+
+
 def validate_response(raw,entity):
     import xml.etree.ElementTree as ET
     root=ET.fromstring(raw)
     if root.tag.rsplit('}',1)[-1].casefold()!='response':raise ValueError('invalid_response_root')
+    for login in root.iter('Login'):
+        if any((node.text or '').strip().casefold() in {'authentication failure','authentication failed','login failed'} for node in login.iter()):raise ValueError('authentication_failed')
     nodes=_nodes(raw,entity)
     if entity in {'Interface','Alias','Zone'}:
         from backend.services.firewall_network_export import _entity_records
@@ -186,7 +229,7 @@ class ConfigurationIndex:
         return result
 
 
-def validate(snapshot):
+def validate(snapshot, *, build_index=True):
     if not isinstance(snapshot,dict) or snapshot.get('configurationErrors'):raise ValueError('incomplete_snapshot')
     if not any(snapshot.get(table) for table in TABLES):raise ValueError('empty_snapshot')
     if any(not isinstance(snapshot.get(table),list) or any(not isinstance(row,dict) for row in snapshot[table]) for table in TABLES):raise ValueError('invalid_snapshot_tables')
@@ -207,6 +250,7 @@ def validate(snapshot):
     metadata=snapshot.get('metadata',{})
     if not isinstance(metadata,dict):raise ValueError('invalid_snapshot_metadata')
     if metadata.get('schema_version')!=SCHEMA_VERSION or not metadata.get('snapshot_id') or not metadata.get('refreshed_at'):raise ValueError('invalid_snapshot_metadata')
+    if not build_index:return None
     index=ConfigurationIndex(snapshot)
     if index.snapshot_id!=metadata['snapshot_id']:raise ValueError('index_version_mismatch')
     return index
@@ -246,39 +290,69 @@ class FirewallConfigurationStore:
         pending_snapshots={};pending_indexes={}
         try:
             for config in self.firewalls.configurations():
-                if not config.get('configured'):continue
-                name=config['name'];attempt=datetime.now(timezone.utc).isoformat();started=time.perf_counter();snapshot=None
+                name=config['name'];attempt=datetime.now(timezone.utc).isoformat();started=time.perf_counter()
+                snapshot=None;previous=self.get(name);saved=False;stage='api_collection'
                 try:
+                    if not config.get('configured'):
+                        diagnostic=failure_diagnostic(ValueError('configuration_missing'),name,'Configuration','configuration')
+                        diagnostic['missing_fields']=[field for field in ('host','port','username','password') if not config.get(field)]
+                        log_failure(diagnostic)
+                        with self.lock:
+                            self.status['firewalls'][name]={**self.status['firewalls'].get(name,{}),
+                                'last_refresh_attempt':attempt,'refresh_status':'failed','error':'ValueError',
+                                'error_code':'configuration_missing','error_entities':['Configuration'],'diagnostics':[diagnostic]}
+                        continue
+                    # This is the online Collector, not _snapshot()/analysis_snapshots().
                     snapshot=copy.deepcopy(self.collector(config,True))
                     collected_at=datetime.now(timezone.utc).isoformat()
                     snapshot['metadata']={'schema_version':SCHEMA_VERSION,'snapshot_id':uuid.uuid4().hex,'firewall':name,'refreshed_at':collected_at,'source':'sophos_configuration_api'}
                     snapshot['checkedAt']=collected_at
-                    index=validate(snapshot)
-                    previous=self.get(name)
+                    stage='snapshot_validation';validate(snapshot,build_index=False)
                     if previous and previous['rules'] and not snapshot['rules'] and not snapshot.get('confirmedEmptyRules',False):raise ValueError('unconfirmed_empty_rules')
-                    # Validation/index construction finishes before disk or memory is replaced.
                     from backend.services.refresh import RefreshService
-                    RefreshService(self.root).save_json_atomic(self.path(name),snapshot)
+                    stage='snapshot_save';RefreshService(self.root).save_json_atomic(self.path(name),snapshot);saved=True
+                    stage='index_build';index=ConfigurationIndex(snapshot)
+                    if index.snapshot_id!=snapshot['metadata']['snapshot_id']:raise ValueError('index_version_mismatch')
                     with self.lock:
                         pending_snapshots[name]=snapshot;pending_indexes[name]=index
-                        self.status['firewalls'][name]={'last_refresh_attempt':attempt,'last_successful_refresh':collected_at,'refresh_status':'success','error':None}
+                        self.status['firewalls'][name]={'last_refresh_attempt':attempt,'last_successful_refresh':collected_at,
+                            'refresh_status':'success','error':None,'error_code':None,'error_entities':[],'diagnostics':[]}
+                    log.info('Firewall refresh collected firewall=%s stage=prepared snapshot_id=%s elapsed_ms=%.2f',name,index.snapshot_id,(time.perf_counter()-started)*1000)
                 except Exception as exc:
+                    details=list(snapshot.get('collectionDiagnostics',[])) if isinstance(snapshot,dict) else []
+                    diagnostic=failure_diagnostic(exc,name,'Snapshot',stage)
+                    if not details:details.append(diagnostic);log_failure(diagnostic)
+                    if saved:
+                        try:
+                            from backend.services.refresh import RefreshService
+                            if previous is not None:RefreshService(self.root).save_json_atomic(self.path(name),previous)
+                            else:self.path(name).unlink(missing_ok=True)
+                        except Exception as rollback_exc:
+                            rollback=failure_diagnostic(rollback_exc,name,'Snapshot','snapshot_rollback')
+                            details.append(rollback);log_failure(rollback)
                     with self.lock:
-                        previous=self.status['firewalls'].get(name,{})
-                        safe_codes={'incomplete_snapshot','invalid_snapshot_tables','invalid_snapshot_objects','invalid_rule_name','duplicate_rule_name','invalid_snapshot_metadata','invalid_snapshot_field','invalid_object_values','invalid_fqdn_values','index_version_mismatch','empty_snapshot','unconfirmed_empty_rules'}
-                        reason=str(exc) if type(exc) is ValueError and str(exc) in safe_codes else 'collection_failed'
-                        self.status['firewalls'][name]={**previous,'last_refresh_attempt':attempt,'refresh_status':'failed','error':type(exc).__name__,'error_code':reason,
-                            'error_entities':sorted(snapshot.get('configurationErrors',{})) if isinstance(snapshot,dict) else []}
+                        old=self.status['firewalls'].get(name,{})
+                        self.status['firewalls'][name]={**old,'last_refresh_attempt':attempt,'refresh_status':'failed',
+                            'error':type(exc).__name__,'error_code':diagnostic['reason'],
+                            'error_entities':sorted({item['entity'] for item in details}),'diagnostics':details}
                 log.debug('Firewall configuration refresh firewall=%s elapsed_ms=%.2f',name,(time.perf_counter()-started)*1000)
+        except Exception as exc:
+            from backend.services.firewall import FIREWALL_DEFINITIONS
+            for name in FIREWALL_DEFINITIONS:
+                diagnostic=failure_diagnostic(exc,name,'Configuration','configuration_load')
+                log_failure(diagnostic)
+                with self.lock:
+                    self.status['firewalls'][name]={**self.status['firewalls'].get(name,{}),
+                        'last_refresh_attempt':datetime.now(timezone.utc).isoformat(),'refresh_status':'failed',
+                        'error':type(exc).__name__,'error_code':diagnostic['reason'],'error_entities':['Configuration'],'diagnostics':[diagnostic]}
         finally:
             with self.lock:
-                self.snapshots={**self.snapshots,**pending_snapshots}
-                self.indexes={**self.indexes,**pending_indexes}
+                self.snapshots={**self.snapshots,**pending_snapshots};self.indexes={**self.indexes,**pending_indexes}
                 self.status['running']=False
             try:
                 from backend.services.refresh import RefreshService
                 RefreshService(self.root).save_json_atomic(self.directory/'status.json',self.info())
-            except Exception as exc:log.warning('Firewall configuration status persistence failed error_type=%s',type(exc).__name__)
+            except Exception as exc:log_failure(failure_diagnostic(exc,'Local','Status','status_save'))
             finally:self.refresh_lock.release()
         return self.info()
     def start_refresh(self):
