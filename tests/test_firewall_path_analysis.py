@@ -53,8 +53,8 @@ def test_exact_path_pass_configuration_summary_and_legacy_schema(tmp_path,monkey
     assert result['mode']=='PATH' and result['summary']['status']=='PASS'
     assert result['summary']['confidence']=='CONFIRMED'
     assert result['analysisPath'][0]['matchedRule']['rule']=='allow'
-    assert [step['type'] for step in result['analysisPath']]==['firewall','route','gateway']
-    assert 'Status' not in result['analysisPath'][-1]['gateway']
+    assert [step['type'] for step in result['analysisPath']]==['firewall','route','gateway','return_route']
+    assert 'Status' not in next(step for step in result['analysisPath'] if step['type']=='gateway')['gateway']
     assert {'source','destination','path','steps','firewalls','policySummary','awsSecurityGroups','checkedAt'}<=result.keys()
     assert result['firewalls'][0]['routing']['returnStatus']=='PASS'
     assert Counter(name for name,refresh in calls)=={'Cloud':1}
@@ -79,7 +79,8 @@ def test_return_route_unknown_and_blackhole_conflict(tmp_path,monkeypatch):
     data['routes'][0]['destination']='203.0.113.0';data['routes'][0]['netmask']='24'
     current,_=service(tmp_path,monkeypatch,{'Cloud':data})
     result=current.check('100.1.1.10','203.0.113.10','TCP',443)
-    assert result['summary']['status']=='WARNING'
+    assert result['summary']['status']=='UNKNOWN'
+    assert 'Return Static / Connected Route' in result['summary']['primaryReason']
     assert result['firewalls'][0]['routing']['returnStatus']=='UNKNOWN'
     data['routes'].append({'destination':'100.1.0.0','netmask':'22','interface':'PortA','blackhole':'Enable'})
     result=current.check('100.1.1.10','203.0.113.10','TCP',443)
@@ -120,7 +121,7 @@ def test_missing_nat_configuration_isolated_and_unsafe_drop_not_asserted(tmp_pat
     data=snapshot();data['configurationErrors']['NATRule']='Firewall API 500'
     current,_=service(tmp_path,monkeypatch,{'Cloud':data})
     result=current.check('100.1.1.10','203.0.113.10','TCP',443)
-    assert result['summary']['status']=='WARNING'
+    assert result['summary']['status']=='UNKNOWN'
     assert result['firewalls'][0]['analysis']['status']=='UNKNOWN'
     assert any('NATRule' in warning for warning in result['summary']['warnings'])
 
@@ -146,11 +147,14 @@ def test_one_sided_modes_group_networks_without_enumeration(tmp_path,monkeypatch
     assert Counter(name for name,refresh in calls)=={'Cloud':1}
 
 
-def test_any_scope_is_not_expanded_or_asserted_as_internet_wide_pass(tmp_path,monkeypatch):
+def test_any_scope_partitioned_without_ip_enumeration_and_verified_by_path_engine(tmp_path,monkeypatch):
     current,_=service(tmp_path,monkeypatch)
     result=current.check('100.1.1.10','','TCP',443)
     assert len(result['groups'])==1 and result['groups'][0]['wildcard'] is True
-    assert result['groups'][0]['status']=='WARNING' and result['groups'][0]['results']==[]
+    assert result['groups'][0]['status']=='PASS'
+    assert result['groups'][0]['results']
+    assert len(result['groups'][0]['results']) < 256
+    assert all(case['progress']['nodes'] for case in result['groups'][0]['results'])
 
 
 def test_source_cidr_partial_rule_is_warning_not_global_block(tmp_path,monkeypatch):
@@ -208,8 +212,9 @@ def test_multi_firewall_first_block_and_downstream_sg_not_reached(tmp_path,monke
     result=current.check('101.1.0.50','100.1.1.10','TCP',443)
     assert result['summary']['status']=='BLOCK' and result['summary']['blockedAt']=='Cloud'
     assert result['firewalls'][0]['analysis']['status']=='PASS'
-    assert result['analysisPath'][-1]['type']=='aws_sg' and result['analysisPath'][-1]['reached'] is False
-    assert 'Not reached' in result['analysisPath'][-1]['notReachedReason']
+    downstream=next(step for step in result['analysisPath'] if step['type']=='aws_sg')
+    assert downstream['status']=='NOT_REACHED' and downstream['reached'] is False
+    assert 'Not reached' in downstream['notReachedReason']
     assert Counter(name for name,refresh in calls)=={'Seoul':1,'Cloud':1}
 
 
@@ -276,11 +281,12 @@ def test_unresolved_rule_object_does_not_prove_allow_or_default_drop(tmp_path, m
     assert 'resolvedObjects' in result['details']
 
 
-def test_inferred_zone_mismatch_is_not_a_definitive_firewall_block(tmp_path, monkeypatch):
+def test_empty_rule_set_is_default_drop_independent_of_inferred_zone(tmp_path, monkeypatch):
     data = snapshot()
     data['interfaces'] = []
     data['rules'] = []
     current, _ = service(tmp_path, monkeypatch, {'Cloud': data})
     result = current.check('100.1.1.10', '203.0.113.10', 'TCP', 443)
-    assert result['summary']['status'] != 'BLOCK'
+    assert result['summary']['status'] == 'BLOCK'
     assert result['analysisPath'][0]['confidence'] == 'INFERRED'
+    assert all(step['status']=='NOT_REACHED' for step in result['analysisPath'][1:])

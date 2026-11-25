@@ -15,7 +15,7 @@ def test_response_menu_and_route_include_firewall_path_check() -> None:
 
 def test_path_check_reuses_existing_ui_classes() -> None:
     page = (ROOT / "frontend/src/pages/FirewallPathCheckPage.tsx").read_text(encoding="utf-8")
-    for class_name in ("panel", "firewall-buttons", "primary-action", "error-banner", "table-wrap", "result-pill"):
+    for class_name in ("panel", "firewall-buttons", "primary-action", "error-banner", "result-pill"):
         assert class_name in page
 
 
@@ -28,14 +28,12 @@ def test_path_check_supports_any_protocol_optional_port_and_effective_policy_lab
     assert 'protocolNumber: protocol === "IP"' in page
     assert 'disabled={!usesPort && !usesProtocolNumber}' in page
     assert 'no_matching_rule: "매칭 정책 없음 · 기본 Drop"' in page
-    assert 'service_varies: "서비스별 정책 상이"' in page
+    assert 'service_varies: "서비스별 결과 상이"' in page
 
 
-def test_exact_table_filters_full_matches_and_shows_rule_addresses() -> None:
+def test_path_page_removes_raw_tables_and_has_analysis_progress() -> None:
     page = (ROOT / "frontend/src/pages/FirewallPathCheckPage.tsx").read_text(encoding="utf-8")
-    assert ".filter(candidate => item.policy.broadQuery || candidate.fullMatch)" in page
-    for heading in ("Source Object", "Source Resolved", "Destination Object", "Destination Resolved"):
-        assert f"<th>{heading}</th>" in page
-    assert "<th>Source Match</th>" not in page
-    assert "<th>Destination Match</th>" not in page
-    assert 'wildcard ? "Any"' in page
+    for removed in ("<table", "<pre", "JSON.stringify(step", "CandidateTable", "모두 펼치기", "모두 접기"):
+        assert removed not in page
+    for required in ("path-progress", "path-vertical", "판정 근거 보기", "NOT_REACHED", "progress.links"):
+        assert required in page
