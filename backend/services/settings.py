@@ -104,12 +104,13 @@ class ThemePresetService:
         temporary.write_text(json.dumps(presets, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         os.replace(temporary, self.path)
 class SchedulerService:
-    TARGETS = {"detections", "inbound", "dlp", "outbound", "endpoints", "organizations", "users", "aws", "learner"}
+    TARGETS = {"detections", "inbound", "dlp", "outbound", "endpoints", "organizations", "users", "aws", "learner", "firewall_configuration"}
     LEGACY_DETECTION_TARGETS = {"xdr", "firewall"}
 
     def __init__(self, root: Path, refresh_service, index_service=None):
         self.path = root / "runtime/scheduler.json"
         self.refresh = refresh_service
+        self.firewall_configuration_refresh = None
         self.index = index_service
         self.lock = threading.Lock()
         self.run_lock = threading.Lock()
@@ -241,8 +242,21 @@ class SchedulerService:
                 self._persist_locked()
             targets = self.get()["targets"]
             learner_selected = "learner" in targets
-            collection_targets = [target for target in targets if target != "learner"]
+            collection_targets = [target for target in targets if target not in {"learner","firewall_configuration"}]
             upstream_ok = True
+            if "firewall_configuration" in targets:
+                try:
+                    self._update_progress("collecting","firewall_configuration","Firewall Configuration 최신화")
+                    if self.firewall_configuration_refresh is None:raise RuntimeError("collector_unavailable")
+                    outcome=self.firewall_configuration_refresh()
+                    success=not any(item.get('refresh_status')=='failed' for item in outcome.get('firewalls',{}).values())
+                    state="SUCCESS" if success else "FAIL"
+                except Exception:
+                    state="FAIL"
+                messages.append("firewall_configuration:"+("OK" if state=="SUCCESS" else "FAIL"))
+                with self.lock:
+                    self.state['targetStatus']['firewall_configuration']={'time':self._display_time(time.time()),'status':state,'message':'Configuration Snapshot Refresh'}
+                    self._persist_locked()
             if collection_targets and self.index is not None and hasattr(self.index, "start_fetch_job"):
                 try:
                     self.log.info("Scheduler dispatching Fetcher targets=%s chain_index=true", collection_targets)
@@ -296,7 +310,7 @@ class SchedulerService:
                 with self.lock:
                     self.state["targetStatus"]["learner"] = {"time": timestamp, "status": status, "message": detail}
                     self._persist_locked()
-            elif not collection_targets:
+            elif not collection_targets and "firewall_configuration" not in targets:
                 messages.append("선택된 수집 대상 없음")
         except Exception as exc:
             self.log.exception("Scheduler cycle failed before completion")

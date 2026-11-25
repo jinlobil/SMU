@@ -224,16 +224,17 @@ def test_broad_cidr_overlap_does_not_invent_an_unconfigured_site_firewall(tmp_pa
 
 def test_numeric_path_resolves_existing_fqdn_object_without_raw_dump(tmp_path,monkeypatch):
     import backend.services.firewall_path_check as module
-    data=snapshot();data['rules'][0].update({'Destination Object':'fqdn-object','Destination Resolved':'object.example.test','_Destination FQDNs':['object.example.test']})
+    data=snapshot();data['rules'][0].update({'Destination Object':'fqdn-object','Destination Resolved':'object.example.test\n203.0.113.10','_Destination FQDNs':['object.example.test']})
     calls=[]
     monkeypatch.setattr(module,'resolve_fqdn',lambda value:calls.append(value) or ['203.0.113.10'])
     assert check(tmp_path,monkeypatch,data)['summary']['status']=='PASS'
-    assert calls==['object.example.test']
+    assert calls==[]  # Existing Snapshot already resolved the Object during refresh.
 
 
 def test_dns_object_failure_has_specific_reason(tmp_path,monkeypatch):
     import backend.services.firewall_path_check as module
     data=snapshot();data['rules'][0].update({'Destination Object':'fqdn-object','Destination Resolved':'object.example.test','_Destination FQDNs':['object.example.test']})
+    data['rules'][0]['_Object Resolution Errors']=['Destination FQDN DNS Resolve 실패']
     monkeypatch.setattr(module,'resolve_fqdn',lambda value:[])
     result=check(tmp_path,monkeypatch,data)
     assert result['summary']['status']=='UNKNOWN'

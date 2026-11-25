@@ -21,7 +21,7 @@ def test_no_raw_tables_json_or_expand_all_and_evidence_resets(tmp_path,monkeypat
         assert page.locator('details[open]').count()==1
         assert page.locator('.path-evidence').first.is_visible()
         assert page.locator('table, pre').count()==0
-        page.get_by_role('button',name='Path Check',exact=True).click()
+        page.get_by_role('button',name='분석',exact=True).click()
         expect(page.locator('details[open]')).to_have_count(0)
 
 
@@ -61,16 +61,16 @@ def test_one_sided_summary_selection_displays_only_selected_path(tmp_path,monkey
     current,_=service(tmp_path,monkeypatch,{'Cloud':data})
     result=current.check(source,destination,'TCP',443)
     with path_browser(result,390) as page:
-        assert page.get_by_text(mode,exact=True).is_visible()
+        assert page.locator(f'[data-mode={mode}]').is_visible()
         assert page.locator('.path-progress').count()==0
         page.get_by_role('button',name='경로 보기:',exact=False).first.click()
-        assert page.locator('.path-progress').count()==1
+        assert page.locator('.mini-path').count()>0
         assert page.locator('.path-vertical').count()==1
         assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
         page.get_by_label('Source IP / CIDR / FQDN',exact=True).fill(source)
         page.get_by_label('Destination IP / CIDR / FQDN',exact=True).fill(destination)
         with page.expect_request('**/api/firewall/path-check') as sent:
-            page.get_by_role('button',name='Path Check',exact=True).click()
+            page.get_by_role('button',name='분석',exact=True).click()
         assert sent.value.post_data_json['source']==source and sent.value.post_data_json['destination']==destination
 
 

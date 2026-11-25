@@ -7,6 +7,22 @@ from backend.services.firewall_path_check import match_rules
 from backend.services.firewall_rule_export import _restore_rule_order
 
 
+def normalized_service_lines(resolved,protocol):
+    lines = resolved.splitlines()
+    normalized=[]
+    for line in lines:
+        match=re.search(r'Protocol:\s*IP\s*\|\s*Protocol Number:\s*(\d+)\b',line,re.I)
+        if match and int(match.group(1)) in {1,6,17,58}:
+            actual={1:'ICMP',6:'TCP',17:'UDP',58:'ICMPV6'}[int(match.group(1))]
+            if protocol==actual:
+                line=re.sub(r'Protocol:\s*IP\b','Protocol: '+actual,line,flags=re.I)
+                if actual in {'TCP','UDP'} and 'Destination:' not in line:line+=' | Destination: 1:65535'
+        line=re.sub(r'Destination:\s*(?:Any|All|\*)(?=\s*(?:\||$))','Destination: 1:65535',line,flags=re.I)
+        normalized.append(line)
+    lines=normalized
+    return lines
+
+
 def decide_policy(rows, source, destination, protocol, port, source_zone, destination_zone,
                   number=None, source_fqdn=None, destination_fqdn=None):
     rows = copy.deepcopy(rows)
@@ -14,30 +30,25 @@ def decide_policy(rows, source, destination, protocol, port, source_zone, destin
     # Keep service records correlated: a TCP protocol on one member must not
     # combine with a UDP destination port from another member of the group.
     for row in rows:
-        lines = row.get('Service Resolved / Protocol / Port', '').splitlines()
-        normalized=[]
-        for line in lines:
-            match=re.search(r'Protocol:\s*IP\s*\|\s*Protocol Number:\s*(\d+)\b',line,re.I)
-            if match and int(match.group(1)) in {1,6,17,58}:
-                actual={1:'ICMP',6:'TCP',17:'UDP',58:'ICMPV6'}[int(match.group(1))]
-                if protocol==actual:
-                    line=re.sub(r'Protocol:\s*IP\b','Protocol: '+actual,line,flags=re.I)
-                    if actual in {'TCP','UDP'} and 'Destination:' not in line:line+=' | Destination: 1:65535'
-            line=re.sub(r'Destination:\s*(?:Any|All|\*)(?=\s*(?:\||$))','Destination: 1:65535',line,flags=re.I)
-            normalized.append(line)
-        lines=normalized
+        lines = normalized_service_lines(row.get('Service Resolved / Protocol / Port',''),protocol)
         row['Service Resolved / Protocol / Port'] = '\n'.join(line for line in lines
             if not re.search(r'Protocol:\s*([^|]+)', line, re.I)
             or re.search(r'Protocol:\s*([^|]+)', line, re.I).group(1).strip().upper() == protocol)
     policy = match_rules(rows, source, destination, protocol, port, source_zone, destination_zone,
                          number, destination_fqdn, source_fqdn, True)
+    lookup={row.get('Rule Name'):row for row in rows}
+    for item in policy.get('evaluations',[]):
+        row=lookup.get(item['rule'],{})
+        if row.get('_Missing Services') and not item['serviceMatch']:item['_service_unresolved']=True
+        for side in ('Source','Destination'):
+            if row.get('_'+side+' Missing Objects') and item[side.lower()+'Match']!='full':item[side.lower()+'_resolver_failed']=True
     matched = policy.get('matchedRule')
     position = (matched or {}).get('position')
     unresolved = []
     for item in policy.get('evaluations', []):
         if item.get('status','').casefold() not in {'enable','enabled','활성'}: continue
         if not item['source_zone_match'] or not item['destination_zone_match']: continue
-        service_unknown = bool(item['service']) and not item['serviceResolved'] and not item['anyService']
+        service_unknown = item.get('_service_unresolved') or bool(item['service']) and not item['serviceResolved'] and not item['anyService']
         if not item['serviceMatch'] and not service_unknown: continue
         if not (item['source_resolver_failed'] or item['destination_resolver_failed'] or service_unknown): continue
         if item['sourceMatch'] == 'none' and not item['source_resolver_failed']: continue

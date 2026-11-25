@@ -88,6 +88,6 @@ def test_source_fqdn_form_submits_unchanged_with_existing_ui(tmp_path, monkeypat
     with path_browser(result) as page:
         page.get_by_label('Source IP / CIDR / FQDN', exact=True).fill('host.example.com')
         with page.expect_request('**/api/firewall/path-check') as sent:
-            page.get_by_role('button', name='Path Check', exact=True).click()
+            page.get_by_role('button', name='분석', exact=True).click()
         assert sent.value.post_data_json['source'] == 'host.example.com'
         assert page.get_by_label('Destination IP / CIDR / FQDN', exact=True).count() == 1
