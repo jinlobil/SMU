@@ -36,7 +36,7 @@ def path_browser(result, width=1440):
             page.goto(f"http://127.0.0.1:{server.server_port}/response/firewall-path-check")
             page.add_style_tag(content="*, *::before, *::after { animation: none !important; transition: none !important; }")
             page.get_by_role("button", name="Path Check", exact=True).dispatch_event("click")
-            page.locator(".path-diagram article").first.wait_for()
+            page.locator(".path-summary").first.wait_for()
             yield page
             browser.close()
     finally:
@@ -50,6 +50,7 @@ def test_path_cards_use_page_scroll_without_clipping(tmp_path, monkeypatch, widt
     save(tmp_path, payload())
     result = path_service(tmp_path, monkeypatch).check("10.10.0.10", "100.1.2.10", "TCP", 443)
     result["steps"] = [result["steps"][0]] * extra_steps + result["steps"]
+    result["analysisPath"] = [result["analysisPath"][0]] * extra_steps + result["analysisPath"]
     with path_browser(result, width) as page:
         geometry = page.locator(".path-diagram").evaluate("""el => {
             const bounds = el.getBoundingClientRect();
@@ -86,6 +87,7 @@ def test_sg_pass_shows_exact_only_fail_hides_mismatches_firewall_drop_remains(tm
     firewall = {"firewall": "Seoul", "available": True, "policy": match_rules([rule], ipaddress.ip_network("10.10.0.10"), ipaddress.ip_network("100.1.2.10"), "TCP", 443), "routing": {"destination": None, "return": None}}
     result["firewalls"] = [firewall]
     result["steps"] = [outbound, firewall_step(firewall), inbound]
+    result.pop("analysisPath", None)  # Exercise retained legacy-response rendering.
     with path_browser(result) as page:
         assert page.get_by_text("Outbound HTTPS", exact=True).count() == 1
         assert page.get_by_text("hidden SG candidate", exact=True).count() == 0

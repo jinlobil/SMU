@@ -124,11 +124,14 @@ def _action_state(candidate: dict[str, Any]) -> str:
     return "allow" if action in {"allow", "accept"} else "deny" if action in {"deny", "drop", "reject"} else "matched"
 
 
-def _query_address_match(network, fqdn, row, side):
+def _query_address_match(network, fqdn, row, side, allow_resolved=False):
     if not fqdn:
         return address_match_details(network, row.get(f'{side} Object', ''), row.get(f'{side} Resolved', ''), row.get(f'{side.lower()}_wildcard') is True)
     wildcard = row.get(f'{side.lower()}_wildcard') is True or any(is_wildcard_value(value) for value in row.get(f'{side} Object', '').splitlines())
     matched = wildcard or any(fqdn_matches(fqdn, pattern) for pattern in row.get(f'_{side} FQDNs', []))
+    if allow_resolved and network is not None:
+        numeric = address_match_details(network, row.get(f'{side} Object', ''), row.get(f'{side} Resolved', ''))
+        matched = matched or numeric['match'] == 'full'
     return {'match': 'full' if matched else 'none', 'wildcard': wildcard, 'resolverFailed': False}
 
 
@@ -148,6 +151,23 @@ def _query_endpoint(value, side):
         return network, fqdn, addresses, endpoint
 
 
+def normalize_service(protocol, port, protocol_number):
+    protocol = (protocol or "ANY").strip().upper()
+    if not re.fullmatch(r"[A-Z0-9][A-Z0-9 _+./-]{0,31}", protocol):
+        raise ValueError("Protocol 형식을 확인하세요")
+    normalized_port = None if port is None or str(port).strip().upper() in {"", "ANY"} else int(port)
+    if normalized_port is not None and not 1 <= normalized_port <= 65535:
+        raise ValueError("Destination Port는 비우거나 1~65535 범위여야 합니다")
+    if protocol not in {"TCP", "UDP"}:
+        normalized_port = None
+    normalized_protocol_number = None if protocol_number is None or str(protocol_number).strip() == "" else int(protocol_number)
+    if normalized_protocol_number is not None and protocol != "IP":
+        raise ValueError("Protocol Number는 IP Protocol에서만 사용할 수 있습니다")
+    if normalized_protocol_number is not None and not 0 <= normalized_protocol_number <= 255:
+        raise ValueError("Protocol Number는 비우거나 0~255 범위여야 합니다")
+    return protocol, normalized_port, normalized_protocol_number
+
+
 def match_rules(
     rows: list[dict[str, Any]],
     source: ipaddress.IPv4Network,
@@ -159,14 +179,15 @@ def match_rules(
     protocol_number: int | None = None,
     destination_fqdn: str | None = None,
     source_fqdn: str | None = None,
+    resolved_fqdn_addresses: bool = False,
 ) -> dict[str, Any]:
     protocol = protocol.upper()
     broad_query = protocol == "ANY" or (protocol in {"TCP", "UDP"} and port is None) or (protocol == "IP" and protocol_number is None)
     matches = []
     evaluations = []
     for row in rows:
-        source_result = _query_address_match(source, source_fqdn, row, 'Source')
-        destination_result = _query_address_match(destination, destination_fqdn, row, 'Destination')
+        source_result = _query_address_match(source, source_fqdn, row, 'Source', resolved_fqdn_addresses)
+        destination_result = _query_address_match(destination, destination_fqdn, row, 'Destination', resolved_fqdn_addresses)
         source_match, destination_match = source_result["match"], destination_result["match"]
         source_zone_match = zone_match(expected_source_zone, row.get("Source Zone", ""))
         destination_zone_match = zone_match(expected_destination_zone, row.get("Destination Zone", ""))
@@ -244,7 +265,7 @@ def match_rules(
 def match_static_route(routes: list[dict[str, str]], destination: ipaddress.IPv4Network) -> dict[str, str] | None:
     candidates = []
     for route in routes:
-        if route.get("status", "").strip().casefold() in {"disable", "disabled", "inactive"}:
+        if route.get("status", "").strip().casefold() in {"disable", "disabled", "inactive", "off"}:
             continue
         try:
             suffix = route["netmask"] or "32"
@@ -268,51 +289,57 @@ class FirewallPathCheckService:
         with self._lock:
             cached = self._cache.get(config["name"])
             if cached and not refresh and time.monotonic() - cached[0] < self.ttl_seconds: return cached[1]
-        client = FirewallClient(config); rule_response = client.get_rules_compatible(); payloads = {"Rule": rule_response["raw"]}
+        from backend.services.firewall_rule_export import _object_maps, _fqdn_object_patterns, _safe_export_error
+        from backend.services.firewall_nat import parse_nat_rules
+        from backend.services.firewall_network_export import parse_interfaces, parse_aliases, parse_zones, parse_gateways
+        client, payloads, errors = FirewallClient(config), {}, {}
+        try:
+            rule_response = client.get_rules_compatible()
+            payloads['Rule'] = rule_response['raw']
+        except Exception as exc:
+            errors['FirewallRule'] = _safe_export_error(exc)
+            rule_response = {'entity': 'FirewallRule'}
         for entity in ENTITIES:
             try:
-                raw = client.get(entity)
-                status = parse_status(raw)
-                if status["code"] and status["code"] != "200":
-                    raise RuntimeError(f"Firewall API entity {entity} {status['code']}: {status['message']}")
-                _nodes(raw, entity)
-                payloads[entity] = raw
-            except Exception:
-                # Object/service data enriches rule matching. A firmware-specific
-                # entity failure must not discard otherwise usable rule data.
-                pass
-        rows, _columns = parse_firewall_rules(payloads, rule_response["entity"])
-        route_error = ""
+                raw = client.get(entity); _nodes(raw, entity); payloads[entity] = raw
+            except Exception as exc: errors[entity] = _safe_export_error(exc, entity)
         try:
-            route_xml = client.get("UnicastRoute")
-            status = parse_status(route_xml)
-            if status["code"] and status["code"] != "200": raise RuntimeError(f"Firewall API {status['code']}: {status['message']}")
-            routes = parse_unicast_routes(route_xml)
+            rows, _columns = parse_firewall_rules(payloads, rule_response['entity']) if 'Rule' in payloads else ([], [])
         except Exception as exc:
-            routes, route_error = [], f"{type(exc).__name__}: {exc}"
-        snapshot = {"rules": rows, "routes": routes, "routeError": route_error, "checkedAt": datetime.now(timezone.utc).isoformat()}
+            rows = []; errors['FirewallRule'] = _safe_export_error(exc)
+        snapshot = {'rules': rows, 'routes': [], 'routeError': '', 'natRules': [], 'interfaces': [],
+                    'aliases': [], 'zones': [], 'gateways': [], 'configurationErrors': errors,
+                    'objects': {}, 'services': {}, 'fqdnObjects': {}, 'checkedAt': datetime.now(timezone.utc).isoformat()}
+        snapshot['objects'], snapshot['services'] = _object_maps(payloads)
+        snapshot['fqdnObjects'] = _fqdn_object_patterns(payloads)
+        for entity in ('UnicastRoute', 'NATRule', 'Interface', 'Alias', 'Zone', 'GatewayConfiguration'):
+            try:
+                raw = client.get(entity)
+                if entity == 'UnicastRoute': snapshot['routes'] = parse_unicast_routes(raw)
+                elif entity == 'NATRule': snapshot['natRules'] = parse_nat_rules(raw, rows)
+                elif entity == 'Interface': snapshot['interfaces'] = parse_interfaces(raw)
+                elif entity == 'Alias': snapshot['aliases'] = parse_aliases(raw, snapshot['interfaces'])
+                elif entity == 'Zone': snapshot['zones'] = parse_zones(raw, snapshot['interfaces'])
+                else: snapshot['gateways'], snapshot['gatewayTimeouts'] = parse_gateways(raw)
+            except Exception as exc:
+                errors[entity] = _safe_export_error(exc, entity)
+                if entity == 'UnicastRoute': snapshot['routeError'] = errors[entity]
         with self._lock: self._cache[config["name"]] = (time.monotonic(), snapshot)
         return snapshot
 
-    def check(self, source_value: str, destination_value: str, protocol: str = "ANY", port: Any = None,
+    def check(self, source_value: str = '', destination_value: str = '', protocol: str = "ANY", port: Any = None,
               refresh: bool = False, protocol_number: Any = None) -> dict[str, Any]:
-        source_network, source_fqdn, source_addresses, source = _query_endpoint(source_value, 'Source')
-        destination_network, destination_fqdn, resolved_addresses, destination = _query_endpoint(destination_value, 'Destination')
+        from backend.services.firewall_path_analysis import PathAnalysis
+        return PathAnalysis(self, refresh).analyze(source_value, destination_value, protocol, port, protocol_number)
+
+    def _check_legacy(self, source_value: str, destination_value: str, protocol: str = "ANY", port: Any = None,
+                      refresh: bool = False, protocol_number: Any = None, _snapshots=None, _endpoints=None) -> dict[str, Any]:
+        source_endpoint, destination_endpoint = _endpoints or (_query_endpoint(source_value, 'Source'), _query_endpoint(destination_value, 'Destination'))
+        source_network, source_fqdn, source_addresses, source = source_endpoint
+        destination_network, destination_fqdn, resolved_addresses, destination = destination_endpoint
         if not source_fqdn and not destination_fqdn and source_network.version != destination_network.version:
             raise ValueError("Source/Destination은 같은 IP address family를 사용해야 합니다")
-        protocol = (protocol or "ANY").strip().upper()
-        if not re.fullmatch(r"[A-Z0-9][A-Z0-9 _+./-]{0,31}", protocol):
-            raise ValueError("Protocol 형식을 확인하세요")
-        normalized_port = None if port is None or str(port).strip().upper() in {"", "ANY"} else int(port)
-        if normalized_port is not None and not 1 <= normalized_port <= 65535:
-            raise ValueError("Destination Port는 비우거나 1~65535 범위여야 합니다")
-        if protocol not in {"TCP", "UDP"}:
-            normalized_port = None
-        normalized_protocol_number = None if protocol_number is None or str(protocol_number).strip() == "" else int(protocol_number)
-        if normalized_protocol_number is not None and protocol != "IP":
-            raise ValueError("Protocol Number는 IP Protocol에서만 사용할 수 있습니다")
-        if normalized_protocol_number is not None and not 0 <= normalized_protocol_number <= 255:
-            raise ValueError("Protocol Number는 비우거나 0~255 범위여야 합니다")
+        protocol, normalized_port, normalized_protocol_number = normalize_service(protocol, port, protocol_number)
         if source is None or destination is None: raise ValueError("Source/Destination IP 또는 CIDR을 확인하세요")
         path, partial = determine_firewall_path(source, destination)
         aws = AwsSecurityGroupPathService(self.root).check(source_network, destination_network, protocol, normalized_port,
@@ -331,7 +358,13 @@ class FirewallPathCheckService:
             if not config or not config["configured"]:
                 results.append({"firewall": name, "available": False, "error": "Firewall configuration unavailable", "policy": {"state": "unavailable"}, "routing": {"destination": None, "return": None}}); continue
             try:
-                snapshot = self._snapshot(config, refresh)
+                if _snapshots is None: snapshot = self._snapshot(config, refresh)
+                else:
+                    if name not in _snapshots: _snapshots[name] = self._snapshot(config, refresh)
+                    snapshot = _snapshots[name]
+                if 'FirewallRule' in snapshot.get('configurationErrors', {}):
+                    results.append({'firewall':name,'available':False,'error':snapshot['configurationErrors']['FirewallRule'], 'policy':{'state':'unavailable'}, 'routing':{'destination':None,'return':None}})
+                    continue
                 source_zone, destination_zone = expected_zones.get(name, (None, None))
                 if destination_fqdn and not destination_network:
                     destination_zone = None
@@ -339,7 +372,7 @@ class FirewallPathCheckService:
                     source_zone = None
                 results.append({"firewall": name, "available": True, "checkedAt": snapshot["checkedAt"], "expectedZones": {"source": source_zone, "destination": destination_zone}, "policy": match_rules(snapshot["rules"], source_network, destination_network, protocol, normalized_port, source_zone, destination_zone, normalized_protocol_number, destination_fqdn, source_fqdn), "routing": {"destination": match_static_route(snapshot["routes"], destination_network) if destination_network else None, "return": match_static_route(snapshot["routes"], source_network) if source_network else None, "error": snapshot["routeError"]}})
             except Exception as exc:
-                results.append({"firewall": name, "available": False, "error": f"{type(exc).__name__}: {exc}", "policy": {"state": "unavailable"}, "routing": {"destination": None, "return": None}})
+                results.append({"firewall": name, "available": False, "error": type(exc).__name__, "policy": {"state": "unavailable"}, "routing": {"destination": None, "return": None}})
         steps = ([aws["outbound"]] if aws["outbound"]["state"] != "N/A" else [])
         steps.extend(firewall_step(item) for item in results)
         if aws["inbound"]["state"] != "N/A": steps.append(aws["inbound"])
