@@ -319,7 +319,7 @@ def get_firewall_configuration() -> dict:
     return {"success": True, "data": {"firewalls": firewall_service.public_configurations()}}
 
 
-@app.get("/api/firewall/configuration")
+@app.get("/api/firewall/configuration/status")
 def firewall_configuration_status() -> dict:
     return {"success":True,"data":firewall_path_check_service.configuration.info()}
 

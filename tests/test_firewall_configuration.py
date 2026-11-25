@@ -151,7 +151,7 @@ def test_refresh_endpoints_and_normal_analysis_api(tmp_path,monkeypatch):
     current,calls=cached(tmp_path,monkeypatch)
     monkeypatch.setattr(app,'firewall_path_check_service',current)
     client=TestClient(app.app)
-    assert client.get('/api/firewall/configuration').status_code==200
+    assert isinstance(client.get('/api/firewall/configuration/status').json()['data']['running'],bool)
     assert client.post('/api/firewall/path-check',json={'source':'100.1.1.10','destination':'203.0.113.10','protocol':'TCP','port':443}).status_code==200
     assert calls==['Cloud']
     assert client.post('/api/firewall/configuration/refresh').status_code==202

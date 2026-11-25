@@ -63,7 +63,7 @@ def test_refresh_is_separate_and_search_stays_available_while_refreshing(tmp_pat
         def configuration(route):
             if route.request.method=='POST':posts.append(1)
             route.fulfill(json={'success':True,'data':{'running':active['value']}})
-        page.route('**/api/firewall/configuration',configuration)
+        page.route('**/api/firewall/configuration/status',configuration)
         page.route('**/api/firewall/configuration/refresh',configuration)
         page.get_by_role('button',name='최신 정보 다시 조회',exact=True).click()
         expect(page.get_by_role('button',name='최신 정보 조회 중...',exact=True)).to_be_disabled()

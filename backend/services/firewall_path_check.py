@@ -285,44 +285,66 @@ class FirewallPathCheckService:
         self.configuration = FirewallConfigurationStore(root,self.firewalls,self._collect_snapshot)
 
     def _collect_snapshot(self, config: dict[str, Any], refresh: bool = True) -> dict[str, Any]:
+        """Online collection only. Never consult the analysis Snapshot-only reader."""
         from backend.services.firewall_rule_export import _object_maps, _fqdn_object_patterns, _safe_export_error
         from backend.services.firewall_nat import parse_nat_rules
         from backend.services.firewall_network_export import parse_interfaces, parse_aliases, parse_zones, parse_gateways
-        from backend.services.firewall_configuration import validate_response
-        client, payloads, errors = FirewallClient(config), {}, {}
-        try:
-            rule_response = client.get_rules_compatible()
-            payloads['Rule'] = validate_response(rule_response['raw'],rule_response['entity'])
-        except Exception as exc:
-            errors['FirewallRule'] = _safe_export_error(exc)
-            rule_response = {'entity': 'FirewallRule'}
-        for entity in ENTITIES:
+        from backend.services.firewall_configuration import validate_response, normalize_objects, failure_diagnostic, log_failure
+        client=FirewallClient(config)
+        payloads,errors,diagnostics={},{},[]
+        last_entity=['FirewallRule']
+        native_get=client.get
+        def tracked_get(entity):
+            last_entity[0]=entity
+            return native_get(entity)
+        client.get=tracked_get
+        def failed(exc,entity,stage,raw=None):
+            diagnostic=failure_diagnostic(exc,config['name'],entity,stage,raw)
+            errors[entity]=_safe_export_error(exc,entity)
+            diagnostics.append(diagnostic);log_failure(diagnostic)
+        def read(entity):
+            raw=None;stage='api_request'
             try:
-                raw = validate_response(client.get(entity),entity); payloads[entity] = raw
-            except Exception as exc: errors[entity] = _safe_export_error(exc, entity)
-        try:
-            rows, _columns = parse_firewall_rules(payloads, rule_response['entity']) if 'Rule' in payloads else ([], [])
-        except Exception as exc:
-            rows = []; errors['FirewallRule'] = _safe_export_error(exc)
-        snapshot = {'rules': rows, 'routes': [], 'routeError': '', 'natRules': [], 'interfaces': [],
-                    'aliases': [], 'zones': [], 'gateways': [], 'configurationErrors': errors,
-                    'objects': {}, 'services': {}, 'fqdnObjects': {}, 'checkedAt': datetime.now(timezone.utc).isoformat()}
-        snapshot['objects'], snapshot['services'] = _object_maps(payloads)
-        snapshot['fqdnObjects'] = _fqdn_object_patterns(payloads)
-        for entity in ('UnicastRoute', 'NATRule', 'Interface', 'Alias', 'Zone', 'GatewayConfiguration'):
-            try:
-                raw = validate_response(client.get(entity),entity)
-                if entity == 'UnicastRoute': snapshot['routes'] = parse_unicast_routes(raw)
-                elif entity == 'NATRule': snapshot['natRules'] = parse_nat_rules(raw, rows)
-                elif entity == 'Interface': snapshot['interfaces'] = parse_interfaces(raw)
-                elif entity == 'Alias': snapshot['aliases'] = parse_aliases(raw, snapshot['interfaces'])
-                elif entity == 'Zone': snapshot['zones'] = parse_zones(raw, snapshot['interfaces'])
-                else: snapshot['gateways'], snapshot['gatewayTimeouts'] = parse_gateways(raw)
+                raw=client.get(entity);stage='response_validation'
+                return validate_response(raw,entity)
             except Exception as exc:
-                errors[entity] = _safe_export_error(exc, entity)
-                if entity == 'UnicastRoute': snapshot['routeError'] = errors[entity]
-        from backend.services.firewall_configuration import normalize_objects
-        normalize_objects(payloads,snapshot)
+                failed(exc,entity,stage,raw);return None
+        raw=None;stage='api_request';rule_entity='FirewallRule'
+        try:
+            rule_response=client.get_rules_compatible()
+            raw=rule_response['raw'];rule_entity=rule_response['entity'];stage='response_validation'
+            payloads['Rule']=validate_response(raw,rule_entity)
+        except Exception as exc:failed(exc,last_entity[0],stage,raw)
+        for entity in ENTITIES:
+            raw=read(entity)
+            if raw is not None:payloads[entity]=raw
+        try:rows,_=parse_firewall_rules(payloads,rule_entity) if 'Rule' in payloads else ([],[])
+        except Exception as exc:
+            rows=[];failed(exc,rule_entity,'parse',payloads.get('Rule'))
+        snapshot={'rules':rows,'routes':[],'routeError':'','natRules':[],'interfaces':[],'aliases':[],
+            'zones':[],'gateways':[],'configurationErrors':errors,'collectionDiagnostics':diagnostics,
+            'objects':{},'services':{},'fqdnObjects':{},'checkedAt':datetime.now(timezone.utc).isoformat()}
+        try:
+            snapshot['objects'],snapshot['services']=_object_maps(payloads)
+            snapshot['fqdnObjects']=_fqdn_object_patterns(payloads)
+        except Exception as exc:failed(exc,'Objects','normalize')
+        for entity in ('UnicastRoute','NATRule','Interface','Alias','Zone','GatewayConfiguration'):
+            raw=read(entity)
+            if raw is None:
+                if entity=='UnicastRoute':snapshot['routeError']=errors[entity]
+                continue
+            try:
+                if entity=='UnicastRoute':snapshot['routes']=parse_unicast_routes(raw)
+                elif entity=='NATRule':snapshot['natRules']=parse_nat_rules(raw,rows)
+                elif entity=='Interface':snapshot['interfaces']=parse_interfaces(raw)
+                elif entity=='Alias':snapshot['aliases']=parse_aliases(raw,snapshot['interfaces'])
+                elif entity=='Zone':snapshot['zones']=parse_zones(raw,snapshot['interfaces'])
+                else:snapshot['gateways'],snapshot['gatewayTimeouts']=parse_gateways(raw)
+            except Exception as exc:
+                failed(exc,entity,'parse',raw)
+                if entity=='UnicastRoute':snapshot['routeError']=errors[entity]
+        try:normalize_objects(payloads,snapshot)
+        except Exception as exc:failed(exc,'Objects','normalize')
         snapshot['confirmedEmptyRules']=bool(re.search(r'(?:totalrecords|totalcount|total)[=\s>]+[\"\']?0(?:[\"\'<\s])',payloads.get('Rule',''),re.I))
         return snapshot
 
