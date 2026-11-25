@@ -463,6 +463,9 @@ class FirewallRuleExportService:
                     log.warning('Firewall supplemental export unavailable firewall=%s entity=%s error=%s', name, entity, message)
                 sections.append(section)
             extra_sheets.append({'name': kind, 'columns': columns, 'sections': sections})
+        from backend.services.firewall_network_export import collect_network_sheets
+        network_sheets, network_counts = collect_network_sheets(ordered_configs, clients, errors, progress)
+        extra_sheets.extend(network_sheets)
         if errors:
             sheets.append({"name": "Export Errors", "rows": errors, "columns": ["Firewall", "Error Type", "Message"]})
         sheets.extend(extra_sheets)
@@ -470,4 +473,4 @@ class FirewallRuleExportService:
         export_dir = self.root / "exports"
         path = export_dir / f"Sophos_Firewall_Rules_{date.today().isoformat()}.xlsx"
         names = write_xlsx_workbook(path, sheets)
-        return {"filename": path.name, "path": str(path), "sheets": names, "counts": counts, "analysisCounts": {name: len(rows) for name, rows in analysis_rows.items()}, "errors": errors, "diagnostics": diagnostics, "natCounts": extra_counts["NAT"], "routeCounts": extra_counts["Route"]}
+        return {"filename": path.name, "path": str(path), "sheets": names, "counts": counts, "analysisCounts": {name: len(rows) for name, rows in analysis_rows.items()}, "errors": errors, "diagnostics": diagnostics, "natCounts": extra_counts["NAT"], "routeCounts": extra_counts["Route"], "interfaceCounts": network_counts["Interface"], "aliasCounts": network_counts["Alias"], "zoneCounts": network_counts["Zone"], "gatewayCounts": network_counts["Gateway"]}
