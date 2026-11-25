@@ -2,13 +2,14 @@
 import copy
 import ipaddress
 import json
+import time
 from datetime import datetime, timezone
 from itertools import product
 
 from backend.services.aws_security_group_path import AwsSecurityGroupPathService, firewall_step, policy_summary
 from backend.services.firewall_network_mapping import NETWORK_MAPPINGS, resolve_input_network, expected_zones_for_path
 from backend.services.firewall_rule_export import _restore_rule_order, is_wildcard_value
-from backend.services.firewall_path_decisions import decide_policy, interface_network, service_slices, progress
+from backend.services.firewall_path_decisions import decide_policy, interface_network, service_slices, progress, normalized_service_lines
 
 
 def _unique(values): return list(dict.fromkeys(values))
@@ -32,10 +33,15 @@ def _summary(steps, source, destination, protocol, port, warnings, partial=False
 class PathAnalysis:
     def __init__(self, service, refresh=False):
         self.service, self.refresh = service, refresh
-        self.snapshots = {}
-        self.configs = {item['name']: item for item in service.firewalls.configurations()}
+        self.snapshots = service.analysis_snapshots()
+        from backend.services.firewall_configuration import ConfigurationIndex
+        with service.configuration.lock:
+            self.indexes={name:service.configuration.indexes[name] if service.configuration.snapshots.get(name) is snapshot and name in service.configuration.indexes else ConfigurationIndex(snapshot) for name,snapshot in self.snapshots.items()}
+        self.metrics=dict.fromkeys(('normalize_ms','policy_lookup_ms','nat_match_ms','route_match_ms','path_decision_ms'),0.0)
+        self.configs = {item['name']:{**item,'configured':item.get('configured') or item['name'] in self.snapshots} for item in service.firewalls.configurations()}
         self.dns = {}
         self.aws_data = None
+        self._service_slices = {}
 
     def snapshot(self, name):
         if name not in self.snapshots:
@@ -50,7 +56,12 @@ class PathAnalysis:
     def endpoint(self, value, side):
         from backend.services.firewall_path_check import _query_endpoint
         key = value.strip()
-        if key not in self.dns: self.dns[key] = _query_endpoint(key, side)
+        if key not in self.dns:
+            from backend.services.fqdn import normalize_fqdn
+            try:normalized=normalize_fqdn(key)
+            except ValueError:normalized=key
+            cached=next((snapshot.get('resolvedFqdnAddresses',{})[normalized] for snapshot in self.snapshots.values() if normalized in snapshot.get('resolvedFqdnAddresses',{})),None)
+            self.dns[key]=_query_endpoint(key,side,cached)
         return self.dns[key]
 
     def analyze(self, source, destination, protocol, port, protocol_number, _partition=True):
@@ -60,11 +71,13 @@ class PathAnalysis:
         protocol, port, number = normalize_service(protocol, port, protocol_number)
         if not source or not destination:
             return self.reachability(source, destination, protocol, port, number)
+        started=time.perf_counter()
         src, dst = self.endpoint(source, 'Source'), self.endpoint(destination, 'Destination')
+        self.metrics['normalize_ms']+=(time.perf_counter()-started)*1000
         if not src[1] and not dst[1] and src[0].version != dst[0].version:
             raise ValueError('Source/Destination은 같은 IP address family를 사용해야 합니다')
         base = self.service._check_legacy(source, destination, protocol, port, self.refresh, number,
-                                          _snapshots=self.snapshots, _endpoints=(src, dst))
+                                          _snapshots=self.snapshots, _indexes=self.indexes, _endpoints=(src, dst))
         if not src[1] and not dst[1]:
             if _partition and (src[0].num_addresses>1 or dst[0].num_addresses>1):
                 scoped=self.network_analysis(base,src[0],dst[0],protocol,port,number)
@@ -85,7 +98,7 @@ class PathAnalysis:
             a, b = ipaddress.ip_network(s), ipaddress.ip_network(d)
             if a.version != b.version:
                 variants.append({'source': s, 'destination': d, 'summary': {'status':'UNKNOWN','primaryReason':'IP address family mismatch'}, 'analysisPath': []}); continue
-            pair = self.service._check_legacy(s, d, protocol, port, self.refresh, number, _snapshots=self.snapshots)
+            pair = self.service._check_legacy(s, d, protocol, port, self.refresh, number, _snapshots=self.snapshots, _indexes=self.indexes)
             pair = self.service_analysis(pair, a, b, protocol, number, src[1], dst[1]) if protocol=='ANY' or protocol in {'TCP','UDP'} and port is None or protocol=='IP' and number is None else self.enhance(pair, a, b, protocol, port, number, src[1], dst[1])
             variants.append({'source':s, 'destination':d, 'summary':pair['summary'], 'analysisPath':pair['analysisPath'], 'details':pair['details'], 'progress':pair['progress'], 'serviceResults':pair.get('serviceResults',[])})
         total = len(sources) * len(destinations)
@@ -109,7 +122,7 @@ class PathAnalysis:
         except (ValueError, TypeError):
             if value in snapshot.get('objects', {}): return _networks(snapshot['objects'][value])
             if value in snapshot.get('fqdnObjects', {}):
-                return [ipaddress.ip_network(address) for pattern in snapshot['fqdnObjects'][value] if '*' not in pattern for address in self.object_addresses(pattern)]
+                return [ipaddress.ip_network(address) for pattern in snapshot['fqdnObjects'][value] for address in snapshot.get('resolvedFqdnAddresses',{}).get(pattern,[])]
             for mapping in NETWORK_MAPPINGS:
                 if value in (mapping.site,*mapping.aliases):return [mapping.network]
             for row in snapshot.get('interfaces', []) + snapshot.get('aliases', []):
@@ -118,7 +131,12 @@ class PathAnalysis:
                     except (ValueError, KeyError): pass
         return []
 
-    def _route(self, snapshot, network):
+    def _route(self,snapshot,network):
+        started=time.perf_counter()
+        try:return self._route_calculate(snapshot,network)
+        finally:self.metrics['route_match_ms']+=(time.perf_counter()-started)*1000
+
+    def _route_calculate(self, snapshot, network):
         from backend.services.firewall_path_check import match_static_route
         if network is None: return None
         connected=[]
@@ -128,13 +146,15 @@ class PathAnalysis:
                 connected.append({'network':str(cidr),'destination':str(cidr.network_address),'netmask':str(cidr.prefixlen),
                     'interface':row.get('Parent Interface') or row['Name'],'gateway':'','source':'connected_interface',
                     'routeType':'Connected','zone':row.get('Zone',''),'description':'Interface IP/Netmask로 계산한 직접 연결망'})
-        static=match_static_route(snapshot.get('routes',[]),network)
+        index=next((self.indexes[name] for name,value in self.snapshots.items() if value is snapshot),None)
+        route_rows=[snapshot['routes'][i] for i in index.routes.find(network)] if index else snapshot.get('routes',[])
+        static=match_static_route(route_rows,network)
         candidates=connected + ([{**static,'source':'static','routeType':'Static','description':static.get('description','Static longest-prefix match')}] if static else [])
         if not candidates: return None
         # Connected wins equal prefixes; a more specific static route still wins LPM.
         route=max(candidates,key=lambda row:(ipaddress.ip_network(row['network']).prefixlen,row['routeType']=='Connected'))
         if route['routeType']=='Static':
-            alternatives=[match_static_route([row],network) for row in snapshot.get('routes',[])]
+            alternatives=[match_static_route([row],network) for row in route_rows]
             alternatives=[row for row in alternatives if row and row['network']==route['network']]
             def distance(row):
                 try:return int(row.get('distance') or row.get('administrative_distance') or 1)
@@ -175,71 +195,77 @@ class PathAnalysis:
                 if match: owners.append({'firewall':name, **row})
         return owners
 
-    def _nat(self, snapshot, source, destination, protocol, port, phase, interface=None, matched_rule=None):
-        from backend.services.firewall_path_check import service_match_details
-        candidates = []
-        for row in snapshot.get('natRules', []):
-            if row.get('Status','').casefold() not in {'enable','enabled'}: continue
-            field = 'Translated Destination' if phase == 'DNAT' else 'Translated Source'
-            if row.get(field,'').casefold() in {'','original'}: continue
-            uncertainty, rejected = [], False
-            for key, query in [('Original Source',source),('Original Destination',destination)]:
-                values = row.get(key,'').splitlines()
-                if not values: uncertainty.append(key + ' omitted'); continue
-                if any(is_wildcard_value(value) for value in values): continue
-                networks = [net for value in values for net in self._networks(value, snapshot)]
-                if not networks: uncertainty.append(key + ' unresolved'); continue
-                if query is None or not any(query.version == net.version and query.subnet_of(net) for net in networks): rejected = True
-            services = row.get('Original Service','').splitlines()
-            if not services: uncertainty.append('Original Service omitted')
-            elif not any(is_wildcard_value(value) for value in services):
-                resolved = '\n'.join(snapshot.get('services',{}).get(value,'') for value in services)
-                if not resolved: uncertainty.append('Original Service unresolved')
-                elif not service_match_details(protocol, port, '\n'.join(services), resolved)['serviceMatch']: rejected = True
-            selectors = row.get('Inbound Interface' if phase=='DNAT' else 'Outbound Interface','').splitlines()
-            if selectors and not any(is_wildcard_value(value) for value in selectors):
-                if not interface: uncertainty.append('Interface unresolved')
-                elif not any(value in {interface.get('Name'), interface.get('Hardware')} for value in selectors): rejected = True
-            if matched_rule and row.get('Linked Firewall Rule') and matched_rule['rule'] not in row['Linked Firewall Rule'].splitlines(): rejected = True
-            if not rejected: candidates.append({'row':row, 'warnings':uncertainty})
-        if len(candidates) > 1:
-            # Restore against the complete NAT list, not just a subset of matches.
-            complete = [{**row, '_Rule Position':row.get('Position',''), '_Rule After':row.get('After Rule','')} for row in snapshot.get('natRules', [])]
-            from backend.services.firewall_path_check import _position
+    def _nat(self,snapshot,source,destination,protocol,port,phase,interface=None,matched_rule=None,ingress=None,egress=None,number=None):
+        from backend.services.firewall_path_check import service_match_details, _position
+        started=time.perf_counter();candidates=[];uncertain=[]
+        if phase=='DNAT':ingress=ingress or interface
+        else:egress=egress or interface
+        index=next((self.indexes[name] for name,value in self.snapshots.items() if value is snapshot),None)
+        ids=(index.nat['Original Source'].find(source)|index.natUnresolved['Original Source'])&(index.nat['Original Destination'].find(destination)|index.natUnresolved['Original Destination']) if index else range(len(snapshot.get('natRules',[])))
+        # Omitted selectors are unrestricted; unresolved references stay candidates for explicit diagnosis.
+        if index:
+            ids.update(i for i,row in enumerate(snapshot.get('natRules',[])) if not row.get('Original Source') or not row.get('Original Destination'))
+        for i in sorted(ids):
+            row=snapshot.get('natRules',[])[i]
+            if row.get('Status','').casefold() not in {'enable','enabled'}:continue
+            field='Translated Destination' if phase=='DNAT' else 'Translated Source'
+            if row.get(field,'').casefold() in {'','original'}:continue
+            missing=[];reject=False
+            for key,query in [('Original Source',source),('Original Destination',destination)]:
+                values=row.get(key,'').splitlines()
+                if not values or any(is_wildcard_value(value) for value in values):continue
+                networks=[net for value in values for net in self._networks(value,snapshot)]
+                if not networks:missing.append(key+' Object missing');continue
+                if query is None or not any(query.version==net.version and query.subnet_of(net) for net in networks):reject=True
+            services=row.get('Original Service','').splitlines()
+            if services and not any(is_wildcard_value(value) for value in services):
+                resolved='\n'.join(snapshot.get('services',{}).get(value,'') for value in services)
+                if not resolved:missing.append('Original Service Object missing')
+                elif not any(service_match_details(protocol,port,'\n'.join(services),line,False,number)['serviceMatch'] for line in normalized_service_lines(resolved,protocol)):reject=True
+            candidate_egress=egress
+            if phase=='DNAT' and not candidate_egress:
+                target=self._translated(row.get('Translated Destination',''),snapshot)
+                route=self._route(snapshot,target) if target is not None else None
+                candidate_egress=self._interface(snapshot,route) or ({'Name':route['interface'],'Hardware':route['interface']} if route and not route.get('ambiguous') and route.get('interface') else None)
+            for key,actual in [('Inbound Interface',ingress),('Outbound Interface',candidate_egress)]:
+                selectors=row.get(key,'').splitlines()
+                if not selectors or any(is_wildcard_value(value) for value in selectors):continue
+                if not actual:missing.append(key+' unavailable');continue
+                names={actual.get('Name'),actual.get('Hardware'),actual.get('Parent Interface')}
+                if not any(value in names for value in selectors):reject=True
+            linked=row.get('Linked Firewall Rule','').splitlines()
+            if phase=='SNAT' and linked and (not matched_rule or matched_rule.get('rule') not in linked):reject=True
+            if reject:continue
+            item={'row':row,'warnings':missing}
+            (uncertain if missing else candidates).append(item)
+        all_candidates=candidates+uncertain
+        if len(all_candidates)>1:
+            complete=[{**row,'_Rule Position':row.get('Position',''),'_Rule After':row.get('After Rule','')} for row in snapshot.get('natRules',[])]
             numeric=[_position(row['_Rule Position']) for row in complete]
             if all(value is not None for value in numeric) and len(set(numeric))==len(numeric):
                 for row,position in zip(complete,numeric):row['_Rule Order']=position
                 reliable=True
             else:reliable=_restore_rule_order(complete)
-            if reliable:
-                positions = {row['Rule Name']:row['_Rule Order'] for row in complete}
-                candidates.sort(key=lambda item: positions[item['row']['Rule Name']])
-            else: return None, ['API에 NAT Position/After 순서가 없어 상충하는 NAT 우선순위를 결정할 수 없습니다'], candidates
-        return (candidates[0] if candidates else None), [], candidates
+            if not reliable:
+                self.metrics['nat_match_ms']+=(time.perf_counter()-started)*1000
+                return None,['API에 NAT Position/After 순서가 없어 적용 NAT를 선택할 수 없습니다'],all_candidates
+            order={row['Rule Name']:row['_Rule Order'] for row in complete}
+            all_candidates.sort(key=lambda item:order[item['row']['Rule Name']])
+        self.metrics['nat_match_ms']+=(time.perf_counter()-started)*1000
+        if not all_candidates:return None,[],[]
+        first=all_candidates[0]
+        return (None,first['warnings'],all_candidates) if first['warnings'] else (first,[],all_candidates)
 
     def _translated(self, value, snapshot):
         networks = self._networks(value, snapshot)
         return networks[0] if len(networks)==1 and networks[0].num_addresses==1 else None
-
-    def object_addresses(self, pattern):
-        try:return self.endpoint(pattern,'Object')[2]
-        except (ValueError,OSError):return []
 
     def network_analysis(self, base, source, destination, protocol, port, number):
         from backend.services.firewall_path_check import _networks
         if not (base.get('awsSecurityGroups',{}).get('networkPath') and not base['path']):
             for name,config in self.configs.items():
                 if config.get('configured'):self.snapshot(name)
-        cuts=[]
-        for snapshot in self.snapshots.values():
-            cuts += [net for row in snapshot.get('interfaces',[])+snapshot.get('aliases',[]) if (net:=interface_network(row)) is not None]
-            for row in snapshot.get('routes',[]):
-                try:cuts.append(ipaddress.ip_network(row['destination'] if '/' in row['destination'] else row['destination']+'/'+(row.get('netmask') or '32'),strict=False))
-                except (KeyError,ValueError):pass
-            for row in snapshot.get('rules',[]):
-                cuts += _networks(row.get('Source Resolved',''))+_networks(row.get('Destination Resolved',''))
-            for row in snapshot.get('natRules',[]):
-                cuts += [net for field in ('Original Source','Original Destination') for value in row.get(field,'').splitlines() for net in self._networks(value,snapshot)]
+        cuts=[network for index in self.indexes.values() for network in index.cuts]
         def partition(network):
             pieces=[network]
             for cut in sorted(set(cuts),key=lambda item:item.prefixlen):
@@ -271,22 +297,24 @@ class PathAnalysis:
         base['summary'].update(source=original[0]['input'],destination=original[1]['input'])
         base['pathContext']='표시 경로: '+representative['target']
         for case in cases:case.pop('_result',None)
-        base.update(networkResults=cases,networkCoverage={'total':total,'analyzed':len(cases)})
+        signatures={tuple((step['type'],step.get('firewall'),step['status'],(step.get('matchedRule') or {}).get('rule'),(step.get('route') or {}).get('network'),step.get('rule')) for step in case['analysisPath']) for case in cases}
+        uniform=len(signatures)==1 and len(cases)==total
+        if uniform:
+            base['pathContext']='전체 주소 범위에서 동일한 경로/판정'
+            base['progress']=copy.deepcopy(base['progress'])
+            base['progress']['nodes'][0]['reason']=original[0]['input']
+            if not any(step['type']=='dnat' for step in base['analysisPath']):base['progress']['nodes'][-1]['reason']=original[1]['input']
+        base.update(networkResults=[] if uniform else cases,networkCoverage={'total':total,'analyzed':len(cases),'uniform':uniform})
         return base
 
-    def resolved_rules(self, snapshot, source_fqdn, destination_fqdn):
-        from backend.services.fqdn import fqdn_matches
-        rows=copy.deepcopy(snapshot.get('rules',[]))
-        for row in rows:
-            for side,typed in (('Source',source_fqdn),('Destination',destination_fqdn)):
-                patterns=row.get('_'+side+' FQDNs',[])
-                if not patterns or typed and any(fqdn_matches(typed,pattern) for pattern in patterns):continue
-                addresses=[]
-                for pattern in patterns:
-                    if '*' in pattern:continue
-                    addresses+=self.object_addresses(pattern)
-                if addresses:row[side+' Resolved']='\n'.join(addresses)
-                else:row.setdefault('_Object Resolution Errors',[]).append(side+' FQDN DNS Resolve 실패 또는 wildcard FQDN의 구체적 주소 데이터 없음')
+    def policy_candidates(self,snapshot,source,destination,source_fqdn=None,destination_fqdn=None):
+        started=time.perf_counter()
+        index=next((self.indexes[name] for name,value in self.snapshots.items() if value is snapshot),None)
+        if index:
+            ids=index.rules('Source',source,source_fqdn)&index.rules('Destination',destination,destination_fqdn)
+            rows=[index.ordered_rules[i] for i in sorted(ids)]
+        else:rows=snapshot.get('rules',[])
+        self.metrics['policy_lookup_ms']+=(time.perf_counter()-started)*1000
         return rows
 
     def service_analysis(self, base, source, destination, protocol, number, source_fqdn=None, destination_fqdn=None):
@@ -297,12 +325,14 @@ class PathAnalysis:
             except (OSError,ValueError):self.aws_data={}
         original_endpoints=(base['source'],base['destination'])
         original_service=(base['protocol'],base['port'],base.get('protocolNumber'))
-        slices=service_slices(protocol,None,number,list(self.snapshots.values()),self.aws_data)
+        key=(protocol,number)
+        if key not in self._service_slices:self._service_slices[key]=service_slices(protocol,None,number,list(self.snapshots.values()),self.aws_data)
+        slices=self._service_slices[key]
         cases=[]
         for current,start,end,coverage in slices[:1024]:
             numbers=list(coverage) if isinstance(coverage,tuple) else [coverage]
             num=numbers[0]
-            pair=self.service._check_legacy(str(source),str(destination),current,start,self.refresh,num,_snapshots=self.snapshots)
+            pair=self.service._check_legacy(str(source),str(destination),current,start,self.refresh,num,_snapshots=self.snapshots, _indexes=self.indexes)
             pair=self.enhance(pair,source,destination,current,start,num,source_fqdn,destination_fqdn)
             signature=(pair['summary']['status'],tuple((step['type'],step.get('firewall'),step['status'],(step.get('matchedRule') or {}).get('rule'),step.get('rule')) for step in pair['analysisPath']))
             if cases and cases[-1]['protocol']==current and cases[-1]['protocolNumber']==num and cases[-1]['_signature']==signature and start is not None and cases[-1]['toPort']==start-1:
@@ -340,7 +370,8 @@ class PathAnalysis:
 
     def enhance(self, base, source, destination, protocol, port, number, source_fqdn=None, destination_fqdn=None):
         packet_source,packet_destination,packet_port=source,destination,port
-        warnings,path_steps,results,returns,notes=[],[],[],[],[]
+        warnings,path_steps,results,returns,notes,nat_failures=[],[],[],[],[],[]
+        source_translation_unknown=False
         path=list(base['path'])
         # Legacy mapping can return the first site overlapping a broad CIDR.
         # An overlap is not ownership of the entire requested address scope.
@@ -359,8 +390,9 @@ class PathAnalysis:
         if not path and not aws_direct:
             published=[]
             for name,snapshot in self.snapshots.items():
-                candidate,issues,_=self._nat(snapshot,source,destination,protocol,port,'DNAT')
-                if candidate and not issues and not any(is_wildcard_value(value) for value in candidate['row'].get('Original Destination','').splitlines()):published.append(name)
+                candidate,issues,potential=self._nat(snapshot,source,destination,protocol,port,'DNAT')
+                candidate=candidate or (potential[0] if len(potential)==1 else None)
+                if candidate and not any(is_wildcard_value(value) for value in candidate['row'].get('Original Destination','').splitlines()):published.append(name)
             if len(published)==1:path.append(published[0])
         if not path and not aws_direct:
             connected=[]
@@ -384,8 +416,9 @@ class PathAnalysis:
             expected=expected_zones_for_path(base['source'],base['destination'],path).get(name,(None,None))
             return_route=self._route(snapshot,packet_source)
             source_zone,ingress,ingress_confidence=self._zone(snapshot,return_route,expected[0])
+            ingress_selector=self._interface(snapshot,return_route) or ({'Name':return_route['interface'],'Hardware':return_route['interface'],'Zone':source_zone} if return_route and not return_route.get('ambiguous') and return_route.get('interface') else None)
             original_destination,original_port=packet_destination,packet_port
-            nat,nat_warnings,candidates=self._nat(snapshot,packet_source,packet_destination,protocol,packet_port,'DNAT',ingress)
+            nat,nat_warnings,candidates=self._nat(snapshot,packet_source,packet_destination,protocol,packet_port,'DNAT',ingress_selector,number=number)
             warnings.extend(f'{name} {message}' for message in nat_warnings)
             nat_status='UNKNOWN' if nat_warnings or 'NATRule' in errors else 'NOT_REQUIRED'
             nat_steps=[]
@@ -403,7 +436,7 @@ class PathAnalysis:
                 reason=f'{old} → {packet_destination}' if nat_status=='PASS' else 'DNAT에 필요한 주소/서비스 Object가 API 결과에 없거나 단일 변환을 결정할 수 없습니다'
                 event={'type':'dnat','firewall':name,'label':'DNAT','status':nat_status,'reason':reason,'rule':row['Rule Name'],'nat':row,
                     'translation':{'original':str(old),'translated':str(packet_destination),'originalPort':original_port,'translatedPort':packet_port}}
-                path_steps.append(event);nat_steps.append(event)
+                if nat_status=='PASS':path_steps.append(event);nat_steps.append(event)
             route=self._route(snapshot,packet_destination)
             if route and not route.get('ambiguous') and route.get('gateway') and len(path)<len(self.configs):
                 try:peers=self._owners(ipaddress.ip_network(route['gateway']))
@@ -417,10 +450,13 @@ class PathAnalysis:
                 path.append(target_firewall)
             confidence='CONFIRMED' if ingress_confidence==egress_confidence=='CONFIRMED' else 'INFERRED'
             if expected and (source_zone,destination_zone)!=expected and any(expected):notes.append(f'{name} 실제 Interface Zone을 Topology 예상 Zone보다 우선 적용했습니다')
-            policy,status,reason=decide_policy(self.resolved_rules(snapshot,source_fqdn,None if nat else destination_fqdn),packet_source,packet_destination,protocol,packet_port,
+            decision_started=time.perf_counter()
+            policy,status,reason=decide_policy(self.policy_candidates(snapshot,packet_source,packet_destination,source_fqdn,None if nat else destination_fqdn),packet_source,packet_destination,protocol,packet_port,
                 source_zone,destination_zone,number,source_fqdn,None if nat else destination_fqdn)
+            self.metrics['path_decision_ms']+=(time.perf_counter()-decision_started)*1000
             matched=policy.get('matchedRule')
-            if 'FirewallRule' in errors:status='UNKNOWN';reason=f'{name} FirewallRule API 조회 실패로 정책 판정이 불가능합니다'
+            if source_translation_unknown:status='UNKNOWN';reason='앞 Firewall의 SNAT 변환 Source가 Snapshot에 없어 후속 Source 조건을 판정할 수 없습니다'
+            if 'FirewallRule' in errors:status='UNKNOWN';reason=f'{name} Configuration Snapshot 없음 · 최신 정보 다시 조회로 수집하세요' if not snapshot.get('checkedAt') and 'Snapshot' in str(errors['FirewallRule']) else f'{name} FirewallRule API 조회 실패로 정책 판정이 불가능합니다'
             elif nat_status=='UNKNOWN':status='UNKNOWN';reason=f'{name} NAT API/참조 Object/우선순위 데이터가 없어 변환 후 정책을 계산할 수 없습니다'
             elif not source_zone or not destination_zone:
                 # Any-zone rules remain decidable even without a route-derived zone.
@@ -431,7 +467,7 @@ class PathAnalysis:
             step={'type':'firewall','firewall':name,'label':name+' Firewall','status':status,'reason':reason,
                 'ingressZone':source_zone,'egressZone':destination_zone,'ingressInterface':ingress,'egressInterface':egress,
                 'matchedRule':matched,'action':(matched or {}).get('action',''),'route':route,'confidence':confidence,
-                'candidateRules':policy.get('matches',[]),'nat':nat_steps,'natStatus':nat_status,
+                'candidateRules':policy.get('matches',[]),'nat':nat_steps,'natStatus':nat_status,'natDecision':{'NOT_REQUIRED':'NAT_NOT_REQUIRED','PASS':'NAT_APPLIED','UNKNOWN':'NAT_UNKNOWN'}.get(nat_status,'NAT_NO_MATCH'),
                 'evidence':{'Source Zone':source_zone,'Destination Zone':destination_zone,'Source Match':(matched or {}).get('sourceObject'),
                     'Destination Match':(matched or {}).get('destinationObject'),'Service Match':(matched or {}).get('service'), 'Action':(matched or {}).get('action')}}
             path_steps.append(step)
@@ -440,7 +476,7 @@ class PathAnalysis:
                 '동일 Prefix/Distance의 복수 Route로 ECMP 경로가 존재합니다' if route.get('ambiguous') else 'Destination Blackhole Route' if route_status=='BLOCK' else
                 f"{route['routeType']} {route['network']} → {route.get('interface','')}")
             path_steps.append({'type':'route','firewall':name,'label':'Destination Route','status':route_status,'reason':route_reason,'route':route})
-            snat,snat_warnings,_=self._nat(snapshot,packet_source,original_destination,protocol,original_port,'SNAT',egress,matched)
+            snat,snat_warnings,_=self._nat(snapshot,packet_source,original_destination,protocol,original_port,'SNAT',self._interface(snapshot,route) or ({'Name':route['interface'],'Hardware':route['interface'],'Zone':destination_zone} if route and not route.get('ambiguous') and route.get('interface') else None),matched,ingress=ingress_selector,number=number)
             warnings.extend(f'{name} {message}' for message in snat_warnings)
             if snat:
                 row=snat['row'];target=row['Translated Source'];translated=self._translated(target,snapshot)
@@ -450,11 +486,19 @@ class PathAnalysis:
                 old=packet_source
                 if translated is not None:packet_source=translated
                 snat_status='PASS' if translated is not None and not snat['warnings'] else 'UNKNOWN'
-                path_steps.append({'type':'snat','firewall':name,'label':'SNAT','status':snat_status,
-                    'reason':f'{old} → {target}' if snat_status=='PASS' else 'SNAT 변환에 필요한 Source Object/Interface IP가 API 결과에 없습니다',
-                    'rule':row['Rule Name'],'nat':row,'translation':{'original':str(old),'translated':str(packet_source)}})
+                if snat_status=='PASS':
+                    step['natDecision']='NAT_APPLIED'
+                    path_steps.append({'type':'snat','firewall':name,'label':'SNAT','status':'PASS','reason':f'{old} → {target}',
+                        'rule':row['Rule Name'],'nat':row,'translation':{'original':str(old),'translated':str(packet_source)}})
+                else:
+                    source_translation_unknown=True
+                    step['natDecision']='NAT_UNKNOWN'
+                    nat_failures.append(name+' NAT_UNKNOWN: SNAT에 필요한 Source Object/실제 Egress IP가 Snapshot에 없습니다')
             elif snat_warnings:
-                path_steps.append({'type':'snat','firewall':name,'label':'SNAT','status':'WARNING','reason':'; '.join(snat_warnings)})
+                step['natDecision']='NAT_UNKNOWN'
+                source_translation_unknown=True
+                nat_failures.extend(name+' NAT_UNKNOWN: '+message for message in snat_warnings)
+            if step['natDecision']=='NAT_NOT_REQUIRED' and destination_zone=='WAN':step['natDecision']='NAT_NO_MATCH'
             gateway=next((row for row in snapshot.get('gateways',[]) if egress and row.get('Name')==egress.get('Gateway Name')),None)
             if gateway:
                 path_steps.append({'type':'gateway','firewall':name,'label':gateway['Name'],'status':'PASS',
@@ -468,7 +512,7 @@ class PathAnalysis:
                 'policy':policy,'routing':{'destination':route,'return':return_route,'returnStatus':return_status,'error':snapshot.get('routeError','')},'analysis':step})
         aws=AwsSecurityGroupPathService(self.service.root).check(packet_source,packet_destination,protocol,packet_port,number,path,base['partialPath'])
         aws['outbound']=base['awsSecurityGroups']['outbound']
-        def sg_step(item):return {'type':'aws_sg','label':item['label'],'status':{'PASS':'PASS','FAIL':'BLOCK'}.get(item['state'],'UNKNOWN'),'reason':item['reason'],'awsSg':item}
+        def sg_step(item):return {'type':'aws_sg','label':item['label'],'status':'UNKNOWN' if source_translation_unknown and item is aws['inbound'] else {'PASS':'PASS','FAIL':'BLOCK'}.get(item['state'],'UNKNOWN'),'reason':'앞 단계 Source Translation 데이터가 없어 Inbound peer 조건을 계산할 수 없습니다' if source_translation_unknown and item is aws['inbound'] else item['reason'],'awsSg':item}
         if aws['outbound']['state']!='N/A':path_steps.insert(0,sg_step(aws['outbound']))
         if aws['inbound']['state']!='N/A':path_steps.append(sg_step(aws['inbound']))
         path_steps+=returns
@@ -476,6 +520,11 @@ class PathAnalysis:
             path_steps.append({'type':'network','label':'Network Path','status':'UNKNOWN','reason':(base.get('awsSecurityGroups',{}).get('networkPath') or {}).get('reason') or 'Source/Destination을 연결하는 Firewall/Cloud network 경로 데이터가 없습니다'})
         path_progress=progress(path_steps,base['source']['input'],str(packet_destination) if packet_destination!=destination else base['destination']['input'])
         summary=_summary(path_steps,base['source']['input'],base['destination']['input'],protocol,port,warnings,False,number)
+        if nat_failures and summary['status']!='BLOCK':
+            summary.update(status='UNKNOWN',primaryReason=nat_failures[0],confidence='UNKNOWN')
+            path_progress['nodes'][-1]['status']='UNKNOWN'
+            path_progress['links'][-1]['status']='UNKNOWN'
+        warnings.extend(nat_failures)
         legacy_steps=([aws['outbound']] if aws['outbound']['state']!='N/A' else [])+[firewall_step(item) for item in results]+([aws['inbound']] if aws['inbound']['state']!='N/A' else [])
         base.update(mode='PATH',summary=summary,analysisPath=path_steps,progress=path_progress,pathSteps=path_steps,
             findings=[{'severity':'WARNING','message':message} for message in _unique(warnings)]+[{'severity':'INFO','message':message} for message in _unique(notes)],path=path,firewalls=results,
@@ -495,34 +544,48 @@ class PathAnalysis:
         mode='SOURCE_REACHABILITY' if source else 'DESTINATION_EXPOSURE'
         value=source or destination; endpoint=self.endpoint(value,'Source' if source else 'Destination')
         known, fqdn, addresses, site=endpoint
-        units={}; publications=[]
+        units={}; publications=[];related_policies={};unresolved_search=[]
         for name, config in self.configs.items():
             if not config.get('configured'):continue
             snapshot=self.snapshot(name) or {}
-            for row in self.resolved_rules(snapshot,fqdn if source else None,fqdn if not source else None):
-                side='Source' if source else 'Destination'; other='Destination' if source else 'Source'
-                queries = [known] if known is not None else [ipaddress.ip_network(value) for value in addresses] or [None]
-                if not source:
-                    translated_queries = []
-                    for query in queries:
-                        for nat in snapshot.get('natRules', []):
-                            if nat.get('Status','').casefold() not in {'enable','enabled'}: continue
-                            originals = [net for value in nat.get('Original Destination','').splitlines() for net in self._networks(value,snapshot)]
-                            translated = self._translated(nat.get('Translated Destination',''),snapshot)
-                            if query is not None and translated is not None and any(query.version==net.version and query.subnet_of(net) for net in originals): translated_queries.append(translated)
-                    queries += translated_queries
+            side='Source' if source else 'Destination';other='Destination' if source else 'Source'
+            queries=[known] if known is not None else [ipaddress.ip_network(item) for item in addresses] or [None]
+            index=self.indexes[name]
+            nat_ids=set()
+            fields=('Original Source','Translated Source') if source else ('Original Destination','Translated Destination')
+            for field in fields:
+                for query in queries:nat_ids.update(index.nat[field].find(query))
+            for nat_id in nat_ids:
+                nat=snapshot.get('natRules',[])[nat_id]
+                if nat.get('Status','').casefold() not in {'enable','enabled'}:continue
+                related_field='Original Source' if source else 'Translated Destination'
+                queries += [net for item in nat.get(related_field,'').splitlines() for net in self._networks(item,snapshot)]
+            ids=set()
+            for query in queries:ids.update(index.rules(side,query,fqdn))
+            for row_id in sorted(ids):
+                row=snapshot['rules'][row_id]
                 matches = [_query_address_match(query,fqdn,row,side,True) for query in queries]
                 match = {'match':'full' if all(item['match']=='full' for item in matches) else 'partial' if any(item['match']!='none' for item in matches) else 'none'}
-                if match['match']=='none' or row.get('Status','').casefold() not in {'enable','enabled','활성'}:continue
-                if not service_match_details(protocol,port,row.get('Service',''),row.get('Service Resolved / Protocol / Port',''),row.get('service_wildcard') is True,number)['serviceMatch']:continue
+                if row.get('Status','').casefold() not in {'enable','enabled','활성'}:continue
+                if match['match']=='none':
+                    if any(item.get('resolverFailed') for item in matches) or row.get('_'+side+' Missing Objects'):
+                        unresolved_search.append(name+' '+side+' Object 주소 데이터가 Snapshot에 없습니다')
+                    continue
+                resolved_service=row.get('Service Resolved / Protocol / Port','')
+                if not any(service_match_details(protocol,port,row.get('Service',''),line,row.get('service_wildcard') is True,number)['serviceMatch'] for line in normalized_service_lines(resolved_service,protocol) or ['']) and not row.get('_Missing Services'):continue
+                policy_ref={'id':name+':'+str(row_id),'firewall':name,'rule':row.get('Rule Name',''),'action':row.get('Action',''),
+                    'source':row.get('Source Object',''),'destination':row.get('Destination Object',''),'service':row.get('Service',''),
+                    'status':row.get('Status',''),'snapshotId':index.snapshot_id}
+                related_policies[policy_ref['id']]=policy_ref
                 names=row.get(other+' Object','').splitlines() or ['ANY'] if row.get(other.lower()+'_wildcard') else row.get(other+' Object','').splitlines()
                 for object_name in names:
                     wildcard=is_wildcard_value(object_name) or row.get(other.lower()+'_wildcard') is True
                     networks=self._networks(object_name,snapshot) or _networks(row.get(other+' Resolved','')) if len(names)==1 else self._networks(object_name,snapshot)
                     patterns=snapshot.get('fqdnObjects',{}).get(object_name,[]) or row.get('_'+other+' FQDNs',[])
                     key=(object_name,tuple(map(str,networks)),tuple(patterns),row.get(other+' Zone',''))
-                    unit=units.setdefault(key,{'label':'ANY / Internet / Other Networks' if wildcard else object_name,'object':object_name,
-                        'networks':list(map(str,networks)),'fqdns':patterns,'zone':row.get(other+' Zone',''),'site':'','wildcard':wildcard,'partialKnown':False,'firewalls':[]})
+                    unit=units.setdefault(key,{'label':('Internet' if row.get(other+' Zone','').casefold()=='wan' else 'ANY / 모든 네트워크') if wildcard else object_name,'object':object_name,
+                        'networks':list(map(str,networks)),'fqdns':patterns,'zone':row.get(other+' Zone',''),'site':'','wildcard':wildcard,'partialKnown':False,'firewalls':[],'relatedPolicies':[]})
+                    if policy_ref not in unit['relatedPolicies']:unit['relatedPolicies'].append(policy_ref)
                     unit['partialKnown'] = unit['partialKnown'] or match['match']=='partial'
                     unit['site'] = '; '.join(_unique(resolve_input_network(str(net)).get('site','') for net in networks if resolve_input_network(str(net)).get('site') != '미확인'))
                     if name not in unit['firewalls']:unit['firewalls'].append(name)
@@ -533,18 +596,20 @@ class PathAnalysis:
                         publications.append({'firewall':name,'rule':nat['Rule Name'],'publishedVia':nat.get('Original Destination',''),
                                              'originalService':nat.get('Original Service',''),'target':str(translated),'status':nat.get('Status','')})
         groups=[]
+        def mini_path(cases,state):
+            value=copy.deepcopy(cases[0].get('progress',{})) if cases else {'nodes':[],'links':[]}
+            if state=='WARNING':
+                value['mixed']=True
+                for node in value.get('nodes',[]):
+                    if node.get('type')!='source':node['status']='WARNING'
+                for link in value.get('links',[]):link.update(active=True,status='WARNING')
+            return value
         # Partition the wildcard domain at collected route/object boundaries.
         # Every CIDR is checked as a whole; no individual IP is enumerated.
         def wildcard_targets(unit):
             version=known.version if known is not None else 4
             remaining=[ipaddress.ip_network('0.0.0.0/0' if version==4 else '::/0')]
-            cuts=[]
-            for snap in self.snapshots.values():
-                cuts += [net for row in snap.get('interfaces',[])+snap.get('aliases',[]) if (net:=interface_network(row)) is not None]
-                cuts += [net for row in snap.get('rules',[]) for side in ('Source','Destination') for net in _networks(row.get(side+' Resolved',''))]
-                for row in snap.get('routes',[]):
-                    try:cuts.append(ipaddress.ip_network(row['destination']+'/'+(row.get('netmask') or '32'),strict=False))
-                    except (KeyError,ValueError):pass
+            cuts=[network for index in self.indexes.values() for network in index.cuts]
             for cut in sorted(set(cuts),key=lambda net:net.prefixlen):
                 if cut.version!=version or cut.prefixlen==0:continue
                 updated=[]
@@ -571,7 +636,7 @@ class PathAnalysis:
                     result=self.analyze(value if source else target,target if source else value,protocol,port,number)
                     cases.append({'target':target,'source':value if source else target,'destination':target if source else value,
                         'summary':result['summary'],'analysisPath':result['analysisPath'],'progress':result.get('progress',{}),
-                        'serviceResults':result.get('serviceResults',[]),'networkResults':result.get('networkResults',[]),'details':result.get('details',{})})
+                        'serviceResults':result.get('serviceResults',[]),'networkResults':result.get('networkResults',[]),'resolvedResults':result.get('resolvedResults',[]),'pathContext':result.get('pathContext'),'details':result.get('details',{})})
                 except ValueError:cases.append({'target':target,'summary':{'status':'UNKNOWN','primaryReason':'Object에 유효한 주소/FQDN이 없습니다'},'analysisPath':[]})
             states={case['summary']['status'] for case in cases}
             state=next(iter(states)) if len(states)==1 else 'WARNING' if states else 'UNKNOWN'
@@ -579,7 +644,7 @@ class PathAnalysis:
             if unit['wildcard']:reason='ANY를 수집된 Route/Object 경계로 분할하여 전체 범위를 분석했습니다'
             if cases and len(states)>1:reason='범위별 결과 상이 · 각 Network의 허용/차단 결과를 제공합니다'
             if unit['partialKnown'] and state=='WARNING':reason='입력 Network/Resolve 범위별 허용/차단 결과가 다릅니다'
-            groups.append({**unit,'status':state,'reason':reason,'results':cases})
+            groups.append({**unit,'status':state,'reason':reason,'results':cases,'policyCount':len(unit['relatedPolicies']),'miniPath':mini_path(cases,state)})
             if not source:
                 for publication in publications:
                     snapshot=self.snapshots[publication['firewall']]
@@ -593,15 +658,17 @@ class PathAnalysis:
                         states={case['summary']['status'] for case in exposure_cases}
                         groups.append({**unit,'label':unit['label']+' → Published '+address,'publication':publication,
                             'status':next(iter(states)) if len(states)==1 else 'WARNING' if states else 'UNKNOWN',
-                            'reason':'DNAT 공개 주소를 통한 실제 경로 분석','results':exposure_cases})
+                            'reason':'DNAT 공개 주소를 통한 실제 경로 분석','results':exposure_cases,'policyCount':len(unit['relatedPolicies']),'miniPath':mini_path(exposure_cases,next(iter(states)) if len(states)==1 else 'WARNING')})
         warnings=[]
         if len(units)>500:warnings.append('500개 그룹 분석 한도 · 나머지 범위 미확인')
         failures=[f'{name} {entity}: {message}' for name,snapshot in self.snapshots.items() for entity,message in snapshot.get('configurationErrors',{}).items()]
         warnings.extend(failures)
-        summary={'status':'UNKNOWN' if not groups else 'WARNING' if warnings or len({group['status'] for group in groups}) > 1 or any(group['status'] in {'WARNING','UNKNOWN'} for group in groups) else 'BLOCK' if all(group['status']=='BLOCK' for group in groups) else 'PASS',
+        summary={'status':('UNKNOWN' if not self.snapshots or failures or unresolved_search else 'BLOCK') if not groups else 'WARNING' if warnings or len({group['status'] for group in groups}) > 1 or any(group['status'] in {'WARNING','UNKNOWN'} for group in groups) else 'BLOCK' if all(group['status']=='BLOCK' for group in groups) else 'PASS',
             'source':source,'destination':destination,'service':f'{protocol} / {port if port is not None else "ANY"}',
             'primaryReason':'정책 Object/Network/Zone별 접근 범위 분석 완료' if groups else '입력에 대응하는 정책 Object/접근 범위가 수집된 API 결과에 없습니다', 'blockedAt':None,'warnings':_unique(warnings),'confidence':'INFERRED'}
+        if not groups and self.snapshots and not failures and not unresolved_search:summary['primaryReason']='수집된 방화벽 정책에 입력/서비스와 일치하는 항목이 없습니다 · 기본 Drop 기준'
+        if not groups and unresolved_search:summary['primaryReason']=unresolved_search[0]
         if not groups and failures:summary['primaryReason']='접근 범위 분석에 필요한 API 조회 실패: '+failures[0]
-        return {'mode':mode,'summary':summary,'groups':groups,'analysisPath':[], 'details':{'publishedServices':publications,
+        return {'mode':mode,'analysisMode':'SOURCE_ONLY' if source else 'DESTINATION_ONLY','relatedPolicies':list(related_policies.values()),'policyCount':len(related_policies),'summary':summary,'groups':groups,'analysisPath':[], 'details':{'publishedServices':publications,
             'configurationErrors':failures},'progress':{'nodes':[],'links':[]},'source':site if source else None,'destination':site if destination else None,
             'protocol':protocol,'port':port,'protocolNumber':number,'checkedAt':datetime.now(timezone.utc).isoformat()}

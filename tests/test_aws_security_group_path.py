@@ -412,7 +412,7 @@ def test_cached_vpc_identity_controls_path_before_sophos_queries(tmp_path, monke
         return {"rules": [], "routes": [{"Destination": "0.0.0.0", "Netmask": "0.0.0.0"}], "routeError": "", "checkedAt": "now"}
     monkeypatch.setattr(service, "_snapshot", snapshot)
     result = service.check("10.10.0.10", "100.1.2.10", "TCP", 443)
-    assert snapshots == []
+    assert all(args[1] is False for args in snapshots)  # Snapshot reads are now local and pre-pinned, not API queries.
     assert result["path"] == result["firewalls"] == []
     assert result["partialPath"] is partial
     assert result["awsSecurityGroups"]["networkPath"]["mode"] == mode

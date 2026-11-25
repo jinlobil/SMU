@@ -89,6 +89,7 @@ report_service = ReportService(PROJECT_ROOT)
 system_metrics_service = SystemMetricsService(PROJECT_ROOT)
 watchdog_manager = WatchdogManager(PROJECT_ROOT)
 scheduler_service = SchedulerService(PROJECT_ROOT, refresh_service, watchdog_manager)
+scheduler_service.firewall_configuration_refresh = firewall_path_check_service.configuration.refresh
 integration_service = IntegrationService(PROJECT_ROOT)
 exception_service = ExceptionService(PROJECT_ROOT)
 content_service = ContentService(PROJECT_ROOT)
@@ -316,6 +317,16 @@ def get_dashboard_top_file(start: date | None = None, end: date | None = None) -
 @app.get("/api/firewall/configuration")
 def get_firewall_configuration() -> dict:
     return {"success": True, "data": {"firewalls": firewall_service.public_configurations()}}
+
+
+@app.get("/api/firewall/configuration")
+def firewall_configuration_status() -> dict:
+    return {"success":True,"data":firewall_path_check_service.configuration.info()}
+
+
+@app.post("/api/firewall/configuration/refresh", status_code=202)
+def refresh_firewall_configuration() -> dict:
+    return {"success":True,"data":firewall_path_check_service.configuration.start_refresh()}
 
 
 @app.post("/api/firewall/path-check")

@@ -195,7 +195,7 @@ def test_invalid_empty_query_never_collects_and_refresh_memo_is_per_analysis(tmp
     with pytest.raises(ValueError):current.check('','')
     assert calls==[]
     current.check('100.1.1.10','','TCP',443,refresh=True)
-    assert calls==[('Cloud',True)]
+    assert calls==[('Cloud',False)]
 
 
 def test_multi_firewall_first_block_and_downstream_sg_not_reached(tmp_path,monkeypatch):

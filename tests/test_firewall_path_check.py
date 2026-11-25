@@ -301,15 +301,18 @@ def test_dotted_netmask_input_is_normalized_and_non_contiguous_mask_rejected(tmp
         service.check("101.1.3.50/255.0.255.0", "52.79.112.47", "ANY", None)
 
 
-def test_snapshot_cache_and_refresh_only_refetch_requested_firewall(tmp_path: Path, monkeypatch) -> None:
+def test_snapshot_reads_are_local_and_only_explicit_refresh_collects(tmp_path: Path, monkeypatch) -> None:
     service = FirewallPathCheckService(tmp_path, ttl_seconds=300); calls = []
     rule_xml = '''<Response><Status code="200">OK</Status><FirewallRule><Name>Rule</Name><Status>Enable</Status><NetworkPolicy/></FirewallRule></Response>'''
     monkeypatch.setattr(FirewallClient, "get_rules_compatible", lambda self: calls.append((self.name,"rules")) or {"raw":rule_xml,"entity":"FirewallRule","apiVersion":""})
     monkeypatch.setattr(FirewallClient, "get", lambda self, entity: calls.append((self.name,entity)) or '<Response><Status code="200">OK</Status></Response>')
     config = {"name":"Cloud","host":"cloud","port":"4444","username":"u","password":"p","verify_ssl":False}
-    service._snapshot(config, False); first = len(calls)
-    service._snapshot(config, False); assert len(calls) == first
-    service._snapshot(config, True); assert len(calls) > first
+    config['configured']=True
+    monkeypatch.setattr(service.firewalls,'configurations',lambda:[config])
+    service._snapshot(config,False);assert calls==[]
+    service.configuration.refresh();first=len(calls);assert first>0
+    service._snapshot(config,False);service._snapshot(config,True);assert len(calls)==first
+    service.configuration.refresh();assert len(calls)==first*2
 
 
 def test_network_mapping_failure_is_not_assigned_a_firewall() -> None:

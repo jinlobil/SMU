@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import ipaddress
 import re
-import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -135,7 +134,7 @@ def _query_address_match(network, fqdn, row, side, allow_resolved=False):
     return {'match': 'full' if matched else 'none', 'wildcard': wildcard, 'resolverFailed': False}
 
 
-def _query_endpoint(value, side):
+def _query_endpoint(value, side, cached_addresses=None):
     try:
         network = ipaddress.ip_network(value, strict=False)
         return network, None, [], resolve_input_network(value)
@@ -143,7 +142,7 @@ def _query_endpoint(value, side):
         if '/' in value:
             raise ValueError(f'{side} IP 또는 CIDR을 확인하세요')
         fqdn = normalize_fqdn(value, side=side)
-        addresses = resolve_fqdn(fqdn)
+        addresses = resolve_fqdn(fqdn) if cached_addresses is None else cached_addresses
         network = ipaddress.ip_network(addresses[0]) if len(addresses) == 1 else None
         endpoint = resolve_input_network(str(network)) if network else None
         endpoint = {**(endpoint or {'network': '', 'site': 'FQDN', 'category': '', 'managedFirewall': ''}),
@@ -282,26 +281,24 @@ class FirewallPathCheckService:
     def __init__(self, root: Path, ttl_seconds: int = 300):
         self.root, self.ttl_seconds = root, ttl_seconds
         self.firewalls = FirewallService(root)
-        self._cache: dict[str, tuple[float, dict[str, Any]]] = {}
-        self._lock = threading.Lock()
+        from backend.services.firewall_configuration import FirewallConfigurationStore
+        self.configuration = FirewallConfigurationStore(root,self.firewalls,self._collect_snapshot)
 
-    def _snapshot(self, config: dict[str, Any], refresh: bool) -> dict[str, Any]:
-        with self._lock:
-            cached = self._cache.get(config["name"])
-            if cached and not refresh and time.monotonic() - cached[0] < self.ttl_seconds: return cached[1]
+    def _collect_snapshot(self, config: dict[str, Any], refresh: bool = True) -> dict[str, Any]:
         from backend.services.firewall_rule_export import _object_maps, _fqdn_object_patterns, _safe_export_error
         from backend.services.firewall_nat import parse_nat_rules
         from backend.services.firewall_network_export import parse_interfaces, parse_aliases, parse_zones, parse_gateways
+        from backend.services.firewall_configuration import validate_response
         client, payloads, errors = FirewallClient(config), {}, {}
         try:
             rule_response = client.get_rules_compatible()
-            payloads['Rule'] = rule_response['raw']
+            payloads['Rule'] = validate_response(rule_response['raw'],rule_response['entity'])
         except Exception as exc:
             errors['FirewallRule'] = _safe_export_error(exc)
             rule_response = {'entity': 'FirewallRule'}
         for entity in ENTITIES:
             try:
-                raw = client.get(entity); _nodes(raw, entity); payloads[entity] = raw
+                raw = validate_response(client.get(entity),entity); payloads[entity] = raw
             except Exception as exc: errors[entity] = _safe_export_error(exc, entity)
         try:
             rows, _columns = parse_firewall_rules(payloads, rule_response['entity']) if 'Rule' in payloads else ([], [])
@@ -314,7 +311,7 @@ class FirewallPathCheckService:
         snapshot['fqdnObjects'] = _fqdn_object_patterns(payloads)
         for entity in ('UnicastRoute', 'NATRule', 'Interface', 'Alias', 'Zone', 'GatewayConfiguration'):
             try:
-                raw = client.get(entity)
+                raw = validate_response(client.get(entity),entity)
                 if entity == 'UnicastRoute': snapshot['routes'] = parse_unicast_routes(raw)
                 elif entity == 'NATRule': snapshot['natRules'] = parse_nat_rules(raw, rows)
                 elif entity == 'Interface': snapshot['interfaces'] = parse_interfaces(raw)
@@ -324,16 +321,51 @@ class FirewallPathCheckService:
             except Exception as exc:
                 errors[entity] = _safe_export_error(exc, entity)
                 if entity == 'UnicastRoute': snapshot['routeError'] = errors[entity]
-        with self._lock: self._cache[config["name"]] = (time.monotonic(), snapshot)
+        from backend.services.firewall_configuration import normalize_objects
+        normalize_objects(payloads,snapshot)
+        snapshot['confirmedEmptyRules']=bool(re.search(r'(?:totalrecords|totalcount|total)[=\s>]+[\"\']?0(?:[\"\'<\s])',payloads.get('Rule',''),re.I))
         return snapshot
+
+    def _snapshot(self, config, refresh=False):
+        snapshot=self.configuration.get(config['name'])
+        if snapshot is None:
+            return {'rules':[],'routes':[],'interfaces':[],'aliases':[],'zones':[],'gateways':[],'natRules':[],
+                'objects':{},'services':{},'fqdnObjects':{},'configurationErrors':{'FirewallRule':'Configuration Snapshot 없음 · 최신 정보 다시 조회를 실행하세요','NATRule':'Configuration Snapshot 없음'},
+                'routeError':'Configuration Snapshot 없음','checkedAt':''}
+        return snapshot
+
+    def analysis_snapshots(self, refresh=False):
+        # Pin a complete generation while building a request view. Refresh I/O never holds this lock.
+        with self.configuration.lock:
+            return {config['name']:self._snapshot(config,False) for config in self.firewalls.configurations() if config.get('configured') or config['name'] in self.configuration.snapshots}
 
     def check(self, source_value: str = '', destination_value: str = '', protocol: str = "ANY", port: Any = None,
               refresh: bool = False, protocol_number: Any = None) -> dict[str, Any]:
         from backend.services.firewall_path_analysis import PathAnalysis
-        return PathAnalysis(self, refresh).analyze(source_value, destination_value, protocol, port, protocol_number)
+        if not str(source_value or "").strip() and not str(destination_value or "").strip():raise ValueError("Source 또는 Destination을 입력하세요")
+        normalize_service(protocol,port,protocol_number)
+        started=time.perf_counter()
+        if refresh:self.configuration.refresh()
+        analysis=PathAnalysis(self,False)
+        result=analysis.analyze(source_value,destination_value,protocol,port,protocol_number)
+        stamps={name:snapshot.get('checkedAt','') for name,snapshot in analysis.snapshots.items() if snapshot.get('checkedAt')}
+        result['configuration']={'refreshedAt':min(stamps.values()) if stamps else None,'firewalls':stamps,
+            'snapshots':{name:snapshot.get('metadata',{}).get('snapshot_id') for name,snapshot in analysis.snapshots.items()}}
+        refresh_status=self.configuration.info().get('firewalls',{})
+        result['configuration']['refreshStatus']=refresh_status
+        for name in stamps:
+            if refresh_status.get(name,{}).get('refresh_status')=='failed':
+                message=name+' Configuration 최신화 실패 · 이전 정상 Snapshot으로 분석했습니다'
+                result.setdefault('findings',[]).append({'severity':'WARNING','message':message})
+                result['summary'].setdefault('warnings',[]).append(message)
+                if result['summary']['status']=='PASS':result['summary']['status']='WARNING'
+        result['metrics']={**analysis.metrics,'total_ms':round((time.perf_counter()-started)*1000,3)}
+        import logging
+        logging.getLogger('smu.firewall.path').debug('Path analysis mode=%s metrics=%s',result.get('mode'),result['metrics'])
+        return result
 
     def _check_legacy(self, source_value: str, destination_value: str, protocol: str = "ANY", port: Any = None,
-                      refresh: bool = False, protocol_number: Any = None, _snapshots=None, _endpoints=None) -> dict[str, Any]:
+                      refresh: bool = False, protocol_number: Any = None, _snapshots=None, _endpoints=None, _indexes=None) -> dict[str, Any]:
         source_endpoint, destination_endpoint = _endpoints or (_query_endpoint(source_value, 'Source'), _query_endpoint(destination_value, 'Destination'))
         source_network, source_fqdn, source_addresses, source = source_endpoint
         destination_network, destination_fqdn, resolved_addresses, destination = destination_endpoint
@@ -355,7 +387,7 @@ class FirewallPathCheckService:
         results = []
         for name in path:
             config = configs.get(name)
-            if not config or not config["configured"]:
+            if not config or not config["configured"] and (_snapshots is None or name not in _snapshots):
                 results.append({"firewall": name, "available": False, "error": "Firewall configuration unavailable", "policy": {"state": "unavailable"}, "routing": {"destination": None, "return": None}}); continue
             try:
                 if _snapshots is None: snapshot = self._snapshot(config, refresh)
@@ -370,7 +402,12 @@ class FirewallPathCheckService:
                     destination_zone = None
                 if source_fqdn and not source_network:
                     source_zone = None
-                results.append({"firewall": name, "available": True, "checkedAt": snapshot["checkedAt"], "expectedZones": {"source": source_zone, "destination": destination_zone}, "policy": match_rules(snapshot["rules"], source_network, destination_network, protocol, normalized_port, source_zone, destination_zone, normalized_protocol_number, destination_fqdn, source_fqdn), "routing": {"destination": match_static_route(snapshot["routes"], destination_network) if destination_network else None, "return": match_static_route(snapshot["routes"], source_network) if source_network else None, "error": snapshot["routeError"]}})
+                rule_rows=snapshot['rules']
+                index=(_indexes or {}).get(name)
+                if index:
+                    ids=index.rules('Source',source_network,source_fqdn)&index.rules('Destination',destination_network,destination_fqdn)
+                    rule_rows=[index.ordered_rules[i] for i in sorted(ids)]
+                results.append({"firewall": name, "available": True, "checkedAt": snapshot["checkedAt"], "expectedZones": {"source": source_zone, "destination": destination_zone}, "policy": match_rules(rule_rows, source_network, destination_network, protocol, normalized_port, source_zone, destination_zone, normalized_protocol_number, destination_fqdn, source_fqdn), "routing": {"destination": match_static_route(snapshot["routes"], destination_network) if destination_network else None, "return": match_static_route(snapshot["routes"], source_network) if source_network else None, "error": snapshot["routeError"]}})
             except Exception as exc:
                 results.append({"firewall": name, "available": False, "error": type(exc).__name__, "policy": {"state": "unavailable"}, "routing": {"destination": None, "return": None}})
         steps = ([aws["outbound"]] if aws["outbound"]["state"] != "N/A" else [])

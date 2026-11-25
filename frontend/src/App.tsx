@@ -50,7 +50,7 @@ const submenus: Record<string, { label: string; route: string }[]> = {
     { label: "Timeline", route: "/forensics/timeline" }, { label: "Sensitive Files", route: "/forensics/sensitive-files" },
     { label: "Sensitive Sites", route: "/forensics/sensitive-sites" },
   ],
-  Response: [{ label: "Firewall", route: "/response/firewall" }, { label: "Firewall Path Check", route: "/response/firewall-path-check" }, { label: "Easy Query", route: "/response/easy-query" }],
+  Response: [{ label: "Firewall", route: "/response/firewall" }, { label: "Firewall Path Analysis", route: "/response/firewall-path-check" }, { label: "Easy Query", route: "/response/easy-query" }],
   Lab: [{ label: "Machine Learning", route: "/lab/machine-learning" }],
   Config: [
     { label: "General", route: "/config/general" }, { label: "UI Management", route: "/config/ui" }, { label: "Data Management", route: "/config/data" },

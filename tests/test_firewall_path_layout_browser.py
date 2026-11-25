@@ -35,10 +35,16 @@ def path_browser(result, width=1440):
             page.route("**/api/**", lambda route: route.fulfill(json={"data": result}) if route.request.url.endswith("/path-check") else route.fulfill(json={"data": {}}))
             page.goto(f"http://127.0.0.1:{server.server_port}/response/firewall-path-check")
             page.add_style_tag(content="*, *::before, *::after { animation: none !important; transition: none !important; }")
-            page.get_by_role("button", name="Path Check", exact=True).dispatch_event("click")
-            page.locator(".path-summary").first.wait_for()
-            yield page
-            browser.close()
+            source = result.get('summary', {}).get('source') or '192.0.2.10'
+            destination = result.get('summary', {}).get('destination', '198.51.100.10')
+            page.get_by_label('Source IP / CIDR / FQDN', exact=True).fill(source)
+            page.get_by_label('Destination IP / CIDR / FQDN', exact=True).fill(destination)
+            page.get_by_role("button", name="분석", exact=True).dispatch_event("click")
+            page.locator(".path-summary, .path-policy-summary").first.wait_for()
+            try:
+                yield page
+            finally:
+                browser.close()
     finally:
         server.shutdown()
         server.server_close()

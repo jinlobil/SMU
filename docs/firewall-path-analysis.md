@@ -1,3 +1,5 @@
+> 이 문서는 이전 재작업의 기록입니다. 현재 수집·Snapshot/Index·정책 검색·참고 이미지 UI와 검증은 [최신 통합 보고서](firewall-path-configuration.md)를 기준으로 합니다.
+
 # Firewall Path Analysis 재작업 보고
 
 ## 1. 변경 파일
