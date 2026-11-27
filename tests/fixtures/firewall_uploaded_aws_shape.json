@@ -1,0 +1,749 @@
+{
+  "provenance": "Anonymized attachment shapes extracted from the user supplied AWS cache; IPs and IDs replaced. Only Prefix List and unrestricted CIDR rule samples retained.",
+  "queries": {
+    "public_target": {
+      "address": "198.51.100.11",
+      "private": "10.60.0.10",
+      "eni": "eni-2",
+      "instance": "instance-1",
+      "groups": [
+        "sg-5",
+        "sg-6"
+      ]
+    },
+    "private_target": {
+      "address": "10.61.0.10",
+      "eni": "eni-8",
+      "instance": "instance-7",
+      "groups": [
+        "sg-11",
+        "sg-12",
+        "sg-13",
+        "sg-14",
+        "sg-15",
+        "sg-16",
+        "sg-17",
+        "sg-18",
+        "sg-19",
+        "sg-20"
+      ]
+    }
+  },
+  "aws": {
+    "instances": [
+      {
+        "InstanceId": "instance-1",
+        "VpcId": "vpc-3",
+        "NetworkInterfaces": [
+          {
+            "NetworkInterfaceId": "eni-2",
+            "PrivateIpAddress": "10.60.0.10",
+            "VpcId": "vpc-3",
+            "SubnetId": "subnet-4",
+            "Attachment": {
+              "InstanceId": "instance-1"
+            },
+            "Groups": [
+              {
+                "GroupId": "sg-5",
+                "GroupName": "sg-5"
+              },
+              {
+                "GroupId": "sg-6",
+                "GroupName": "sg-6"
+              }
+            ],
+            "PrivateIpAddresses": [
+              {
+                "PrivateIpAddress": "10.60.0.10",
+                "Primary": true,
+                "Association": {
+                  "PublicIp": "198.51.100.11"
+                }
+              },
+              {
+                "PrivateIpAddress": "10.60.0.11",
+                "Primary": false,
+                "Association": {
+                  "PublicIp": "198.51.100.13"
+                }
+              },
+              {
+                "PrivateIpAddress": "10.60.0.12",
+                "Primary": false,
+                "Association": {
+                  "PublicIp": "198.51.100.15"
+                }
+              },
+              {
+                "PrivateIpAddress": "10.60.0.13",
+                "Primary": false,
+                "Association": {
+                  "PublicIp": "198.51.100.17"
+                }
+              },
+              {
+                "PrivateIpAddress": "10.60.0.14",
+                "Primary": false,
+                "Association": {
+                  "PublicIp": "198.51.100.19"
+                }
+              },
+              {
+                "PrivateIpAddress": "10.60.0.15",
+                "Primary": false,
+                "Association": {
+                  "PublicIp": "198.51.100.21"
+                }
+              },
+              {
+                "PrivateIpAddress": "10.60.0.16",
+                "Primary": false,
+                "Association": {
+                  "PublicIp": "198.51.100.23"
+                }
+              },
+              {
+                "PrivateIpAddress": "10.60.0.17",
+                "Primary": false,
+                "Association": {
+                  "PublicIp": "198.51.100.25"
+                }
+              },
+              {
+                "PrivateIpAddress": "10.60.0.18",
+                "Primary": false,
+                "Association": {
+                  "PublicIp": "198.51.100.27"
+                }
+              },
+              {
+                "PrivateIpAddress": "10.60.0.19",
+                "Primary": false,
+                "Association": {
+                  "PublicIp": "198.51.100.29"
+                }
+              },
+              {
+                "PrivateIpAddress": "10.60.0.20",
+                "Primary": false,
+                "Association": {
+                  "PublicIp": "198.51.100.31"
+                }
+              },
+              {
+                "PrivateIpAddress": "10.60.0.21",
+                "Primary": false,
+                "Association": {
+                  "PublicIp": "198.51.100.33"
+                }
+              },
+              {
+                "PrivateIpAddress": "10.60.0.22",
+                "Primary": false,
+                "Association": {
+                  "PublicIp": "198.51.100.35"
+                }
+              },
+              {
+                "PrivateIpAddress": "10.60.0.23",
+                "Primary": false,
+                "Association": {
+                  "PublicIp": "198.51.100.37"
+                }
+              },
+              {
+                "PrivateIpAddress": "10.60.0.24",
+                "Primary": false,
+                "Association": {
+                  "PublicIp": "198.51.100.39"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "InstanceId": "instance-7",
+        "VpcId": "vpc-9",
+        "NetworkInterfaces": [
+          {
+            "NetworkInterfaceId": "eni-8",
+            "PrivateIpAddress": "10.61.0.10",
+            "VpcId": "vpc-9",
+            "SubnetId": "subnet-10",
+            "Attachment": {
+              "InstanceId": "instance-7"
+            },
+            "Groups": [
+              {
+                "GroupId": "sg-11",
+                "GroupName": "sg-11"
+              },
+              {
+                "GroupId": "sg-12",
+                "GroupName": "sg-12"
+              },
+              {
+                "GroupId": "sg-13",
+                "GroupName": "sg-13"
+              },
+              {
+                "GroupId": "sg-14",
+                "GroupName": "sg-14"
+              },
+              {
+                "GroupId": "sg-15",
+                "GroupName": "sg-15"
+              },
+              {
+                "GroupId": "sg-16",
+                "GroupName": "sg-16"
+              },
+              {
+                "GroupId": "sg-17",
+                "GroupName": "sg-17"
+              },
+              {
+                "GroupId": "sg-18",
+                "GroupName": "sg-18"
+              },
+              {
+                "GroupId": "sg-19",
+                "GroupName": "sg-19"
+              },
+              {
+                "GroupId": "sg-20",
+                "GroupName": "sg-20"
+              }
+            ],
+            "PrivateIpAddresses": [
+              {
+                "PrivateIpAddress": "10.61.0.10",
+                "Primary": true
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "network_interfaces": [
+      {
+        "NetworkInterfaceId": "eni-2",
+        "PrivateIpAddress": "10.60.0.10",
+        "VpcId": "vpc-3",
+        "SubnetId": "subnet-4",
+        "Attachment": {
+          "InstanceId": "instance-1"
+        },
+        "Groups": [
+          {
+            "GroupId": "sg-5",
+            "GroupName": "sg-5"
+          },
+          {
+            "GroupId": "sg-6",
+            "GroupName": "sg-6"
+          }
+        ],
+        "PrivateIpAddresses": [
+          {
+            "PrivateIpAddress": "10.60.0.10",
+            "Primary": true,
+            "Association": {
+              "PublicIp": "198.51.100.11"
+            }
+          },
+          {
+            "PrivateIpAddress": "10.60.0.11",
+            "Primary": false,
+            "Association": {
+              "PublicIp": "198.51.100.13"
+            }
+          },
+          {
+            "PrivateIpAddress": "10.60.0.12",
+            "Primary": false,
+            "Association": {
+              "PublicIp": "198.51.100.15"
+            }
+          },
+          {
+            "PrivateIpAddress": "10.60.0.13",
+            "Primary": false,
+            "Association": {
+              "PublicIp": "198.51.100.17"
+            }
+          },
+          {
+            "PrivateIpAddress": "10.60.0.14",
+            "Primary": false,
+            "Association": {
+              "PublicIp": "198.51.100.19"
+            }
+          },
+          {
+            "PrivateIpAddress": "10.60.0.15",
+            "Primary": false,
+            "Association": {
+              "PublicIp": "198.51.100.21"
+            }
+          },
+          {
+            "PrivateIpAddress": "10.60.0.16",
+            "Primary": false,
+            "Association": {
+              "PublicIp": "198.51.100.23"
+            }
+          },
+          {
+            "PrivateIpAddress": "10.60.0.17",
+            "Primary": false,
+            "Association": {
+              "PublicIp": "198.51.100.25"
+            }
+          },
+          {
+            "PrivateIpAddress": "10.60.0.18",
+            "Primary": false,
+            "Association": {
+              "PublicIp": "198.51.100.27"
+            }
+          },
+          {
+            "PrivateIpAddress": "10.60.0.19",
+            "Primary": false,
+            "Association": {
+              "PublicIp": "198.51.100.29"
+            }
+          },
+          {
+            "PrivateIpAddress": "10.60.0.20",
+            "Primary": false,
+            "Association": {
+              "PublicIp": "198.51.100.31"
+            }
+          },
+          {
+            "PrivateIpAddress": "10.60.0.21",
+            "Primary": false,
+            "Association": {
+              "PublicIp": "198.51.100.33"
+            }
+          },
+          {
+            "PrivateIpAddress": "10.60.0.22",
+            "Primary": false,
+            "Association": {
+              "PublicIp": "198.51.100.35"
+            }
+          },
+          {
+            "PrivateIpAddress": "10.60.0.23",
+            "Primary": false,
+            "Association": {
+              "PublicIp": "198.51.100.37"
+            }
+          },
+          {
+            "PrivateIpAddress": "10.60.0.24",
+            "Primary": false,
+            "Association": {
+              "PublicIp": "198.51.100.39"
+            }
+          }
+        ]
+      },
+      {
+        "NetworkInterfaceId": "eni-8",
+        "PrivateIpAddress": "10.61.0.10",
+        "VpcId": "vpc-9",
+        "SubnetId": "subnet-10",
+        "Attachment": {
+          "InstanceId": "instance-7"
+        },
+        "Groups": [
+          {
+            "GroupId": "sg-11",
+            "GroupName": "sg-11"
+          },
+          {
+            "GroupId": "sg-12",
+            "GroupName": "sg-12"
+          },
+          {
+            "GroupId": "sg-13",
+            "GroupName": "sg-13"
+          },
+          {
+            "GroupId": "sg-14",
+            "GroupName": "sg-14"
+          },
+          {
+            "GroupId": "sg-15",
+            "GroupName": "sg-15"
+          },
+          {
+            "GroupId": "sg-16",
+            "GroupName": "sg-16"
+          },
+          {
+            "GroupId": "sg-17",
+            "GroupName": "sg-17"
+          },
+          {
+            "GroupId": "sg-18",
+            "GroupName": "sg-18"
+          },
+          {
+            "GroupId": "sg-19",
+            "GroupName": "sg-19"
+          },
+          {
+            "GroupId": "sg-20",
+            "GroupName": "sg-20"
+          }
+        ],
+        "PrivateIpAddresses": [
+          {
+            "PrivateIpAddress": "10.61.0.10",
+            "Primary": true
+          }
+        ]
+      }
+    ],
+    "addresses": [
+      {
+        "NetworkInterfaceId": "eni-2",
+        "InstanceId": "instance-1",
+        "PrivateIpAddress": "10.60.0.10",
+        "PublicIp": "198.51.100.11"
+      },
+      {
+        "NetworkInterfaceId": "eni-2",
+        "InstanceId": "instance-1",
+        "PrivateIpAddress": "10.60.0.11",
+        "PublicIp": "198.51.100.13"
+      },
+      {
+        "NetworkInterfaceId": "eni-2",
+        "InstanceId": "instance-1",
+        "PrivateIpAddress": "10.60.0.12",
+        "PublicIp": "198.51.100.15"
+      },
+      {
+        "NetworkInterfaceId": "eni-2",
+        "InstanceId": "instance-1",
+        "PrivateIpAddress": "10.60.0.13",
+        "PublicIp": "198.51.100.17"
+      },
+      {
+        "NetworkInterfaceId": "eni-2",
+        "InstanceId": "instance-1",
+        "PrivateIpAddress": "10.60.0.14",
+        "PublicIp": "198.51.100.19"
+      },
+      {
+        "NetworkInterfaceId": "eni-2",
+        "InstanceId": "instance-1",
+        "PrivateIpAddress": "10.60.0.15",
+        "PublicIp": "198.51.100.21"
+      },
+      {
+        "NetworkInterfaceId": "eni-2",
+        "InstanceId": "instance-1",
+        "PrivateIpAddress": "10.60.0.16",
+        "PublicIp": "198.51.100.23"
+      },
+      {
+        "NetworkInterfaceId": "eni-2",
+        "InstanceId": "instance-1",
+        "PrivateIpAddress": "10.60.0.17",
+        "PublicIp": "198.51.100.25"
+      },
+      {
+        "NetworkInterfaceId": "eni-2",
+        "InstanceId": "instance-1",
+        "PrivateIpAddress": "10.60.0.18",
+        "PublicIp": "198.51.100.27"
+      },
+      {
+        "NetworkInterfaceId": "eni-2",
+        "InstanceId": "instance-1",
+        "PrivateIpAddress": "10.60.0.19",
+        "PublicIp": "198.51.100.29"
+      },
+      {
+        "NetworkInterfaceId": "eni-2",
+        "InstanceId": "instance-1",
+        "PrivateIpAddress": "10.60.0.20",
+        "PublicIp": "198.51.100.31"
+      },
+      {
+        "NetworkInterfaceId": "eni-2",
+        "InstanceId": "instance-1",
+        "PrivateIpAddress": "10.60.0.21",
+        "PublicIp": "198.51.100.33"
+      },
+      {
+        "NetworkInterfaceId": "eni-2",
+        "InstanceId": "instance-1",
+        "PrivateIpAddress": "10.60.0.22",
+        "PublicIp": "198.51.100.35"
+      },
+      {
+        "NetworkInterfaceId": "eni-2",
+        "InstanceId": "instance-1",
+        "PrivateIpAddress": "10.60.0.23",
+        "PublicIp": "198.51.100.37"
+      },
+      {
+        "NetworkInterfaceId": "eni-2",
+        "InstanceId": "instance-1",
+        "PrivateIpAddress": "10.60.0.24",
+        "PublicIp": "198.51.100.39"
+      }
+    ],
+    "security_groups": [
+      {
+        "GroupId": "sg-20",
+        "GroupName": "sg-20"
+      },
+      {
+        "GroupId": "sg-17",
+        "GroupName": "sg-17"
+      },
+      {
+        "GroupId": "sg-18",
+        "GroupName": "sg-18"
+      },
+      {
+        "GroupId": "sg-11",
+        "GroupName": "sg-11"
+      },
+      {
+        "GroupId": "sg-6",
+        "GroupName": "sg-6"
+      },
+      {
+        "GroupId": "sg-15",
+        "GroupName": "sg-15"
+      },
+      {
+        "GroupId": "sg-19",
+        "GroupName": "sg-19"
+      },
+      {
+        "GroupId": "sg-13",
+        "GroupName": "sg-13"
+      },
+      {
+        "GroupId": "sg-12",
+        "GroupName": "sg-12"
+      },
+      {
+        "GroupId": "sg-5",
+        "GroupName": "sg-5"
+      },
+      {
+        "GroupId": "sg-14",
+        "GroupName": "sg-14"
+      },
+      {
+        "GroupId": "sg-16",
+        "GroupName": "sg-16"
+      }
+    ],
+    "security_group_rules": [
+      {
+        "IsEgress": false,
+        "IpProtocol": "tcp",
+        "FromPort": 636,
+        "ToPort": 636,
+        "GroupId": "sg-18",
+        "SecurityGroupRuleId": "rule-21",
+        "PrefixListId": "prefix-list-22"
+      },
+      {
+        "IsEgress": false,
+        "IpProtocol": "tcp",
+        "FromPort": 88,
+        "ToPort": 88,
+        "GroupId": "sg-20",
+        "SecurityGroupRuleId": "rule-23",
+        "PrefixListId": "prefix-list-24"
+      },
+      {
+        "IsEgress": true,
+        "IpProtocol": "tcp",
+        "FromPort": 636,
+        "ToPort": 636,
+        "GroupId": "sg-20",
+        "SecurityGroupRuleId": "rule-25",
+        "PrefixListId": "prefix-list-24"
+      },
+      {
+        "IsEgress": true,
+        "IpProtocol": "tcp",
+        "FromPort": 443,
+        "ToPort": 443,
+        "GroupId": "sg-17",
+        "SecurityGroupRuleId": "rule-26",
+        "PrefixListId": "prefix-list-27"
+      },
+      {
+        "IsEgress": false,
+        "IpProtocol": "tcp",
+        "FromPort": 445,
+        "ToPort": 445,
+        "GroupId": "sg-17",
+        "SecurityGroupRuleId": "rule-28",
+        "PrefixListId": "prefix-list-27"
+      },
+      {
+        "IsEgress": true,
+        "IpProtocol": "tcp",
+        "FromPort": 88,
+        "ToPort": 88,
+        "GroupId": "sg-18",
+        "SecurityGroupRuleId": "rule-29",
+        "PrefixListId": "prefix-list-22"
+      },
+      {
+        "IsEgress": true,
+        "IpProtocol": "tcp",
+        "FromPort": 443,
+        "ToPort": 443,
+        "GroupId": "sg-19",
+        "SecurityGroupRuleId": "rule-30",
+        "PrefixListId": "prefix-list-31"
+      },
+      {
+        "IsEgress": false,
+        "IpProtocol": "udp",
+        "FromPort": 49152,
+        "ToPort": 65535,
+        "GroupId": "sg-15",
+        "SecurityGroupRuleId": "rule-32",
+        "PrefixListId": "prefix-list-27"
+      },
+      {
+        "IsEgress": true,
+        "IpProtocol": "udp",
+        "FromPort": 135,
+        "ToPort": 135,
+        "GroupId": "sg-11",
+        "SecurityGroupRuleId": "rule-33",
+        "PrefixListId": "prefix-list-34"
+      },
+      {
+        "IsEgress": true,
+        "IpProtocol": "udp",
+        "FromPort": 636,
+        "ToPort": 636,
+        "GroupId": "sg-15",
+        "SecurityGroupRuleId": "rule-35",
+        "PrefixListId": "prefix-list-27"
+      },
+      {
+        "IsEgress": false,
+        "IpProtocol": "udp",
+        "FromPort": 137,
+        "ToPort": 138,
+        "GroupId": "sg-19",
+        "SecurityGroupRuleId": "rule-36",
+        "PrefixListId": "prefix-list-31"
+      },
+      {
+        "IsEgress": false,
+        "IpProtocol": "-1",
+        "FromPort": -1,
+        "ToPort": -1,
+        "CidrIpv4": "0.0.0.0/0",
+        "GroupId": "sg-6",
+        "SecurityGroupRuleId": "rule-37"
+      },
+      {
+        "IsEgress": false,
+        "IpProtocol": "udp",
+        "FromPort": 135,
+        "ToPort": 135,
+        "GroupId": "sg-11",
+        "SecurityGroupRuleId": "rule-38",
+        "PrefixListId": "prefix-list-34"
+      },
+      {
+        "IsEgress": true,
+        "IpProtocol": "-1",
+        "FromPort": -1,
+        "ToPort": -1,
+        "CidrIpv4": "0.0.0.0/0",
+        "GroupId": "sg-6",
+        "SecurityGroupRuleId": "rule-39"
+      },
+      {
+        "IsEgress": true,
+        "IpProtocol": "udp",
+        "FromPort": 123,
+        "ToPort": 123,
+        "GroupId": "sg-13",
+        "SecurityGroupRuleId": "rule-40",
+        "PrefixListId": "prefix-list-22"
+      },
+      {
+        "IsEgress": false,
+        "IpProtocol": "udp",
+        "FromPort": 464,
+        "ToPort": 464,
+        "GroupId": "sg-13",
+        "SecurityGroupRuleId": "rule-41",
+        "PrefixListId": "prefix-list-22"
+      },
+      {
+        "IsEgress": true,
+        "IpProtocol": "tcp",
+        "FromPort": 443,
+        "ToPort": 443,
+        "CidrIpv4": "0.0.0.0/0",
+        "GroupId": "sg-12",
+        "SecurityGroupRuleId": "rule-42"
+      },
+      {
+        "IsEgress": true,
+        "IpProtocol": "-1",
+        "FromPort": -1,
+        "ToPort": -1,
+        "CidrIpv4": "0.0.0.0/0",
+        "GroupId": "sg-5",
+        "SecurityGroupRuleId": "rule-43"
+      },
+      {
+        "IsEgress": false,
+        "IpProtocol": "-1",
+        "FromPort": -1,
+        "ToPort": -1,
+        "CidrIpv4": "0.0.0.0/0",
+        "GroupId": "sg-5",
+        "SecurityGroupRuleId": "rule-44"
+      },
+      {
+        "IsEgress": false,
+        "IpProtocol": "tcp",
+        "FromPort": 135,
+        "ToPort": 135,
+        "GroupId": "sg-16",
+        "SecurityGroupRuleId": "rule-45",
+        "PrefixListId": "prefix-list-34"
+      },
+      {
+        "IsEgress": true,
+        "IpProtocol": "tcp",
+        "FromPort": 88,
+        "ToPort": 88,
+        "GroupId": "sg-16",
+        "SecurityGroupRuleId": "rule-46",
+        "PrefixListId": "prefix-list-34"
+      }
+    ]
+  }
+}

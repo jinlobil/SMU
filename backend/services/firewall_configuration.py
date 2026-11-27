@@ -202,10 +202,14 @@ class ConfigurationIndex:
                 for name in row.get(side+' Object','').splitlines():self.objects[name].add((side,i))
                 for fqdn in row.get('_'+side+' FQDNs',[]):self.fqdns[side][fqdn].add(i)
             for name in row.get('Service','').splitlines():self.services[name].add(i)
+        def nat_address(value):
+            reference=self.aliases.get(value.lstrip('#'),self.interfaces.get(value.lstrip('#'),{}))
+            if value.startswith('#') and reference.get('IP Address'):return reference['IP Address']
+            return snapshot.get('objects',{}).get(value) or reference.get('IP Address') or value
         for i,row in enumerate(snapshot.get('natRules',[])):
             for field,index in self.nat.items():
                 values=row.get(field,'').splitlines()
-                text='\n'.join(snapshot.get('objects',{}).get(value,value) for value in values)
+                text='\n'.join(nat_address(value) for value in values)
                 index.add(text,i)
                 if text and (not _networks(text) or any(value not in snapshot.get('objects',{}) and not literal_address(value) and not is_wildcard_value(value) and value.casefold() not in {'original','masq'} for value in values)) and i not in index.any and text.casefold() not in {'original','masq'}:self.natUnresolved[field].add(i)
         for row in snapshot.get('interfaces',[])+snapshot.get('aliases',[]):
@@ -261,8 +265,9 @@ class FirewallConfigurationStore:
         self.root=Path(root);self.directory=self.root/'cache/firewall_config'
         self.firewalls,self.collector=firewalls,collector
         self.lock=threading.RLock();self.refresh_lock=threading.Lock()
-        self.snapshots={};self.indexes={};self.status={'running':False,'firewalls':{}}
+        self.snapshots={};self.indexes={};self.topology=None;self.aws_data={};self.status={'running':False,'firewalls':{}}
         self.load()
+        self.load_topology()
     def path(self,name):return self.directory/(name.casefold()+'.json')
     def load(self):
         try:
@@ -278,6 +283,34 @@ class FirewallConfigurationStore:
                 previous=self.status['firewalls'].get(name,{})
                 self.status['firewalls'][name]={**previous,'refresh_status':previous.get('refresh_status','loaded'),'last_successful_refresh':payload['metadata']['refreshed_at']}
             except (OSError,ValueError,KeyError,TypeError):continue
+    def load_topology(self):
+        from backend.services.firewall_topology import TopologyIndex
+        try:
+            manifest=json.loads((self.directory/'topology.json').read_text(encoding='utf-8'))
+            versions={name:row.get('metadata',{}).get('snapshot_id') for name,row in self.snapshots.items()}
+            if manifest.get('snapshot_ids') != versions:raise ValueError('topology_version_mismatch')
+            self.aws_data=manifest['aws']
+        except FileNotFoundError:
+            # One-time migration from the pre-topology cache, not a per-query reload.
+            try:self.aws_data=json.loads((self.root/'cache/aws.json').read_text(encoding='utf-8'))
+            except (OSError,ValueError):self.aws_data={}
+        except (OSError,ValueError,KeyError,TypeError):
+            self.aws_data={}
+            log.warning('Firewall topology generation unavailable reason=topology_version_mismatch')
+        if not isinstance(self.aws_data,dict):self.aws_data={}
+        self.topology=TopologyIndex(self.snapshots,self.indexes,self.aws_data)
+
+    def collect_aws_topology(self):
+        # Explicit refresh only. Never invokes SSM or unrelated inventory collectors.
+        from backend.services.aws_assets import AwsCollector, load_aws_credentials, AwsConfigurationError
+        try:load_aws_credentials(self.root/'env/aws_env.txt')
+        except AwsConfigurationError:
+            try:
+                data=json.loads((self.root/'cache/aws.json').read_text(encoding='utf-8'))
+                return data if isinstance(data,dict) else self.aws_data
+            except (OSError,ValueError):return self.aws_data
+        return AwsCollector(self.root).collect_network()
+
     def get(self,name):
         with self.lock:return self.snapshots.get(name)
     def index(self,name):
@@ -288,7 +321,14 @@ class FirewallConfigurationStore:
         if not _leased and not self.refresh_lock.acquire(blocking=False):return self.info()
         with self.lock:self.status['running']=True
         pending_snapshots={};pending_indexes={}
+        previous_snapshots=dict(self.snapshots)
+        previous_status=copy.deepcopy(self.status['firewalls'])
+        batch_stage='aws_topology_collection'
         try:
+            aws_error=None
+            try:aws_data=self.collect_aws_topology()
+            except Exception as exc:aws_data=self.aws_data;aws_error=exc
+            batch_stage='configuration_load'
             for config in self.firewalls.configurations():
                 name=config['name'];attempt=datetime.now(timezone.utc).isoformat();started=time.perf_counter()
                 snapshot=None;previous=self.get(name);saved=False;stage='api_collection'
@@ -336,18 +376,36 @@ class FirewallConfigurationStore:
                             'error':type(exc).__name__,'error_code':diagnostic['reason'],
                             'error_entities':sorted({item['entity'] for item in details}),'diagnostics':details}
                 log.debug('Firewall configuration refresh firewall=%s elapsed_ms=%.2f',name,(time.perf_counter()-started)*1000)
+            if aws_error is not None:
+                batch_stage='aws_topology_collection'
+                raise aws_error
+            from backend.services.firewall_topology import TopologyIndex
+            batch_stage='topology_build'
+            generation={**self.snapshots,**pending_snapshots};indexes={**self.indexes,**pending_indexes}
+            topology=TopologyIndex(generation,indexes,aws_data)
+            from backend.services.refresh import RefreshService
+            batch_stage='topology_save'
+            RefreshService(self.root).save_json_atomic(self.directory/'topology.json',{'snapshot_ids':topology.snapshot_ids,'aws':aws_data})
+            with self.lock:
+                self.snapshots=generation;self.indexes=indexes;self.aws_data=aws_data;self.topology=topology
         except Exception as exc:
+            from backend.services.refresh import RefreshService
+            for name in pending_snapshots:
+                try:
+                    if name in previous_snapshots:RefreshService(self.root).save_json_atomic(self.path(name),previous_snapshots[name])
+                    else:self.path(name).unlink(missing_ok=True)
+                except Exception as rollback_exc:log_failure(failure_diagnostic(rollback_exc,name,'Snapshot','snapshot_rollback'))
+            pending_snapshots={};pending_indexes={}
             from backend.services.firewall import FIREWALL_DEFINITIONS
-            for name in FIREWALL_DEFINITIONS:
-                diagnostic=failure_diagnostic(exc,name,'Configuration','configuration_load')
+            for name in set(FIREWALL_DEFINITIONS)|set(self.status['firewalls']):
+                diagnostic=failure_diagnostic(exc,name,'Configuration',batch_stage)
                 log_failure(diagnostic)
                 with self.lock:
-                    self.status['firewalls'][name]={**self.status['firewalls'].get(name,{}),
+                    self.status['firewalls'][name]={**previous_status.get(name,{}),
                         'last_refresh_attempt':datetime.now(timezone.utc).isoformat(),'refresh_status':'failed',
                         'error':type(exc).__name__,'error_code':diagnostic['reason'],'error_entities':['Configuration'],'diagnostics':[diagnostic]}
         finally:
             with self.lock:
-                self.snapshots={**self.snapshots,**pending_snapshots};self.indexes={**self.indexes,**pending_indexes}
                 self.status['running']=False
             try:
                 from backend.services.refresh import RefreshService

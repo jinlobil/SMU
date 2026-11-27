@@ -79,11 +79,12 @@ def test_connected_network_from_ip_netmask_without_cidr_or_static(tmp_path,monke
     data['interfaces']=[{'Name':'LAN','IP Address':'100.1.0.1','Netmask':'255.255.252.0','Zone':'LAN'}]
     current,_=service(tmp_path,monkeypatch,{'Cloud':data})
     result=current.check('100.1.1.10','100.1.1.20','TCP',443)
-    fw=result['analysisPath'][0]
     assert result['summary']['status']=='PASS'
-    assert fw['route']['routeType']=='Connected' and fw['route']['zone']=='LAN'
-    assert fw['returnRoute']['route']['routeType']=='Connected'
-    assert fw['natStatus']=='NOT_REQUIRED'
+    assert result['analysisPath'][0]['type']=='network'
+    assert not any(step['type'] in {'firewall','snat','dnat'} for step in result['analysisPath'])
+    from backend.services.firewall_path_analysis import PathAnalysis
+    route=PathAnalysis(current).topology.routes.select('Cloud',__import__('ipaddress').ip_network('100.1.1.20'))
+    assert route['routeType']=='Connected' and route['zone']=='LAN'
 
 
 def test_lpm_route_then_gateway_config_without_live_health_claim(tmp_path,monkeypatch):
@@ -109,24 +110,27 @@ def test_xfrm_without_gateway_is_valid_static_vpn_route(tmp_path,monkeypatch):
     data=snapshot();data['routes']=[{'destination':'203.0.113.0','netmask':'24','interface':'xfrm10','gateway':''}]
     result=check(tmp_path,monkeypatch,data)
     assert result['analysisPath'][0]['egressZone']=='VPN'
-    assert result['summary']['status'] in {'PASS','WARNING'}
+    assert result['summary']['status']=='UNKNOWN'  # A VPN Route alone does not identify its remote peer.
+    assert result['analysisPath'][-1]['label']=='VPN Next Hop'
     assert not any(step['type']=='gateway' for step in result['analysisPath'])
 
 
 def test_missing_dynamic_forward_route_has_precise_unknown_reason(tmp_path,monkeypatch):
-    data=snapshot();data['routes']=[]
+    data=snapshot();data['routes']=[];data['gateways']=[]
+    data['interfaces'][1].update({'Gateway Name':'','Gateway IP':''})
     result=check(tmp_path,monkeypatch,data)
     assert result['summary']['status']=='UNKNOWN'
     assert 'BGP / OSPF / SD-WAN' in result['summary']['primaryReason']
-    assert result['analysisPath'][0]['status']=='PASS'
+    assert result['analysisPath'][0]['type']=='route'
 
 
 def test_block_does_not_get_overridden_by_missing_return_and_route(tmp_path,monkeypatch):
-    data=snapshot();data['routes']=[];data['interfaces']=[];data['rules']=[rule(action='Drop')]
+    data=snapshot();data['rules']=[rule(action='Drop')]
     result=check(tmp_path,monkeypatch,data)
     assert result['summary']['status']=='BLOCK'
-    assert all(step['status']=='NOT_REACHED' for step in result['analysisPath'][1:])
-    assert any(step['configurationStatus']=='UNKNOWN' for step in result['analysisPath'][1:])
+    assert result['analysisPath'][-1]['status']=='BLOCK'
+    assert result['returnPath']['status']=='NOT_REACHED'
+    assert result['progress']['nodes'][-1]['status']=='NOT_REACHED'
 
 
 def test_alias_dnat_and_combined_snat_use_configured_names_and_packet(tmp_path,monkeypatch):
@@ -149,8 +153,8 @@ def test_return_static_appears_after_forward_checks(tmp_path,monkeypatch):
     data['routes'].append({'destination':'100.1.0.0','netmask':'22','interface':'PortA'})
     result=check(tmp_path,monkeypatch,data)
     assert result['summary']['status']=='PASS'
-    assert result['analysisPath'][-1]['type']=='return_route'
-    assert result['analysisPath'][-1]['route']['routeType']=='Static'
+    assert not any(step['type']=='return_route' for step in result['analysisPath'])
+    assert result['returnPath']['hops'][0]['route']['routeType']=='Static'
 
 
 def test_snat_separate_and_nat_not_required_not_unknown(tmp_path,monkeypatch):
@@ -197,9 +201,10 @@ def test_tcp_any_internet_zone_scope_is_verified_instead_of_symbolic_warning(tmp
     data=snapshot();data['rules'][0]['Destination Zone']='WAN'
     current,_=service(tmp_path,monkeypatch,{'Cloud':data})
     result=current.check('100.1.1.10','','TCP',None)
-    assert result['groups'][0]['status']=='PASS'
+    assert result['groups'][0]['status']=='WARNING'
     assert result['groups'][0]['results']
-    assert all(case['summary']['status']=='PASS' for case in result['groups'][0]['results'])
+    assert any(case['summary']['status']=='PASS' for case in result['groups'][0]['results'])
+    assert any(case['summary']['status']=='UNKNOWN' for case in result['groups'][0]['results'])
 
 
 def test_numeric_nat_priority_is_decided_without_guessing(tmp_path,monkeypatch):

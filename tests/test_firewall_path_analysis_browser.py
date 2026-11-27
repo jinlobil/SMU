@@ -93,6 +93,7 @@ def test_mixed_fqdn_selects_one_resolved_path(tmp_path,monkeypatch):
     import backend.services.firewall_path_check as module
     monkeypatch.setattr(module,'resolve_fqdn',lambda _:['203.0.113.10','198.51.100.10'])
     data=snapshot();data['rules']=[rule(destination='203.0.113.0/24')]
+    data['resolvedFqdnAddresses']={'fixture.example.test':['203.0.113.10','198.51.100.10']}
     current,_=service(tmp_path,monkeypatch,{'Cloud':data})
     result=current.check('100.1.1.10','fixture.example.test','TCP',443)
     with path_browser(result) as page:

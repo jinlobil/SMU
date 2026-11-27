@@ -87,6 +87,15 @@ class AwsCollector:
                 rows.extend(values)
         return rows
 
+    def collect_network(self):
+        """Explicit Path refresh: only existing EC2 read APIs, no SSM or Excel changes."""
+        credentials = load_aws_credentials(self.credential_path)
+        client = self._client(credentials)
+        keys = ('instances', 'network_interfaces', 'addresses', 'security_groups', 'security_group_rules', 'subnets', 'vpcs')
+        output = {key: self._pages(client, *AWS_OPERATIONS[key]) for key in keys}
+        return json_safe({'metadata': {'fetched_at': datetime.now().astimezone().isoformat(),
+            'region': credentials['AWS_REGION']}, **output})
+
     def collect(self, progress: Callable[[str], None] = lambda _message: None) -> dict[str, Any]:
         credentials = load_aws_credentials(self.credential_path)
         operation = "create_ec2_client"

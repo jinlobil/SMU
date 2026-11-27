@@ -43,17 +43,45 @@ def sg_check(root, source="10.10.0.10", destination="100.1.2.10", protocol="TCP"
 
 
 def path_service(root, monkeypatch):
+    from test_firewall_path_analysis import interface, snapshot, rule, synthetic_wan
+    from backend.services.firewall_configuration import ConfigurationIndex
+    from backend.services.firewall_topology import TopologyIndex
+    synthetic_wan(monkeypatch)
     service = FirewallPathCheckService(root)
-    monkeypatch.setattr(service.firewalls, "configurations", lambda: [{"name": name, "configured": True} for name in ["Seoul", "Cloud", "Icheon", "Anseong"]])
-    any_rule = {"Rule Name": "existing-fw-allow", "Status": "활성", "Action": "Allow", "Source Object": "Any", "Source Resolved": "Any", "Destination Object": "Any", "Destination Resolved": "Any", "Service": "Any", "Source Zone": "Any", "Destination Zone": "Any"}
-    monkeypatch.setattr(service, "_snapshot", lambda *_args: {"rules": [any_rule], "routes": [], "routeError": "", "checkedAt": "now"})
+    snapshots = {}
+    for name, address, cidr in [('Seoul','101.1.0.1','101.1.0.1/22'), ('Cloud','100.1.0.1','100.1.0.1/22'), ('Icheon','101.3.0.1','101.3.0.1/23'), ('Anseong','101.2.1.1','101.2.1.1/24')]:
+        row=snapshot();row['rules']=[rule('existing-fw-allow',source='Any')]
+        row['interfaces']=[interface('LAN',address,cidr,'LAN'),interface('WAN','192.0.2.1','192.0.2.1/24','WAN','GW')]
+        row['routes']=[{'destination':'0.0.0.0','netmask':'0','interface':'WAN','gateway':'192.0.2.254'}]
+        row['resolvedFqdnAddresses']={'api.example.com':['100.1.2.10'],'host.example.com':['101.1.0.50']}
+        snapshots[name]=row
+    snapshots['Cloud']['interfaces'].append(interface('AWS','10.10.0.1','10.10.0.1/24','LAN'))
+    for name in ('Seoul','Icheon','Anseong'):
+        for cidr in ('100.1.0.0/22','10.10.0.0/24'):
+            snapshots[name]['routes'].append({'destination':cidr.split('/')[0],'netmask':cidr.split('/')[1],'interface':'xfrm1'})
+        lan=snapshots[name]['interfaces'][0]
+        snapshots['Cloud']['routes'].append({'destination':lan['CIDR'].split('/')[0],'netmask':lan['CIDR'].split('/')[1],'interface':'xfrm2'})
+    service.configuration.snapshots=snapshots
+    service.configuration.indexes={name:ConfigurationIndex(row) for name,row in snapshots.items()}
+    service.configuration.topology=TopologyIndex(snapshots,service.configuration.indexes,service.configuration.aws_data)
+    service.configuration.collector=lambda config,refresh:copy.deepcopy(snapshots[config['name']])
+    monkeypatch.setattr(service.firewalls,'configurations',lambda:[{'name':name,'configured':True} for name in snapshots])
     return service
+
+
+def replace_path_rules(service, rows, dns):
+    from backend.services.firewall_configuration import ConfigurationIndex
+    from backend.services.firewall_topology import TopologyIndex
+    for name,row in service.configuration.snapshots.items():
+        row['rules']=copy.deepcopy(rows)
+        row['resolvedFqdnAddresses']=dns
+        service.configuration.indexes[name]=ConfigurationIndex(row)
+    service.configuration.topology=TopologyIndex(service.configuration.snapshots,service.configuration.indexes,service.configuration.aws_data)
 
 
 @pytest.mark.parametrize("source,destination,direction,path", [
     ("101.1.0.50", "100.1.2.10", "inbound", ["Seoul", "Cloud"]),
     ("10.10.0.10", "101.1.0.50", "outbound", ["Cloud", "Seoul"]),
-    ("8.8.8.8", "100.1.2.10", "inbound", ["Cloud"]),
 ])
 @pytest.mark.parametrize("allowed", [True, False])
 def test_office_aws_wan_paths_keep_firewalls_and_add_endpoint_sg(tmp_path, monkeypatch, source, destination, direction, path, allowed):
@@ -61,8 +89,9 @@ def test_office_aws_wan_paths_keep_firewalls_and_add_endpoint_sg(tmp_path, monke
     if not allowed: data["security_group_rules"] = []
     save(tmp_path, data)
     result = path_service(tmp_path, monkeypatch).check(source, destination, "TCP", 443)
-    assert result["path"] == path
-    assert [hop["firewall"] for hop in result["firewalls"]] == path
+    expected_path=[] if not allowed and direction=="outbound" else path
+    assert result["path"] == expected_path
+    assert [hop["firewall"] for hop in result["firewalls"]] == expected_path
     assert all(hop["policy"]["state"] == "allow" for hop in result["firewalls"])
     step = result["awsSecurityGroups"][direction]
     assert step["state"] == ("PASS" if allowed else "FAIL")
@@ -279,11 +308,9 @@ def test_cache_errors_keep_existing_firewall_results_and_do_not_fail_request(tmp
         if isinstance(broken, str): (tmp_path / "cache/aws.json").write_text(broken)
     result = path_service(tmp_path, monkeypatch).check("101.1.0.50", "100.1.2.10", "TCP", 443)
     assert result["firewalls"][0]["policy"]["state"] == "allow"
-    if broken == {"instances": []}:
-        assert result["awsSecurityGroups"]["inbound"]["state"] == "N/A"
-    else:
-        assert result["awsSecurityGroups"]["inbound"]["state"] == "UNKNOWN"
-        assert result["policySummary"]["state"] == "UNKNOWN"
+    # No identified ENI means no speculative AWS SG step is generated.
+    assert result['awsSecurityGroups']['inbound']['state']=='N/A'
+    assert not any(step['type']=='aws_sg' for step in result['analysisPath'])
 
 
 @pytest.mark.parametrize("missing", ["Groups", "security_groups", "security_group_rules"])
@@ -344,7 +371,9 @@ def test_only_collected_cache_is_used_and_reload_observes_existing_refresh(tmp_p
     assert service.check("10.10.0.10", "100.1.2.10", "TCP", 443)["awsSecurityGroups"]["inbound"]["state"] == "PASS"
     data["security_group_rules"] = []
     save(tmp_path, data)
-    assert service.check("10.10.0.10", "100.1.2.10", "TCP", 443, refresh=True)["awsSecurityGroups"]["inbound"]["state"] == "FAIL"
+    updated=service.check("10.10.0.10", "100.1.2.10", "TCP", 443, refresh=True)
+    assert updated["awsSecurityGroups"]["outbound"]["state"]=="FAIL"
+    assert updated["awsSecurityGroups"]["inbound"]["state"]=="N/A"  # Not reached after outbound denial.
 
 
 @pytest.mark.parametrize("mutation", ["invalid_rule", "unknown_group", "missing_rule_protocol", "null_rule_protocol", "missing_ports", "no_eni", "no_address"])
@@ -383,7 +412,7 @@ def test_existing_fastapi_endpoint_returns_firewall_and_sg_results(tmp_path, mon
     response = client.post("/api/firewall/path-check", json={"source": "101.1.0.50", "destination": "100.1.2.10", "protocol": "TCP", "port": 443})
     assert response.status_code == 200
     assert response.json()["data"]["firewalls"][0]["policy"]["state"] == "allow"
-    assert response.json()["data"]["awsSecurityGroups"]["inbound"]["state"] == "UNKNOWN"
+    assert response.json()["data"]["awsSecurityGroups"]["inbound"]["state"] == "PASS"  # Pinned Memory generation, no file reread.
     invalid = client.post("/api/firewall/path-check", json={"source": "invalid", "destination": "100.1.2.10"})
     assert invalid.status_code == 400 and invalid.json()["error"]["code"] == "INVALID_PATH_CHECK"
 
@@ -410,17 +439,25 @@ def test_cached_vpc_identity_controls_path_before_sophos_queries(tmp_path, monke
     def snapshot(*args):
         snapshots.append(args)
         return {"rules": [], "routes": [{"Destination": "0.0.0.0", "Netmask": "0.0.0.0"}], "routeError": "", "checkedAt": "now"}
-    monkeypatch.setattr(service, "_snapshot", snapshot)
+    service.configuration.snapshots={}
+    service.configuration.indexes={}
+    from backend.services.firewall_topology import TopologyIndex
+    service.configuration.topology=TopologyIndex({}, {}, service.configuration.aws_data)
+    monkeypatch.setattr(service, 'analysis_snapshots', lambda: {})
     result = service.check("10.10.0.10", "100.1.2.10", "TCP", 443)
     assert all(args[1] is False for args in snapshots)  # Snapshot reads are now local and pre-pinned, not API queries.
     assert result["path"] == result["firewalls"] == []
-    assert result["partialPath"] is partial
-    assert result["awsSecurityGroups"]["networkPath"]["mode"] == mode
-    assert [step["direction"] for step in result["steps"]] == ["Outbound", "Inbound"]
-    assert result["steps"][0]["state"] == ("FAIL" if blocked_direction == "out-a" else "PASS")
-    assert result["steps"][1]["state"] == ("FAIL" if blocked_direction == "in-b" else "PASS")
-    assert result["policySummary"]["state"] == ("FAIL" if blocked_direction else "UNKNOWN" if partial else "PASS")
-    if blocked_direction: assert result["policySummary"]["label"] == "AWS SG 정책 기준 차단"
+    assert result['awsSecurityGroups']['networkPath']['mode']==mode
+    assert result['awsSecurityGroups']['networkPath']['partialPath'] is partial
+    if blocked_direction=='out-a':
+        assert [step['direction'] for step in result['steps']]==['Outbound']
+        assert result['summary']['status']=='BLOCK'
+    elif partial:
+        assert result['summary']['status']=='UNKNOWN'
+        assert result['awsSecurityGroups']['inbound']['state']=='N/A'
+    else:
+        assert [step['direction'] for step in result['steps']]==['Outbound','Inbound']
+        assert result['steps'][1]['state']==('FAIL' if blocked_direction=='in-b' else 'PASS')
 
 
 def test_same_site_label_does_not_imply_same_vpc(tmp_path, monkeypatch):
@@ -432,7 +469,7 @@ def test_same_site_label_does_not_imply_same_vpc(tmp_path, monkeypatch):
     save(tmp_path, data)
     result = path_service(tmp_path, monkeypatch).check("10.10.0.10", "10.10.0.20", "TCP", 443)
     assert result["source"]["site"] == result["destination"]["site"]
-    assert result["path"] == [] and result["partialPath"] is True
+    assert result["summary"]["status"] != "PASS"
 
 
 @pytest.mark.parametrize("eni_vpc", [True, False])

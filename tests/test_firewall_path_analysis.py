@@ -27,7 +27,21 @@ def snapshot():
         'objects':{},'services':{},'fqdnObjects':{}}
 
 
+def synthetic_wan(monkeypatch):
+    # Documentation ranges stand for Internet hosts in these synthetic fixtures only.
+    from backend.services.firewall_topology import TopologyIndex, Endpoint
+    original = TopologyIndex.resolve
+    ranges = [ipaddress.ip_network(value) for value in ('192.0.2.0/24', '198.51.100.0/24', '203.0.113.0/24')]
+    def resolve(self, query):
+        result = original(self, query)
+        if result.kind == 'UNKNOWN_ENDPOINT' and query is not None and any(query.version == item.version and query.subnet_of(item) for item in ranges):
+            return Endpoint('EXTERNAL_INTERNET', query)
+        return result
+    monkeypatch.setattr(TopologyIndex, 'resolve', resolve)
+
+
 def service(tmp_path, monkeypatch, snapshots=None, aws=True):
+    synthetic_wan(monkeypatch)
     import backend.services.firewall_path_check as module
     original_mapping = module.resolve_input_network
     def mapping(value):
@@ -39,7 +53,14 @@ def service(tmp_path, monkeypatch, snapshots=None, aws=True):
     snapshots = snapshots or {'Cloud':snapshot()}
     result=FirewallPathCheckService(tmp_path);calls=[]
     monkeypatch.setattr(result.firewalls,'configurations',lambda:[{'name':name,'configured':True} for name in snapshots])
-    monkeypatch.setattr(result,'_snapshot',lambda config,refresh:calls.append((config['name'],refresh)) or snapshots[config['name']])
+    from backend.services.firewall_configuration import ConfigurationIndex
+    result.configuration.snapshots=snapshots
+    result.configuration.indexes={name:ConfigurationIndex(row) for name,row in snapshots.items()}
+    native=result.analysis_snapshots
+    def memory_view(*args):
+        calls.extend((name,False) for name in snapshots)
+        return native()
+    monkeypatch.setattr(result,'analysis_snapshots',memory_view)
     if aws:
         monkeypatch.setattr(AwsSecurityGroupPathService,'check',lambda *a,**k:{
             'outbound':{'kind':'aws_sg','label':'AWS SG Outbound','state':'N/A','reason':'fixture non-AWS'},
@@ -53,7 +74,9 @@ def test_exact_path_pass_configuration_summary_and_legacy_schema(tmp_path,monkey
     assert result['mode']=='PATH' and result['summary']['status']=='PASS'
     assert result['summary']['confidence']=='CONFIRMED'
     assert result['analysisPath'][0]['matchedRule']['rule']=='allow'
-    assert [step['type'] for step in result['analysisPath']]==['firewall','route','gateway','return_route']
+    assert not any(step['type']=='return_route' for step in result['analysisPath'])
+    assert result['returnPath']['status']=='PASS'
+    assert next(step for step in result['analysisPath'] if step['type']=='route')['route']['routeType']=='Default'
     assert 'Status' not in next(step for step in result['analysisPath'] if step['type']=='gateway')['gateway']
     assert {'source','destination','path','steps','firewalls','policySummary','awsSecurityGroups','checkedAt'}<=result.keys()
     assert result['firewalls'][0]['routing']['returnStatus']=='PASS'
@@ -75,16 +98,20 @@ def test_drop_priority_default_drop_and_matched_rule_are_distinct(tmp_path,monke
 
 
 def test_return_route_unknown_and_blackhole_conflict(tmp_path,monkeypatch):
-    data=snapshot();data['interfaces'][0]['CIDR']='100.1.0.1/32'
-    data['routes'][0]['destination']='203.0.113.0';data['routes'][0]['netmask']='24'
+    data=snapshot();data['routes']=[]
+    data['interfaces'][1].update({'Gateway Name':'','Gateway IP':''})
+    data['gateways']=[]
+    data['natRules']=[nat()];data['objects']={'published':'192.0.2.20','internal':'100.1.1.20'}
+    data['aliases']=[{'Name':'PortB:0','Parent Interface':'PortB','IP Address':'192.0.2.20','Zone':'WAN'}]
+    data['rules']=[rule(source='Any')]
     current,_=service(tmp_path,monkeypatch,{'Cloud':data})
-    result=current.check('100.1.1.10','203.0.113.10','TCP',443)
+    result=current.check('203.0.113.9','192.0.2.20','TCP',443)
+    assert result['forwardPath']['status']=='REACHED' and result['returnPath']['status']=='UNKNOWN'
     assert result['summary']['status']=='UNKNOWN'
-    assert 'Return Static / Connected Route' in result['summary']['primaryReason']
-    assert result['firewalls'][0]['routing']['returnStatus']=='UNKNOWN'
-    data['routes'].append({'destination':'100.1.0.0','netmask':'22','interface':'PortA','blackhole':'Enable'})
-    result=current.check('100.1.1.10','203.0.113.10','TCP',443)
-    assert result['summary']['status']=='BLOCK' and result['firewalls'][0]['routing']['returnStatus']=='FAIL'
+    data['routes'].append({'destination':'203.0.113.0','netmask':'24','interface':'PortB','blackhole':'Enable'})
+    current,_=service(tmp_path,monkeypatch,{'Cloud':data})  # Publish a new indexed fixture generation.
+    result=current.check('203.0.113.9','192.0.2.20','TCP',443)
+    assert result['summary']['status']=='BLOCK' and result['returnPath']['status']=='BLOCK'
 
 
 def nat(kind='DNAT'):
@@ -122,8 +149,9 @@ def test_missing_nat_configuration_isolated_and_unsafe_drop_not_asserted(tmp_pat
     current,_=service(tmp_path,monkeypatch,{'Cloud':data})
     result=current.check('100.1.1.10','203.0.113.10','TCP',443)
     assert result['summary']['status']=='UNKNOWN'
-    assert result['firewalls'][0]['analysis']['status']=='UNKNOWN'
-    assert any('NATRule' in warning for warning in result['summary']['warnings'])
+    assert result['firewalls']==[]
+    assert result['analysisPath'][-1]['type']=='configuration'
+    assert 'NATRule' in result['analysisPath'][-1]['reason']
 
 
 def test_route_blackhole_and_ambiguous_routes_never_pass(tmp_path,monkeypatch):
@@ -131,9 +159,10 @@ def test_route_blackhole_and_ambiguous_routes_never_pass(tmp_path,monkeypatch):
     current,_=service(tmp_path,monkeypatch,{'Cloud':data})
     assert current.check('100.1.1.10','203.0.113.10','TCP',443)['summary']['status']=='BLOCK'
     data['routes'].append({'destination':'0.0.0.0','netmask':'0','interface':'PortA','gateway':'100.1.0.2'})
+    current,_=service(tmp_path,monkeypatch,{'Cloud':data})
     result=current.check('100.1.1.10','203.0.113.10','TCP',443)
-    assert result['summary']['status']=='WARNING'
-    assert result['firewalls'][0]['routing']['destination']['ambiguous'] is True
+    assert result['summary']['status']=='UNKNOWN'
+    assert result['analysisPath'][-1]['route']['ambiguous'] is True
 
 
 @pytest.mark.parametrize('source,destination,mode',[('100.1.1.10','','SOURCE_REACHABILITY'),('', '203.0.113.10','DESTINATION_EXPOSURE')])
@@ -151,7 +180,7 @@ def test_any_scope_partitioned_without_ip_enumeration_and_verified_by_path_engin
     current,_=service(tmp_path,monkeypatch)
     result=current.check('100.1.1.10','','TCP',443)
     assert len(result['groups'])==1 and result['groups'][0]['wildcard'] is True
-    assert result['groups'][0]['status']=='PASS'
+    assert result['groups'][0]['status']=='WARNING'  # Unowned private scopes cannot be proved through WAN.
     assert result['groups'][0]['results']
     assert len(result['groups'][0]['results']) < 256
     assert all(case['progress']['nodes'] for case in result['groups'][0]['results'])
@@ -181,7 +210,8 @@ def test_destination_exposure_published_dnat_and_internal_reverse_link(tmp_path,
 def test_fqdn_all_addresses_and_mixed_results(tmp_path,monkeypatch,addresses,expected):
     import backend.services.firewall_path_check as module
     data=snapshot();data['rules']=[rule(destination='203.0.113.0/24')]
-    monkeypatch.setattr(module,'resolve_fqdn',lambda _:addresses)
+    data['resolvedFqdnAddresses']={'fixture.example.test':addresses}
+    monkeypatch.setattr(module,'resolve_fqdn',lambda _:pytest.fail('analysis used live DNS'))
     current,calls=service(tmp_path,monkeypatch,{'Cloud':data})
     result=current.check('100.1.1.10','fixture.example.test','TCP',443)
     assert result['summary']['status']==expected
@@ -212,25 +242,26 @@ def test_multi_firewall_first_block_and_downstream_sg_not_reached(tmp_path,monke
     result=current.check('101.1.0.50','100.1.1.10','TCP',443)
     assert result['summary']['status']=='BLOCK' and result['summary']['blockedAt']=='Cloud'
     assert result['firewalls'][0]['analysis']['status']=='PASS'
-    downstream=next(step for step in result['analysisPath'] if step['type']=='aws_sg')
-    assert downstream['status']=='NOT_REACHED' and downstream['reached'] is False
-    assert 'Not reached' in downstream['notReachedReason']
+    assert not any(step['type']=='aws_sg' for step in result['analysisPath'])
+    assert result['returnPath']['status']=='NOT_REACHED'
+    assert result['analysisPath'][-1]['firewall']=='Cloud' and result['analysisPath'][-1]['status']=='BLOCK'
     assert Counter(name for name,refresh in calls)=={'Seoul':1,'Cloud':1}
 
 
 def test_snat_does_not_erase_original_source_sg_evaluation(tmp_path,monkeypatch):
     data=snapshot();data['natRules']=[nat('SNAT')]
     current,_=service(tmp_path,monkeypatch,{'Cloud':data})
-    observed=[]
-    def sg(_self,source,destination,*args,**kwargs):
-        observed.append(str(source))
-        return {'outbound':{'label':'AWS SG Outbound','state':'PASS' if str(source)=='100.1.1.10/32' else 'N/A','reason':'original source SG'},
-                'inbound':{'label':'AWS SG Inbound','state':'PASS','reason':str(source)}}
-    monkeypatch.setattr(AwsSecurityGroupPathService,'check',sg)
+    aws={'instances':[{'InstanceId':'i-source','NetworkInterfaces':[{'NetworkInterfaceId':'eni-source','PrivateIpAddress':'100.1.1.10','Groups':[{'GroupId':'sg-source'}]}]},
+        {'InstanceId':'i-dest','NetworkInterfaces':[{'NetworkInterfaceId':'eni-dest','PrivateIpAddress':'10.9.0.5','Association':{'PublicIp':'203.0.113.10'},'Groups':[{'GroupId':'sg-dest'}]}]}],
+        'security_groups':[{'GroupId':'sg-source'},{'GroupId':'sg-dest'}],
+        'security_group_rules':[{'GroupId':'sg-source','IsEgress':True,'IpProtocol':'-1','CidrIpv4':'0.0.0.0/0'},
+            {'GroupId':'sg-dest','IsEgress':False,'IpProtocol':'-1','CidrIpv4':'192.0.2.1/32'}]}
+    current.configuration.aws_data=aws
     result=current.check('100.1.1.10','203.0.113.10','TCP',443)
-    assert observed==['100.1.1.10/32','192.0.2.1/32']
+    assert result['awsSecurityGroups']['outbound']['endpoint']['ip']=='100.1.1.10'
     assert result['awsSecurityGroups']['outbound']['state']=='PASS'
-    assert result['awsSecurityGroups']['inbound']['reason']=='192.0.2.1/32'
+    assert result['awsSecurityGroups']['inbound']['state']=='PASS'
+    assert result['awsSecurityGroups']['inbound']['endpoint']['eniId']=='eni-dest'
 
 
 def test_actual_snapshot_reuses_export_parsers_and_refresh_only_once_per_analysis(tmp_path,monkeypatch):
@@ -250,7 +281,8 @@ def test_actual_snapshot_reuses_export_parsers_and_refresh_only_once_per_analysi
     config={'name':'Cloud','configured':True,'host':'example.test','port':'4444','username':'fixture','password':'secret','verify_ssl':False}
     monkeypatch.setattr(current.firewalls,'configurations',lambda:[config])
     result=current.check('100.1.1.10','fixture.example.test','TCP',443,refresh=True)
-    assert len(result['resolvedResults'])==2
+    assert result['summary']['status']=='UNKNOWN'
+    assert current.configuration.get('Cloud') is None  # Reject the incomplete generation.
     assert set(Counter(client_calls).values())=={1}
     assert {'Rule','NATRule','Interface','Alias','Zone','GatewayConfiguration','UnicastRoute'}<=set(client_calls)
     import json
@@ -287,6 +319,5 @@ def test_empty_rule_set_is_default_drop_independent_of_inferred_zone(tmp_path, m
     data['rules'] = []
     current, _ = service(tmp_path, monkeypatch, {'Cloud': data})
     result = current.check('100.1.1.10', '203.0.113.10', 'TCP', 443)
-    assert result['summary']['status'] == 'BLOCK'
-    assert result['analysisPath'][0]['confidence'] == 'INFERRED'
-    assert all(step['status']=='NOT_REACHED' for step in result['analysisPath'][1:])
+    assert result['summary']['status'] == 'UNKNOWN'
+    assert result['path']==[]  # No Interface/route proves which Firewall would receive the packet.

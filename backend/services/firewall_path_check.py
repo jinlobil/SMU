@@ -357,9 +357,9 @@ class FirewallPathCheckService:
         return snapshot
 
     def analysis_snapshots(self, refresh=False):
-        # Pin a complete generation while building a request view. Refresh I/O never holds this lock.
+        # Only the published Memory generation is visible to normal queries.
         with self.configuration.lock:
-            return {config['name']:self._snapshot(config,False) for config in self.firewalls.configurations() if config.get('configured') or config['name'] in self.configuration.snapshots}
+            return dict(self.configuration.snapshots)
 
     def check(self, source_value: str = '', destination_value: str = '', protocol: str = "ANY", port: Any = None,
               refresh: bool = False, protocol_number: Any = None) -> dict[str, Any]:
@@ -373,9 +373,13 @@ class FirewallPathCheckService:
         stamps={name:snapshot.get('checkedAt','') for name,snapshot in analysis.snapshots.items() if snapshot.get('checkedAt')}
         result['configuration']={'refreshedAt':min(stamps.values()) if stamps else None,'firewalls':stamps,
             'snapshots':{name:snapshot.get('metadata',{}).get('snapshot_id') for name,snapshot in analysis.snapshots.items()}}
+        result['configuration']['awsCollectedAt']=(analysis.topology.aws_data.get('metadata') or {}).get('fetched_at')
+        result['configuration']['topologySnapshots']=analysis.topology.snapshot_ids
         refresh_status=self.configuration.info().get('firewalls',{})
         result['configuration']['refreshStatus']=refresh_status
-        for name in stamps:
+        used=set(result.get('path',[]))
+        used.update(step.get('firewall') for group in result.get('groups',[]) for case in group.get('results',[]) for step in case.get('analysisPath',[]) if step.get('firewall'))
+        for name in used:
             if refresh_status.get(name,{}).get('refresh_status')=='failed':
                 message=name+' Configuration 최신화 실패 · 이전 정상 Snapshot으로 분석했습니다'
                 result.setdefault('findings',[]).append({'severity':'WARNING','message':message})
@@ -385,57 +389,3 @@ class FirewallPathCheckService:
         import logging
         logging.getLogger('smu.firewall.path').debug('Path analysis mode=%s metrics=%s',result.get('mode'),result['metrics'])
         return result
-
-    def _check_legacy(self, source_value: str, destination_value: str, protocol: str = "ANY", port: Any = None,
-                      refresh: bool = False, protocol_number: Any = None, _snapshots=None, _endpoints=None, _indexes=None) -> dict[str, Any]:
-        source_endpoint, destination_endpoint = _endpoints or (_query_endpoint(source_value, 'Source'), _query_endpoint(destination_value, 'Destination'))
-        source_network, source_fqdn, source_addresses, source = source_endpoint
-        destination_network, destination_fqdn, resolved_addresses, destination = destination_endpoint
-        if not source_fqdn and not destination_fqdn and source_network.version != destination_network.version:
-            raise ValueError("Source/Destination은 같은 IP address family를 사용해야 합니다")
-        protocol, normalized_port, normalized_protocol_number = normalize_service(protocol, port, protocol_number)
-        if source is None or destination is None: raise ValueError("Source/Destination IP 또는 CIDR을 확인하세요")
-        path, partial = determine_firewall_path(source, destination)
-        aws = AwsSecurityGroupPathService(self.root).check(source_network, destination_network, protocol, normalized_port,
-                                                         normalized_protocol_number, path, partial, fqdn=bool(destination_fqdn),
-                                                         destination_queries=[ipaddress.ip_network(value) for value in resolved_addresses] if destination_fqdn else None,
-                                                         source_fqdn=bool(source_fqdn), source_queries=[ipaddress.ip_network(value) for value in source_addresses] if source_fqdn else None)
-        if (destination_fqdn and not destination_network) or (source_fqdn and not source_network):
-            partial = True
-        if aws.get("networkPath"):
-            path, partial = aws["networkPath"]["path"], aws["networkPath"]["partialPath"]
-        expected_zones = expected_zones_for_path(source, destination, path)
-        configs = {item["name"]: item for item in self.firewalls.configurations()}
-        results = []
-        for name in path:
-            config = configs.get(name)
-            if not config or not config["configured"] and (_snapshots is None or name not in _snapshots):
-                results.append({"firewall": name, "available": False, "error": "Firewall configuration unavailable", "policy": {"state": "unavailable"}, "routing": {"destination": None, "return": None}}); continue
-            try:
-                if _snapshots is None: snapshot = self._snapshot(config, refresh)
-                else:
-                    if name not in _snapshots: _snapshots[name] = self._snapshot(config, refresh)
-                    snapshot = _snapshots[name]
-                if 'FirewallRule' in snapshot.get('configurationErrors', {}):
-                    results.append({'firewall':name,'available':False,'error':snapshot['configurationErrors']['FirewallRule'], 'policy':{'state':'unavailable'}, 'routing':{'destination':None,'return':None}})
-                    continue
-                source_zone, destination_zone = expected_zones.get(name, (None, None))
-                if destination_fqdn and not destination_network:
-                    destination_zone = None
-                if source_fqdn and not source_network:
-                    source_zone = None
-                rule_rows=snapshot['rules']
-                index=(_indexes or {}).get(name)
-                if index:
-                    ids=index.rules('Source',source_network,source_fqdn)&index.rules('Destination',destination_network,destination_fqdn)
-                    rule_rows=[index.ordered_rules[i] for i in sorted(ids)]
-                results.append({"firewall": name, "available": True, "checkedAt": snapshot["checkedAt"], "expectedZones": {"source": source_zone, "destination": destination_zone}, "policy": match_rules(rule_rows, source_network, destination_network, protocol, normalized_port, source_zone, destination_zone, normalized_protocol_number, destination_fqdn, source_fqdn), "routing": {"destination": match_static_route(snapshot["routes"], destination_network) if destination_network else None, "return": match_static_route(snapshot["routes"], source_network) if source_network else None, "error": snapshot["routeError"]}})
-            except Exception as exc:
-                results.append({"firewall": name, "available": False, "error": type(exc).__name__, "policy": {"state": "unavailable"}, "routing": {"destination": None, "return": None}})
-        steps = ([aws["outbound"]] if aws["outbound"]["state"] != "N/A" else [])
-        steps.extend(firewall_step(item) for item in results)
-        if aws["inbound"]["state"] != "N/A": steps.append(aws["inbound"])
-        return {"source": source, "destination": destination, "protocol": protocol, "port": normalized_port,
-                "protocolNumber": normalized_protocol_number, "path": path, "partialPath": partial,
-                "firewalls": results, "awsSecurityGroups": aws, "steps": steps, "policySummary": policy_summary(steps, partial),
-                "checkedAt": datetime.now(timezone.utc).isoformat()}
