@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import ipaddress
 import copy
+import threading
+from collections import OrderedDict
 from dataclasses import dataclass
 
 from backend.services.aws_assets import AwsAssetService
@@ -40,62 +42,37 @@ class Endpoint:
 class RouteResolver:
     def __init__(self, snapshots, indexes):
         self.snapshots, self.indexes = snapshots, indexes
+        self._cache=OrderedDict();self._lock=threading.RLock()
 
     def interface(self, firewall, name):
-        for row in self.snapshots.get(firewall, {}).get('interfaces', []):
-            if name and name in {row.get('Name'), row.get('Hardware')}:
-                return row
-        return None
+        index=self.indexes.get(firewall)
+        return index.interface_refs.get(name) if index and name else None
 
-    def select(self, firewall, destination):
-        snapshot = self.snapshots.get(firewall, {})
-        if destination is None:
-            return None
-        candidates = []
-        # Alias addresses share their parent's link; they do not create new links.
-        for row in snapshot.get('interfaces', []):
-            cidr = interface_network(row)
-            if enabled(row) and contains(cidr, destination):
-                candidates.append({'network': str(cidr), 'interface': row.get('Name', ''), 'zone': row.get('Zone', ''),
-                    'gateway': '', 'routeType': 'Connected', 'source': 'connected_interface', '_distance': 0})
-        index = self.indexes.get(firewall)
-        ids = index.routes.find(destination) if index else range(len(snapshot.get('routes', [])))
-        for i in sorted(ids):
-            row = snapshot['routes'][i]
-            cidr = network(row.get('destination', '') + ('/' + (row.get('netmask') or '32') if '/' not in row.get('destination', '') else ''))
-            if not enabled(row) or not contains(cidr, destination):
-                continue
-            interface = self.interface(firewall, row.get('interface'))
-            zone = (interface or {}).get('Zone') or ('VPN' if row.get('interface', '').casefold().startswith('xfrm') else '')
-            try:
-                distance = int(row.get('administrative_distance') or row.get('distance') or 1)
-            except (ValueError, TypeError):
-                distance = 1
-            candidates.append({**row, 'network': str(cidr), 'zone': zone, 'source': 'static',
-                'routeType': 'Default' if cidr.prefixlen == 0 else 'Static', '_distance': distance})
-        if not candidates:
-            # SFOS WAN gateway/Interface is a configured default, even if UnicastRoute omits it.
-            for row in snapshot.get('interfaces', []):
-                if row.get('Zone', '').upper() != 'WAN' or not enabled(row):
-                    continue
-                gateway = next((item for item in snapshot.get('gateways', []) if item.get('Name') == row.get('Gateway Name')), {})
-                if gateway.get('Type', '').casefold() in {'disabled', 'disable', 'backup'}:
-                    continue
-                address = row.get('Gateway IP') or gateway.get('Gateway IP')
-                if network(address) is not None and network(address).version == destination.version:
-                    candidates.append({'network': '0.0.0.0/0' if destination.version == 4 else '::/0',
-                        'interface': row['Name'], 'gateway': address, 'zone': 'WAN', 'routeType': 'Default',
-                        'source': 'interface_gateway', '_distance': 255})
-        if not candidates:
-            return None
-        # Longest prefix, connected on equal prefix, then administrative distance.
-        key = lambda row: (network(row['network']).prefixlen, row['routeType'] == 'Connected', -row['_distance'])
-        best = max(map(key, candidates))
-        choices = [row for row in candidates if key(row) == best]
-        result = dict(choices[0])
-        if len({(row.get('interface'), row.get('gateway'), row.get('blackhole')) for row in choices}) > 1:
-            result.update(ambiguous=True, alternatives=choices)
-        result.pop('_distance', None)
+    def select(self,firewall,destination):
+        key=(firewall,destination)
+        with self._lock:
+            if key in self._cache:return copy.copy(self._cache[key])
+        value=self._select(firewall,destination)
+        with self._lock:
+            self._cache[key]=value
+            if len(self._cache)>8192:self._cache.popitem(last=False)
+        return copy.copy(value)
+
+    def _select(self,firewall,destination):
+        index=self.indexes.get(firewall)
+        if index is None or destination is None:return None
+        candidates=[index.connected_records[i] for i in index.connected_routes.find(destination)
+            if contains(index.connected_records[i]['_cidr'],destination)]
+        candidates += [index.route_records[i] for i in index.routes.find(destination) if i in index.route_records
+            and enabled(index.route_records[i]) and contains(index.route_records[i]['_cidr'],destination)]
+        if not candidates:candidates=[row for row in index.default_routes if row['_cidr'].version==destination.version]
+        if not candidates:return None
+        key=lambda row:(row['_cidr'].prefixlen,row['routeType']=='Connected',-row['_distance'])
+        best=max(map(key,candidates));choices=[row for row in candidates if key(row)==best]
+        clean=lambda row:{key:value for key,value in row.items() if not key.startswith('_')}
+        result=clean(choices[0])
+        if len({(r.get('interface'),r.get('gateway'),r.get('blackhole')) for r in choices})>1:
+            result.update(ambiguous=True,alternatives=[clean(row) for row in choices])
         return result
 
 
@@ -126,9 +103,26 @@ class TopologyIndex:
                 if item.get('Parent Interface'):
                     self.edges.append({'type': 'PARENT_OF', 'firewall': name, 'from': parent, 'to': item['Name']})
         self._aws()
+        from backend.services.firewall_configuration import PrefixIndex
+        self.connected=PrefixIndex();self.connected_rows={}
+        for name,snapshot in snapshots.items():
+            for i,row in enumerate(snapshot.get('interfaces',[])):
+                cidr=interface_network(row)
+                if enabled(row) and cidr is not None:
+                    self.connected.add(str(cidr),(name,i));self.connected_rows[(name,i)]=(cidr,row)
+        self.cache_lock=threading.RLock();self.partition_cache=OrderedDict();self.query_cache=OrderedDict()
+        from collections import defaultdict
+        self.sg_rules=defaultdict(list)
+        for row in self.aws_data.get('security_group_rules',[]):
+            if row.get('GroupId') and isinstance(row.get('IsEgress'),bool):self.sg_rules[(row['GroupId'],row['IsEgress'])].append(row)
+        self.sg_groups={row['GroupId']:row for row in self.aws_data.get('security_groups',[]) if row.get('GroupId')}
 
     def _aws(self):
-        for instance in self.aws_data.get('instances', []):
+        instances=list(self.aws_data.get('instances',[]))
+        instance_ids={item.get('InstanceId') for item in instances}
+        embedded={row.get('NetworkInterfaceId') for item in instances for row in item.get('NetworkInterfaces',[]) if isinstance(row,dict)}
+        instances.extend({'NetworkInterfaces':[eni]} for eni in self.aws_data.get('network_interfaces',[]) if eni.get('NetworkInterfaceId') not in embedded and (eni.get('Attachment') or {}).get('InstanceId') not in instance_ids)
+        for instance in instances:
             for eni in AwsAssetService.attached_interfaces(instance, self.aws_data):
                 refs = eni.get('Groups')
                 valid = isinstance(refs, list) and all(isinstance(item, dict) and item.get('GroupId') for item in refs)
@@ -216,22 +210,14 @@ class TopologyIndex:
             return Endpoint('EXTERNAL_INTERNET', query)
         return Endpoint('UNKNOWN_ENDPOINT', query, reason='Endpoint ownership unavailable')
 
-    def connected_owner(self, query, exclude=None):
-        matches = []
-        for name, snapshot in self.snapshots.items():
-            if name == exclude:
-                continue
-            for row in snapshot.get('interfaces', []):
-                cidr = interface_network(row)
-                if enabled(row) and contains(cidr, query):
-                    matches.append((cidr.prefixlen, name, row))
-        if not matches:
-            return None
-        best = max(item[0] for item in matches)
-        selected = {(name, row['Name']): row for prefix, name, row in matches if prefix == best}
-        if len(selected) == 1:
-            (name, _), row = next(iter(selected.items()))
-            return name, row
+    def connected_owner(self,query,exclude=None):
+        matches=[(self.connected_rows[key][0].prefixlen,key[0],self.connected_rows[key][1]) for key in self.connected.find(query)
+            if key[0]!=exclude and contains(self.connected_rows[key][0],query)]
+        if not matches:return None
+        best=max(item[0] for item in matches)
+        selected={(name,row['Name']):row for prefix,name,row in matches if prefix==best}
+        if len(selected)==1:
+            (name,_),row=next(iter(selected.items()));return name,row
         return None
 
     def first_firewall(self, source, destination):

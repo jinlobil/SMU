@@ -1,5 +1,7 @@
 # Firewall Path Analysis: Dynamic Packet Flow
 
+후속 변경: [Published Address / Index / 일일 수집](firewall-published-index-daily.md). 아래 초기 구현의 Interface/Alias 즉시 Local 종료 정책은 폐기되었으며, 현재는 명시 Transit/NAT 사용을 먼저 검증하고 실제 Local Service 근거가 있을 때만 Local Endpoint를 사용한다.
+
 ## 변경 전 조사
 
 `POST /api/firewall/path-check` → `FirewallPathCheckService.check()` → `PathAnalysis.analyze()` → `_check_legacy()` → `enhance()` 흐름이었다. `_check_legacy()`가 `determine_firewall_path()`/`NETWORK_MAPPINGS`로 Firewall 목록과 예상 Zone을 먼저 생성했다. `enhance()`는 그 목록에 대해 Policy, Route, SNAT, Gateway, Return Route를 일괄 평가하고, `progress()`가 이미 계산한 후속 결과를 NOT_REACHED로 바꿨다. 따라서 차단 후에도 실제 계산이 실행되었다. Route/NAT/기존 matcher가 서로 별도로 Interface를 추론했다.
@@ -18,7 +20,7 @@ flowchart TD
     D --> E[Ingress / 필요 시 Public ENI 및 SG]
     E --> F[실제 일치 DNAT만 적용]
     F --> G{Firewall 자체 주소인가?}
-    G -->|예| L[Local Endpoint 도달 / Local ACL 판정 분리]
+    G -->|예| L[명시 Transit 사용 검증 후 실제 Local Service 판정]
     G -->|아니오| H[Connected / Static LPM / Default Route]
     H --> I[Transit Policy → 실제 일치 SNAT → Route의 Gateway]
     I --> J{Next Hop}
@@ -52,7 +54,7 @@ flowchart TD
 | 12 | `TopologyIndex.aws_addresses/public_addresses`는 ENI의 각 PrivateIpAddresses.Association 및 DescribeAddresses의 정확한 ENI/Private IP 쌍을 사용한다. 한 ENI의 다른 EIP를 Primary IP에 잘못 연결하지 않는다. |
 | 13 | AWS Private IP와 Sophos Physical/Alias IP를 exact join. Alias는 Parent Interface 및 Zone을 상속한다. 서로 다른 VPC/ENI에서 Private IP가 중복되면 소유 관계를 임의 선택하지 않는다. |
 | 14 | `#`는 경로용 NAT lookup 및 `_networks()`에서 Interface/Alias reference로 해석한다. Export에 쓰이는 원래 문자열/공통 Parser는 변경하지 않는다. |
-| 15 | 자신의 Interface/Alias에 도착하면 Transit Policy/내부 Route를 더 검사하지 않는다. DNAT이 먼저 실제 매칭되면 내부 Server 흐름으로 전환한다. Local Endpoint까지의 도달과 미수집 서비스 포트/Local ACL 판정은 분리한다. 관리 포트는 하드코딩하지 않는다. |
+| 15 | 자신의 Interface/Alias도 명시 Transit/NAT 정책을 먼저 검사한다. 실제 Local Service 근거가 있는 경우에만 Local Endpoint로 분류하고, 자료가 없으면 Endpoint 용도 미확정으로 남긴다. 관리 포트는 하드코딩하지 않는다. |
 | 16 | Source Outbound, 실제 도착 Public ENI, 최종 AWS Destination의 exact attached SG만 검사한다. SG가 막으면 후속 경로를 생성하지 않는다. 다른 VPC를 사이트명/같은 주소 범위로 직접 연결하지 않는다. |
 | 17 | Destination 도달, BLOCK, 필요한 정보 부족, routing loop, hop limit에서 종료. 차단 시 마지막 Destination만 NOT_REACHED로 표시하고 미래 processing은 만들지 않는다. |
 | 18 | Forward가 도달한 뒤 실제 통과 Firewall Hop의 역순 Routing/비대칭만 평가한다. Stateful 응답에 신규 Inbound Policy를 재평가하지 않는다. Return은 별도 `returnPath`; Progress에 Return Route를 미리 넣지 않는다. |

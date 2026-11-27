@@ -24,8 +24,8 @@ def normalized_service_lines(resolved,protocol):
 
 
 def decide_policy(rows, source, destination, protocol, port, source_zone, destination_zone,
-                  number=None, source_fqdn=None, destination_fqdn=None):
-    rows = copy.deepcopy(rows)
+                  number=None, source_fqdn=None, destination_fqdn=None, published_destination=None):
+    rows = [dict(row) for row in rows]  # Prepared immutable address predicates stay shared; only row fields are rewritten.
     _restore_rule_order(rows)
     # Keep service records correlated: a TCP protocol on one member must not
     # combine with a UDP destination port from another member of the group.
@@ -35,7 +35,7 @@ def decide_policy(rows, source, destination, protocol, port, source_zone, destin
             if not re.search(r'Protocol:\s*([^|]+)', line, re.I)
             or re.search(r'Protocol:\s*([^|]+)', line, re.I).group(1).strip().upper() == protocol)
     policy = match_rules(rows, source, destination, protocol, port, source_zone, destination_zone,
-                         number, destination_fqdn, source_fqdn, True)
+                         number, destination_fqdn, source_fqdn, True, published_destination)
     lookup={row.get('Rule Name'):row for row in rows}
     for item in policy.get('evaluations',[]):
         row=lookup.get(item['rule'],{})

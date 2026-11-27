@@ -55,7 +55,12 @@ def test_actual_scenarios_bind_exact_raw_eni_groups_without_online_calls(supplie
         assert row['IP Address']==association['PrivateIpAddress']
         assert owner['zone']=='WAN'
     # Any remaining stop must identify an actual unresolved predicate, not identity failure.
-    assert result['summary']['status']=='UNKNOWN'
+    if query['port'] is None:
+        assert result['summary']['status']=='WARNING'
+        assert len(result['serviceResults'])>1
+        assert any(scope['summary']['status']=='UNKNOWN' for scope in result['serviceResults'])
+    else:
+        assert result['summary']['status']=='UNKNOWN'
     assert unresolved_evidence(result,snapshots)
     assert not any('Object missing' in step['reason'] for step in result['analysisPath'])
     assert not any(step['type']=='aws_sg' for step in result['analysisPath'])

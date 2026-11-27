@@ -1,5 +1,7 @@
 # Firewall Path Analysis — 정책 검색, Snapshot/Index, NAT 및 카드 UI
 
+현행 Alias 판정, Index 검색 및 하루 1회 Configuration 수집 정책은 [후속 보고](firewall-published-index-daily.md)를 따른다. 아래는 초기 구현 기록이다.
+
 두 요청과 추가 UI 참고 이미지를 함께 반영한 현재 구현 보고다. 운영 방화벽/AWS 호출은 하지 않았으며, 실제 장비 대신 mock 응답·로컬 Cache·브라우저 fixture로 검증했다. 커밋/푸시는 하지 않았다.
 
 ## 변경 파일

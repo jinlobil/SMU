@@ -96,7 +96,8 @@ def test_default_wan_route_shares_egress_with_nat_and_no_cloud(tmp_path):
 
 @pytest.mark.parametrize('public,private,interface_name,kind', [('8.8.4.4', '10.43.0.2', 'uplink', 'physical'), ('8.8.4.5', '10.43.0.12', 'uplink:10', 'alias')])
 def test_primary_and_alias_eip_join_and_firewall_local_no_transit(tmp_path, public, private, interface_name, kind):
-    current = service(tmp_path, aws=aws_data())
+    snapshots=topology();snapshots['Hub']['localServices']=[{'zone':'WAN','protocol':'TCP','port':9876,'service':'HTTPS'}]
+    current = service(tmp_path, snapshots, aws_data())
     entry = current.configuration.topology.public_addresses[public]
     assert (entry['private_ip'], entry['interface'], entry['interface_type'], entry['zone'], entry['parent_interface']) == (private, interface_name, kind, 'WAN', 'uplink')
     result = check(current, public, port=9876)
@@ -173,7 +174,8 @@ def test_loop_detection_stops_at_repeated_packet_state(tmp_path):
 
 
 def test_analysis_uses_pinned_memory_without_file_reads_apis_or_dns(tmp_path, monkeypatch):
-    current = service(tmp_path, aws=aws_data())
+    snapshots=topology();snapshots['Hub']['localServices']=[{'zone':'WAN','protocol':'TCP','port':443,'service':'HTTPS'}]
+    current = service(tmp_path, snapshots, aws_data())
     from pathlib import Path
     import socket
     from backend.services.firewall import FirewallClient
@@ -377,7 +379,8 @@ def test_browser_renders_only_emitted_wan_path_and_separate_return(tmp_path):
 
 def test_browser_local_firewall_endpoint_has_no_transit_policy_card(tmp_path):
     from test_firewall_path_layout_browser import path_browser
-    result=check(service(tmp_path,aws=aws_data()),'8.8.4.4',port=9876)
+    snapshots=topology();snapshots['Hub']['localServices']=[{'zone':'WAN','protocol':'TCP','port':9876,'service':'HTTPS'}]
+    result=check(service(tmp_path,snapshots,aws_data()),'8.8.4.4',port=9876)
     with path_browser(result) as page:
         assert page.get_by_role('heading',name='Hub Local Endpoint',exact=True).is_visible()
         assert page.get_by_role('heading',name='Hub Firewall',exact=True).count()==0
