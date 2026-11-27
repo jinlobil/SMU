@@ -1,5 +1,5 @@
 import json, logging, os, re, threading, time, uuid
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -120,6 +120,7 @@ class SchedulerService:
             "enabled": False, "interval": 10, "targets": ["detections", "inbound"],
             "lastRun": None, "lastResult": "-", "nextRun": None, "running": False,
             "targetStatus": {},
+            "firewallConfiguration": {"enabled":True,"time":"03:00","timezone":"Asia/Seoul","lastAttemptDate":None,"lastSuccessAt":None},
             "phase": "idle", "currentTarget": None, "currentMessage": "대기 중",
         }
         self._next_run_at: float | None = None
@@ -139,6 +140,10 @@ class SchedulerService:
             interval = max(1, min(1440, int(loaded.get("interval", self.state["interval"]))))
             normalized = {key: loaded[key] for key in self.state if key in loaded}
             normalized.update(enabled=loaded.get("enabled") is True, interval=interval)
+            daily=normalized.get('firewallConfiguration',{})
+            normalized['firewallConfiguration']={**self.state['firewallConfiguration'],**(daily if isinstance(daily,dict) else {})}
+            if not re.fullmatch(r'(?:[01][0-9]|2[0-3]):[0-5][0-9]',str(normalized['firewallConfiguration'].get('time',''))):normalized['firewallConfiguration']['time']='03:00'
+            normalized['firewallConfiguration']['timezone']='Asia/Seoul'
             self.state.update(normalized)
             targets = list(targets)
             if any(target in self.LEGACY_DETECTION_TARGETS for target in targets) and "detections" not in targets:
@@ -176,34 +181,54 @@ class SchedulerService:
     def _display_time(timestamp: float) -> str:
         return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(timestamp))
 
-    def _schedule_next(self):
+    @staticmethod
+    def _now():
+        return datetime.now(timezone(timedelta(hours=9),'Asia/Seoul'))
+
+    def _daily_due_at(self):
+        daily=self.state['firewallConfiguration'];now=self._now()
+        if not daily['enabled'] or 'firewall_configuration' not in self.state['targets']:return None
+        hour,minute=map(int,daily['time'].split(':'))
+        when=now.replace(hour=hour,minute=minute,second=0,microsecond=0)
+        if daily.get('lastAttemptDate')==now.date().isoformat():when+=timedelta(days=1)
+        return max(now.timestamp(),when.timestamp())
+
+    def _schedule_next(self,preserve_normal=False):
         with self.lock:
-            self._next_run_at = time.time() + int(self.state["interval"]) * 60
-            self.state["nextRun"] = self._display_time(self._next_run_at)
+            normal=any(target!='firewall_configuration' for target in self.state['targets'])
+            if not preserve_normal or self._next_run_at is None:
+                self._next_run_at=time.time()+int(self.state['interval'])*60 if normal else None
+            values=[value for value in (self._next_run_at,self._daily_due_at()) if value is not None]
+            self.state['nextRun']=self._display_time(min(values)) if values else None
             self._persist_locked()
 
     def get(self):
-        with self.lock:
-            return dict(self.state)
+        with self.lock:return json.loads(json.dumps(self.state))
 
-    def save(self, data):
-        interval = max(1, min(1440, int(data.get("interval", 10))))
-        requested = list(data.get("targets", []))
-        if any(target in self.LEGACY_DETECTION_TARGETS for target in requested) and "detections" not in requested:
-            requested.insert(0, "detections")
-        targets = list(dict.fromkeys(target for target in requested if target in self.TARGETS))
-        enabled = bool(data.get("enabled"))
+    def save(self,data):
+        interval=max(1,min(1440,int(data.get('interval',10))))
+        requested=list(data.get('targets',[]))
+        if any(target in self.LEGACY_DETECTION_TARGETS for target in requested) and 'detections' not in requested:requested.insert(0,'detections')
+        targets=list(dict.fromkeys(target for target in requested if target in self.TARGETS))
+        daily=data.get('firewallConfiguration')
+        if daily is not None and (not isinstance(daily,dict) or not re.fullmatch(r'(?:[01][0-9]|2[0-3]):[0-5][0-9]',str(daily.get('time','03:00')))):raise ValueError('Firewall daily time must be HH:MM')
+        enabled=bool(data.get('enabled'))
         with self.lock:
-            self.state.update(enabled=enabled, interval=interval, targets=targets)
-            if not enabled:
-                self._next_run_at = None
-                self.state["nextRun"] = None
+            if daily is not None:self.state['firewallConfiguration'].update(enabled=daily.get('enabled',True) is True,time=daily.get('time','03:00'))
+            self.state.update(enabled=enabled,interval=interval,targets=targets)
+            if not enabled:self._next_run_at=None;self.state['nextRun']=None
             self._persist_locked()
-        if enabled:
-            self._schedule_next()
+        if enabled:self._schedule_next()
         self.wake.set()
-        self.log.info("Scheduler saved enabled=%s interval=%s targets=%s", enabled, interval, targets)
         return self.get()
+
+    def _claim_firewall_daily(self):
+        with self.lock:
+            now=self._now();daily=self.state['firewallConfiguration'];hour,minute=map(int,daily['time'].split(':'))
+            if not daily['enabled'] or (now.hour,now.minute)<(hour,minute) or daily.get('lastAttemptDate')==now.date().isoformat():return False
+            daily['lastAttemptDate']=now.date().isoformat()
+            self._persist_locked()
+            return True
 
     def _refresh_target(self, target: str, start: date, today: date):
         progress = lambda message: self._update_progress("collecting", target, message)
@@ -229,7 +254,7 @@ class SchedulerService:
             self.state.update(phase=phase, currentTarget=target, currentMessage=str(message))
             self._persist_locked()
 
-    def _run_cycle(self):
+    def _run_cycle(self,firewall_only=False):
         if not self.run_lock.acquire(blocking=False):
             self.log.warning("Scheduler cycle skipped because another cycle is running")
             return
@@ -240,11 +265,11 @@ class SchedulerService:
                 self.state["lastResult"] = "수집 작업 실행 중"
                 self.state.update(phase="collecting", currentTarget=None, currentMessage="수집 작업 준비 중")
                 self._persist_locked()
-            targets = self.get()["targets"]
+            targets = ["firewall_configuration"] if firewall_only else self.get()["targets"]
             learner_selected = "learner" in targets
             collection_targets = [target for target in targets if target not in {"learner","firewall_configuration"}]
             upstream_ok = True
-            if "firewall_configuration" in targets:
+            if "firewall_configuration" in targets and self._claim_firewall_daily():
                 try:
                     self._update_progress("collecting","firewall_configuration","Firewall Configuration 최신화")
                     if self.firewall_configuration_refresh is None:raise RuntimeError("collector_unavailable")
@@ -255,6 +280,7 @@ class SchedulerService:
                     state="FAIL"
                 messages.append("firewall_configuration:"+("OK" if state=="SUCCESS" else "FAIL"))
                 with self.lock:
+                    if state=='SUCCESS':self.state['firewallConfiguration']['lastSuccessAt']=self._now().isoformat()
                     self.state['targetStatus']['firewall_configuration']={'time':self._display_time(time.time()),'status':state,'message':'Configuration Snapshot Refresh'}
                     self._persist_locked()
             if collection_targets and self.index is not None and hasattr(self.index, "start_fetch_job"):
@@ -325,7 +351,7 @@ class SchedulerService:
                 self._persist_locked()
             self.run_lock.release()
             if self.get()["enabled"]:
-                self._schedule_next()
+                self._schedule_next(preserve_normal=firewall_only)
 
     def run_now(self, data=None):
         if data is not None:
@@ -337,13 +363,15 @@ class SchedulerService:
 
     def _loop(self):
         while True:
-            state = self.get()
-            if not state["enabled"] or self._next_run_at is None:
-                self.wake.wait()
-                self.wake.clear()
-                continue
-            timeout = max(0.0, self._next_run_at - time.time())
-            if self.wake.wait(timeout):
-                self.wake.clear()
-                continue
-            self._run_cycle()
+            with self.lock:
+                enabled=self.state['enabled']
+                daily=self._daily_due_at() if enabled else None
+                times=[value for value in (self._next_run_at,daily) if value is not None] if enabled else []
+            if not times:
+                self.wake.wait();self.wake.clear();continue
+            if self.wake.wait(max(0,min(times)-time.time())):
+                self.wake.clear();continue
+            firewall_only=daily is not None and (self._next_run_at is None or time.time()<self._next_run_at)
+            if self.run_lock.locked():
+                self.wake.wait(1);self.wake.clear();continue
+            self._run_cycle(firewall_only=firewall_only)

@@ -154,7 +154,7 @@ class AwsSecurityGroupPathService:
         return "NO_MATCH", "Rule CIDR에 상대 IP/CIDR 포함 안 됨"
 
     def _step(self, direction: str, endpoint: dict[str, Any], peer: dict[str, Any], peer_query,
-              protocol: str, port: int | None, protocol_number: int | None, data: dict[str, Any], path: list[str], partial: bool, port_only: bool = False) -> dict[str, Any]:
+              protocol: str, port: int | None, protocol_number: int | None, data: dict[str, Any], path: list[str], partial: bool, port_only: bool = False, *, rule_rows=None, group_map=None) -> dict[str, Any]:
         broad = broad_query(protocol, port, protocol_number)
         result = {"kind": "aws_sg", "label": f"AWS SG {direction}", "direction": direction, "state": endpoint["state"],
                   "queryMode": "fqdn" if port_only else "ip", "endpoint": endpoint, "groups": [], "matches": [], "evaluations": [], "broadQuery": broad, "reason": endpoint["reason"]}
@@ -165,10 +165,10 @@ class AwsSecurityGroupPathService:
         group_data, rules = data.get("security_groups"), data.get("security_group_rules")
         if not isinstance(group_data, list) or not isinstance(rules, list):
             return {**result, "state": "UNKNOWN", "reason": "AWS SG/Rule 데이터 누락"}
-        groups = {str(group["GroupId"]): group for group in group_data if isinstance(group, dict) and group.get("GroupId")}
+        groups = group_map if group_map is not None else {str(group["GroupId"]): group for group in group_data if isinstance(group, dict) and group.get("GroupId")}
         result["groups"] = [{"id": identifier, "name": groups.get(identifier, {}).get("GroupName") or "-"} for identifier in endpoint["groupIds"]]
         incomplete = any(identifier not in groups for identifier in endpoint["groupIds"])
-        for raw in rules:
+        for raw in (rule_rows if rule_rows is not None else rules):
             if not isinstance(raw, dict) or not isinstance(raw.get("GroupId"), str) or not raw["GroupId"] or not isinstance(raw.get("IsEgress"), bool):
                 incomplete = True
                 continue

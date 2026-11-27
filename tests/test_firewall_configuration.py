@@ -89,7 +89,7 @@ def test_per_firewall_partial_failure_preserves_failed_site(tmp_path,monkeypatch
         if config['name']=='Seoul':raise TimeoutError()
         return snapshot()
     store.collector=collect;store.refresh()
-    assert store.get('Seoul') is old['Seoul'] and store.get('Cloud') is not old['Cloud']
+    assert store.get('Seoul') is old['Seoul'] and store.get('Cloud') is old['Cloud']
 
 
 def test_search_during_refresh_and_atomic_generation_swap(tmp_path,monkeypatch):

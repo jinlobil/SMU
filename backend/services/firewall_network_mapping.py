@@ -3,6 +3,7 @@ from __future__ import annotations
 import ipaddress
 import re
 from dataclasses import dataclass
+from functools import lru_cache
 
 
 @dataclass(frozen=True)
@@ -13,6 +14,7 @@ class NetworkMapping:
     aliases: tuple[str, ...] = ()
 
     @property
+    @lru_cache(maxsize=64)
     def network(self) -> ipaddress.IPv4Network:
         return ipaddress.ip_network(self.cidr)
 

@@ -94,7 +94,7 @@ def test_refresh_stage_order_and_analysis_stays_offline_after_bootstrap(native,m
     monkeypatch.setattr(module,'validate',validate);monkeypatch.setattr(module,'ConfigurationIndex',index)
     monkeypatch.setattr(RefreshService,'save_json_atomic',save)
     client.post('/api/firewall/configuration/refresh');finished(client)
-    assert events==[(stage,name) for name in NAMES for stage in ('validate','save','index')]
+    assert events==[(stage,name) for name in NAMES for stage in ('validate','index','save')]
     count=len(calls)
     result=client.post('/api/firewall/path-check',json={'source':'10.0.0.10','destination':'203.0.113.10','protocol':'TCP','port':443}).json()['data']
     assert len(calls)==count
@@ -119,7 +119,8 @@ def test_entity_http_api_failures_are_diagnosed_safely_and_other_devices_bootstr
     assert diagnostic['firewall']=='Seoul'
     assert diagnostic['http_status' if kind=='http' else 'api_code']==expected
     assert diagnostic['stage']=='api_request' if kind=='http' else diagnostic['stage']=='response_validation'
-    assert all(current.configuration.path(name).exists() for name in NAMES if name!='Seoul')
+    assert not any(current.configuration.path(name).exists() for name in NAMES)
+    assert current.configuration.snapshots=={} and current.configuration.indexes=={}
     assert not current.configuration.path('Seoul').exists()
     assert 'entity=NATRule' in caplog.text and f"{'http_status' if kind=='http' else 'api_code'}={expected}" in caplog.text
     assert marker not in caplog.text+json.dumps(status)

@@ -42,15 +42,20 @@ class PathAnalysis:
                 self.topology = TopologyIndex(self.snapshots, self.indexes, service.configuration.aws_data)
         self.metrics = dict.fromkeys(('normalize_ms','policy_lookup_ms','nat_match_ms','route_match_ms','path_decision_ms'), 0.0)
         self.configs = {name: {'name':name,'configured':True} for name in self.snapshots}
+        self.metrics.update(dict.fromkeys(('endpoint_lookup_ms','object_index_lookup_ms','group_lookup_ms','service_index_lookup_ms','nat_index_lookup_ms','policy_validation_ms','dynamic_path_ms'),0.0))
+        self.metrics.update(candidate_rule_count=0,candidate_nat_count=0,total_rule_count=sum(len(i.ordered_rules) for i in self.indexes.values()))
+        self._candidate_rules=set();self._candidate_nats=set()
         self.dns = {}
         self.aws_data = self.topology.aws_data
         self._service_slices = {}
+        self._path_cache={}
 
     def snapshot(self, name):
         return self.snapshots.get(name)
 
     def endpoint(self, value, side):
         from backend.services.firewall_path_check import _query_endpoint
+        started=time.perf_counter()
         key = value.strip()
         if key not in self.dns:
             from backend.services.fqdn import normalize_fqdn
@@ -58,9 +63,17 @@ class PathAnalysis:
             except ValueError:normalized=key
             cached=next((snapshot.get('resolvedFqdnAddresses',{})[normalized] for snapshot in self.snapshots.values() if normalized in snapshot.get('resolvedFqdnAddresses',{})),None)
             self.dns[key]=_query_endpoint(key,side,(cached or []))
+        self.metrics['endpoint_lookup_ms']+=(time.perf_counter()-started)*1000
         return self.dns[key]
 
-    def analyze(self, source, destination, protocol, port, protocol_number, _partition=True):
+    def analyze(self,source,destination,protocol,port,protocol_number,_partition=True):
+        key=(str(source),str(destination),protocol,port,protocol_number,_partition)
+        if key in self._path_cache:return copy.deepcopy(self._path_cache[key])
+        result=self._analyze(source,destination,protocol,port,protocol_number,_partition)
+        if len(self._path_cache)<256:self._path_cache[key]=copy.deepcopy(result)
+        return result
+
+    def _analyze(self, source, destination, protocol, port, protocol_number, _partition=True):
         from backend.services.firewall_path_check import normalize_service
         source, destination = str(source or '').strip(), str(destination or '').strip()
         if not source and not destination: raise ValueError('Source 또는 Destination을 입력하세요')
@@ -119,6 +132,8 @@ class PathAnalysis:
 
     def _networks(self, value, snapshot):
         from backend.services.firewall_path_check import _networks
+        index=next((index for name,index in self.indexes.items() if self.snapshots[name] is snapshot),None)
+        if index and value in index.object_networks and index.object_networks[value]:return list(index.object_networks[value])
         try:
             return [ipaddress.ip_network(value, strict=False)]
         except (ValueError, TypeError):
@@ -169,12 +184,14 @@ class PathAnalysis:
         if phase=='DNAT':ingress=ingress or interface
         else:egress=egress or interface
         index=next((self.indexes[name] for name,value in self.snapshots.items() if value is snapshot),None)
-        ids=(index.nat['Original Source'].find(source)|index.natUnresolved['Original Source'])&(index.nat['Original Destination'].find(destination)|index.natUnresolved['Original Destination']) if index else range(len(snapshot.get('natRules',[])))
-        # Omitted selectors are unrestricted; unresolved references stay candidates for explicit diagnosis.
-        if index:
-            ids.update(i for i,row in enumerate(snapshot.get('natRules',[])) if not row.get('Original Source') or not row.get('Original Destination'))
+        lookup=time.perf_counter()
+        ids=(index.nat['Original Source'].find(source)|index.natUnresolved['Original Source'])&(index.nat['Original Destination'].find(destination)|index.natUnresolved['Original Destination']) if index else set()
+        if index:ids &= index.nat_phases[phase] & index.nat_service_index.find(protocol,port,number)
+        self.metrics['nat_index_lookup_ms']+=(time.perf_counter()-lookup)*1000
+        self._candidate_nats.update((id(snapshot),i) for i in ids)
+        self.metrics['candidate_nat_count']=len(self._candidate_nats)
         for i in sorted(ids):
-            row=snapshot.get('natRules',[])[i]
+            row=index.nat_rows[i]
             if row.get('Status','').casefold() not in {'enable','enabled'}:continue
             field='Translated Destination' if phase=='DNAT' else 'Translated Source'
             if row.get(field,'').casefold() in {'','original'}:continue
@@ -208,17 +225,11 @@ class PathAnalysis:
             (uncertain if missing else candidates).append(item)
         all_candidates=candidates+uncertain
         if len(all_candidates)>1:
-            complete=[{**row,'_Rule Position':row.get('Position',''),'_Rule After':row.get('After Rule','')} for row in snapshot.get('natRules',[])]
-            numeric=[_position(row['_Rule Position']) for row in complete]
-            if all(value is not None for value in numeric) and len(set(numeric))==len(numeric):
-                for row,position in zip(complete,numeric):row['_Rule Order']=position
-                reliable=True
-            else:reliable=_restore_rule_order(complete)
-            if not reliable:
+            if not index.nat_order_reliable:
                 self.metrics['nat_match_ms']+=(time.perf_counter()-started)*1000
                 return None,['API에 NAT Position/After 순서가 없어 적용 NAT를 선택할 수 없습니다'],all_candidates
-            order={row['Rule Name']:row['_Rule Order'] for row in complete}
-            all_candidates.sort(key=lambda item:order[item['row']['Rule Name']])
+            by_name={row['Rule Name']:i for i,row in ((i,index.nat_rows[i]) for i in ids)}
+            all_candidates.sort(key=lambda item:index.nat_order[by_name[item['row']['Rule Name']]])
         self.metrics['nat_match_ms']+=(time.perf_counter()-started)*1000
         if not all_candidates:return None,[],[]
         first=all_candidates[0]
@@ -230,18 +241,35 @@ class PathAnalysis:
 
     def network_analysis(self, base, source, destination, protocol, port, number):
         from backend.services.firewall_path_check import _networks
-        cuts=[network for index in self.indexes.values() for network in index.cuts]
-        cuts += [ipaddress.ip_network(value) for value in self.topology.aws_addresses]
+        sources={source};destinations={destination};cuts=set()
+        for _ in range(4):
+            old=(len(sources),len(destinations))
+            for name,index in self.indexes.items():
+                ids=(set().union(*(index.nat['Original Source'].find(q) for q in sources))|index.natUnresolved['Original Source']) & (set().union(*(index.nat['Original Destination'].find(q) for q in destinations))|index.natUnresolved['Original Destination']) & index.nat_service_index.find(protocol,port,number)
+                for i in ids:
+                    row=index.nat_rows[i]
+                    sources.update(self._networks(row.get('Translated Source',''),self.snapshots[name]))
+                    destinations.update(self._networks(row.get('Translated Destination',''),self.snapshots[name]))
+            if old==(len(sources),len(destinations)):break
+        for name,index in self.indexes.items():
+            src_ids=set().union(*(index.rules('Destination',q) for q in destinations)) & index.service_index.find(protocol,port,number)
+            dst_ids=set().union(*(index.rules('Source',q) for q in sources)) & index.service_index.find(protocol,port,number)
+            cuts.update(net for i in src_ids for net in index.ordered_rules[i]['_Source Networks'])
+            cuts.update(net for i in dst_ids for net in index.ordered_rules[i]['_Destination Networks'])
+            cuts.update(index.route_cuts);cuts.update(row['_cidr'] for row in index.connected_records.values())
+        cuts.update(ipaddress.ip_network(value) for value in self.topology.aws_addresses)
+        cuts.update(ipaddress.ip_network(value) for value in self.topology.addresses)
         def partition(network):
-            pieces=[network]
-            for cut in sorted(set(cuts),key=lambda item:item.prefixlen):
-                if cut.version!=network.version:continue
-                updated=[]
-                for scope in pieces:
-                    if cut!=scope and cut.subnet_of(scope):updated.extend([cut,*scope.address_exclude(cut)])
-                    else:updated.append(scope)
-                pieces=updated
-            return sorted(pieces,key=lambda item:(int(item.network_address),item.prefixlen))
+            low,high=int(network.network_address),int(network.broadcast_address)+1
+            points={low,high}
+            for cut in cuts:
+                if cut.version==network.version:
+                    a,b=int(cut.network_address),int(cut.broadcast_address)+1
+                    if low<a<high:points.add(a)
+                    if low<b<high:points.add(b)
+            address=ipaddress.IPv4Address if network.version==4 else ipaddress.IPv6Address
+            bounds=sorted(points)
+            return [scope for a,b in zip(bounds,bounds[1:]) for scope in ipaddress.summarize_address_range(address(a),address(b-1))]
         sources,destinations=partition(source),partition(destination)
         if len(sources)==len(destinations)==1:return None
         cases=[]
@@ -273,21 +301,67 @@ class PathAnalysis:
         base.update(networkResults=[] if uniform else cases,networkCoverage={'total':total,'analyzed':len(cases),'uniform':uniform})
         return base
 
-    def policy_candidates(self,snapshot,source,destination,source_fqdn=None,destination_fqdn=None):
+    def policy_candidates(self,snapshot,source,destination,source_fqdn=None,destination_fqdn=None,protocol=None,port=None,number=None,published_destination=None):
         started=time.perf_counter()
         index=next((self.indexes[name] for name,value in self.snapshots.items() if value is snapshot),None)
-        if index:
-            ids=index.rules('Source',source,source_fqdn)&index.rules('Destination',destination,destination_fqdn)
-            rows=[index.ordered_rules[i] for i in sorted(ids)]
-        else:rows=snapshot.get('rules',[])
+        if not index:return []
+        source_ids=index.rules('Source',source,source_fqdn)
+        destination_ids=index.rules('Destination',destination,destination_fqdn)
+        if published_destination is not None:
+            refs=index.interface_by_address.get(str(published_destination.network_address),[])
+            destination_ids |= set().union(*(index.interface_rules[row['Name']] for row in refs)) if refs else set()
+        ids=source_ids & destination_ids
+        self.metrics['object_index_lookup_ms']+=(time.perf_counter()-started)*1000
+        service_started=time.perf_counter()
+        if protocol is not None:ids &= index.service_index.find(protocol,port,number)
+        self.metrics['service_index_lookup_ms']+=(time.perf_counter()-service_started)*1000
+        self._candidate_rules.update((id(snapshot),i) for i in ids)
+        self.metrics['candidate_rule_count']=len(self._candidate_rules)
         self.metrics['policy_lookup_ms']+=(time.perf_counter()-started)*1000
-        return rows
+        return [index.ordered_rules[i] for i in sorted(ids)]
+
+    def scoped_service_slices(self,source,destination,protocol,number):
+        """Collect bounds from address candidates and reachable NAT translations only."""
+        sources={source};destinations={destination};policy_ids={};nat_ids={}
+        for _ in range(4):
+            old=(len(sources),len(destinations))
+            for name,index in self.indexes.items():
+                src=set().union(*(index.nat['Original Source'].find(q) for q in sources))|index.natUnresolved['Original Source']
+                dst=set().union(*(index.nat['Original Destination'].find(q) for q in destinations))|index.natUnresolved['Original Destination']
+                ids=src&dst;nat_ids.setdefault(name,set()).update(ids)
+                for i in ids:
+                    row=index.nat_rows[i]
+                    for field,target in [('Translated Source',sources),('Translated Destination',destinations)]:
+                        if row.get(field,'').casefold()=='masq':continue
+                        target.update(self._networks(row.get(field,''),self.snapshots[name]))
+            if old==(len(sources),len(destinations)):break
+        subsets=[]
+        for name,index in self.indexes.items():
+            ids=set().union(*(index.rules('Source',q) for q in sources)) & set().union(*(index.rules('Destination',q) for q in destinations))
+            policy_ids[name]=ids
+            rows=[index.ordered_rules[i] for i in sorted(ids)]
+            for i in nat_ids.get(name,()):
+                row=index.nat_rows[i]
+                rows.append({'Service':row.get('Original Service',''),'Service Resolved / Protocol / Port':row.get('_Service Resolved','')})
+            rows += [{'Service':svc.get('service','local'),'Service Resolved / Protocol / Port':'Protocol: '+svc.get('protocol','')+' | Destination: '+str(svc['port'])} for svc in self.snapshots[name].get('localServices',[]) if isinstance(svc.get('port'),int)]
+            subsets.append({'rules':rows})
+        groups={g for q in sources|destinations for g in (self.topology.resolve(q).aws or {}).get('groupIds',[])}
+        sg_rows=[row for g in groups for direction in (False,True) for row in self.topology.sg_rules.get((g,direction),[])]
+        key=(protocol,number,tuple((n,tuple(sorted(ids))) for n,ids in policy_ids.items()),tuple((n,tuple(sorted(ids))) for n,ids in nat_ids.items()),tuple(sorted(groups)))
+        with self.topology.cache_lock:
+            cached=self.topology.partition_cache.get(key)
+        if cached is not None:return cached
+        slices=service_slices(protocol,None,number,subsets,{'security_group_rules':sg_rows})
+        with self.topology.cache_lock:
+            self.topology.partition_cache[key]=slices
+            if len(self.topology.partition_cache)>256:self.topology.partition_cache.popitem(last=False)
+        return slices
 
     def service_analysis(self, base, source, destination, protocol, number, source_fqdn=None, destination_fqdn=None):
         original_endpoints=(base['source'],base['destination'])
         original_service=(base['protocol'],base['port'],base.get('protocolNumber'))
-        key=(protocol,number)
-        if key not in self._service_slices:self._service_slices[key]=service_slices(protocol,None,number,list(self.snapshots.values()),self.aws_data)
+        key=(str(source),str(destination),protocol,number)
+        if key not in self._service_slices:self._service_slices[key]=self.scoped_service_slices(source,destination,protocol,number)
         slices=self._service_slices[key]
         cases=[]
         for current,start,end,coverage in slices[:1024]:
@@ -320,7 +394,8 @@ class PathAnalysis:
         base.update(summary=copy.deepcopy(representative['summary']),analysisPath=representative['analysisPath'],progress=representative['progress'],serviceResults=merged,mode='PATH')
         states={case['summary']['status'] for case in merged}
         base['summary']['service']=f'{protocol} / ANY'
-        if len(states)>1 or len(slices)>1024:
+        path_signatures={tuple((step['type'],step.get('firewall'),step['status'],(step.get('matchedRule') or {}).get('rule'),step.get('rule')) for step in case['analysisPath']) for case in merged}
+        if len(states)>1 or len(path_signatures)>1 or len(slices)>1024:
             base['summary'].update(status='WARNING',primaryReason='서비스 분석 한도 1024개를 초과하여 일부 범위는 미분석입니다' if len(slices)>1024 else '서비스별 결과 상이 · 서비스 범위별 판정 결과를 제공합니다',blockedAt=None,matchedRule=None,action=None,ingressZone=None,egressZone=None,confidence='CONFIRMED')
         elif states=={'BLOCK'}:
             base['summary']['primaryReason']='전체 요청 서비스 범위가 차단됩니다 · '+representative['summary']['primaryReason']
@@ -335,14 +410,15 @@ class PathAnalysis:
         try:
             return DynamicPathBuilder(self).build(base, source, destination, protocol, port, number, source_fqdn, destination_fqdn)
         finally:
-            self.metrics['path_decision_ms'] += (time.perf_counter() - started) * 1000
+            elapsed=(time.perf_counter()-started)*1000
+            self.metrics['path_decision_ms']+=elapsed;self.metrics['dynamic_path_ms']+=elapsed
 
     def reachability(self, source, destination, protocol, port, number):
         from backend.services.firewall_path_check import _networks, _query_address_match, service_match_details, zone_match
         mode='SOURCE_REACHABILITY' if source else 'DESTINATION_EXPOSURE'
         value=source or destination; endpoint=self.endpoint(value,'Source' if source else 'Destination')
         known, fqdn, addresses, site=endpoint
-        units={}; publications=[];related_policies={};unresolved_search=[]
+        units={}; publications=[];related_policies={};unresolved_search=[];discovery_queries=set()
         for name, config in self.configs.items():
             if not config.get('configured'):continue
             snapshot=self.snapshot(name) or {}
@@ -358,10 +434,18 @@ class PathAnalysis:
                 if nat.get('Status','').casefold() not in {'enable','enabled'}:continue
                 related_field='Original Source' if source else 'Translated Destination'
                 queries += [net for item in nat.get(related_field,'').splitlines() for net in self._networks(item,snapshot)]
+            discovery_queries.update(q for q in queries if q is not None)
             ids=set()
+            lookup=time.perf_counter()
             for query in queries:ids.update(index.rules(side,query,fqdn))
+            self.metrics['object_index_lookup_ms']+=(time.perf_counter()-lookup)*1000
+            lookup=time.perf_counter()
+            ids &= index.service_index.find(protocol,port,number)
+            self.metrics['service_index_lookup_ms']+=(time.perf_counter()-lookup)*1000
+            self._candidate_rules.update((id(snapshot),i) for i in ids)
+            self.metrics['candidate_rule_count']=len(self._candidate_rules)
             for row_id in sorted(ids):
-                row=snapshot['rules'][row_id]
+                row=index.ordered_rules[row_id]
                 matches = [_query_address_match(query,fqdn,row,side,True) for query in queries]
                 match = {'match':'full' if all(item['match']=='full' for item in matches) else 'partial' if any(item['match']!='none' for item in matches) else 'none'}
                 if row.get('Status','').casefold() not in {'enable','enabled','활성'}:continue
@@ -388,7 +472,9 @@ class PathAnalysis:
                     unit['site'] = '; '.join(_unique(resolve_input_network(str(net)).get('site','') for net in networks if resolve_input_network(str(net)).get('site') != '미확인'))
                     if name not in unit['firewalls']:unit['firewalls'].append(name)
             if not source:
-                for nat in snapshot.get('natRules',[]):
+                publication_ids=set().union(*(index.nat['Translated Destination'].find(query) for query in queries))
+                for nat_id in publication_ids:
+                    nat=index.nat_rows[nat_id]
                     translated=self._translated(nat.get('Translated Destination',''),snapshot)
                     if translated is not None and known is not None and translated.version==known.version and translated.overlaps(known):
                         publications.append({'firewall':name,'rule':nat['Rule Name'],'publishedVia':nat.get('Original Destination',''),
@@ -404,43 +490,77 @@ class PathAnalysis:
             return value
         # Partition the wildcard domain at collected route/object boundaries.
         # Every CIDR is checked as a whole; no individual IP is enumerated.
+        wildcard_cache={}
         def wildcard_targets(unit):
+            cache_key=(tuple(sorted(unit['firewalls'])),unit['zone'])
+            if cache_key in wildcard_cache:return wildcard_cache[cache_key]
+            if 'classes' in wildcard_cache:
+                value=[(target,coverage) for target,coverage,zones in wildcard_cache['classes'] if not any(zones.get(name) for name in unit['firewalls']) or any(zone_match(zones.get(name),unit['zone']) for name in unit['firewalls'] if zones.get(name))]
+                wildcard_cache[cache_key]=value;return value
             version=known.version if known is not None else 4
-            remaining=[ipaddress.ip_network('0.0.0.0/0' if version==4 else '::/0')]
-            cuts=[network for index in self.indexes.values() for network in index.cuts]
-            cuts += [ipaddress.ip_network(value) for value in self.topology.aws_addresses]
-            for cut in sorted(set(cuts),key=lambda net:net.prefixlen):
-                if cut.version!=version or cut.prefixlen==0:continue
-                updated=[]
-                for scope in remaining:
-                    if cut.subnet_of(scope) and cut!=scope:updated.extend([cut,*scope.address_exclude(cut)])
-                    else:updated.append(scope)
-                remaining=updated
-            # A zone selector narrows wildcard addresses to actual interface/route zones.
-            selected=[]
-            for scope in sorted(remaining,key=lambda net:(int(net.network_address),net.prefixlen)):
-                zones=[]
-                for firewall in unit['firewalls']:
-                    snapshot=self.snapshots.get(firewall,{})
-                    route=self._route(snapshot,scope)
-                    zone=(route or {}).get('zone')
-                    if zone:zones.append(zone)
-                if not zones or any(zone_match(zone,unit['zone']) for zone in zones):selected.append(str(scope))
-            return selected
+            cuts=set();known_ids={}
+            side='Source' if source else 'Destination';other='Destination' if source else 'Source'
+            for name,index in self.indexes.items():
+                ids=set().union(*(index.rules(side,q,fqdn) for q in (discovery_queries or {None}))) & index.service_index.find(protocol,port,number)
+                known_ids[name]=ids
+                for i in ids:cuts.update(index.ordered_rules[i]['_'+other+' Networks'])
+                cuts.update(index.route_cuts)
+                for field in index.nat:
+                    # Prefix keys, not NAT record scans; isolate translation/publication boundaries.
+                    if ('Source' in field) == bool(source):continue
+                    for (v,prefix),addresses in index.nat[field].prefixes.items():
+                        if v==version:cuts.update(ipaddress.ip_network((address,prefix)) for address in addresses)
+            cuts.update(ipaddress.ip_network(value) for value in self.topology.aws_addresses)
+            cuts.update(ipaddress.ip_network(value) for value in self.topology.addresses)
+            cuts.update(mapping.network for mapping in NETWORK_MAPPINGS)
+            for index in self.indexes.values():cuts.update(row['_cidr'] for row in index.connected_records.values())
+            address_type=ipaddress.IPv4Address if version==4 else ipaddress.IPv6Address
+            cuts.update(getattr(address_type._constants,'_private_networks',()))
+            shared=getattr(address_type._constants,'_public_network',None)
+            if shared is not None:cuts.add(shared)
+            bits=32 if version==4 else 128
+            points={0,1<<bits}
+            for cut in cuts:
+                if cut.version==version:points.update((int(cut.network_address),int(cut.broadcast_address)+1))
+            boundaries=sorted(points)
+            address=ipaddress.IPv4Address if version==4 else ipaddress.IPv6Address
+            grouped={}
+            for low,high in zip(boundaries,boundaries[1:]):
+                scope=ipaddress.ip_network(address(low))
+                zones={};fingerprint=[]
+                for name,index in self.indexes.items():
+                    snapshot=self.snapshots[name];route=self._route(snapshot,scope)
+                    if route and route.get('zone'):zones[name]=route['zone']
+                    rows=index.rules(other,scope)&known_ids[name]
+                    field='Original Destination' if source else 'Original Source'
+                    fixed='Original Source' if source else 'Original Destination'
+                    fixed_ids=set().union(*(index.nat[fixed].find(q) for q in (discovery_queries or {None})))|index.natUnresolved[fixed]
+                    nat_candidates=tuple(sorted((index.nat[field].find(scope)|index.natUnresolved[field]) & fixed_ids & index.nat_service_index.find(protocol,port,number)))
+                    fingerprint.append((name,tuple(sorted(rows)),(route or {}).get('network'),(route or {}).get('interface'),(route or {}).get('gateway'),nat_candidates))
+                endpoint=self.topology.resolve(scope)
+                owner=endpoint.owner or {};aws=endpoint.aws or {}
+                fingerprint.append((endpoint.kind,owner.get('firewall'),owner.get('interface'),aws.get('eniId'),str(scope) if aws else None))
+                group=grouped.setdefault(tuple(fingerprint),[str(scope),[],zones])
+                group[1].extend(str(net) for net in ipaddress.summarize_address_range(address(low),address(high-1)))
+            wildcard_cache['classes']=list(grouped.values())
+            value=[(target,coverage) for target,coverage,zones in wildcard_cache['classes'] if not any(zones.get(name) for name in unit['firewalls']) or any(zone_match(zones.get(name),unit['zone']) for name in unit['firewalls'] if zones.get(name))]
+            wildcard_cache[cache_key]=value
+            return value
         for unit in list(units.values())[:500]:
-            targets=wildcard_targets(unit) if unit['wildcard'] else unit['networks'] or [value for value in unit['fqdns'] if '*' not in value]
+            scopes=wildcard_targets(unit) if unit['wildcard'] else [(target,[target]) for target in (unit['networks'] or [value for value in unit['fqdns'] if '*' not in value])]
+            targets=[target for target,coverage in scopes]
             cases=[]
-            for target in targets:
+            for target,coverage in scopes:
                 try:
-                    result=self.analyze(value if source else target,target if source else value,protocol,port,number)
-                    cases.append({'target':target,'source':value if source else target,'destination':target if source else value,
+                    result=self.analyze(value if source else target,target if source else value,protocol,port,number,_partition=not unit['wildcard'])
+                    cases.append({'target':target,'coveredNetworks':coverage,'source':value if source else target,'destination':target if source else value,
                         'summary':result['summary'],'analysisPath':result['analysisPath'],'progress':result.get('progress',{}),'returnPath':result.get('returnPath'),
                         'serviceResults':result.get('serviceResults',[]),'networkResults':result.get('networkResults',[]),'resolvedResults':result.get('resolvedResults',[]),'pathContext':result.get('pathContext'),'details':result.get('details',{})})
                 except ValueError:cases.append({'target':target,'summary':{'status':'UNKNOWN','primaryReason':'Object에 유효한 주소/FQDN이 없습니다'},'analysisPath':[]})
             states={case['summary']['status'] for case in cases}
             state=next(iter(states)) if len(states)==1 else 'WARNING' if states else 'UNKNOWN'
             reason='정책 Object/Zone 범위를 실제 Path Engine으로 분석했습니다' if cases else 'API 결과에 Object 주소/FQDN이 없어 분석할 수 없습니다'
-            if unit['wildcard']:reason='ANY를 수집된 Route/Object 경계로 분할하여 전체 범위를 분석했습니다'
+            if unit['wildcard']:reason='전체 주소 범위를 같은 정책/경로 조건별로 묶어 분석했습니다'
             if cases and len(states)>1:reason='범위별 결과 상이 · 각 Network의 허용/차단 결과를 제공합니다'
             if unit['partialKnown'] and state=='WARNING':reason='입력 Network/Resolve 범위별 허용/차단 결과가 다릅니다'
             groups.append({**unit,'status':state,'reason':reason,'results':cases,'policyCount':len(unit['relatedPolicies']),'miniPath':mini_path(cases,state)})

@@ -124,6 +124,11 @@ def _action_state(candidate: dict[str, Any]) -> str:
 
 
 def _query_address_match(network, fqdn, row, side, allow_resolved=False):
+    prepared=row.get('_'+side+' Address Index')
+    if not fqdn and prepared is not None:
+        if prepared.contains(network):return {'match':'full','wildcard':bool(prepared.any),'resolverFailed':False}
+        return {'match':'partial' if prepared.find(network) else 'none','wildcard':False,
+            'resolverFailed':bool(row.get(side+' Object','')) and not prepared.prefixes}
     if not fqdn:
         return address_match_details(network, row.get(f'{side} Object', ''), row.get(f'{side} Resolved', ''), row.get(f'{side.lower()}_wildcard') is True)
     wildcard = row.get(f'{side.lower()}_wildcard') is True or any(is_wildcard_value(value) for value in row.get(f'{side} Object', '').splitlines())
@@ -179,6 +184,7 @@ def match_rules(
     destination_fqdn: str | None = None,
     source_fqdn: str | None = None,
     resolved_fqdn_addresses: bool = False,
+    published_destination=None,
 ) -> dict[str, Any]:
     protocol = protocol.upper()
     broad_query = protocol == "ANY" or (protocol in {"TCP", "UDP"} and port is None) or (protocol == "IP" and protocol_number is None)
@@ -187,6 +193,12 @@ def match_rules(
     for row in rows:
         source_result = _query_address_match(source, source_fqdn, row, 'Source', resolved_fqdn_addresses)
         destination_result = _query_address_match(destination, destination_fqdn, row, 'Destination', resolved_fqdn_addresses)
+        destination_basis='translated_or_current'
+        if published_destination is not None and row.get('_Destination Interface Networks'):
+            published=address_match_details(published_destination,'\n'.join(row['_Destination Interface Networks']),'\n'.join(row['_Destination Interface Networks']))
+            if published['match']=='full':
+                destination_result=published;destination_basis='published_interface_reference'
+
         source_match, destination_match = source_result["match"], destination_result["match"]
         source_zone_match = zone_match(expected_source_zone, row.get("Source Zone", ""))
         destination_zone_match = zone_match(expected_destination_zone, row.get("Destination Zone", ""))
@@ -210,6 +222,7 @@ def match_rules(
             "action": row.get("Action", ""),
             "sourceMatch": source_match,
             "destinationMatch": destination_match,
+            "destinationMatchBasis": destination_basis,
             **service,
             "sourceZone": row.get("Source Zone", ""),
             "destinationZone": row.get("Destination Zone", ""),
@@ -369,7 +382,21 @@ class FirewallPathCheckService:
         started=time.perf_counter()
         if refresh:self.configuration.refresh()
         analysis=PathAnalysis(self,False)
-        result=analysis.analyze(source_value,destination_value,protocol,port,protocol_number)
+        import copy
+        normalized=normalize_service(protocol,port,protocol_number)
+        key=(str(source_value or '').strip(),str(destination_value or '').strip(),*normalized)
+        with analysis.topology.cache_lock:
+            cached=analysis.topology.query_cache.get(key)
+        if cached is not None:
+            result=copy.deepcopy(cached);analysis.metrics['cache_hit']=True
+        else:
+            result=analysis.analyze(source_value,destination_value,protocol,port,protocol_number)
+            analysis.metrics['cache_hit']=False
+            with analysis.topology.cache_lock:
+                analysis.topology.query_cache[key]=copy.deepcopy(result)
+                if len(analysis.topology.query_cache)>16:analysis.topology.query_cache.popitem(last=False)
+        if not analysis.snapshots and not analysis.aws_data:
+            result['summary'].update(status='UNKNOWN',primaryReason='Configuration Snapshot이 없습니다. 최신 정보 다시 조회를 먼저 실행해 주세요.')
         stamps={name:snapshot.get('checkedAt','') for name,snapshot in analysis.snapshots.items() if snapshot.get('checkedAt')}
         result['configuration']={'refreshedAt':min(stamps.values()) if stamps else None,'firewalls':stamps,
             'snapshots':{name:snapshot.get('metadata',{}).get('snapshot_id') for name,snapshot in analysis.snapshots.items()}}

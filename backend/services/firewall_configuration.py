@@ -1,6 +1,7 @@
 """Persistent, generation-consistent firewall configuration and prebuilt search indexes."""
 from __future__ import annotations
 import copy
+import bisect
 import ipaddress
 import json
 import re
@@ -26,7 +27,7 @@ SCHEMA_VERSION=1
 SAFE_REASONS=frozenset({
     'incomplete_snapshot','invalid_snapshot_tables','invalid_snapshot_objects','invalid_rule_name','duplicate_rule_name',
     'invalid_snapshot_metadata','invalid_snapshot_field','invalid_object_values','invalid_fqdn_values','index_version_mismatch',
-    'configuration_missing','empty_snapshot','unconfirmed_empty_rules','partial_response','partial_response_count','invalid_response_root','authentication_failed',
+    'configuration_missing','empty_snapshot','unconfirmed_empty_rules','partial_response','partial_response_count','invalid_response_root','authentication_failed','partial_refresh_rejected',
 })
 
 
@@ -151,11 +152,24 @@ def normalize_objects(payloads, snapshot):
 
 class PrefixIndex:
     def __init__(self):
-        self.prefixes=defaultdict(lambda:defaultdict(set));self.any=set()
+        self.prefixes=defaultdict(lambda:defaultdict(set));self.any=set();self.sorted={};self.cache={}
+    def freeze(self):
+        self.sorted={key:sorted(values) for key,values in self.prefixes.items()}
     def add(self,text,identifier,wildcard=False):
+        self.cache.clear();self.sorted.clear()
         if wildcard or any(is_wildcard_value(value) for value in text.splitlines()):self.any.add(identifier)
         for network in _networks(text):self.prefixes[(network.version,network.prefixlen)][int(network.network_address)].add(identifier)
+    def contains(self,network):
+        if self.any:return True
+        if network is None:return False
+        bits=network.max_prefixlen
+        for (version,prefix),values in self.prefixes.items():
+            if version==network.version and prefix<=network.prefixlen:
+                mask=((1<<bits)-1)^((1<<(bits-prefix))-1) if prefix else 0
+                if int(network.network_address)&mask in values:return True
+        return False
     def find(self,network):
+        if network in self.cache:return set(self.cache[network])
         result=set(self.any)
         if network is None:return result
         bits=network.max_prefixlen
@@ -166,8 +180,10 @@ class PrefixIndex:
                 result.update(values.get(int(network.network_address)&mask,()))
             else:
                 low,high=int(network.network_address),int(network.broadcast_address)
-                for address,ids in values.items():
-                    if low<=address<=high:result.update(ids)
+                keys=self.sorted.get((version,prefix))
+                if keys is None:keys=sorted(values);self.sorted[(version,prefix)]=keys
+                for address in keys[bisect.bisect_left(keys,low):bisect.bisect_right(keys,high)]:result.update(values[address])
+        if len(self.cache)<8192:self.cache[network]=frozenset(result)
         return result
 
 
@@ -182,7 +198,9 @@ class ConfigurationIndex:
         self.fqdns={side:defaultdict(set) for side in self.sides}
         self.objects=defaultdict(set);self.services=defaultdict(set);self.nat={field:PrefixIndex() for field in ('Original Source','Original Destination','Translated Source','Translated Destination')}
         self.hostObjects=PrefixIndex()
-        for name,text in snapshot.get('objects',{}).items():self.hostObjects.add(text,name)
+        self.object_networks={}
+        for name,text in snapshot.get('objects',{}).items():
+            self.hostObjects.add(text,name);self.object_networks[name]=tuple(_networks(text))
         self.objectParents=defaultdict(set)
         for parent,members in {**snapshot.get('objectGroups',{}),**snapshot.get('expandedObjectGroups',{})}.items():
             for member in members:self.objectParents[member].add(parent)
@@ -191,12 +209,32 @@ class ConfigurationIndex:
             for member in members:self.serviceParents[member].add(parent)
         self.natUnresolved={field:set() for field in self.nat}
         self.routes=PrefixIndex();self.interfaces={row['Name']:row for row in snapshot.get('interfaces',[]) if row.get('Name')}
-        self.aliases={row['Name']:row for row in snapshot.get('aliases',[]) if row.get('Name')}
+        self.aliases={row['Name']:{**row,'Zone':row.get('Zone') or self.interfaces.get(row.get('Parent Interface'),{}).get('Zone','')} for row in snapshot.get('aliases',[]) if row.get('Name')}
         self.gateways={row['Name']:row for row in snapshot.get('gateways',[]) if row.get('Name')}
-        for i,row in enumerate(snapshot.get('rules',[])):
+        self.interface_by_address=defaultdict(list);self.interface_rules=defaultdict(set);self.interface_nat=defaultdict(set)
+        self.interface_refs={}
+        for ref,row in {**self.interfaces,**self.aliases}.items():
+            self.interface_refs[ref]=row;self.interface_refs['#'+ref]=row
+            if row.get('Hardware'):self.interface_refs[row['Hardware']]=row
+            if row.get('IP Address'):self.interface_by_address[row['IP Address']].append(row)
+        for i,row in enumerate(self.ordered_rules):
+            for side in self.sides:
+                refs=[]
+                for value in row.get(side+' Object','').splitlines():
+                    refs.extend([value,*snapshot.get('expandedObjectGroups',{}).get(value,[])])
+                references=[self.interface_refs[v] for v in refs if v in self.interface_refs and self.interface_refs[v].get('IP Address')]
+                if references:
+                    row[side+' Resolved']='\n'.join([row.get(side+' Resolved',''),*[v['IP Address'] for v in references]])
+                    row['_'+side+' Interface Networks']=[v['IP Address']+'/32' if ':' not in v['IP Address'] else v['IP Address']+'/128' for v in references]
+                    missing=row.get('_'+side+' Missing Objects',[])
+                    row['_'+side+' Missing Objects']=[v for v in missing if v not in self.interface_refs]
+                    for ref in references:self.interface_rules[ref['Name']].add(i)
             for side in self.sides:
                 self.sides[side].add(row.get(side+' Object','')+'\n'+row.get(side+' Resolved',''),i,row.get(side.lower()+'_wildcard',False))
                 text=row.get(side+' Resolved','')
+                predicate=PrefixIndex();predicate.add(text,0,row.get(side.lower()+'_wildcard',False) or any(is_wildcard_value(value) for value in row.get(side+' Object','').splitlines()));predicate.freeze()
+                row['_'+side+' Address Index']=predicate
+                row['_'+side+' Networks']=tuple(_networks(text))
                 if row.get('_'+side+' Missing Objects') or row.get(side+' Object') and not _networks(text) and i not in self.sides[side].any and not row.get('_'+side+' EmptyGroup'):self.unresolved[side].add(i)
                 self.cuts+=_networks(text)
                 for name in row.get(side+' Object','').splitlines():self.objects[name].add((side,i))
@@ -206,12 +244,32 @@ class ConfigurationIndex:
             reference=self.aliases.get(value.lstrip('#'),self.interfaces.get(value.lstrip('#'),{}))
             if value.startswith('#') and reference.get('IP Address'):return reference['IP Address']
             return snapshot.get('objects',{}).get(value) or reference.get('IP Address') or value
-        for i,row in enumerate(snapshot.get('natRules',[])):
+        self.nat_rows=copy.deepcopy(snapshot.get('natRules',[]))
+        self.nat_phases={'DNAT':set(),'SNAT':set()}
+        for i,row in enumerate(self.nat_rows):
+            row['_Service Resolved']='\n'.join(snapshot.get('services',{}).get(value,'') for value in row.get('Original Service','').splitlines())
+            if not row.get('Original Service'):row['_service_wildcard']=True
+            for phase,field in [('DNAT','Translated Destination'),('SNAT','Translated Source')]:
+                if row.get(field,'').casefold() not in {'','original'}:self.nat_phases[phase].add(i)
+            for value in row.get('Original Destination','').splitlines():
+                if value in self.interface_refs:self.interface_nat[self.interface_refs[value]['Name']].add(i)
             for field,index in self.nat.items():
                 values=row.get(field,'').splitlines()
                 text='\n'.join(nat_address(value) for value in values)
-                index.add(text,i)
+                index.add(text,i,wildcard=not values and field.startswith('Original '))
                 if text and (not _networks(text) or any(value not in snapshot.get('objects',{}) and not literal_address(value) and not is_wildcard_value(value) and value.casefold() not in {'original','masq'} for value in values)) and i not in index.any and text.casefold() not in {'original','masq'}:self.natUnresolved[field].add(i)
+        from backend.services.firewall_search_index import ServiceIndex
+        self.service_index=ServiceIndex(self.ordered_rules)
+        self.nat_service_index=ServiceIndex(self.nat_rows,'Original Service','_Service Resolved','_service_wildcard')
+        ordered=[{**row,'_Rule Position':row.get('Position',''),'_Rule After':row.get('After Rule','')} for row in self.nat_rows]
+        from backend.services.firewall_path_check import _position
+        numeric=[_position(row['_Rule Position']) for row in ordered]
+        self.nat_order_reliable=all(v is not None for v in numeric) and len(set(numeric))==len(numeric)
+        if self.nat_order_reliable:
+            self.nat_order={i:v for i,v in enumerate(numeric)}
+        else:
+            self.nat_order_reliable=_restore_rule_order(ordered)
+            self.nat_order={i:row.get('_Rule Order',i) for i,row in enumerate(ordered)}
         for row in snapshot.get('interfaces',[])+snapshot.get('aliases',[]):
             try:self.cuts.append(ipaddress.ip_interface(row.get('CIDR') or row['IP Address']+'/'+row['Netmask']).network)
             except (ValueError,KeyError,TypeError):pass
@@ -224,6 +282,34 @@ class ConfigurationIndex:
             if '/' not in text:text+='/'+(row.get('netmask') or '32')
             self.routes.add(text,i)
             self.cuts+=_networks(text)
+        self.cuts=tuple(set(self.cuts))
+        from backend.services.firewall_path_decisions import interface_network
+        self.connected_routes=PrefixIndex();self.connected_records={};self.route_records={};self.default_routes=[]
+        for i,row in enumerate(self.interfaces.values()):
+            cidr=interface_network(row)
+            if cidr is not None and row.get('Status','').casefold() not in {'disable','disabled','off'}:
+                self.connected_routes.add(str(cidr),i)
+                self.connected_records[i]={'network':str(cidr),'interface':row['Name'],'zone':row.get('Zone',''),'gateway':'','routeType':'Connected','source':'connected_interface','_cidr':cidr,'_distance':0}
+            gateway=self.gateways.get(row.get('Gateway Name'),{})
+            address=row.get('Gateway IP') or gateway.get('Gateway IP')
+            if row.get('Zone')=='WAN' and address and gateway.get('Type','').casefold() not in {'disable','disabled','backup'}:
+                try:
+                    version=ipaddress.ip_address(address).version
+                    default=ipaddress.ip_network('0.0.0.0/0' if version==4 else '::/0')
+                    self.default_routes.append({'network':str(default),'interface':row['Name'],'zone':'WAN','gateway':address,'routeType':'Default','source':'interface_gateway','_cidr':default,'_distance':255})
+                except ValueError:pass
+        for i,row in enumerate(snapshot.get('routes',[])):
+            try:
+                text=row.get('destination','')
+                cidr=ipaddress.ip_network(text if '/' in text else text+'/'+(row.get('netmask') or '32'),strict=False)
+                try:distance=int(row.get('administrative_distance') or row.get('distance') or 1)
+                except (ValueError,TypeError):distance=1
+                reference=self.interface_refs.get(row.get('interface'),{})
+                zone=reference.get('Zone') or ('VPN' if row.get('interface','').casefold().startswith('xfrm') else '')
+                self.route_records[i]={**row,'network':str(cidr),'zone':zone,'routeType':'Default' if cidr.prefixlen==0 else 'Static','source':'static','_cidr':cidr,'_distance':distance}
+            except ValueError:pass
+        for prefix_index in [*self.sides.values(),*self.nat.values(),self.routes,self.hostObjects,self.connected_routes]:prefix_index.freeze()
+        self.route_cuts=tuple(net for row in snapshot.get('routes',[]) for net in _networks(row.get('destination','')+'/'+(row.get('netmask') or '32') if '/' not in row.get('destination','') else row['destination']))
     def rules(self,side,network=None,fqdn=None):
         from backend.services.fqdn import fqdn_matches
         result=self.sides[side].find(network) | self.unresolved[side]
@@ -320,7 +406,7 @@ class FirewallConfigurationStore:
     def refresh(self,_leased=False):
         if not _leased and not self.refresh_lock.acquire(blocking=False):return self.info()
         with self.lock:self.status['running']=True
-        pending_snapshots={};pending_indexes={}
+        pending_snapshots={};pending_indexes={};batch_failed=False
         previous_snapshots=dict(self.snapshots)
         previous_status=copy.deepcopy(self.status['firewalls'])
         batch_stage='aws_topology_collection'
@@ -341,6 +427,7 @@ class FirewallConfigurationStore:
                             self.status['firewalls'][name]={**self.status['firewalls'].get(name,{}),
                                 'last_refresh_attempt':attempt,'refresh_status':'failed','error':'ValueError',
                                 'error_code':'configuration_missing','error_entities':['Configuration'],'diagnostics':[diagnostic]}
+                        batch_failed=True
                         continue
                     # This is the online Collector, not _snapshot()/analysis_snapshots().
                     snapshot=copy.deepcopy(self.collector(config,True))
@@ -350,15 +437,16 @@ class FirewallConfigurationStore:
                     stage='snapshot_validation';validate(snapshot,build_index=False)
                     if previous and previous['rules'] and not snapshot['rules'] and not snapshot.get('confirmedEmptyRules',False):raise ValueError('unconfirmed_empty_rules')
                     from backend.services.refresh import RefreshService
-                    stage='snapshot_save';RefreshService(self.root).save_json_atomic(self.path(name),snapshot);saved=True
                     stage='index_build';index=ConfigurationIndex(snapshot)
                     if index.snapshot_id!=snapshot['metadata']['snapshot_id']:raise ValueError('index_version_mismatch')
+                    stage='snapshot_save';RefreshService(self.root).save_json_atomic(self.path(name),snapshot);saved=True
                     with self.lock:
                         pending_snapshots[name]=snapshot;pending_indexes[name]=index
                         self.status['firewalls'][name]={'last_refresh_attempt':attempt,'last_successful_refresh':collected_at,
                             'refresh_status':'success','error':None,'error_code':None,'error_entities':[],'diagnostics':[]}
                     log.info('Firewall refresh collected firewall=%s stage=prepared snapshot_id=%s elapsed_ms=%.2f',name,index.snapshot_id,(time.perf_counter()-started)*1000)
                 except Exception as exc:
+                    batch_failed=True
                     details=list(snapshot.get('collectionDiagnostics',[])) if isinstance(snapshot,dict) else []
                     diagnostic=failure_diagnostic(exc,name,'Snapshot',stage)
                     if not details:details.append(diagnostic);log_failure(diagnostic)
@@ -376,6 +464,9 @@ class FirewallConfigurationStore:
                             'error':type(exc).__name__,'error_code':diagnostic['reason'],
                             'error_entities':sorted({item['entity'] for item in details}),'diagnostics':details}
                 log.debug('Firewall configuration refresh firewall=%s elapsed_ms=%.2f',name,(time.perf_counter()-started)*1000)
+            if batch_failed:
+                batch_stage='batch_validation'
+                raise ValueError('partial_refresh_rejected')
             if aws_error is not None:
                 batch_stage='aws_topology_collection'
                 raise aws_error
@@ -398,6 +489,7 @@ class FirewallConfigurationStore:
             pending_snapshots={};pending_indexes={}
             from backend.services.firewall import FIREWALL_DEFINITIONS
             for name in set(FIREWALL_DEFINITIONS)|set(self.status['firewalls']):
+                if batch_failed and self.status['firewalls'].get(name,{}).get('refresh_status')=='failed':continue
                 diagnostic=failure_diagnostic(exc,name,'Configuration',batch_stage)
                 log_failure(diagnostic)
                 with self.lock:

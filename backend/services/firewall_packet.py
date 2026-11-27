@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import ipaddress
 import logging
+import time
 from dataclasses import dataclass, field
 
 from backend.services.aws_security_group_path import AwsSecurityGroupPathService, firewall_step, policy_summary
@@ -91,11 +92,14 @@ class DynamicPathBuilder:
         return step
 
     def aws_control(self, direction, endpoint, peer_query, context):
-        if not endpoint:
+        if not endpoint:return True
+        if endpoint.get('state')=='IDENTIFIED' and not endpoint.get('instanceId') and endpoint.get('groupsValid') and not endpoint.get('groupIds'):
+            self.aws[direction.lower()]={'kind':'aws_sg','label':'AWS SG '+direction,'direction':direction,'state':'N/A','reason':'Managed ENI에 부착된 SG 없음(명시적 Cache 값)','endpoint':endpoint}
             return True
         peer = self.topology.resolve(peer_query).aws or {'state': 'N/A'}
         value = self.sg._step(direction, endpoint, peer, peer_query, context.protocol, context.port,
-            context.protocol_number, self.topology.aws_data, context.visited_firewalls, False)
+            context.protocol_number,self.topology.aws_data,context.visited_firewalls,False,
+            rule_rows=[row for gid in endpoint.get('groupIds',[]) for row in self.topology.sg_rules.get((gid,direction=='Outbound'),[])],group_map=self.topology.sg_groups)
         self.aws[direction.lower()] = value
         status = {'PASS': 'PASS', 'FAIL': 'BLOCK'}.get(value['state'], 'UNKNOWN')
         self.emit('aws_sg', value['label'], status, value['reason'], awsSg=value,
@@ -124,6 +128,7 @@ class DynamicPathBuilder:
             return
         if not nat:
             return
+        context.destination_type='PUBLISHED_ADDRESS'
         row = nat['row']
         target = self.analysis._translated(row.get('Translated Destination'), snapshot)
         translated_port = context.port
@@ -163,18 +168,46 @@ class DynamicPathBuilder:
         self.emit('snat', 'SNAT', 'PASS', f'{old} → {target}', firewall=context.firewall, rule=row['Rule Name'], nat=row,
             translation={'original': str(old), 'translated': str(translated)})
 
-    def local_endpoint(self, context, endpoint):
-        owner = endpoint.owner or {}
-        snapshot = self.analysis.snapshots[context.firewall]
-        # Zone Device Access identifies enabled services, not arbitrary port numbers.
-        # No service-port/Local ACL collection exists; never infer one from a query port.
-        zone = next((row for row in snapshot.get('zones', []) if row.get('Name') == owner.get('zone')), {})
-        context.forward_status = 'REACHED'
-        self.hops.append({'firewall': context.firewall, 'source': context.source, 'ingress': context.ingress})
-        self.emit('firewall_local', context.firewall + ' Local Endpoint', 'UNKNOWN',
-            'Firewall Interface까지 도달 · Local Service 포트/ACL 설정 미수집으로 서비스 접근은 판정할 수 없습니다',
-            firewall=context.firewall, reachedEndpoint=True, destinationType='FIREWALL_LOCAL_ENDPOINT',
-            evidence={'Interface': owner.get('interface', ''), 'Zone': owner.get('zone', ''), 'Device Access': zone.get('Device Access', '')})
+    def published_policy(self,context,endpoint):
+        """Alias ownership is not Local Service ownership. Check explicit usage first."""
+        index=self.analysis.indexes[context.firewall]
+        refs=index.interface_rules.get(endpoint.owner['interface'],set())
+        started=time.perf_counter()
+        ids=refs & index.rules('Source',context.source,context.source_fqdn) & index.service_index.find(context.protocol,context.port,context.protocol_number)
+        self.analysis.metrics['object_index_lookup_ms']+=(time.perf_counter()-started)*1000
+        self.analysis._candidate_rules.update((id(self.analysis.snapshots[context.firewall]),i) for i in ids)
+        self.analysis.metrics['candidate_rule_count']=len(self.analysis._candidate_rules)
+        rows=[index.ordered_rules[i] for i in sorted(ids)]
+        zones={zone for row in rows for zone in row.get('Destination Zone','').splitlines() if zone and zone.casefold() not in {'local','any','all','*'}}
+        matches=[]
+        for zone in sorted(zones):
+            policy,status,reason=decide_policy(rows,context.source,context.destination,context.protocol,context.port,
+                context.ingress_zone,zone,context.protocol_number,context.source_fqdn,context.destination_fqdn)
+            if policy.get('matchedRule') or policy.get('unresolvedRules'):matches.append((policy,status,reason,zone))
+        if not matches:return None
+        # API-provided precedence, never address ownership or Rule ID order.
+        return min(matches,key=lambda match:(match[0].get('matchedRule') or {}).get('position') or float('inf'))
+
+    def local_endpoint(self,context,endpoint):
+        owner=endpoint.owner or {};snapshot=self.analysis.snapshots[context.firewall]
+        zone=next((row for row in snapshot.get('zones',[]) if row.get('Name')==owner.get('zone')),{})
+        services=snapshot.get('localServices',[])
+        local=next((row for row in services if row.get('enabled',True) and row.get('zone') in {owner.get('zone'),'*'} and
+            row.get('protocol','').upper()==context.protocol and row.get('port')==context.port),None)
+        if context.protocol in {'ICMP','ICMPV6'} and 'Ping' in zone.get('Device Access','').splitlines():local={'service':'Ping'}
+        if not local:
+            context.destination_type='FIREWALL_ENDPOINT_UNCLASSIFIED'
+            self.emit('firewall_endpoint',context.firewall+' Interface Endpoint','UNKNOWN',
+                'Transit/NAT Match 없음 · 실제 Local Service 포트/ACL 자료가 없어 Endpoint 용도를 확정할 수 없습니다',
+                firewall=context.firewall,destinationType='FIREWALL_ENDPOINT_UNCLASSIFIED',
+                evidence={'Interface':owner.get('interface',''),'Zone':owner.get('zone',''),'Device Access':zone.get('Device Access','')})
+            return
+        context.forward_status='REACHED';context.destination_type='FIREWALL_LOCAL_ENDPOINT'
+        self.hops.append({'firewall':context.firewall,'source':context.source,'ingress':context.ingress})
+        self.emit('firewall_local',context.firewall+' Local Endpoint','UNKNOWN',
+            '실제 Local Service 대상 확인 · Source ACL 조건은 수집되지 않았습니다',firewall=context.firewall,
+            reachedEndpoint=True,destinationType='FIREWALL_LOCAL_ENDPOINT',
+            evidence={'Interface':owner.get('interface',''),'Zone':owner.get('zone',''),'Service':local.get('service','')})
 
     def hop(self, context):
         name = context.firewall
@@ -204,7 +237,15 @@ class DynamicPathBuilder:
             return None
         endpoint = self.topology.resolve(context.destination)
         if endpoint.owner and endpoint.kind in {'FIREWALL_INTERFACE', 'FIREWALL_ALIAS'} and endpoint.owner['firewall'] == name:
-            self.local_endpoint(context, endpoint)
+            published=self.published_policy(context,endpoint)
+            if published:
+                context.destination_type='PUBLISHED_ADDRESS'
+                policy,status,reason,zone=published
+                self.emit('published_address',name+' Published Address','PASS','현재 Flow와 일치하는 Alias Transit 정책',firewall=name,destinationType='PUBLISHED_ADDRESS')
+                self.emit('firewall',name+' Firewall',status,reason,firewall=name,ingressZone=context.ingress_zone,egressZone=zone,
+                    matchedRule=policy.get('matchedRule'),action=(policy.get('matchedRule') or {}).get('action'),candidateRules=policy.get('matches',[]))
+                if not self.stopped:self.emit('topology','Published Next Hop','UNKNOWN','Transit 정책은 확인했으나 변환/다음 Hop 주소 자료가 없습니다',firewall=name)
+            else:self.local_endpoint(context,endpoint)
             return None
         route = self.topology.routes.select(name, context.destination)
         context.route = route
@@ -226,9 +267,11 @@ class DynamicPathBuilder:
                 '동등 우선순위 Route의 Next Hop이 모호합니다' if route.get('ambiguous') else '선택된 Route의 Ingress/Egress Interface/Zone을 식별할 수 없습니다')
             self.emit('route', name + ' Route', 'UNKNOWN', reason, firewall=name, route=route)
             return None
-        rows = self.analysis.policy_candidates(snapshot, context.source, context.destination, context.source_fqdn, context.destination_fqdn)
+        rows = self.analysis.policy_candidates(snapshot,context.source,context.destination,context.source_fqdn,context.destination_fqdn,context.protocol,context.port,context.protocol_number,context.hop_destination if context.applied_dnat else None)
+        validation_started=time.perf_counter()
         policy, status, reason = decide_policy(rows, context.source, context.destination, context.protocol, context.port,
-            context.ingress_zone, context.egress_zone, context.protocol_number, context.source_fqdn, context.destination_fqdn)
+            context.ingress_zone,context.egress_zone,context.protocol_number,context.source_fqdn,context.destination_fqdn,context.hop_destination if context.applied_dnat else None)
+        self.analysis.metrics['policy_validation_ms']+=(time.perf_counter()-validation_started)*1000
         matched = policy.get('matchedRule')
         step = self.emit('firewall', name + ' Firewall', status, reason, firewall=name,
             ingressZone=context.ingress_zone, egressZone=context.egress_zone, matchedRule=matched,
@@ -281,7 +324,9 @@ class DynamicPathBuilder:
         return None
 
     def build(self, base, source, destination, protocol, port, number, source_fqdn=None, destination_fqdn=None):
+        endpoint_started=time.perf_counter()
         self.source_endpoint, self.destination_endpoint = self.topology.resolve(source), self.topology.resolve(destination)
+        self.analysis.metrics['endpoint_lookup_ms']+=(time.perf_counter()-endpoint_started)*1000
         log.debug('packet-flow stage=resolve_destination endpoint_type=%s owner_firewall=%s interface=%s aws_eni_identified=%s', self.destination_endpoint.kind, (self.destination_endpoint.owner or {}).get('firewall'), (self.destination_endpoint.owner or {}).get('interface'), bool(self.destination_endpoint.aws))
         context = PacketContext(source, destination, source, destination, protocol, port, number,
             destination_type=self.destination_endpoint.kind, source_fqdn=source_fqdn, destination_fqdn=destination_fqdn)
@@ -351,10 +396,10 @@ class DynamicPathBuilder:
         base.update(mode='PATH', summary=summary, analysisPath=self.steps, pathSteps=self.steps, progress=path_progress,
             path=list(dict.fromkeys(context.visited_firewalls)), partialPath=(self.aws.get('networkPath') or {}).get('partialPath',context.forward_status not in {'REACHED', 'BLOCKED'}),
             firewalls=self.results, steps=steps, awsSecurityGroups=self.aws, policySummary=policy_summary(steps, context.forward_status != 'REACHED'),
-            endpoints={'source': self.source_endpoint.public(), 'destination': self.destination_endpoint.public()}, returnPath=return_path,
+            endpoints={'source': self.source_endpoint.public(), 'destination': {**self.destination_endpoint.public(),'usage':context.destination_type}}, returnPath=return_path,
             forwardPath={'status': context.forward_status, 'hopCount': context.hop_count}, findings=[],
             details={'candidateRules': {row['firewall']: row['policy'].get('matches', []) for row in self.results},
                 'destinationOwners': [self.destination_endpoint.owner] if self.destination_endpoint.owner else [],
                 'awsSg': self.aws, 'returnPath': return_path,
-                'resolvedObjects': {name: {'addresses': self.analysis.snapshots[name].get('objects', {}), 'services': self.analysis.snapshots[name].get('services', {}), 'fqdns': self.analysis.snapshots[name].get('fqdnObjects', {})} for name in context.visited_firewalls}})
+                'resolvedObjects': {name: {'snapshotId':self.analysis.indexes[name].snapshot_id,'addresses':{},'services':{},'fqdns':{}} for name in context.visited_firewalls}})
         return base
