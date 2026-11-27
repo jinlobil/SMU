@@ -86,7 +86,7 @@ def test_refresh_stage_order_and_analysis_stays_offline_after_bootstrap(native,m
         events.append(('validate',snapshot['metadata']['firewall']))
         return original_validate(snapshot,**kwargs)
     def save(self,path,payload):
-        if path.name!='status.json':events.append(('save',payload['metadata']['firewall']))
+        if path.name not in {'status.json','topology.json'}:events.append(('save',payload['metadata']['firewall']))
         return original_save(self,path,payload)
     def index(snapshot):
         events.append(('index',snapshot['metadata']['firewall']))

@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 from backend.services.firewall_path_check import match_rules
 from backend.services.firewall_rule_export import parse_firewall_rules
 from backend.services.aws_security_group_path import AwsSecurityGroupPathService
-from test_aws_security_group_path import payload, save, path_service
+from test_aws_security_group_path import payload, save, path_service, replace_path_rules
 
 
 def source_rules(name='source-group'):
@@ -35,15 +35,17 @@ def test_source_dns_is_topology_only_no_arbitrary_record(tmp_path, monkeypatch, 
     save(tmp_path, payload())
     monkeypatch.setattr(module, 'resolve_fqdn', lambda _: addresses)
     service = path_service(tmp_path, monkeypatch)
-    monkeypatch.setattr(service, '_snapshot', lambda *_: {'rules': source_rules(), 'routes': [], 'routeError': '', 'checkedAt': 'now'})
+    replace_path_rules(service, source_rules(), {'host.example.com':addresses})
     result = service.check('HOST.Example.COM.', '100.1.2.10', 'TCP', 443)
     assert result['source']['input'] == 'host.example.com'
     assert result['source']['resolvedIps'] == addresses
     assert result['source']['network'] == ('101.1.0.50/32' if len(addresses) == 1 else '')
-    assert result['firewalls'] and all(item['policy']['state'] == 'allow' for item in result['firewalls'])
-    if len(addresses) != 1:
-        assert result['partialPath'] is True
-        assert all(item['routing']['return'] is None for item in result['firewalls'])
+    if addresses:
+        assert result['firewalls'] and all(item['policy']['state']=='allow' for item in result['firewalls'])
+        assert len(result['resolvedResults'])==len(addresses)
+    else:
+        assert result['summary']['status']=='UNKNOWN'
+        assert result['firewalls']==[]
 
 
 @pytest.mark.parametrize('value', ['https://host.example.com', '*.example.com', 'bad name', 'host..example.com', '999.1.1.1', 'host/example.com'])
@@ -62,7 +64,7 @@ def test_source_fqdn_api_and_simultaneous_destination_fqdn(tmp_path, monkeypatch
     import backend.app as app_module
     import backend.services.firewall_path_check as module
     service = path_service(tmp_path, monkeypatch)
-    monkeypatch.setattr(service, '_snapshot', lambda *_: {'rules': source_rules(), 'routes': [], 'routeError': '', 'checkedAt': 'now'})
+    replace_path_rules(service, source_rules(), {'host.example.com':['101.1.0.50'],'dest.example.com':['100.1.2.10']})
     monkeypatch.setattr(module, 'resolve_fqdn', lambda query: ['101.1.0.50'] if query == 'host.example.com' else ['100.1.2.10'])
     monkeypatch.setattr(app_module, 'firewall_path_check_service', service)
     response = TestClient(app_module.app).post('/api/firewall/path-check', json={'source': 'host.example.com', 'destination': 'dest.example.com', 'protocol': 'TCP', 'port': 443})

@@ -11,10 +11,11 @@ import pytest
 from backend.services.firewall_configuration import ConfigurationIndex, FirewallConfigurationStore, normalize_objects, validate_response
 from backend.services.firewall_path_check import FirewallPathCheckService
 from backend.services.firewall import FirewallClient
-from test_firewall_path_analysis import snapshot, rule, interface, nat, service
+from test_firewall_path_analysis import snapshot, rule, interface, nat, service, synthetic_wan
 
 
 def cached(tmp_path,monkeypatch,data=None,names=('Cloud',)):
+    synthetic_wan(monkeypatch)
     current=FirewallPathCheckService(tmp_path)
     monkeypatch.setattr(current.firewalls,'configurations',lambda:[{'name':name,'configured':True} for name in names])
     calls=[]

@@ -6,7 +6,7 @@ from backend.services.fqdn import fqdn_matches, normalize_fqdn, resolve_fqdn
 from backend.services.firewall_path_check import match_rules
 from backend.services.firewall_rule_export import parse_firewall_rules
 from backend.services.aws_security_group_path import AwsSecurityGroupPathService
-from test_aws_security_group_path import payload, save, path_service
+from test_aws_security_group_path import payload, save, path_service, replace_path_rules
 
 
 def fqdn_rules(object_name='api-host', action='Allow'):
@@ -56,13 +56,16 @@ def test_path_dns_does_not_replace_fqdn_policy_query(tmp_path, monkeypatch, reso
     save(tmp_path, payload())
     monkeypatch.setattr(module, 'resolve_fqdn', lambda _: resolved)
     service = path_service(tmp_path, monkeypatch)
-    monkeypatch.setattr(service, '_snapshot', lambda *_: {'rules': fqdn_rules(action='Reject'), 'routes': [], 'routeError': '', 'checkedAt': 'now'})
+    replace_path_rules(service, fqdn_rules(action='Reject'), {'api.example.com':resolved})
     result = service.check('101.1.0.50', 'API.Example.Com.', 'TCP', 443)
     assert result['destination']['input'] == 'api.example.com'
     assert result['destination']['resolvedIps'] == resolved
-    assert result['firewalls'][0]['policy']['state'] == 'deny'
-    assert result['firewalls'][0]['policy']['matchedRule']['rule'] == 'fqdn-policy'
-    assert result['policySummary']['state'] == 'FAIL'
+    if resolved:
+        assert result['firewalls'][0]['policy']['state']=='deny'
+        assert result['firewalls'][0]['policy']['matchedRule']['rule']=='fqdn-policy'
+    else:
+        assert result['summary']['status']=='UNKNOWN'
+        assert result['firewalls']==[]
 
 
 @pytest.mark.parametrize('rule_protocol,start,end,expected', [('tcp', 443, 443, 'UNKNOWN'), ('tcp', 400, 500, 'UNKNOWN'),
@@ -118,7 +121,8 @@ def test_existing_api_accepts_destination_fqdn(tmp_path, monkeypatch):
     result = response.json()['data']
     assert result['destination']['fqdn'] == 'api.example.com'
     assert result['path'] == []
-    assert all(step['state'] == 'UNKNOWN' for step in result['steps'])
+    assert result['summary']['status']=='PASS'
+    assert all(step['state']=='PASS' for step in result['steps'])
 
 
 def test_fqdn_group_nested_names_and_cycles_are_resolved_safely():

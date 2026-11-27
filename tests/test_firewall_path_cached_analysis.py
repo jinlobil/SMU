@@ -50,7 +50,8 @@ def test_wan_masq_applied_and_internal_no_nat_step(tmp_path,monkeypatch):
     internal=current.check('100.1.1.10','100.1.1.20','TCP',443)
     assert not any(step['type']=='snat' for step in internal['analysisPath'])
     assert internal['summary']['status']=='PASS'
-    assert internal['analysisPath'][0]['natDecision']=='NAT_NOT_REQUIRED'
+    assert internal['analysisPath'][0]['type']=='network'
+    assert internal['firewalls']==[]
 
 
 @pytest.mark.parametrize('field,value',[('Original Source','198.51.100.0/24'),('Original Destination','198.51.100.10'),('Original Service','other-service'),('Inbound Interface','wrong-port'),('Outbound Interface','wrong-port')])
